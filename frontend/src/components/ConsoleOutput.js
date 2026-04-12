@@ -409,6 +409,8 @@ const ConsoleOutput = ({ output, onClear, dslCode, addConsoleLog, onCodeChange, 
     if (!dslCode || !dslCode.trim()) {
       toast.error("No DSL code to run");
       return;
+    }
+
     // Fetch unique posting dates from loaded activity event data.
     // If there is more than one, show the date-selection modal before running.
     try {
@@ -440,9 +442,7 @@ const ConsoleOutput = ({ output, onClear, dslCode, addConsoleLog, onCodeChange, 
       const payload = { dsl_code: dslCode };
       if (postingDate) payload.posting_date = postingDate;
 
-      const response = await axios.post(`${API}/dsl/run`, payloadonst response = await axios.post(`${API}/dsl/run`, {
-        dsl_code: dslCode
-      });
+      const response = await axios.post(`${API}/dsl/run`, payload);
 
       if (response.data.success) {
         const eventsUsed = response.data.events_used?.length > 0 

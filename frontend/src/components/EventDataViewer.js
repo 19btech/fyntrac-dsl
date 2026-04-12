@@ -117,7 +117,18 @@ const EventDataViewer = ({ onClose }) => {
 
   const getColumnHeaders = () => {
     if (!eventData || !eventData.data_rows || eventData.data_rows.length === 0) return [];
-    return Object.keys(eventData.data_rows[0]);
+    // Union all keys across every row so columns present only in later rows are not missed.
+    const seen = new Set();
+    const headers = [];
+    for (const row of eventData.data_rows) {
+      for (const key of Object.keys(row)) {
+        if (!seen.has(key)) {
+          seen.add(key);
+          headers.push(key);
+        }
+      }
+    }
+    return headers;
   };
 
   // Safely convert any cell value to a renderable string.
