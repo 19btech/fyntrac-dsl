@@ -1,12 +1,13 @@
-import React, { useState, useRef, useEffect } from "react";
+import React, { useState, useRef, useEffect, useCallback } from "react";
 import axios from "axios";
 import { useToast } from "./ToastProvider";
-import { Send, User, Code, Copy, Check, RefreshCw, Sparkles, Eye, EyeOff, Zap, BookOpen, Calculator } from "lucide-react";
+import { Send, User, Code, Copy, Check, RefreshCw, Sparkles, Eye, EyeOff, Zap, BookOpen, Calculator, AlertTriangle } from "lucide-react";
 import { Button, Box, Chip } from '@mui/material';
+import ModelSelector from "./ModelSelector";
 
 const API = '/api';
 
-const ChatAssistantComponent = ({ dslFunctions, events, onInsertCode, onOverwriteCode, editorCode, consoleOutput }, ref) => {
+const ChatAssistantComponent = ({ dslFunctions, events, onInsertCode, onOverwriteCode, editorCode, consoleOutput, providerRefreshKey }, ref) => {
   const toast = useToast();
   const [messages, setMessages] = useState(() => {
     try {
@@ -27,8 +28,13 @@ const ChatAssistantComponent = ({ dslFunctions, events, onInsertCode, onOverwrit
   });
   const [copiedIndex, setCopiedIndex] = useState(null);
   const [showContext, setShowContext] = useState(false);
+  const [selectedModel, setSelectedModel] = useState("");
   const scrollRef = useRef(null);
   const inputRef = useRef(null);
+
+  const handleModelChange = useCallback((model) => {
+    setSelectedModel(model);
+  }, []);
 
   // Expose sendMessage method to parent
   React.useImperativeHandle(ref, () => ({
@@ -85,25 +91,39 @@ const ChatAssistantComponent = ({ dslFunctions, events, onInsertCode, onOverwrit
         ai_requirements: "IMPORTANT: Follow these code-generation rules for ALL DSL examples: use ## for inline comments (never //), do NOT create transactions or call createTransaction/createTransactions unless the user explicitly asks for them, compute required values and use print() to output the final variable when transactions are NOT requested, use only DSL functions supported by both frontend and backend, never output Python or other languages, and ensure code is syntactically valid and runnable. Wrap code in ```dsl blocks when providing examples."
       };
 
-        // Add strict AI requirements: enforce DSL-only outputs and no Python
+        // Build conversation history for multi-turn context
+        const history = messages.slice(-10).map(m => ({
+          role: m.role,
+          content: m.content,
+        }));
+
         const response = await axios.post(`${API}/chat`, {
         message: userMessage,
         session_id: sessionId,
         context: context,
-        // Hard constraints for the assistant
-        ai_requirements: "When generating code examples: use only DSL syntax and DSL functions available in both frontend and backend, never output Python or other languages (no def, import, class, or Python loops), use ## for comments (never //), do NOT include createTransaction/createTransactions unless the user explicitly requests transaction creation, and ensure examples are complete, syntactically valid, and wrapped in ```dsl code fences."
+        model: selectedModel || undefined,
+        history: history,
       });
 
       if (!sessionId) {
         setSessionId(response.data.session_id);
       }
 
-      setMessages(prev => [...prev, { role: "assistant", content: response.data.response }]);
+      const data = response.data;
+      const msg = {
+        role: "assistant",
+        content: data.response,
+        structured: data.structured || null,
+        error_type: data.error_type || null,
+        error_message: data.error_message || null,
+      };
+      setMessages(prev => [...prev, msg]);
     } catch (error) {
       toast.error("Failed to get response from AI assistant");
       setMessages(prev => [...prev, { 
         role: "assistant", 
-        content: "Sorry, I encountered an error. Please try again." 
+        content: "Sorry, I encountered an error. Please try again.",
+        error_type: "network",
       }]);
     } finally {
       setLoading(false);
@@ -498,8 +518,16 @@ const ChatAssistantComponent = ({ dslFunctions, events, onInsertCode, onOverwrit
           {messages.map((msg, idx) => (
             <div key={idx} className={`flex gap-3 ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
               {msg.role === 'assistant' && (
-                <div className="w-6 h-6 rounded-lg bg-gradient-to-br from-[#5B5FED] to-[#4346C8] flex items-center justify-center flex-shrink-0 mt-1 shadow-sm">
-                  <Sparkles className="w-3.5 h-3.5 text-white" />
+                <div className={`w-6 h-6 rounded-lg flex items-center justify-center flex-shrink-0 mt-1 shadow-sm ${
+                  msg.error_type
+                    ? 'bg-gradient-to-br from-amber-500 to-red-500'
+                    : 'bg-gradient-to-br from-[#5B5FED] to-[#4346C8]'
+                }`}>
+                  {msg.error_type ? (
+                    <AlertTriangle className="w-3.5 h-3.5 text-white" />
+                  ) : (
+                    <Sparkles className="w-3.5 h-3.5 text-white" />
+                  )}
                 </div>
               )}
               
@@ -507,9 +535,11 @@ const ChatAssistantComponent = ({ dslFunctions, events, onInsertCode, onOverwrit
                 <div className={`rounded-xl px-4 py-3 text-sm ${
                   msg.role === 'user' 
                     ? 'bg-gradient-to-br from-[#5B5FED] to-[#4346C8] text-white rounded-br-sm shadow-md' 
-                    : 'bg-white text-[#495057] border border-[#E9ECEF] rounded-bl-sm shadow-sm hover:shadow-md transition-shadow'
+                    : msg.error_type
+                      ? 'bg-amber-50 text-amber-900 border border-amber-200 rounded-bl-sm shadow-sm'
+                      : 'bg-white text-[#495057] border border-[#E9ECEF] rounded-bl-sm shadow-sm hover:shadow-md transition-shadow'
                 }`}>
-                  <MessageContent content={msg.content} isUser={msg.role === 'user'} />
+                  <MessageContent content={msg.error_message || msg.content} isUser={msg.role === 'user'} />
                 </div>
                 
                 {/* Action buttons - Fyntrac style */}
@@ -571,8 +601,13 @@ const ChatAssistantComponent = ({ dslFunctions, events, onInsertCode, onOverwrit
         </div>
       </Box>
 
+      {/* Model selector */}
+      <div className="px-3 pt-1.5 pb-0 border-t border-[#E9ECEF] bg-white">
+        <ModelSelector onModelChange={handleModelChange} refreshKey={providerRefreshKey} />
+      </div>
+
       {/* Input - Fyntrac style */}
-      <div className="p-3 border-t border-[#E9ECEF] bg-white">
+      <div className="p-3 pt-1.5 border-[#E9ECEF] bg-white">
         <div className="flex items-end gap-2 rounded-lg border border-[#CED4DA] bg-white focus-within:border-[#5B5FED] focus-within:ring-2 focus-within:ring-[#5B5FED] focus-within:ring-opacity-20 transition-all duration-200">
           <textarea
             ref={inputRef}

@@ -15,6 +15,7 @@ import DSLExamples from "../components/DSLExamples";
 // import CustomFunctionBuilder from "../components/CustomFunctionBuilder";
 import EventDataViewer from "../components/EventDataViewer";
 import AppDialog, { useAppDialog } from "../components/AppDialog";
+import AIAgentSetupWizard from "../components/AIAgentSetupWizard";
 
 // API URL - use relative path since setupProxy.js handles the forwarding
 const API = '/api';
@@ -64,6 +65,8 @@ const Dashboard = ({ onSignOut }) => {
   const [settingsAnchorEl, setSettingsAnchorEl] = useState(null);
   // Custom function builder removed: feature disabled
   const [showEventDataViewer, setShowEventDataViewer] = useState(false);
+  const [showAISetup, setShowAISetup] = useState(false);
+  const [providerRefreshKey, setProviderRefreshKey] = useState(0);
   const chatAssistantRef = useRef(null);
   const toast = useToast();
   const { confirmProps, openConfirm, promptProps, openPrompt } = useAppDialog();
@@ -523,6 +526,18 @@ const Dashboard = ({ onSignOut }) => {
                   <Trash2 className="w-4 h-4 text-[#6C757D] mr-2" />
                   Clear All Data
                 </MenuItem>
+                <Divider />
+                <MenuItem
+                  onClick={() => {
+                    setShowAISetup(true);
+                    setSettingsAnchorEl(null);
+                  }}
+                  data-testid="menu-ai-setup"
+                  sx={{ fontSize: '0.875rem', py: 1.5 }}
+                >
+                  <Sparkles className="w-4 h-4 text-[#6C757D] mr-2" />
+                  AI Agent Setup
+                </MenuItem>
                 
               </Menu>
             </div>
@@ -758,6 +773,7 @@ const Dashboard = ({ onSignOut }) => {
               onOverwriteCode={(code) => setDslCode(code)}
               editorCode={dslCode}
               consoleOutput={consoleOutput}
+              providerRefreshKey={providerRefreshKey}
             />
           </div>
         </div>
@@ -790,6 +806,7 @@ const Dashboard = ({ onSignOut }) => {
 
       <AppDialog {...confirmProps} />
       <AppDialog {...promptProps} />
+      <AIAgentSetupWizard open={showAISetup} onClose={() => setShowAISetup(false)} onSaved={() => setProviderRefreshKey(k => k + 1)} />
     </div>
   );
 };

@@ -100,11 +100,7 @@ frontend/node_modules/.cache/default-development/1.pack
 # Environment files
 *.env
 *.env.*
--e 
-# Environment files
-*.env
-*.env.*
--e 
-# Environment files
-*.env
-*.env.*
+
+# AI encryption key
+.ai_secret_key
+backend/.ai_secret_key

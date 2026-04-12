@@ -14,6 +14,11 @@ BLUE='\033[0;34m'
 YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
 
+# Resolve project directories relative to this script location
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+BACKEND_DIR="$ROOT_DIR/backend"
+FRONTEND_DIR="$ROOT_DIR/frontend"
+
 # ============= Check Prerequisites =============
 echo -e "${BLUE}Checking prerequisites...${NC}"
 
@@ -61,9 +66,9 @@ echo ""
 echo -e "${BLUE}Configuring environment...${NC}"
 
 # Ensure backend directory has .env with API keys
-if [ ! -f "/workspaces/dsl/backend/.env" ]; then
+if [ ! -f "$BACKEND_DIR/.env" ]; then
     echo "Creating .env file with configuration..."
-    cat > /workspaces/dsl/backend/.env << 'ENV_EOF'
+    cat > "$BACKEND_DIR/.env" << 'ENV_EOF'
 MONGO_URL=mongodb://localhost:27017
 DB_NAME=dsl_db
 # Google Cloud Generative AI key for Gemini (set to your key)
@@ -78,7 +83,7 @@ echo ""
 
 # ============= Install Backend Dependencies =============
 echo -e "${BLUE}Installing backend dependencies...${NC}"
-cd /workspaces/dsl/backend
+cd "$BACKEND_DIR"
 
 if [ ! -d "venv" ]; then
     echo "Creating Python virtual environment..."
@@ -99,7 +104,7 @@ echo ""
 
 # ============= Install Frontend Dependencies =============
 echo -e "${BLUE}Installing frontend dependencies...${NC}"
-cd /workspaces/dsl/frontend
+cd "$FRONTEND_DIR"
 
 if [ ! -d "node_modules" ]; then
     npm install --legacy-peer-deps --quiet
@@ -112,7 +117,7 @@ echo ""
 
 # ============= Start Backend =============
 echo -e "${BLUE}Starting backend server...${NC}"
-cd /workspaces/dsl/backend
+cd "$BACKEND_DIR"
 
 # Kill any existing backend process
 # Match any running backend.server invocation
@@ -120,7 +125,7 @@ pkill -f "backend.server" 2>/dev/null || true
 sleep 1
 
 # Start backend in background (run from workspace root so package imports work)
-cd /workspaces/dsl
+cd "$ROOT_DIR"
 python -m backend.server > /tmp/backend.log 2>&1 &
 BACKEND_PID=$!
 
@@ -138,7 +143,7 @@ echo ""
 
 # ============= Start Frontend =============
 echo -e "${BLUE}Starting frontend dev server...${NC}"
-cd /workspaces/dsl/frontend
+cd "$FRONTEND_DIR"
 
 # Kill any existing frontend process
 lsof -ti :3000 | xargs kill -9 2>/dev/null || true
