@@ -2959,6 +2959,129 @@ async def chat_with_assistant(message: ChatMessage):
         raise HTTPException(status_code=500, detail=f"Chat error: {str(e)}")
 
 
+@api_router.post("/chat/stream")
+async def chat_stream(message: ChatMessage):
+    """SSE streaming chat endpoint — sends tokens as they arrive from the provider."""
+
+    session_id = message.session_id or str(uuid.uuid4())
+
+    # --- Error message table (shared with non-streaming endpoint) ---
+    ERROR_MESSAGES = {
+        "no_provider": "You haven't set up an AI provider yet. Go to Settings → AI Agent Setup to get started.",
+        "invalid_key": "Your API key appears to be invalid or has expired. Please update it in Settings → AI Agent Setup.",
+        "quota_exceeded": "You've reached the usage limit for your {provider} account. Please check your plan or billing.",
+        "rate_limited": "You're sending messages too quickly. Please wait a moment before trying again.",
+        "model_premium": "The selected model ({model}) requires a paid subscription on {provider}. Switch to a free-tier model or upgrade your account.",
+        "network": "Couldn't reach {provider} right now. Check your internet connection and try again.",
+        "model_deprecated": "The model '{model}' is no longer available on {provider}. Please select a different model in the chatbot settings.",
+    }
+
+    async def event_stream():
+        try:
+            # Load provider config
+            try:
+                provider_config = await db.ai_provider_config.find_one({}, {"_id": 0})
+            except Exception:
+                provider_config = None
+
+            if not provider_config:
+                yield f"data: {json.dumps({'type': 'error', 'error_type': 'no_provider', 'error_message': ERROR_MESSAGES['no_provider']})}\n\n"
+                yield "data: [DONE]\n\n"
+                return
+
+            provider_name = provider_config.get("provider", "")
+            selected_model = message.model or provider_config.get("selected_model", "")
+            provider_display = PROVIDER_INFO.get(provider_name, {}).get("name", provider_name)
+
+            # Decrypt key
+            try:
+                api_key = decrypt_key(provider_config["encrypted_api_key"])
+            except Exception:
+                yield f"data: {json.dumps({'type': 'error', 'error_type': 'invalid_key', 'error_message': ERROR_MESSAGES['invalid_key']})}\n\n"
+                yield "data: [DONE]\n\n"
+                return
+
+            # Emit session info
+            yield f"data: {json.dumps({'type': 'session', 'session_id': session_id})}\n\n"
+
+            # Gather context
+            try:
+                custom_funcs = await db.custom_functions.find({}, {"_id": 0}).to_list(1000)
+            except Exception:
+                custom_funcs = in_memory_data.get('custom_functions', [])
+
+            if message.context and message.context.get('events'):
+                events = message.context['events']
+            else:
+                try:
+                    events = await db.event_definitions.find({}, {"_id": 0}).to_list(1000)
+                except Exception:
+                    events = in_memory_data.get('event_definitions', SAMPLE_EVENTS)
+
+            editor_code = ""
+            if message.context and message.context.get('editor_code'):
+                editor_code = message.context['editor_code']
+
+            console_output = []
+            if message.context and message.context.get('console_output'):
+                console_output = message.context['console_output']
+
+            # Build system prompt
+            system_prompt = build_agent_context(
+                dsl_function_metadata=list(DSL_FUNCTION_METADATA),
+                custom_functions=custom_funcs,
+                events=events,
+                editor_code=editor_code,
+                console_output=console_output,
+                conversation_history=message.history,
+            )
+
+            # Emit context-ready event with summary for the UI
+            events_count = len(events) if events else 0
+            editor_lines = len(editor_code.split('\n')) if editor_code.strip() else 0
+            console_count = len(console_output) if console_output else 0
+            yield f"data: {json.dumps({'type': 'context_ready', 'events_count': events_count, 'editor_lines': editor_lines, 'console_count': console_count, 'model': selected_model, 'provider': provider_display})}\n\n"
+
+            # Stream from provider
+            provider = get_provider(provider_name)
+            full_text = []
+            try:
+                async for chunk in provider.stream_chat(
+                    api_key=api_key,
+                    model_id=selected_model,
+                    system_prompt=system_prompt,
+                    user_message=message.message,
+                    history=message.history,
+                ):
+                    full_text.append(chunk)
+                    yield f"data: {json.dumps({'type': 'token', 'token': chunk})}\n\n"
+            except AIError as e:
+                err_msg = ERROR_MESSAGES.get(e.error_type, e.detail)
+                err_msg = err_msg.replace("{provider}", provider_display).replace("{model}", selected_model)
+                yield f"data: {json.dumps({'type': 'error', 'error_type': e.error_type, 'error_message': err_msg})}\n\n"
+                yield "data: [DONE]\n\n"
+                return
+
+            # Send done event
+            yield f"data: {json.dumps({'type': 'done'})}\n\n"
+            yield "data: [DONE]\n\n"
+
+        except Exception as e:
+            logger.error(f"Stream chat error: {str(e)}")
+            yield f"data: {json.dumps({'type': 'error', 'error_type': 'network', 'error_message': str(e)})}\n\n"
+            yield "data: [DONE]\n\n"
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
 # ============= Custom Functions API =============
 
 @api_router.get("/custom-functions")

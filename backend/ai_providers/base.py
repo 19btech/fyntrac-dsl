@@ -1,7 +1,7 @@
 """Abstract base class for all AI providers."""
 
 from abc import ABC, abstractmethod
-from typing import Optional
+from typing import Optional, AsyncIterator
 from pydantic import BaseModel
 
 
@@ -65,3 +65,19 @@ class AIProvider(ABC):
         Raises AIError with a typed error_type on failure.
         """
         ...
+
+    async def stream_chat(
+        self,
+        api_key: str,
+        model_id: str,
+        system_prompt: str,
+        user_message: str,
+        history: list[dict] | None = None,
+    ) -> AsyncIterator[str]:
+        """Stream a response token by token. Yields text chunks.
+
+        Default implementation falls back to non-streaming chat.
+        Providers should override for real streaming.
+        """
+        resp = await self.chat(api_key, model_id, system_prompt, user_message, history)
+        yield resp.text

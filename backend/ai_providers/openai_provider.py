@@ -3,6 +3,7 @@
 import asyncio
 import re
 import logging
+from typing import AsyncIterator
 from .base import (
     AIProvider, AIResponse, ModelInfo, AIError,
     ERROR_INVALID_KEY, ERROR_QUOTA_EXCEEDED, ERROR_RATE_LIMITED,
@@ -112,6 +113,63 @@ class OpenAIProvider(AIProvider):
                     "completion_tokens": response.usage.completion_tokens,
                 }
             return AIResponse(text=text, usage=usage)
+        except Exception as exc:
+            error_type, detail = _classify_error(exc)
+            raise AIError(error_type, "openai", detail) from exc
+
+    async def stream_chat(
+        self,
+        api_key: str,
+        model_id: str,
+        system_prompt: str,
+        user_message: str,
+        history: list[dict] | None = None,
+    ) -> AsyncIterator[str]:
+        import queue, threading
+        try:
+            from openai import OpenAI
+            client = OpenAI(api_key=api_key)
+
+            messages = [{"role": "system", "content": system_prompt}]
+            if history:
+                for msg in history:
+                    role = msg.get("role", "user")
+                    if role not in ("user", "assistant"):
+                        role = "user"
+                    messages.append({"role": role, "content": msg.get("content", "")})
+            messages.append({"role": "user", "content": user_message})
+
+            q = queue.Queue()
+            _SENTINEL = object()
+
+            def _stream_worker():
+                try:
+                    stream = client.chat.completions.create(
+                        model=model_id,
+                        messages=messages,
+                        stream=True,
+                    )
+                    for chunk in stream:
+                        delta = chunk.choices[0].delta if chunk.choices else None
+                        if delta and delta.content:
+                            q.put(delta.content)
+                except Exception as e:
+                    q.put(e)
+                finally:
+                    q.put(_SENTINEL)
+
+            thread = threading.Thread(target=_stream_worker, daemon=True)
+            thread.start()
+
+            while True:
+                item = await asyncio.to_thread(q.get)
+                if item is _SENTINEL:
+                    break
+                if isinstance(item, Exception):
+                    raise item
+                yield item
+        except AIError:
+            raise
         except Exception as exc:
             error_type, detail = _classify_error(exc)
             raise AIError(error_type, "openai", detail) from exc

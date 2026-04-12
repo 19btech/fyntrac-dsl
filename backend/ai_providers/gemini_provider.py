@@ -3,6 +3,7 @@
 import asyncio
 import re
 import logging
+from typing import AsyncIterator
 from .base import (
     AIProvider, AIResponse, ModelInfo, AIError,
     ERROR_INVALID_KEY, ERROR_QUOTA_EXCEEDED, ERROR_RATE_LIMITED,
@@ -115,6 +116,61 @@ class GeminiProvider(AIProvider):
             chat = model.start_chat(history=gemini_history)
             response = await asyncio.to_thread(chat.send_message, user_message)
             return AIResponse(text=response.text)
+        except Exception as exc:
+            error_type, detail = _classify_error(exc)
+            raise AIError(error_type, "gemini", detail) from exc
+
+    async def stream_chat(
+        self,
+        api_key: str,
+        model_id: str,
+        system_prompt: str,
+        user_message: str,
+        history: list[dict] | None = None,
+    ) -> AsyncIterator[str]:
+        import google.generativeai as genai
+        import queue, threading
+        try:
+            genai.configure(api_key=api_key)
+            model = genai.GenerativeModel(
+                model_id,
+                system_instruction=system_prompt,
+            )
+            gemini_history = []
+            if history:
+                for msg in history:
+                    role = "user" if msg.get("role") == "user" else "model"
+                    gemini_history.append({"role": role, "parts": [msg.get("content", "")]})
+
+            chat = model.start_chat(history=gemini_history)
+
+            # Use a queue to bridge sync Gemini streaming into async iteration
+            q = queue.Queue()
+            _SENTINEL = object()
+
+            def _stream_worker():
+                try:
+                    response = chat.send_message(user_message, stream=True)
+                    for chunk in response:
+                        if chunk.text:
+                            q.put(chunk.text)
+                except Exception as e:
+                    q.put(e)
+                finally:
+                    q.put(_SENTINEL)
+
+            thread = threading.Thread(target=_stream_worker, daemon=True)
+            thread.start()
+
+            while True:
+                item = await asyncio.to_thread(q.get)
+                if item is _SENTINEL:
+                    break
+                if isinstance(item, Exception):
+                    raise item
+                yield item
+        except AIError:
+            raise
         except Exception as exc:
             error_type, detail = _classify_error(exc)
             raise AIError(error_type, "gemini", detail) from exc

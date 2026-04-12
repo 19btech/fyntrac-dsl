@@ -3,6 +3,7 @@
 import asyncio
 import re
 import logging
+from typing import AsyncIterator
 from .base import (
     AIProvider, AIResponse, ModelInfo, AIError,
     ERROR_INVALID_KEY, ERROR_QUOTA_EXCEEDED, ERROR_RATE_LIMITED,
@@ -113,6 +114,62 @@ class AnthropicProvider(AIProvider):
                     "completion_tokens": response.usage.output_tokens,
                 }
             return AIResponse(text=text, usage=usage)
+        except Exception as exc:
+            error_type, detail = _classify_error(exc)
+            raise AIError(error_type, "anthropic", detail) from exc
+
+    async def stream_chat(
+        self,
+        api_key: str,
+        model_id: str,
+        system_prompt: str,
+        user_message: str,
+        history: list[dict] | None = None,
+    ) -> AsyncIterator[str]:
+        import queue, threading
+        try:
+            import anthropic
+            client = anthropic.Anthropic(api_key=api_key)
+
+            messages = []
+            if history:
+                for msg in history:
+                    role = msg.get("role", "user")
+                    if role not in ("user", "assistant"):
+                        role = "user"
+                    messages.append({"role": role, "content": msg.get("content", "")})
+            messages.append({"role": "user", "content": user_message})
+
+            q = queue.Queue()
+            _SENTINEL = object()
+
+            def _stream_worker():
+                try:
+                    with client.messages.stream(
+                        model=model_id,
+                        max_tokens=4096,
+                        system=system_prompt,
+                        messages=messages,
+                    ) as stream:
+                        for text in stream.text_stream:
+                            q.put(text)
+                except Exception as e:
+                    q.put(e)
+                finally:
+                    q.put(_SENTINEL)
+
+            thread = threading.Thread(target=_stream_worker, daemon=True)
+            thread.start()
+
+            while True:
+                item = await asyncio.to_thread(q.get)
+                if item is _SENTINEL:
+                    break
+                if isinstance(item, Exception):
+                    raise item
+                yield item
+        except AIError:
+            raise
         except Exception as exc:
             error_type, detail = _classify_error(exc)
             raise AIError(error_type, "anthropic", detail) from exc
