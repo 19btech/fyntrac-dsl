@@ -31,7 +31,15 @@ const AnthropicLogo = () => (
   </svg>
 );
 
-const PROVIDER_LOGOS = { gemini: GeminiLogo, openai: OpenAILogo, anthropic: AnthropicLogo };
+const DeepSeekLogo = () => (
+  <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
+    <circle cx="12" cy="12" r="10" fill="#4D6BFE"/>
+    <path d="M8 12.5c0-2.5 1.5-4 4-4s4 1.5 4 4-1.5 4-4 4" stroke="#fff" strokeWidth="2" strokeLinecap="round" fill="none"/>
+    <circle cx="12" cy="8.5" r="1.2" fill="#fff"/>
+  </svg>
+);
+
+const PROVIDER_LOGOS = { gemini: GeminiLogo, openai: OpenAILogo, anthropic: AnthropicLogo, deepseek: DeepSeekLogo };
 
 const PROVIDERS = {
   gemini: {
@@ -51,6 +59,12 @@ const PROVIDERS = {
     description: "Claude 3.5 Sonnet, Opus, and Haiku",
     keyUrl: "https://console.anthropic.com/settings/keys",
     color: "#D97757",
+  },
+  deepseek: {
+    name: "DeepSeek",
+    description: "DeepSeek-V3, DeepSeek-R1, and more",
+    keyUrl: "https://platform.deepseek.com/api_keys",
+    color: "#4D6BFE",
   },
 };
 

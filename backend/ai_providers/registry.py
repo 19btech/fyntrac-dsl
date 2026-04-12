@@ -19,6 +19,11 @@ PROVIDER_INFO = {
         "description": "Claude 3.5 Sonnet, Opus, and Haiku",
         "key_url": "https://console.anthropic.com/settings/keys",
     },
+    "deepseek": {
+        "name": "DeepSeek",
+        "description": "DeepSeek-V3, DeepSeek-R1, and more",
+        "key_url": "https://platform.deepseek.com/api_keys",
+    },
 }
 
 
@@ -33,4 +38,7 @@ def get_provider(name: str) -> AIProvider:
     if name == "anthropic":
         from .anthropic_provider import AnthropicProvider
         return AnthropicProvider()
+    if name == "deepseek":
+        from .deepseek_provider import DeepSeekProvider
+        return DeepSeekProvider()
     raise ValueError(f"Unknown provider: {name}")
