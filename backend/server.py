@@ -3004,8 +3004,8 @@ REQUIRED_EVENT_FIELDS = {"instrumentId", "eventId", "eventName", "postingDate", 
 # ---------------------------------------------------------------------------
 # Import transformation helpers
 # ---------------------------------------------------------------------------
-# Fixed/system fields — both PascalCase (EOD-style) and camelCase (ECF/MeasurementType-style)
-# must be excluded from the dynamic columns and handled explicitly.
+# Fixed/system fields — both PascalCase (EOD-style) and camelCase (inner-row style)
+# must be excluded from dynamic columns and handled explicitly.
 _IMPORT_FIXED_KEYS = {
     "PostingDate", "EffectiveDate", "InstrumentId", "AttributeId",
     "postingDate", "effectiveDate", "instrumentId", "attributeId",
@@ -3049,25 +3049,31 @@ def _parse_import_date(val) -> str:
 
 
 # Sentinel for "system" / placeholder instrument IDs with no real business meaning
-_SYSTEM_INSTRUMENT_IDS = {"system", ""}
-
-
 def _is_custom_event(records: list, event_id: str) -> bool:
     """
-    Return True if the event has no real InstrumentId in any inner row.
-    'Real' means the value is non-empty and not the reserved word 'system'.
-    Such events are classified as eventTable='custom', eventType='reference'.
+    Return True if the event has no real InstrumentId.
+
+    Rule (no hardcoding of names or placeholder strings):
+      An event is 'standard' only when at least one inner value row contains
+      an instrumentId that matches the outer instrumentId of the same event
+      record — i.e. the inner rows are genuinely tied to a specific instrument.
+      If no inner row matches its enclosing record's outer instrumentId, the
+      event carries no instrument-specific data and is classified as
+      eventTable='custom', eventType='reference'.
     """
     for event in records:
         if event.get("eventId") != event_id:
             continue
+        outer = (event.get("instrumentId") or event.get("InstrumentId") or "").strip()
+        if not outer:
+            continue  # outer has no instrumentId — skip this record
         for row_val in event.get("eventDetail", {}).get("values", {}).values():
             if not isinstance(row_val, dict):
                 continue
-            raw = row_val.get("instrumentId") or row_val.get("InstrumentId") or ""
-            if isinstance(raw, str) and raw.lower() not in _SYSTEM_INSTRUMENT_IDS:
-                return False  # found a real instrument ID — standard event
-    return True  # no real instrument found — custom/reference event
+            inner = (row_val.get("instrumentId") or row_val.get("InstrumentId") or "").strip()
+            if inner and inner == outer:
+                return False  # inner instrumentId matches outer → real instrument event
+    return True  # no inner row matched its enclosing event's instrumentId → custom
 
 
 def _build_event_definitions_from_import(records: list) -> list:
@@ -3113,9 +3119,9 @@ def _build_event_data_from_import(records: list) -> list:
     """
     Build event data rows from imported records.
     Groups rows by eventId. Each value entry in eventDetail.values becomes one data row.
-    Handles both PascalCase (EOD) and camelCase (ECF/MeasurementType) inner row keys.
+    Handles both PascalCase (EOD) and camelCase inner row keys.
     Maps attributeId (either case) to SubInstrumentId — for standard events only.
-    Custom/reference events (no real instrumentId) omit all standard fields.
+    Custom/reference events (no instrumentId in inner rows) omit all standard fields.
     Normalises all date values to YYYY-MM-DD.
     """
     from collections import defaultdict
