@@ -42,6 +42,33 @@ export default function ReplyBlock({ tokens, streaming }) {
   flushText();
   flushCode();
 
+  // Detect structured JSON response with dsl_code and convert to readable parts
+  if (parts.length >= 1) {
+    const newParts = [];
+    for (const part of parts) {
+      if (part.type === 'code') {
+        try {
+          const parsed = JSON.parse(part.content);
+          if (parsed && parsed.dsl_code) {
+            // Add explanation as text
+            if (parsed.explanation) {
+              newParts.push({ type: 'text', content: parsed.explanation });
+            }
+            // Add dsl_code as a proper code block with unescaped newlines
+            const cleanCode = parsed.dsl_code.replace(/\\n/g, '\n').replace(/\\t/g, '\t');
+            newParts.push({ type: 'code', content: cleanCode });
+            continue;
+          }
+        } catch {
+          // Not JSON — render as-is
+        }
+      }
+      newParts.push(part);
+    }
+    parts.length = 0;
+    parts.push(...newParts);
+  }
+
   // Render inline markdown (bold, italic, inline code)
   const renderInline = (text) => {
     const result = [];
