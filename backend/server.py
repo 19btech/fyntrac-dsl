@@ -2999,6 +2999,319 @@ async def chat_stream(message: ChatMessage):
     )
 
 
+REQUIRED_EVENT_FIELDS = {"instrumentId", "eventId", "eventName", "postingDate", "effectiveDate", "status", "eventDetail", "_class"}
+
+# ---------------------------------------------------------------------------
+# Import transformation helpers
+# ---------------------------------------------------------------------------
+# Fixed/system fields — both PascalCase (EOD-style) and camelCase (ECF/MeasurementType-style)
+# must be excluded from the dynamic columns and handled explicitly.
+_IMPORT_FIXED_KEYS = {
+    "PostingDate", "EffectiveDate", "InstrumentId", "AttributeId",
+    "postingDate", "effectiveDate", "instrumentId", "attributeId",
+    "_id", "_metadata_version", "_imported_at",
+}
+
+
+def _infer_field_datatype(values: list) -> str:
+    """Infer the best datatype for a field from a list of sample values."""
+    for v in values:
+        if v is None:
+            continue
+        if isinstance(v, bool):
+            return "boolean"
+        if isinstance(v, dict) and "$date" in v:
+            return "date"
+        if isinstance(v, str):
+            if re.match(r"^\d{4}-\d{2}-\d{2}", v):
+                return "date"
+            return "string"
+        if isinstance(v, float) and v != int(v):
+            return "decimal"
+    return "decimal"  # int / whole float / unknown → decimal (financial default)
+
+
+def _parse_import_date(val) -> str:
+    """Normalise a date value from an imported event record to YYYY-MM-DD."""
+    if val is None:
+        return ""
+    if isinstance(val, dict) and "$date" in val:
+        return str(val["$date"])[:10]
+    if isinstance(val, int):
+        s = str(val)
+        if len(s) == 8:
+            return f"{s[:4]}-{s[4:6]}-{s[6:8]}"
+        return s
+    try:
+        return normalize_date(str(val))
+    except Exception:
+        return str(val)
+
+
+def _build_event_definitions_from_import(records: list) -> list:
+    """
+    Derive unique event definitions from the imported records.
+    Groups by eventId, collects dynamic field names and infers datatypes.
+    Excludes all fixed/system fields (both PascalCase and camelCase) and meta keys.
+    Returns a list of dicts compatible with EventDefinition.model_dump().
+    """
+    from collections import defaultdict
+    event_fields: dict = defaultdict(lambda: defaultdict(list))
+
+    for event in records:
+        event_id = event.get("eventId", "")
+        for row_val in event.get("eventDetail", {}).get("values", {}).values():
+            if not isinstance(row_val, dict):
+                continue
+            for key, value in row_val.items():
+                if key not in _IMPORT_FIXED_KEYS:
+                    event_fields[event_id][key].append(value)
+
+    definitions = []
+    ts = datetime.now(timezone.utc).isoformat()
+    for event_id, fields in event_fields.items():
+        field_list = [
+            {"name": fn, "datatype": _infer_field_datatype(sv)}
+            for fn, sv in fields.items()
+        ]
+        definitions.append({
+            "id": str(uuid.uuid4()),
+            "event_name": event_id,
+            "fields": field_list,
+            "eventType": "activity",
+            "eventTable": "standard",
+            "created_at": ts,
+        })
+    return definitions
+
+
+def _build_event_data_from_import(records: list) -> list:
+    """
+    Build event data rows from imported records.
+    Groups rows by eventId. Each value entry in eventDetail.values becomes one data row.
+    Handles both PascalCase (EOD) and camelCase (ECF/MeasurementType) inner row keys.
+    Maps attributeId (either case) to SubInstrumentId.
+    Normalises all date values to YYYY-MM-DD.
+    """
+    from collections import defaultdict
+    event_rows: dict = defaultdict(list)
+
+    for event in records:
+        event_id = event.get("eventId", "")
+        # Outer event-level fallbacks (always camelCase at top level)
+        outer_posting = _parse_import_date(event.get("postingDate") or event.get("PostingDate", ""))
+        outer_effective = _parse_import_date(event.get("effectiveDate") or event.get("EffectiveDate", ""))
+        outer_instrument = event.get("instrumentId") or event.get("InstrumentId", "")
+
+        raw_values = event.get("eventDetail", {}).get("values", {})
+        for row_val in raw_values.values():
+            if not isinstance(row_val, dict):
+                continue
+
+            # Extract fixed fields — accept both PascalCase and camelCase
+            inner_posting = _parse_import_date(
+                row_val.get("PostingDate") or row_val.get("postingDate")
+            ) or outer_posting
+            inner_effective = _parse_import_date(
+                row_val.get("EffectiveDate") or row_val.get("effectiveDate")
+            ) or outer_effective
+            inner_instrument = (
+                row_val.get("InstrumentId") or row_val.get("instrumentId") or outer_instrument
+            )
+            # attributeId (either case) maps to SubInstrumentId
+            inner_subinstr = str(
+                row_val.get("AttributeId") or row_val.get("attributeId") or ""
+            )
+
+            row: dict = {
+                "PostingDate":     inner_posting,
+                "EffectiveDate":   inner_effective,
+                "InstrumentId":    inner_instrument,
+                "SubInstrumentId": inner_subinstr,
+            }
+
+            for key, value in row_val.items():
+                if key in _IMPORT_FIXED_KEYS:
+                    continue
+                # Normalise any {$date: ...} values to YYYY-MM-DD string
+                if isinstance(value, dict) and "$date" in value:
+                    row[key] = _parse_import_date(value)
+                elif isinstance(value, dict) and "$oid" in value:
+                    # Skip embedded object-id fields (e.g. nested _id)
+                    continue
+                else:
+                    row[key] = value
+
+            event_rows[event_id].append(row)
+
+    ts = datetime.now(timezone.utc).isoformat()
+    return [
+        {"id": str(uuid.uuid4()), "event_name": eid, "data_rows": rows, "created_at": ts}
+        for eid, rows in event_rows.items()
+    ]
+
+def _validate_imported_events(data: Any) -> str | None:
+    """Return an error string if data does not match the required format, else None."""
+    if not isinstance(data, list):
+        return "File must contain a JSON array of event objects."
+    if len(data) == 0:
+        return "The JSON array is empty — no events to import."
+    for i, item in enumerate(data):
+        if not isinstance(item, dict):
+            return f"Item at index {i} is not a JSON object."
+        missing = REQUIRED_EVENT_FIELDS - item.keys()
+        if missing:
+            return f"Item at index {i} is missing required fields: {', '.join(sorted(missing))}."
+        if not isinstance(item.get("eventDetail"), dict):
+            return f"Item at index {i}: 'eventDetail' must be a JSON object."
+        if "values" not in item["eventDetail"]:
+            return f"Item at index {i}: 'eventDetail' must contain a 'values' field."
+    return None
+
+
+@api_router.post("/import-events")
+async def import_events(file: UploadFile = File(...)):
+    """Import events from a JSON file and persist to the imported_events collection."""
+    # Validate file type
+    if not file.filename or not file.filename.lower().endswith(".json"):
+        raise HTTPException(status_code=400, detail="Only .json files are accepted.")
+    try:
+        content = await file.read()
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Could not read file: {e}")
+
+    # Parse JSON
+    try:
+        data = json.loads(content.decode("utf-8"))
+    except Exception:
+        raise HTTPException(status_code=400, detail="File is not valid JSON.")
+
+    # Structural validation
+    error = _validate_imported_events(data)
+    if error:
+        raise HTTPException(status_code=422, detail=error)
+
+    # Persist to imported_events collection
+    try:
+        # Add an import timestamp to each document
+        import_ts = datetime.now(timezone.utc).isoformat()
+        docs = []
+        for item in data:
+            doc = dict(item)
+            doc["_imported_at"] = import_ts
+            # Remove MongoDB's special _id to let Motor assign a new one
+            doc.pop("_id", None)
+            docs.append(doc)
+        await db.imported_events.insert_many(docs)
+        return {"message": f"Successfully imported {len(docs)} event(s).", "count": len(docs)}
+    except Exception as e:
+        logger.error(f"Error saving imported events: {e}")
+        raise HTTPException(status_code=500, detail="Failed to save events to the database.")
+
+
+@api_router.post("/import-events/transform")
+async def import_and_transform_events(file: UploadFile = File(...)):
+    """
+    Full import pipeline: validate JSON → persist raw → transform to
+    event definitions + event data and persist both.
+    Returns a structured result with success/failure details for each step.
+    """
+    # ---- Read and validate file ----
+    if not file.filename or not file.filename.lower().endswith(".json"):
+        raise HTTPException(status_code=400, detail="Only .json files are accepted.")
+    try:
+        content = await file.read()
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Could not read file: {e}")
+
+    try:
+        records = json.loads(content.decode("utf-8"))
+    except Exception:
+        raise HTTPException(status_code=400, detail="The file is not valid JSON. Please check the file and try again.")
+
+    validation_error = _validate_imported_events(records)
+    if validation_error:
+        raise HTTPException(status_code=422, detail=validation_error)
+
+    import_ts = datetime.now(timezone.utc).isoformat()
+    result = {
+        "imported_count": len(records),
+        "event_definitions": None,
+        "event_data": None,
+    }
+
+    # ---- Step 1: Persist raw to imported_events ----
+    try:
+        docs = []
+        for item in records:
+            doc = dict(item)
+            doc["_imported_at"] = import_ts
+            doc.pop("_id", None)
+            docs.append(doc)
+        await db.imported_events.insert_many(docs)
+    except Exception as e:
+        logger.warning(f"Could not persist raw events to imported_events: {e}")
+        # Non-fatal — continue with transformation
+
+    # ---- Step 2: Transform → Event Definitions ----
+    def_error = None
+    try:
+        definitions = _build_event_definitions_from_import(records)
+        if not definitions:
+            def_error = "No event types could be extracted from the uploaded file."
+        else:
+            await db.event_definitions.delete_many({})
+            await db.event_definitions.insert_many([dict(d) for d in definitions])
+            result["event_definitions"] = {
+                "success": True,
+                "count": len(definitions),
+                "names": [d["event_name"] for d in definitions],
+            }
+    except Exception as e:
+        logger.error(f"Event definition transformation failed: {e}")
+        def_error = f"Could not build event definitions: {e}"
+
+    if def_error:
+        result["event_definitions"] = {"success": False, "error": def_error}
+
+    # ---- Step 3: Transform → Event Data ----
+    data_error = None
+    try:
+        event_data_list = _build_event_data_from_import(records)
+        if not event_data_list:
+            data_error = "No event data rows could be extracted from the uploaded file."
+        else:
+            await db.event_data.delete_many({})
+            rows_by_event = {}
+            for ed in event_data_list:
+                await db.event_data.insert_one(dict(ed))
+                rows_by_event[ed["event_name"]] = len(ed["data_rows"])
+            result["event_data"] = {
+                "success": True,
+                "total_rows": sum(rows_by_event.values()),
+                "by_event": rows_by_event,
+            }
+    except Exception as e:
+        logger.error(f"Event data transformation failed: {e}")
+        data_error = f"Could not build event data: {e}"
+
+    if data_error:
+        result["event_data"] = {"success": False, "error": data_error}
+
+    # If BOTH transformations failed, surface as a 500
+    if not result["event_definitions"]["success"] and not result["event_data"]["success"]:
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                f"Both transformations failed. "
+                f"Event definitions: {result['event_definitions']['error']}. "
+                f"Event data: {result['event_data']['error']}."
+            ),
+        )
+
+    return result
+
+
 from contextlib import asynccontextmanager
 
 @asynccontextmanager
