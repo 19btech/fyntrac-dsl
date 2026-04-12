@@ -38,11 +38,15 @@ const EventDataViewer = ({ onClose }) => {
       } catch (err) {}
     };
 
+    const refreshHandler = () => { loadEventDataSummary(); };
+
     window.addEventListener('dsl-upload-errors', uploadErrorsHandler);
     window.addEventListener('dsl-clear-event-viewer', clearViewerHandler);
+    window.addEventListener('dsl-event-data-refresh', refreshHandler);
     return () => {
       window.removeEventListener('dsl-upload-errors', uploadErrorsHandler);
       window.removeEventListener('dsl-clear-event-viewer', clearViewerHandler);
+      window.removeEventListener('dsl-event-data-refresh', refreshHandler);
     };
   }, []);
 
@@ -100,6 +104,20 @@ const EventDataViewer = ({ onClose }) => {
   const getColumnHeaders = () => {
     if (!eventData || !eventData.data_rows || eventData.data_rows.length === 0) return [];
     return Object.keys(eventData.data_rows[0]);
+  };
+
+  // Safely convert any cell value to a renderable string.
+  // Handles MongoDB extended JSON objects like {$oid: "..."} and {$date: "..."}.
+  const renderCellValue = (value) => {
+    if (value === null || value === undefined) return '';
+    if (typeof value === 'object') {
+      if (value.$date) return typeof value.$date === 'string' ? value.$date : String(value.$date);
+      if (value.$oid) return value.$oid;
+      if (value.$numberDecimal) return value.$numberDecimal;
+      if (value.$numberLong) return value.$numberLong;
+      return JSON.stringify(value);
+    }
+    return String(value);
   };
 
   return (
@@ -294,7 +312,7 @@ const EventDataViewer = ({ onClose }) => {
                             </TableCell>
                             {getColumnHeaders().map((header, colIdx) => (
                               <TableCell key={colIdx} sx={{ fontFamily: 'monospace', fontSize: '0.8125rem', whiteSpace: 'nowrap' }}>
-                                {row[header]}
+                                {renderCellValue(row[header])}
                               </TableCell>
                             ))}
                           </TableRow>
