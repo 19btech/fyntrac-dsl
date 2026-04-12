@@ -1,0 +1,2190 @@
+[{
+  "_id": {
+    "$oid": "69d41a4447896466a8d7fc84"
+  },
+  "instrumentId": "LN-1002",
+  "eventId": "MeasurementType",
+  "eventName": "MeasurementType",
+  "postingDate": 20250131,
+  "effectiveDate": 20250131,
+  "lastPlayedPostingDate": 20250131,
+  "priority": 0,
+  "status": "NOT_STARTED",
+  "eventDetail": {
+    "sourceTable": "MeasurementType",
+    "sourceType": "SYSTEM",
+    "sourceKey": "System",
+    "isAscendingOrder": false,
+    "values": {
+      "69d41a4347896466a8d7fc7b": {
+        "attributeId": "system",
+        "_metadata_version": "1.0",
+        "instrumentId": "system",
+        "MeasurementType": "COLLATERAL",
+        "_id": {
+          "$oid": "69d41a4347896466a8d7fc7b"
+        },
+        "postingDate": {
+          "$date": "2025-01-31T00:00:00.000Z"
+        },
+        "effectiveDate": {
+          "$date": "2025-01-31T00:00:00.000Z"
+        }
+      },
+      "69d41a4347896466a8d7fc7c": {
+        "attributeId": "system",
+        "_metadata_version": "1.0",
+        "instrumentId": "system",
+        "MeasurementType": "FAIRVALUE",
+        "_id": {
+          "$oid": "69d41a4347896466a8d7fc7c"
+        },
+        "postingDate": {
+          "$date": "2025-01-31T00:00:00.000Z"
+        },
+        "effectiveDate": {
+          "$date": "2025-01-31T00:00:00.000Z"
+        }
+      },
+      "69d41a4347896466a8d7fc7a": {
+        "attributeId": "system",
+        "_metadata_version": "1.0",
+        "instrumentId": "system",
+        "MeasurementType": "CF",
+        "_id": {
+          "$oid": "69d41a4347896466a8d7fc7a"
+        },
+        "postingDate": {
+          "$date": "2025-01-31T00:00:00.000Z"
+        },
+        "effectiveDate": {
+          "$date": "2025-01-31T00:00:00.000Z"
+        }
+      }
+    }
+  },
+  "_class": "com.fyntrac.common.entity.Event"
+},
+{
+  "_id": {
+    "$oid": "69d41a4447896466a8d7fc85"
+  },
+  "instrumentId": "LN-1002",
+  "eventId": "EOD",
+  "eventName": "End Of Day",
+  "postingDate": 20250131,
+  "effectiveDate": 20250131,
+  "lastPlayedPostingDate": 20250131,
+  "priority": 1,
+  "status": "NOT_STARTED",
+  "eventDetail": {
+    "sourceTable": "System",
+    "sourceType": "SYSTEM",
+    "sourceKey": "System",
+    "isAscendingOrder": false,
+    "values": {
+      "LN-1002_1_0_20250131_20250131": {
+        "ATTRIBUTE_LOANAMOUNT_CURRENT": 15000,
+        "ATTRIBUTE_TERM_CURRENT": 12,
+        "PostingDate": {
+          "$date": "2025-01-31T00:00:00.000Z"
+        },
+        "AttributeId": "1.0",
+        "ATTRIBUTE_NOTERATE_CURRENT": 10,
+        "ATTRIBUTE_ORIGINATIONDATE_CURRENT": {
+          "$date": "2025-01-31T00:00:00.000Z"
+        },
+        "InstrumentId": "LN-1002",
+        "EffectiveDate": {
+          "$date": "2025-01-31T00:00:00.000Z"
+        }
+      }
+    }
+  },
+  "_class": "com.fyntrac.common.entity.Event"
+},
+{
+  "_id": {
+    "$oid": "69d41a4447896466a8d7fc86"
+  },
+  "instrumentId": "LN-1001",
+  "eventId": "MeasurementType",
+  "eventName": "MeasurementType",
+  "postingDate": 20250131,
+  "effectiveDate": 20250131,
+  "lastPlayedPostingDate": 20250131,
+  "priority": 0,
+  "status": "NOT_STARTED",
+  "eventDetail": {
+    "sourceTable": "MeasurementType",
+    "sourceType": "SYSTEM",
+    "sourceKey": "System",
+    "isAscendingOrder": false,
+    "values": {
+      "69d41a4347896466a8d7fc7b": {
+        "attributeId": "system",
+        "_metadata_version": "1.0",
+        "instrumentId": "system",
+        "MeasurementType": "COLLATERAL",
+        "_id": {
+          "$oid": "69d41a4347896466a8d7fc7b"
+        },
+        "postingDate": {
+          "$date": "2025-01-31T00:00:00.000Z"
+        },
+        "effectiveDate": {
+          "$date": "2025-01-31T00:00:00.000Z"
+        }
+      },
+      "69d41a4347896466a8d7fc7c": {
+        "attributeId": "system",
+        "_metadata_version": "1.0",
+        "instrumentId": "system",
+        "MeasurementType": "FAIRVALUE",
+        "_id": {
+          "$oid": "69d41a4347896466a8d7fc7c"
+        },
+        "postingDate": {
+          "$date": "2025-01-31T00:00:00.000Z"
+        },
+        "effectiveDate": {
+          "$date": "2025-01-31T00:00:00.000Z"
+        }
+      },
+      "69d41a4347896466a8d7fc7a": {
+        "attributeId": "system",
+        "_metadata_version": "1.0",
+        "instrumentId": "system",
+        "MeasurementType": "CF",
+        "_id": {
+          "$oid": "69d41a4347896466a8d7fc7a"
+        },
+        "postingDate": {
+          "$date": "2025-01-31T00:00:00.000Z"
+        },
+        "effectiveDate": {
+          "$date": "2025-01-31T00:00:00.000Z"
+        }
+      }
+    }
+  },
+  "_class": "com.fyntrac.common.entity.Event"
+},
+{
+  "_id": {
+    "$oid": "69d41a4447896466a8d7fc87"
+  },
+  "instrumentId": "LN-1001",
+  "eventId": "EOD",
+  "eventName": "End Of Day",
+  "postingDate": 20250131,
+  "effectiveDate": 20250131,
+  "lastPlayedPostingDate": 20250131,
+  "priority": 1,
+  "status": "NOT_STARTED",
+  "eventDetail": {
+    "sourceTable": "System",
+    "sourceType": "SYSTEM",
+    "sourceKey": "System",
+    "isAscendingOrder": false,
+    "values": {
+      "LN-1001_1_0_20250131_20250131": {
+        "ATTRIBUTE_LOANAMOUNT_CURRENT": 12000,
+        "ATTRIBUTE_TERM_CURRENT": 12,
+        "PostingDate": {
+          "$date": "2025-01-31T00:00:00.000Z"
+        },
+        "AttributeId": "1.0",
+        "ATTRIBUTE_NOTERATE_CURRENT": 6,
+        "ATTRIBUTE_ORIGINATIONDATE_CURRENT": {
+          "$date": "2025-01-31T00:00:00.000Z"
+        },
+        "InstrumentId": "LN-1001",
+        "EffectiveDate": {
+          "$date": "2025-01-31T00:00:00.000Z"
+        }
+      }
+    }
+  },
+  "_class": "com.fyntrac.common.entity.Event"
+},
+{
+  "_id": {
+    "$oid": "69d41a6247896466a8d7fca8"
+  },
+  "instrumentId": "LN-1002",
+  "eventId": "MeasurementType",
+  "eventName": "MeasurementType",
+  "postingDate": 20250228,
+  "effectiveDate": 20250228,
+  "lastPlayedPostingDate": 20250228,
+  "priority": 0,
+  "status": "NOT_STARTED",
+  "eventDetail": {
+    "sourceTable": "MeasurementType",
+    "sourceType": "SYSTEM",
+    "sourceKey": "System",
+    "isAscendingOrder": false,
+    "values": {
+      "69d41a4347896466a8d7fc7b": {
+        "attributeId": "system",
+        "_metadata_version": "1.0",
+        "instrumentId": "system",
+        "MeasurementType": "COLLATERAL",
+        "_id": {
+          "$oid": "69d41a4347896466a8d7fc7b"
+        },
+        "postingDate": {
+          "$date": "2025-02-28T00:00:00.000Z"
+        },
+        "effectiveDate": {
+          "$date": "2025-02-28T00:00:00.000Z"
+        }
+      },
+      "69d41a4347896466a8d7fc7c": {
+        "attributeId": "system",
+        "_metadata_version": "1.0",
+        "instrumentId": "system",
+        "MeasurementType": "FAIRVALUE",
+        "_id": {
+          "$oid": "69d41a4347896466a8d7fc7c"
+        },
+        "postingDate": {
+          "$date": "2025-02-28T00:00:00.000Z"
+        },
+        "effectiveDate": {
+          "$date": "2025-02-28T00:00:00.000Z"
+        }
+      },
+      "69d41a4347896466a8d7fc7a": {
+        "attributeId": "system",
+        "_metadata_version": "1.0",
+        "instrumentId": "system",
+        "MeasurementType": "CF",
+        "_id": {
+          "$oid": "69d41a4347896466a8d7fc7a"
+        },
+        "postingDate": {
+          "$date": "2025-02-28T00:00:00.000Z"
+        },
+        "effectiveDate": {
+          "$date": "2025-02-28T00:00:00.000Z"
+        }
+      }
+    }
+  },
+  "_class": "com.fyntrac.common.entity.Event"
+},
+{
+  "_id": {
+    "$oid": "69d41a6247896466a8d7fca9"
+  },
+  "instrumentId": "LN-1002",
+  "eventId": "EOD",
+  "eventName": "End Of Day",
+  "postingDate": 20250228,
+  "effectiveDate": 20250228,
+  "lastPlayedPostingDate": 20250228,
+  "priority": 1,
+  "status": "NOT_STARTED",
+  "eventDetail": {
+    "sourceTable": "System",
+    "sourceType": "SYSTEM",
+    "sourceKey": "System",
+    "isAscendingOrder": false,
+    "values": {
+      "LN-1002_1_0_20250228_20250228": {
+        "ATTRIBUTE_LOANAMOUNT_CURRENT": 15000,
+        "BALANCES_BEGINNINGBALANCE_UPB": 15000,
+        "ATTRIBUTE_TERM_CURRENT": 12,
+        "PostingDate": {
+          "$date": "2025-02-28T00:00:00.000Z"
+        },
+        "AttributeId": "1.0",
+        "BALANCES_ACTIVITY_UPB": 0,
+        "ATTRIBUTE_NOTERATE_CURRENT": 10,
+        "BALANCES_ENDINGBALANCE_UPB": 15000,
+        "ATTRIBUTE_ORIGINATIONDATE_CURRENT": {
+          "$date": "2025-01-31T00:00:00.000Z"
+        },
+        "InstrumentId": "LN-1002",
+        "EffectiveDate": {
+          "$date": "2025-02-28T00:00:00.000Z"
+        }
+      }
+    }
+  },
+  "_class": "com.fyntrac.common.entity.Event"
+},
+{
+  "_id": {
+    "$oid": "69d41a6247896466a8d7fcaa"
+  },
+  "instrumentId": "LN-1002",
+  "eventId": "ECF",
+  "eventName": "ExpectedCashFlows",
+  "postingDate": 20250228,
+  "effectiveDate": 20250228,
+  "lastPlayedPostingDate": 20250228,
+  "priority": 3,
+  "status": "NOT_STARTED",
+  "eventDetail": {
+    "sourceTable": "System",
+    "sourceType": "SYSTEM",
+    "sourceKey": "System",
+    "isAscendingOrder": false,
+    "values": {
+      "69d41a6247896466a8d7fc9e": {
+        "attributeId": "1.0",
+        "StartDate": {
+          "$date": "2025-07-30T18:30:00.000Z"
+        },
+        "ExpectedCF": 1050,
+        "instrumentId": "LN-1002",
+        "MeasurementType": "CF",
+        "_id": {
+          "$oid": "69d41a6247896466a8d7fc9e"
+        },
+        "postingDate": {
+          "$date": "2025-02-28T00:00:00.000Z"
+        },
+        "effectiveDate": {
+          "$date": "2025-02-28T00:00:00.000Z"
+        }
+      },
+      "69d41a6247896466a8d7fc9f": {
+        "attributeId": "1.0",
+        "StartDate": {
+          "$date": "2025-08-30T18:30:00.000Z"
+        },
+        "ExpectedCF": 550,
+        "instrumentId": "LN-1002",
+        "MeasurementType": "CF",
+        "_id": {
+          "$oid": "69d41a6247896466a8d7fc9f"
+        },
+        "postingDate": {
+          "$date": "2025-02-28T00:00:00.000Z"
+        },
+        "effectiveDate": {
+          "$date": "2025-02-28T00:00:00.000Z"
+        }
+      },
+      "69d41a6247896466a8d7fca0": {
+        "attributeId": "1.0",
+        "StartDate": {
+          "$date": "2025-09-29T18:30:00.000Z"
+        },
+        "ExpectedCF": 550,
+        "instrumentId": "LN-1002",
+        "MeasurementType": "CF",
+        "_id": {
+          "$oid": "69d41a6247896466a8d7fca0"
+        },
+        "postingDate": {
+          "$date": "2025-02-28T00:00:00.000Z"
+        },
+        "effectiveDate": {
+          "$date": "2025-02-28T00:00:00.000Z"
+        }
+      },
+      "69d41a6247896466a8d7fc9a": {
+        "attributeId": "1.0",
+        "StartDate": {
+          "$date": "2025-03-30T18:30:00.000Z"
+        },
+        "ExpectedCF": 1050,
+        "instrumentId": "LN-1002",
+        "MeasurementType": "CF",
+        "_id": {
+          "$oid": "69d41a6247896466a8d7fc9a"
+        },
+        "postingDate": {
+          "$date": "2025-02-28T00:00:00.000Z"
+        },
+        "effectiveDate": {
+          "$date": "2025-02-28T00:00:00.000Z"
+        }
+      },
+      "69d41a6247896466a8d7fc9b": {
+        "attributeId": "1.0",
+        "StartDate": {
+          "$date": "2025-04-29T18:30:00.000Z"
+        },
+        "ExpectedCF": 1050,
+        "instrumentId": "LN-1002",
+        "MeasurementType": "CF",
+        "_id": {
+          "$oid": "69d41a6247896466a8d7fc9b"
+        },
+        "postingDate": {
+          "$date": "2025-02-28T00:00:00.000Z"
+        },
+        "effectiveDate": {
+          "$date": "2025-02-28T00:00:00.000Z"
+        }
+      },
+      "69d41a6247896466a8d7fc9c": {
+        "attributeId": "1.0",
+        "StartDate": {
+          "$date": "2025-05-30T18:30:00.000Z"
+        },
+        "ExpectedCF": 1050,
+        "instrumentId": "LN-1002",
+        "MeasurementType": "CF",
+        "_id": {
+          "$oid": "69d41a6247896466a8d7fc9c"
+        },
+        "postingDate": {
+          "$date": "2025-02-28T00:00:00.000Z"
+        },
+        "effectiveDate": {
+          "$date": "2025-02-28T00:00:00.000Z"
+        }
+      },
+      "69d41a6247896466a8d7fc9d": {
+        "attributeId": "1.0",
+        "StartDate": {
+          "$date": "2025-06-29T18:30:00.000Z"
+        },
+        "ExpectedCF": 1050,
+        "instrumentId": "LN-1002",
+        "MeasurementType": "CF",
+        "_id": {
+          "$oid": "69d41a6247896466a8d7fc9d"
+        },
+        "postingDate": {
+          "$date": "2025-02-28T00:00:00.000Z"
+        },
+        "effectiveDate": {
+          "$date": "2025-02-28T00:00:00.000Z"
+        }
+      },
+      "69d41a6247896466a8d7fc99": {
+        "attributeId": "1.0",
+        "StartDate": {
+          "$date": "2025-02-27T18:30:00.000Z"
+        },
+        "ExpectedCF": 1050,
+        "instrumentId": "LN-1002",
+        "MeasurementType": "CF",
+        "_id": {
+          "$oid": "69d41a6247896466a8d7fc99"
+        },
+        "postingDate": {
+          "$date": "2025-02-28T00:00:00.000Z"
+        },
+        "effectiveDate": {
+          "$date": "2025-02-28T00:00:00.000Z"
+        }
+      },
+      "69d41a6247896466a8d7fca1": {
+        "attributeId": "1.0",
+        "StartDate": {
+          "$date": "2025-10-30T18:30:00.000Z"
+        },
+        "ExpectedCF": 550,
+        "instrumentId": "LN-1002",
+        "MeasurementType": "CF",
+        "_id": {
+          "$oid": "69d41a6247896466a8d7fca1"
+        },
+        "postingDate": {
+          "$date": "2025-02-28T00:00:00.000Z"
+        },
+        "effectiveDate": {
+          "$date": "2025-02-28T00:00:00.000Z"
+        }
+      },
+      "69d41a6247896466a8d7fca2": {
+        "attributeId": "1.0",
+        "StartDate": {
+          "$date": "2025-11-29T18:30:00.000Z"
+        },
+        "ExpectedCF": 550,
+        "instrumentId": "LN-1002",
+        "MeasurementType": "CF",
+        "_id": {
+          "$oid": "69d41a6247896466a8d7fca2"
+        },
+        "postingDate": {
+          "$date": "2025-02-28T00:00:00.000Z"
+        },
+        "effectiveDate": {
+          "$date": "2025-02-28T00:00:00.000Z"
+        }
+      },
+      "69d41a6247896466a8d7fca3": {
+        "attributeId": "1.0",
+        "StartDate": {
+          "$date": "2025-12-30T18:30:00.000Z"
+        },
+        "ExpectedCF": 550,
+        "instrumentId": "LN-1002",
+        "MeasurementType": "CF",
+        "_id": {
+          "$oid": "69d41a6247896466a8d7fca3"
+        },
+        "postingDate": {
+          "$date": "2025-02-28T00:00:00.000Z"
+        },
+        "effectiveDate": {
+          "$date": "2025-02-28T00:00:00.000Z"
+        }
+      },
+      "69d41a6247896466a8d7fca4": {
+        "attributeId": "1.0",
+        "StartDate": {
+          "$date": "2026-01-30T18:30:00.000Z"
+        },
+        "ExpectedCF": 550,
+        "instrumentId": "LN-1002",
+        "MeasurementType": "CF",
+        "_id": {
+          "$oid": "69d41a6247896466a8d7fca4"
+        },
+        "postingDate": {
+          "$date": "2025-02-28T00:00:00.000Z"
+        },
+        "effectiveDate": {
+          "$date": "2025-02-28T00:00:00.000Z"
+        }
+      }
+    }
+  },
+  "_class": "com.fyntrac.common.entity.Event"
+},
+{
+  "_id": {
+    "$oid": "69d41a6247896466a8d7fcab"
+  },
+  "instrumentId": "LN-1001",
+  "eventId": "MeasurementType",
+  "eventName": "MeasurementType",
+  "postingDate": 20250228,
+  "effectiveDate": 20250228,
+  "lastPlayedPostingDate": 20250228,
+  "priority": 0,
+  "status": "NOT_STARTED",
+  "eventDetail": {
+    "sourceTable": "MeasurementType",
+    "sourceType": "SYSTEM",
+    "sourceKey": "System",
+    "isAscendingOrder": false,
+    "values": {
+      "69d41a4347896466a8d7fc7b": {
+        "attributeId": "system",
+        "_metadata_version": "1.0",
+        "instrumentId": "system",
+        "MeasurementType": "COLLATERAL",
+        "_id": {
+          "$oid": "69d41a4347896466a8d7fc7b"
+        },
+        "postingDate": {
+          "$date": "2025-02-28T00:00:00.000Z"
+        },
+        "effectiveDate": {
+          "$date": "2025-02-28T00:00:00.000Z"
+        }
+      },
+      "69d41a4347896466a8d7fc7c": {
+        "attributeId": "system",
+        "_metadata_version": "1.0",
+        "instrumentId": "system",
+        "MeasurementType": "FAIRVALUE",
+        "_id": {
+          "$oid": "69d41a4347896466a8d7fc7c"
+        },
+        "postingDate": {
+          "$date": "2025-02-28T00:00:00.000Z"
+        },
+        "effectiveDate": {
+          "$date": "2025-02-28T00:00:00.000Z"
+        }
+      },
+      "69d41a4347896466a8d7fc7a": {
+        "attributeId": "system",
+        "_metadata_version": "1.0",
+        "instrumentId": "system",
+        "MeasurementType": "CF",
+        "_id": {
+          "$oid": "69d41a4347896466a8d7fc7a"
+        },
+        "postingDate": {
+          "$date": "2025-02-28T00:00:00.000Z"
+        },
+        "effectiveDate": {
+          "$date": "2025-02-28T00:00:00.000Z"
+        }
+      }
+    }
+  },
+  "_class": "com.fyntrac.common.entity.Event"
+},
+{
+  "_id": {
+    "$oid": "69d41a6247896466a8d7fcac"
+  },
+  "instrumentId": "LN-1001",
+  "eventId": "EOD",
+  "eventName": "End Of Day",
+  "postingDate": 20250228,
+  "effectiveDate": 20250228,
+  "lastPlayedPostingDate": 20250228,
+  "priority": 1,
+  "status": "NOT_STARTED",
+  "eventDetail": {
+    "sourceTable": "System",
+    "sourceType": "SYSTEM",
+    "sourceKey": "System",
+    "isAscendingOrder": false,
+    "values": {
+      "LN-1001_1_0_20250228_20250228": {
+        "ATTRIBUTE_LOANAMOUNT_CURRENT": 12000,
+        "BALANCES_BEGINNINGBALANCE_UPB": 12000,
+        "ATTRIBUTE_TERM_CURRENT": 12,
+        "PostingDate": {
+          "$date": "2025-02-28T00:00:00.000Z"
+        },
+        "AttributeId": "1.0",
+        "BALANCES_ACTIVITY_UPB": 0,
+        "ATTRIBUTE_NOTERATE_CURRENT": 6,
+        "BALANCES_ENDINGBALANCE_UPB": 12000,
+        "ATTRIBUTE_ORIGINATIONDATE_CURRENT": {
+          "$date": "2025-01-31T00:00:00.000Z"
+        },
+        "InstrumentId": "LN-1001",
+        "EffectiveDate": {
+          "$date": "2025-02-28T00:00:00.000Z"
+        }
+      }
+    }
+  },
+  "_class": "com.fyntrac.common.entity.Event"
+},
+{
+  "_id": {
+    "$oid": "69d41a6247896466a8d7fcad"
+  },
+  "instrumentId": "LN-1001",
+  "eventId": "ECF",
+  "eventName": "ExpectedCashFlows",
+  "postingDate": 20250228,
+  "effectiveDate": 20250228,
+  "lastPlayedPostingDate": 20250228,
+  "priority": 3,
+  "status": "NOT_STARTED",
+  "eventDetail": {
+    "sourceTable": "System",
+    "sourceType": "SYSTEM",
+    "sourceKey": "System",
+    "isAscendingOrder": false,
+    "values": {
+      "69d41a6247896466a8d7fc8d": {
+        "attributeId": "1.0",
+        "StartDate": {
+          "$date": "2025-02-27T18:30:00.000Z"
+        },
+        "ExpectedCF": 1030,
+        "instrumentId": "LN-1001",
+        "MeasurementType": "CF",
+        "_id": {
+          "$oid": "69d41a6247896466a8d7fc8d"
+        },
+        "postingDate": {
+          "$date": "2025-02-28T00:00:00.000Z"
+        },
+        "effectiveDate": {
+          "$date": "2025-02-28T00:00:00.000Z"
+        }
+      },
+      "69d41a6247896466a8d7fc95": {
+        "attributeId": "1.0",
+        "StartDate": {
+          "$date": "2025-10-30T18:30:00.000Z"
+        },
+        "ExpectedCF": 500,
+        "instrumentId": "LN-1001",
+        "MeasurementType": "CF",
+        "_id": {
+          "$oid": "69d41a6247896466a8d7fc95"
+        },
+        "postingDate": {
+          "$date": "2025-02-28T00:00:00.000Z"
+        },
+        "effectiveDate": {
+          "$date": "2025-02-28T00:00:00.000Z"
+        }
+      },
+      "69d41a6247896466a8d7fc8e": {
+        "attributeId": "1.0",
+        "StartDate": {
+          "$date": "2025-03-30T18:30:00.000Z"
+        },
+        "ExpectedCF": 1030,
+        "instrumentId": "LN-1001",
+        "MeasurementType": "CF",
+        "_id": {
+          "$oid": "69d41a6247896466a8d7fc8e"
+        },
+        "postingDate": {
+          "$date": "2025-02-28T00:00:00.000Z"
+        },
+        "effectiveDate": {
+          "$date": "2025-02-28T00:00:00.000Z"
+        }
+      },
+      "69d41a6247896466a8d7fc96": {
+        "attributeId": "1.0",
+        "StartDate": {
+          "$date": "2025-11-29T18:30:00.000Z"
+        },
+        "ExpectedCF": 500,
+        "instrumentId": "LN-1001",
+        "MeasurementType": "CF",
+        "_id": {
+          "$oid": "69d41a6247896466a8d7fc96"
+        },
+        "postingDate": {
+          "$date": "2025-02-28T00:00:00.000Z"
+        },
+        "effectiveDate": {
+          "$date": "2025-02-28T00:00:00.000Z"
+        }
+      },
+      "69d41a6247896466a8d7fc8f": {
+        "attributeId": "1.0",
+        "StartDate": {
+          "$date": "2025-04-29T18:30:00.000Z"
+        },
+        "ExpectedCF": 1030,
+        "instrumentId": "LN-1001",
+        "MeasurementType": "CF",
+        "_id": {
+          "$oid": "69d41a6247896466a8d7fc8f"
+        },
+        "postingDate": {
+          "$date": "2025-02-28T00:00:00.000Z"
+        },
+        "effectiveDate": {
+          "$date": "2025-02-28T00:00:00.000Z"
+        }
+      },
+      "69d41a6247896466a8d7fc97": {
+        "attributeId": "1.0",
+        "StartDate": {
+          "$date": "2025-12-30T18:30:00.000Z"
+        },
+        "ExpectedCF": 500,
+        "instrumentId": "LN-1001",
+        "MeasurementType": "CF",
+        "_id": {
+          "$oid": "69d41a6247896466a8d7fc97"
+        },
+        "postingDate": {
+          "$date": "2025-02-28T00:00:00.000Z"
+        },
+        "effectiveDate": {
+          "$date": "2025-02-28T00:00:00.000Z"
+        }
+      },
+      "69d41a6247896466a8d7fc98": {
+        "attributeId": "1.0",
+        "StartDate": {
+          "$date": "2026-01-30T18:30:00.000Z"
+        },
+        "ExpectedCF": 500,
+        "instrumentId": "LN-1001",
+        "MeasurementType": "CF",
+        "_id": {
+          "$oid": "69d41a6247896466a8d7fc98"
+        },
+        "postingDate": {
+          "$date": "2025-02-28T00:00:00.000Z"
+        },
+        "effectiveDate": {
+          "$date": "2025-02-28T00:00:00.000Z"
+        }
+      },
+      "69d41a6247896466a8d7fc91": {
+        "attributeId": "1.0",
+        "StartDate": {
+          "$date": "2025-06-29T18:30:00.000Z"
+        },
+        "ExpectedCF": 1030,
+        "instrumentId": "LN-1001",
+        "MeasurementType": "CF",
+        "_id": {
+          "$oid": "69d41a6247896466a8d7fc91"
+        },
+        "postingDate": {
+          "$date": "2025-02-28T00:00:00.000Z"
+        },
+        "effectiveDate": {
+          "$date": "2025-02-28T00:00:00.000Z"
+        }
+      },
+      "69d41a6247896466a8d7fc92": {
+        "attributeId": "1.0",
+        "StartDate": {
+          "$date": "2025-07-30T18:30:00.000Z"
+        },
+        "ExpectedCF": 1030,
+        "instrumentId": "LN-1001",
+        "MeasurementType": "CF",
+        "_id": {
+          "$oid": "69d41a6247896466a8d7fc92"
+        },
+        "postingDate": {
+          "$date": "2025-02-28T00:00:00.000Z"
+        },
+        "effectiveDate": {
+          "$date": "2025-02-28T00:00:00.000Z"
+        }
+      },
+      "69d41a6247896466a8d7fc93": {
+        "attributeId": "1.0",
+        "StartDate": {
+          "$date": "2025-08-30T18:30:00.000Z"
+        },
+        "ExpectedCF": 500,
+        "instrumentId": "LN-1001",
+        "MeasurementType": "CF",
+        "_id": {
+          "$oid": "69d41a6247896466a8d7fc93"
+        },
+        "postingDate": {
+          "$date": "2025-02-28T00:00:00.000Z"
+        },
+        "effectiveDate": {
+          "$date": "2025-02-28T00:00:00.000Z"
+        }
+      },
+      "69d41a6247896466a8d7fc94": {
+        "attributeId": "1.0",
+        "StartDate": {
+          "$date": "2025-09-29T18:30:00.000Z"
+        },
+        "ExpectedCF": 500,
+        "instrumentId": "LN-1001",
+        "MeasurementType": "CF",
+        "_id": {
+          "$oid": "69d41a6247896466a8d7fc94"
+        },
+        "postingDate": {
+          "$date": "2025-02-28T00:00:00.000Z"
+        },
+        "effectiveDate": {
+          "$date": "2025-02-28T00:00:00.000Z"
+        }
+      },
+      "69d41a6247896466a8d7fc90": {
+        "attributeId": "1.0",
+        "StartDate": {
+          "$date": "2025-05-30T18:30:00.000Z"
+        },
+        "ExpectedCF": 1030,
+        "instrumentId": "LN-1001",
+        "MeasurementType": "CF",
+        "_id": {
+          "$oid": "69d41a6247896466a8d7fc90"
+        },
+        "postingDate": {
+          "$date": "2025-02-28T00:00:00.000Z"
+        },
+        "effectiveDate": {
+          "$date": "2025-02-28T00:00:00.000Z"
+        }
+      }
+    }
+  },
+  "_class": "com.fyntrac.common.entity.Event"
+},
+{
+  "_id": {
+    "$oid": "69d41a8147896466a8d7fce8"
+  },
+  "instrumentId": "LN-1002",
+  "eventId": "MeasurementType",
+  "eventName": "MeasurementType",
+  "postingDate": 20250331,
+  "effectiveDate": 20250331,
+  "lastPlayedPostingDate": 20250331,
+  "priority": 0,
+  "status": "NOT_STARTED",
+  "eventDetail": {
+    "sourceTable": "MeasurementType",
+    "sourceType": "SYSTEM",
+    "sourceKey": "System",
+    "isAscendingOrder": false,
+    "values": {
+      "69d41a4347896466a8d7fc7b": {
+        "attributeId": "system",
+        "_metadata_version": "1.0",
+        "instrumentId": "system",
+        "MeasurementType": "COLLATERAL",
+        "_id": {
+          "$oid": "69d41a4347896466a8d7fc7b"
+        },
+        "postingDate": {
+          "$date": "2025-03-31T00:00:00.000Z"
+        },
+        "effectiveDate": {
+          "$date": "2025-03-31T00:00:00.000Z"
+        }
+      },
+      "69d41a4347896466a8d7fc7c": {
+        "attributeId": "system",
+        "_metadata_version": "1.0",
+        "instrumentId": "system",
+        "MeasurementType": "FAIRVALUE",
+        "_id": {
+          "$oid": "69d41a4347896466a8d7fc7c"
+        },
+        "postingDate": {
+          "$date": "2025-03-31T00:00:00.000Z"
+        },
+        "effectiveDate": {
+          "$date": "2025-03-31T00:00:00.000Z"
+        }
+      },
+      "69d41a4347896466a8d7fc7a": {
+        "attributeId": "system",
+        "_metadata_version": "1.0",
+        "instrumentId": "system",
+        "MeasurementType": "CF",
+        "_id": {
+          "$oid": "69d41a4347896466a8d7fc7a"
+        },
+        "postingDate": {
+          "$date": "2025-03-31T00:00:00.000Z"
+        },
+        "effectiveDate": {
+          "$date": "2025-03-31T00:00:00.000Z"
+        }
+      }
+    }
+  },
+  "_class": "com.fyntrac.common.entity.Event"
+},
+{
+  "_id": {
+    "$oid": "69d41a8147896466a8d7fce9"
+  },
+  "instrumentId": "LN-1002",
+  "eventId": "EOD",
+  "eventName": "End Of Day",
+  "postingDate": 20250331,
+  "effectiveDate": 20250331,
+  "lastPlayedPostingDate": 20250331,
+  "priority": 1,
+  "status": "NOT_STARTED",
+  "eventDetail": {
+    "sourceTable": "System",
+    "sourceType": "SYSTEM",
+    "sourceKey": "System",
+    "isAscendingOrder": false,
+    "values": {
+      "LN-1002_1_0_20250331_20250331": {
+        "AttributeId": "1.0",
+        "BALANCES_ENDINGBALANCE_IMPAIRMENT": -5829.6143,
+        "ATTRIBUTE_NOTERATE_CURRENT": 10,
+        "BALANCES_ENDINGBALANCE_UPB": 14180,
+        "ATTRIBUTE_ORIGINATIONDATE_CURRENT": {
+          "$date": "2025-01-31T00:00:00.000Z"
+        },
+        "InstrumentId": "LN-1002",
+        "BALANCES_BEGINNINGBALANCE_IMPAIRMENT": -5829.6143,
+        "ATTRIBUTE_LOANAMOUNT_CURRENT": 15000,
+        "BALANCES_BEGINNINGBALANCE_UPB": 15000,
+        "ATTRIBUTE_TERM_CURRENT": 12,
+        "PostingDate": {
+          "$date": "2025-03-31T00:00:00.000Z"
+        },
+        "BALANCES_ACTIVITY_UPB": -820,
+        "BALANCES_ACTIVITY_IMPAIRMENT": 0,
+        "EffectiveDate": {
+          "$date": "2025-03-31T00:00:00.000Z"
+        }
+      }
+    }
+  },
+  "_class": "com.fyntrac.common.entity.Event"
+},
+{
+  "_id": {
+    "$oid": "69d41a8147896466a8d7fcea"
+  },
+  "instrumentId": "LN-1002",
+  "eventId": "ECF",
+  "eventName": "ExpectedCashFlows",
+  "postingDate": 20250331,
+  "effectiveDate": 20250331,
+  "lastPlayedPostingDate": 20250331,
+  "priority": 3,
+  "status": "NOT_STARTED",
+  "eventDetail": {
+    "sourceTable": "System",
+    "sourceType": "SYSTEM",
+    "sourceKey": "System",
+    "isAscendingOrder": false,
+    "values": {
+      "69d41a8047896466a8d7fccc": {
+        "attributeId": "1.0",
+        "StartDate": {
+          "$date": "2025-07-30T18:30:00.000Z"
+        },
+        "ExpectedCF": 1050,
+        "instrumentId": "LN-1002",
+        "MeasurementType": "CF",
+        "_id": {
+          "$oid": "69d41a8047896466a8d7fccc"
+        },
+        "postingDate": {
+          "$date": "2025-03-31T00:00:00.000Z"
+        },
+        "effectiveDate": {
+          "$date": "2025-03-31T00:00:00.000Z"
+        }
+      },
+      "69d41a8047896466a8d7fccd": {
+        "attributeId": "1.0",
+        "StartDate": {
+          "$date": "2025-08-30T18:30:00.000Z"
+        },
+        "ExpectedCF": 550,
+        "instrumentId": "LN-1002",
+        "MeasurementType": "CF",
+        "_id": {
+          "$oid": "69d41a8047896466a8d7fccd"
+        },
+        "postingDate": {
+          "$date": "2025-03-31T00:00:00.000Z"
+        },
+        "effectiveDate": {
+          "$date": "2025-03-31T00:00:00.000Z"
+        }
+      },
+      "69d41a8047896466a8d7fcce": {
+        "attributeId": "1.0",
+        "StartDate": {
+          "$date": "2025-09-29T18:30:00.000Z"
+        },
+        "ExpectedCF": 550,
+        "instrumentId": "LN-1002",
+        "MeasurementType": "CF",
+        "_id": {
+          "$oid": "69d41a8047896466a8d7fcce"
+        },
+        "postingDate": {
+          "$date": "2025-03-31T00:00:00.000Z"
+        },
+        "effectiveDate": {
+          "$date": "2025-03-31T00:00:00.000Z"
+        }
+      },
+      "69d41a8047896466a8d7fccf": {
+        "attributeId": "1.0",
+        "StartDate": {
+          "$date": "2025-10-30T18:30:00.000Z"
+        },
+        "ExpectedCF": 550,
+        "instrumentId": "LN-1002",
+        "MeasurementType": "CF",
+        "_id": {
+          "$oid": "69d41a8047896466a8d7fccf"
+        },
+        "postingDate": {
+          "$date": "2025-03-31T00:00:00.000Z"
+        },
+        "effectiveDate": {
+          "$date": "2025-03-31T00:00:00.000Z"
+        }
+      },
+      "69d41a8047896466a8d7fcd0": {
+        "attributeId": "1.0",
+        "StartDate": {
+          "$date": "2025-11-29T18:30:00.000Z"
+        },
+        "ExpectedCF": 450,
+        "instrumentId": "LN-1002",
+        "MeasurementType": "CF",
+        "_id": {
+          "$oid": "69d41a8047896466a8d7fcd0"
+        },
+        "postingDate": {
+          "$date": "2025-03-31T00:00:00.000Z"
+        },
+        "effectiveDate": {
+          "$date": "2025-03-31T00:00:00.000Z"
+        }
+      },
+      "69d41a8047896466a8d7fcd1": {
+        "attributeId": "1.0",
+        "StartDate": {
+          "$date": "2025-12-30T18:30:00.000Z"
+        },
+        "ExpectedCF": 450,
+        "instrumentId": "LN-1002",
+        "MeasurementType": "CF",
+        "_id": {
+          "$oid": "69d41a8047896466a8d7fcd1"
+        },
+        "postingDate": {
+          "$date": "2025-03-31T00:00:00.000Z"
+        },
+        "effectiveDate": {
+          "$date": "2025-03-31T00:00:00.000Z"
+        }
+      },
+      "69d41a8047896466a8d7fcca": {
+        "attributeId": "1.0",
+        "StartDate": {
+          "$date": "2025-05-30T18:30:00.000Z"
+        },
+        "ExpectedCF": 1050,
+        "instrumentId": "LN-1002",
+        "MeasurementType": "CF",
+        "_id": {
+          "$oid": "69d41a8047896466a8d7fcca"
+        },
+        "postingDate": {
+          "$date": "2025-03-31T00:00:00.000Z"
+        },
+        "effectiveDate": {
+          "$date": "2025-03-31T00:00:00.000Z"
+        }
+      },
+      "69d41a8047896466a8d7fcd2": {
+        "attributeId": "1.0",
+        "StartDate": {
+          "$date": "2026-01-30T18:30:00.000Z"
+        },
+        "ExpectedCF": 450,
+        "instrumentId": "LN-1002",
+        "MeasurementType": "CF",
+        "_id": {
+          "$oid": "69d41a8047896466a8d7fcd2"
+        },
+        "postingDate": {
+          "$date": "2025-03-31T00:00:00.000Z"
+        },
+        "effectiveDate": {
+          "$date": "2025-03-31T00:00:00.000Z"
+        }
+      },
+      "69d41a8047896466a8d7fccb": {
+        "attributeId": "1.0",
+        "StartDate": {
+          "$date": "2025-06-29T18:30:00.000Z"
+        },
+        "ExpectedCF": 1050,
+        "instrumentId": "LN-1002",
+        "MeasurementType": "CF",
+        "_id": {
+          "$oid": "69d41a8047896466a8d7fccb"
+        },
+        "postingDate": {
+          "$date": "2025-03-31T00:00:00.000Z"
+        },
+        "effectiveDate": {
+          "$date": "2025-03-31T00:00:00.000Z"
+        }
+      },
+      "69d41a8047896466a8d7fcc8": {
+        "attributeId": "1.0",
+        "StartDate": {
+          "$date": "2025-03-30T18:30:00.000Z"
+        },
+        "ExpectedCF": 1050,
+        "instrumentId": "LN-1002",
+        "MeasurementType": "CF",
+        "_id": {
+          "$oid": "69d41a8047896466a8d7fcc8"
+        },
+        "postingDate": {
+          "$date": "2025-03-31T00:00:00.000Z"
+        },
+        "effectiveDate": {
+          "$date": "2025-03-31T00:00:00.000Z"
+        }
+      },
+      "69d41a8047896466a8d7fcc9": {
+        "attributeId": "1.0",
+        "StartDate": {
+          "$date": "2025-04-29T18:30:00.000Z"
+        },
+        "ExpectedCF": 1050,
+        "instrumentId": "LN-1002",
+        "MeasurementType": "CF",
+        "_id": {
+          "$oid": "69d41a8047896466a8d7fcc9"
+        },
+        "postingDate": {
+          "$date": "2025-03-31T00:00:00.000Z"
+        },
+        "effectiveDate": {
+          "$date": "2025-03-31T00:00:00.000Z"
+        }
+      }
+    }
+  },
+  "_class": "com.fyntrac.common.entity.Event"
+},
+{
+  "_id": {
+    "$oid": "69d41a8147896466a8d7fceb"
+  },
+  "instrumentId": "LN-1001",
+  "eventId": "MeasurementType",
+  "eventName": "MeasurementType",
+  "postingDate": 20250331,
+  "effectiveDate": 20250331,
+  "lastPlayedPostingDate": 20250331,
+  "priority": 0,
+  "status": "NOT_STARTED",
+  "eventDetail": {
+    "sourceTable": "MeasurementType",
+    "sourceType": "SYSTEM",
+    "sourceKey": "System",
+    "isAscendingOrder": false,
+    "values": {
+      "69d41a4347896466a8d7fc7b": {
+        "attributeId": "system",
+        "_metadata_version": "1.0",
+        "instrumentId": "system",
+        "MeasurementType": "COLLATERAL",
+        "_id": {
+          "$oid": "69d41a4347896466a8d7fc7b"
+        },
+        "postingDate": {
+          "$date": "2025-03-31T00:00:00.000Z"
+        },
+        "effectiveDate": {
+          "$date": "2025-03-31T00:00:00.000Z"
+        }
+      },
+      "69d41a4347896466a8d7fc7c": {
+        "attributeId": "system",
+        "_metadata_version": "1.0",
+        "instrumentId": "system",
+        "MeasurementType": "FAIRVALUE",
+        "_id": {
+          "$oid": "69d41a4347896466a8d7fc7c"
+        },
+        "postingDate": {
+          "$date": "2025-03-31T00:00:00.000Z"
+        },
+        "effectiveDate": {
+          "$date": "2025-03-31T00:00:00.000Z"
+        }
+      },
+      "69d41a4347896466a8d7fc7a": {
+        "attributeId": "system",
+        "_metadata_version": "1.0",
+        "instrumentId": "system",
+        "MeasurementType": "CF",
+        "_id": {
+          "$oid": "69d41a4347896466a8d7fc7a"
+        },
+        "postingDate": {
+          "$date": "2025-03-31T00:00:00.000Z"
+        },
+        "effectiveDate": {
+          "$date": "2025-03-31T00:00:00.000Z"
+        }
+      }
+    }
+  },
+  "_class": "com.fyntrac.common.entity.Event"
+},
+{
+  "_id": {
+    "$oid": "69d41a8147896466a8d7fcec"
+  },
+  "instrumentId": "LN-1001",
+  "eventId": "EOD",
+  "eventName": "End Of Day",
+  "postingDate": 20250331,
+  "effectiveDate": 20250331,
+  "lastPlayedPostingDate": 20250331,
+  "priority": 1,
+  "status": "NOT_STARTED",
+  "eventDetail": {
+    "sourceTable": "System",
+    "sourceType": "SYSTEM",
+    "sourceKey": "System",
+    "isAscendingOrder": false,
+    "values": {
+      "LN-1001_1_0_20250331_20250331": {
+        "AttributeId": "1.0",
+        "BALANCES_ENDINGBALANCE_IMPAIRMENT": -3065.4515,
+        "ATTRIBUTE_NOTERATE_CURRENT": 6,
+        "BALANCES_ENDINGBALANCE_UPB": 11030,
+        "ATTRIBUTE_ORIGINATIONDATE_CURRENT": {
+          "$date": "2025-01-31T00:00:00.000Z"
+        },
+        "InstrumentId": "LN-1001",
+        "BALANCES_BEGINNINGBALANCE_IMPAIRMENT": -3065.4515,
+        "ATTRIBUTE_LOANAMOUNT_CURRENT": 12000,
+        "BALANCES_BEGINNINGBALANCE_UPB": 12000,
+        "ATTRIBUTE_TERM_CURRENT": 12,
+        "PostingDate": {
+          "$date": "2025-03-31T00:00:00.000Z"
+        },
+        "BALANCES_ACTIVITY_UPB": -970,
+        "BALANCES_ACTIVITY_IMPAIRMENT": 0,
+        "EffectiveDate": {
+          "$date": "2025-03-31T00:00:00.000Z"
+        }
+      }
+    }
+  },
+  "_class": "com.fyntrac.common.entity.Event"
+},
+{
+  "_id": {
+    "$oid": "69d41a8147896466a8d7fced"
+  },
+  "instrumentId": "LN-1001",
+  "eventId": "ECF",
+  "eventName": "ExpectedCashFlows",
+  "postingDate": 20250331,
+  "effectiveDate": 20250331,
+  "lastPlayedPostingDate": 20250331,
+  "priority": 3,
+  "status": "NOT_STARTED",
+  "eventDetail": {
+    "sourceTable": "System",
+    "sourceType": "SYSTEM",
+    "sourceKey": "System",
+    "isAscendingOrder": false,
+    "values": {
+      "69d41a8047896466a8d7fcc3": {
+        "attributeId": "1.0",
+        "StartDate": {
+          "$date": "2025-09-29T18:30:00.000Z"
+        },
+        "ExpectedCF": 500,
+        "instrumentId": "LN-1001",
+        "MeasurementType": "CF",
+        "_id": {
+          "$oid": "69d41a8047896466a8d7fcc3"
+        },
+        "postingDate": {
+          "$date": "2025-03-31T00:00:00.000Z"
+        },
+        "effectiveDate": {
+          "$date": "2025-03-31T00:00:00.000Z"
+        }
+      },
+      "69d41a8047896466a8d7fcc4": {
+        "attributeId": "1.0",
+        "StartDate": {
+          "$date": "2025-10-30T18:30:00.000Z"
+        },
+        "ExpectedCF": 500,
+        "instrumentId": "LN-1001",
+        "MeasurementType": "CF",
+        "_id": {
+          "$oid": "69d41a8047896466a8d7fcc4"
+        },
+        "postingDate": {
+          "$date": "2025-03-31T00:00:00.000Z"
+        },
+        "effectiveDate": {
+          "$date": "2025-03-31T00:00:00.000Z"
+        }
+      },
+      "69d41a8047896466a8d7fcbd": {
+        "attributeId": "1.0",
+        "StartDate": {
+          "$date": "2025-03-30T18:30:00.000Z"
+        },
+        "ExpectedCF": 1030,
+        "instrumentId": "LN-1001",
+        "MeasurementType": "CF",
+        "_id": {
+          "$oid": "69d41a8047896466a8d7fcbd"
+        },
+        "postingDate": {
+          "$date": "2025-03-31T00:00:00.000Z"
+        },
+        "effectiveDate": {
+          "$date": "2025-03-31T00:00:00.000Z"
+        }
+      },
+      "69d41a8047896466a8d7fcc5": {
+        "attributeId": "1.0",
+        "StartDate": {
+          "$date": "2025-11-29T18:30:00.000Z"
+        },
+        "ExpectedCF": 400,
+        "instrumentId": "LN-1001",
+        "MeasurementType": "CF",
+        "_id": {
+          "$oid": "69d41a8047896466a8d7fcc5"
+        },
+        "postingDate": {
+          "$date": "2025-03-31T00:00:00.000Z"
+        },
+        "effectiveDate": {
+          "$date": "2025-03-31T00:00:00.000Z"
+        }
+      },
+      "69d41a8047896466a8d7fcbe": {
+        "attributeId": "1.0",
+        "StartDate": {
+          "$date": "2025-04-29T18:30:00.000Z"
+        },
+        "ExpectedCF": 1030,
+        "instrumentId": "LN-1001",
+        "MeasurementType": "CF",
+        "_id": {
+          "$oid": "69d41a8047896466a8d7fcbe"
+        },
+        "postingDate": {
+          "$date": "2025-03-31T00:00:00.000Z"
+        },
+        "effectiveDate": {
+          "$date": "2025-03-31T00:00:00.000Z"
+        }
+      },
+      "69d41a8047896466a8d7fcc6": {
+        "attributeId": "1.0",
+        "StartDate": {
+          "$date": "2025-12-30T18:30:00.000Z"
+        },
+        "ExpectedCF": 400,
+        "instrumentId": "LN-1001",
+        "MeasurementType": "CF",
+        "_id": {
+          "$oid": "69d41a8047896466a8d7fcc6"
+        },
+        "postingDate": {
+          "$date": "2025-03-31T00:00:00.000Z"
+        },
+        "effectiveDate": {
+          "$date": "2025-03-31T00:00:00.000Z"
+        }
+      },
+      "69d41a8047896466a8d7fcc0": {
+        "attributeId": "1.0",
+        "StartDate": {
+          "$date": "2025-06-29T18:30:00.000Z"
+        },
+        "ExpectedCF": 1030,
+        "instrumentId": "LN-1001",
+        "MeasurementType": "CF",
+        "_id": {
+          "$oid": "69d41a8047896466a8d7fcc0"
+        },
+        "postingDate": {
+          "$date": "2025-03-31T00:00:00.000Z"
+        },
+        "effectiveDate": {
+          "$date": "2025-03-31T00:00:00.000Z"
+        }
+      },
+      "69d41a8047896466a8d7fcc1": {
+        "attributeId": "1.0",
+        "StartDate": {
+          "$date": "2025-07-30T18:30:00.000Z"
+        },
+        "ExpectedCF": 1030,
+        "instrumentId": "LN-1001",
+        "MeasurementType": "CF",
+        "_id": {
+          "$oid": "69d41a8047896466a8d7fcc1"
+        },
+        "postingDate": {
+          "$date": "2025-03-31T00:00:00.000Z"
+        },
+        "effectiveDate": {
+          "$date": "2025-03-31T00:00:00.000Z"
+        }
+      },
+      "69d41a8047896466a8d7fcc2": {
+        "attributeId": "1.0",
+        "StartDate": {
+          "$date": "2025-08-30T18:30:00.000Z"
+        },
+        "ExpectedCF": 500,
+        "instrumentId": "LN-1001",
+        "MeasurementType": "CF",
+        "_id": {
+          "$oid": "69d41a8047896466a8d7fcc2"
+        },
+        "postingDate": {
+          "$date": "2025-03-31T00:00:00.000Z"
+        },
+        "effectiveDate": {
+          "$date": "2025-03-31T00:00:00.000Z"
+        }
+      },
+      "69d41a8047896466a8d7fcbf": {
+        "attributeId": "1.0",
+        "StartDate": {
+          "$date": "2025-05-30T18:30:00.000Z"
+        },
+        "ExpectedCF": 1030,
+        "instrumentId": "LN-1001",
+        "MeasurementType": "CF",
+        "_id": {
+          "$oid": "69d41a8047896466a8d7fcbf"
+        },
+        "postingDate": {
+          "$date": "2025-03-31T00:00:00.000Z"
+        },
+        "effectiveDate": {
+          "$date": "2025-03-31T00:00:00.000Z"
+        }
+      },
+      "69d41a8047896466a8d7fcc7": {
+        "attributeId": "1.0",
+        "StartDate": {
+          "$date": "2026-01-30T18:30:00.000Z"
+        },
+        "ExpectedCF": 400,
+        "instrumentId": "LN-1001",
+        "MeasurementType": "CF",
+        "_id": {
+          "$oid": "69d41a8047896466a8d7fcc7"
+        },
+        "postingDate": {
+          "$date": "2025-03-31T00:00:00.000Z"
+        },
+        "effectiveDate": {
+          "$date": "2025-03-31T00:00:00.000Z"
+        }
+      }
+    }
+  },
+  "_class": "com.fyntrac.common.entity.Event"
+},
+{
+  "_id": {
+    "$oid": "69d41a9f47896466a8d7fd03"
+  },
+  "instrumentId": "LN-1002",
+  "eventId": "MeasurementType",
+  "eventName": "MeasurementType",
+  "postingDate": 20250430,
+  "effectiveDate": 20250430,
+  "lastPlayedPostingDate": 20250430,
+  "priority": 0,
+  "status": "NOT_STARTED",
+  "eventDetail": {
+    "sourceTable": "MeasurementType",
+    "sourceType": "SYSTEM",
+    "sourceKey": "System",
+    "isAscendingOrder": false,
+    "values": {
+      "69d41a4347896466a8d7fc7b": {
+        "attributeId": "system",
+        "_metadata_version": "1.0",
+        "instrumentId": "system",
+        "MeasurementType": "COLLATERAL",
+        "_id": {
+          "$oid": "69d41a4347896466a8d7fc7b"
+        },
+        "postingDate": {
+          "$date": "2025-04-30T00:00:00.000Z"
+        },
+        "effectiveDate": {
+          "$date": "2025-04-30T00:00:00.000Z"
+        }
+      },
+      "69d41a4347896466a8d7fc7c": {
+        "attributeId": "system",
+        "_metadata_version": "1.0",
+        "instrumentId": "system",
+        "MeasurementType": "FAIRVALUE",
+        "_id": {
+          "$oid": "69d41a4347896466a8d7fc7c"
+        },
+        "postingDate": {
+          "$date": "2025-04-30T00:00:00.000Z"
+        },
+        "effectiveDate": {
+          "$date": "2025-04-30T00:00:00.000Z"
+        }
+      },
+      "69d41a4347896466a8d7fc7a": {
+        "attributeId": "system",
+        "_metadata_version": "1.0",
+        "instrumentId": "system",
+        "MeasurementType": "CF",
+        "_id": {
+          "$oid": "69d41a4347896466a8d7fc7a"
+        },
+        "postingDate": {
+          "$date": "2025-04-30T00:00:00.000Z"
+        },
+        "effectiveDate": {
+          "$date": "2025-04-30T00:00:00.000Z"
+        }
+      }
+    }
+  },
+  "_class": "com.fyntrac.common.entity.Event"
+},
+{
+  "_id": {
+    "$oid": "69d41a9f47896466a8d7fd04"
+  },
+  "instrumentId": "LN-1002",
+  "eventId": "EOD",
+  "eventName": "End Of Day",
+  "postingDate": 20250430,
+  "effectiveDate": 20250430,
+  "lastPlayedPostingDate": 20250430,
+  "priority": 1,
+  "status": "NOT_STARTED",
+  "eventDetail": {
+    "sourceTable": "System",
+    "sourceType": "SYSTEM",
+    "sourceKey": "System",
+    "isAscendingOrder": false,
+    "values": {
+      "LN-1002_1_0_20250430_20250430": {
+        "AttributeId": "1.0",
+        "BALANCES_ENDINGBALANCE_IMPAIRMENT": -6207.5773,
+        "ATTRIBUTE_NOTERATE_CURRENT": 10,
+        "BALANCES_ENDINGBALANCE_UPB": 14180,
+        "ATTRIBUTE_ORIGINATIONDATE_CURRENT": {
+          "$date": "2025-01-31T00:00:00.000Z"
+        },
+        "InstrumentId": "LN-1002",
+        "BALANCES_BEGINNINGBALANCE_IMPAIRMENT": -6207.5773,
+        "ATTRIBUTE_LOANAMOUNT_CURRENT": 15000,
+        "BALANCES_BEGINNINGBALANCE_UPB": 14180,
+        "ATTRIBUTE_TERM_CURRENT": 12,
+        "PostingDate": {
+          "$date": "2025-04-30T00:00:00.000Z"
+        },
+        "BALANCES_ACTIVITY_IMPAIRMENT": 0,
+        "BALANCES_ACTIVITY_UPB": 0,
+        "EffectiveDate": {
+          "$date": "2025-04-30T00:00:00.000Z"
+        }
+      }
+    }
+  },
+  "_class": "com.fyntrac.common.entity.Event"
+},
+{
+  "_id": {
+    "$oid": "69d41a9f47896466a8d7fd05"
+  },
+  "instrumentId": "LN-1002",
+  "eventId": "ECF",
+  "eventName": "ExpectedCashFlows",
+  "postingDate": 20250430,
+  "effectiveDate": 20250430,
+  "lastPlayedPostingDate": 20250430,
+  "priority": 3,
+  "status": "NOT_STARTED",
+  "eventDetail": {
+    "sourceTable": "System",
+    "sourceType": "SYSTEM",
+    "sourceKey": "System",
+    "isAscendingOrder": false,
+    "values": {
+      "69d41a9f47896466a8d7fcf8": {
+        "attributeId": "1.0",
+        "StartDate": {
+          "$date": "2025-04-29T18:30:00.000Z"
+        },
+        "ExpectedCF": 1030,
+        "instrumentId": "LN-1002",
+        "MeasurementType": "CF",
+        "_id": {
+          "$oid": "69d41a9f47896466a8d7fcf8"
+        },
+        "postingDate": {
+          "$date": "2025-04-30T00:00:00.000Z"
+        },
+        "effectiveDate": {
+          "$date": "2025-04-30T00:00:00.000Z"
+        }
+      },
+      "69d41a9f47896466a8d7fd01": {
+        "attributeId": "1.0",
+        "StartDate": {
+          "$date": "2026-01-30T18:30:00.000Z"
+        },
+        "ExpectedCF": 2000,
+        "instrumentId": "LN-1002",
+        "MeasurementType": "CF",
+        "_id": {
+          "$oid": "69d41a9f47896466a8d7fd01"
+        },
+        "postingDate": {
+          "$date": "2025-04-30T00:00:00.000Z"
+        },
+        "effectiveDate": {
+          "$date": "2025-04-30T00:00:00.000Z"
+        }
+      },
+      "69d41a9f47896466a8d7fd00": {
+        "attributeId": "1.0",
+        "StartDate": {
+          "$date": "2025-12-30T18:30:00.000Z"
+        },
+        "ExpectedCF": 2000,
+        "instrumentId": "LN-1002",
+        "MeasurementType": "CF",
+        "_id": {
+          "$oid": "69d41a9f47896466a8d7fd00"
+        },
+        "postingDate": {
+          "$date": "2025-04-30T00:00:00.000Z"
+        },
+        "effectiveDate": {
+          "$date": "2025-04-30T00:00:00.000Z"
+        }
+      },
+      "69d41a9f47896466a8d7fcff": {
+        "attributeId": "1.0",
+        "StartDate": {
+          "$date": "2025-11-29T18:30:00.000Z"
+        },
+        "ExpectedCF": 2000,
+        "instrumentId": "LN-1002",
+        "MeasurementType": "CF",
+        "_id": {
+          "$oid": "69d41a9f47896466a8d7fcff"
+        },
+        "postingDate": {
+          "$date": "2025-04-30T00:00:00.000Z"
+        },
+        "effectiveDate": {
+          "$date": "2025-04-30T00:00:00.000Z"
+        }
+      },
+      "69d41a9f47896466a8d7fcfe": {
+        "attributeId": "1.0",
+        "StartDate": {
+          "$date": "2025-10-30T18:30:00.000Z"
+        },
+        "ExpectedCF": 2000,
+        "instrumentId": "LN-1002",
+        "MeasurementType": "CF",
+        "_id": {
+          "$oid": "69d41a9f47896466a8d7fcfe"
+        },
+        "postingDate": {
+          "$date": "2025-04-30T00:00:00.000Z"
+        },
+        "effectiveDate": {
+          "$date": "2025-04-30T00:00:00.000Z"
+        }
+      },
+      "69d41a9f47896466a8d7fcf9": {
+        "attributeId": "1.0",
+        "StartDate": {
+          "$date": "2025-05-30T18:30:00.000Z"
+        },
+        "ExpectedCF": 1030,
+        "instrumentId": "LN-1002",
+        "MeasurementType": "CF",
+        "_id": {
+          "$oid": "69d41a9f47896466a8d7fcf9"
+        },
+        "postingDate": {
+          "$date": "2025-04-30T00:00:00.000Z"
+        },
+        "effectiveDate": {
+          "$date": "2025-04-30T00:00:00.000Z"
+        }
+      },
+      "69d41a9f47896466a8d7fcfd": {
+        "attributeId": "1.0",
+        "StartDate": {
+          "$date": "2025-09-29T18:30:00.000Z"
+        },
+        "ExpectedCF": 2000,
+        "instrumentId": "LN-1002",
+        "MeasurementType": "CF",
+        "_id": {
+          "$oid": "69d41a9f47896466a8d7fcfd"
+        },
+        "postingDate": {
+          "$date": "2025-04-30T00:00:00.000Z"
+        },
+        "effectiveDate": {
+          "$date": "2025-04-30T00:00:00.000Z"
+        }
+      },
+      "69d41a9f47896466a8d7fcfc": {
+        "attributeId": "1.0",
+        "StartDate": {
+          "$date": "2025-08-30T18:30:00.000Z"
+        },
+        "ExpectedCF": 2000,
+        "instrumentId": "LN-1002",
+        "MeasurementType": "CF",
+        "_id": {
+          "$oid": "69d41a9f47896466a8d7fcfc"
+        },
+        "postingDate": {
+          "$date": "2025-04-30T00:00:00.000Z"
+        },
+        "effectiveDate": {
+          "$date": "2025-04-30T00:00:00.000Z"
+        }
+      },
+      "69d41a9f47896466a8d7fcfb": {
+        "attributeId": "1.0",
+        "StartDate": {
+          "$date": "2025-07-30T18:30:00.000Z"
+        },
+        "ExpectedCF": 1030,
+        "instrumentId": "LN-1002",
+        "MeasurementType": "CF",
+        "_id": {
+          "$oid": "69d41a9f47896466a8d7fcfb"
+        },
+        "postingDate": {
+          "$date": "2025-04-30T00:00:00.000Z"
+        },
+        "effectiveDate": {
+          "$date": "2025-04-30T00:00:00.000Z"
+        }
+      },
+      "69d41a9f47896466a8d7fcfa": {
+        "attributeId": "1.0",
+        "StartDate": {
+          "$date": "2025-06-29T18:30:00.000Z"
+        },
+        "ExpectedCF": 1030,
+        "instrumentId": "LN-1002",
+        "MeasurementType": "CF",
+        "_id": {
+          "$oid": "69d41a9f47896466a8d7fcfa"
+        },
+        "postingDate": {
+          "$date": "2025-04-30T00:00:00.000Z"
+        },
+        "effectiveDate": {
+          "$date": "2025-04-30T00:00:00.000Z"
+        }
+      }
+    }
+  },
+  "_class": "com.fyntrac.common.entity.Event"
+},
+{
+  "_id": {
+    "$oid": "69d41a9f47896466a8d7fd06"
+  },
+  "instrumentId": "LN-1001",
+  "eventId": "MeasurementType",
+  "eventName": "MeasurementType",
+  "postingDate": 20250430,
+  "effectiveDate": 20250430,
+  "lastPlayedPostingDate": 20250430,
+  "priority": 0,
+  "status": "NOT_STARTED",
+  "eventDetail": {
+    "sourceTable": "MeasurementType",
+    "sourceType": "SYSTEM",
+    "sourceKey": "System",
+    "isAscendingOrder": false,
+    "values": {
+      "69d41a4347896466a8d7fc7b": {
+        "attributeId": "system",
+        "_metadata_version": "1.0",
+        "instrumentId": "system",
+        "MeasurementType": "COLLATERAL",
+        "_id": {
+          "$oid": "69d41a4347896466a8d7fc7b"
+        },
+        "postingDate": {
+          "$date": "2025-04-30T00:00:00.000Z"
+        },
+        "effectiveDate": {
+          "$date": "2025-04-30T00:00:00.000Z"
+        }
+      },
+      "69d41a4347896466a8d7fc7c": {
+        "attributeId": "system",
+        "_metadata_version": "1.0",
+        "instrumentId": "system",
+        "MeasurementType": "FAIRVALUE",
+        "_id": {
+          "$oid": "69d41a4347896466a8d7fc7c"
+        },
+        "postingDate": {
+          "$date": "2025-04-30T00:00:00.000Z"
+        },
+        "effectiveDate": {
+          "$date": "2025-04-30T00:00:00.000Z"
+        }
+      },
+      "69d41a4347896466a8d7fc7a": {
+        "attributeId": "system",
+        "_metadata_version": "1.0",
+        "instrumentId": "system",
+        "MeasurementType": "CF",
+        "_id": {
+          "$oid": "69d41a4347896466a8d7fc7a"
+        },
+        "postingDate": {
+          "$date": "2025-04-30T00:00:00.000Z"
+        },
+        "effectiveDate": {
+          "$date": "2025-04-30T00:00:00.000Z"
+        }
+      }
+    }
+  },
+  "_class": "com.fyntrac.common.entity.Event"
+},
+{
+  "_id": {
+    "$oid": "69d41a9f47896466a8d7fd07"
+  },
+  "instrumentId": "LN-1001",
+  "eventId": "EOD",
+  "eventName": "End Of Day",
+  "postingDate": 20250430,
+  "effectiveDate": 20250430,
+  "lastPlayedPostingDate": 20250430,
+  "priority": 1,
+  "status": "NOT_STARTED",
+  "eventDetail": {
+    "sourceTable": "System",
+    "sourceType": "SYSTEM",
+    "sourceKey": "System",
+    "isAscendingOrder": false,
+    "values": {
+      "LN-1001_1_0_20250430_20250430": {
+        "AttributeId": "1.0",
+        "BALANCES_ENDINGBALANCE_IMPAIRMENT": -3349.4385,
+        "ATTRIBUTE_NOTERATE_CURRENT": 6,
+        "BALANCES_ENDINGBALANCE_UPB": 11030,
+        "ATTRIBUTE_ORIGINATIONDATE_CURRENT": {
+          "$date": "2025-01-31T00:00:00.000Z"
+        },
+        "InstrumentId": "LN-1001",
+        "BALANCES_BEGINNINGBALANCE_IMPAIRMENT": -3349.4385,
+        "ATTRIBUTE_LOANAMOUNT_CURRENT": 12000,
+        "BALANCES_BEGINNINGBALANCE_UPB": 11030,
+        "ATTRIBUTE_TERM_CURRENT": 12,
+        "PostingDate": {
+          "$date": "2025-04-30T00:00:00.000Z"
+        },
+        "BALANCES_ACTIVITY_UPB": 0,
+        "BALANCES_ACTIVITY_IMPAIRMENT": 0,
+        "EffectiveDate": {
+          "$date": "2025-04-30T00:00:00.000Z"
+        }
+      }
+    }
+  },
+  "_class": "com.fyntrac.common.entity.Event"
+},
+{
+  "_id": {
+    "$oid": "69d41a9f47896466a8d7fd08"
+  },
+  "instrumentId": "LN-1001",
+  "eventId": "ECF",
+  "eventName": "ExpectedCashFlows",
+  "postingDate": 20250430,
+  "effectiveDate": 20250430,
+  "lastPlayedPostingDate": 20250430,
+  "priority": 3,
+  "status": "NOT_STARTED",
+  "eventDetail": {
+    "sourceTable": "System",
+    "sourceType": "SYSTEM",
+    "sourceKey": "System",
+    "isAscendingOrder": false,
+    "values": {
+      "69d41a9f47896466a8d7fcef": {
+        "attributeId": "1.0",
+        "StartDate": {
+          "$date": "2025-05-30T18:30:00.000Z"
+        },
+        "ExpectedCF": 1030,
+        "instrumentId": "LN-1001",
+        "MeasurementType": "CF",
+        "_id": {
+          "$oid": "69d41a9f47896466a8d7fcef"
+        },
+        "postingDate": {
+          "$date": "2025-04-30T00:00:00.000Z"
+        },
+        "effectiveDate": {
+          "$date": "2025-04-30T00:00:00.000Z"
+        }
+      },
+      "69d41a9f47896466a8d7fcf7": {
+        "attributeId": "1.0",
+        "StartDate": {
+          "$date": "2026-01-30T18:30:00.000Z"
+        },
+        "ExpectedCF": 1700,
+        "instrumentId": "LN-1001",
+        "MeasurementType": "CF",
+        "_id": {
+          "$oid": "69d41a9f47896466a8d7fcf7"
+        },
+        "postingDate": {
+          "$date": "2025-04-30T00:00:00.000Z"
+        },
+        "effectiveDate": {
+          "$date": "2025-04-30T00:00:00.000Z"
+        }
+      },
+      "69d41a9f47896466a8d7fcee": {
+        "attributeId": "1.0",
+        "StartDate": {
+          "$date": "2025-04-29T18:30:00.000Z"
+        },
+        "ExpectedCF": 1030,
+        "instrumentId": "LN-1001",
+        "MeasurementType": "CF",
+        "_id": {
+          "$oid": "69d41a9f47896466a8d7fcee"
+        },
+        "postingDate": {
+          "$date": "2025-04-30T00:00:00.000Z"
+        },
+        "effectiveDate": {
+          "$date": "2025-04-30T00:00:00.000Z"
+        }
+      },
+      "69d41a9f47896466a8d7fcf6": {
+        "attributeId": "1.0",
+        "StartDate": {
+          "$date": "2025-12-30T18:30:00.000Z"
+        },
+        "ExpectedCF": 1700,
+        "instrumentId": "LN-1001",
+        "MeasurementType": "CF",
+        "_id": {
+          "$oid": "69d41a9f47896466a8d7fcf6"
+        },
+        "postingDate": {
+          "$date": "2025-04-30T00:00:00.000Z"
+        },
+        "effectiveDate": {
+          "$date": "2025-04-30T00:00:00.000Z"
+        }
+      },
+      "69d41a9f47896466a8d7fcf5": {
+        "attributeId": "1.0",
+        "StartDate": {
+          "$date": "2025-11-29T18:30:00.000Z"
+        },
+        "ExpectedCF": 1700,
+        "instrumentId": "LN-1001",
+        "MeasurementType": "CF",
+        "_id": {
+          "$oid": "69d41a9f47896466a8d7fcf5"
+        },
+        "postingDate": {
+          "$date": "2025-04-30T00:00:00.000Z"
+        },
+        "effectiveDate": {
+          "$date": "2025-04-30T00:00:00.000Z"
+        }
+      },
+      "69d41a9f47896466a8d7fcf0": {
+        "attributeId": "1.0",
+        "StartDate": {
+          "$date": "2025-06-29T18:30:00.000Z"
+        },
+        "ExpectedCF": 1030,
+        "instrumentId": "LN-1001",
+        "MeasurementType": "CF",
+        "_id": {
+          "$oid": "69d41a9f47896466a8d7fcf0"
+        },
+        "postingDate": {
+          "$date": "2025-04-30T00:00:00.000Z"
+        },
+        "effectiveDate": {
+          "$date": "2025-04-30T00:00:00.000Z"
+        }
+      },
+      "69d41a9f47896466a8d7fcf4": {
+        "attributeId": "1.0",
+        "StartDate": {
+          "$date": "2025-10-30T18:30:00.000Z"
+        },
+        "ExpectedCF": 1700,
+        "instrumentId": "LN-1001",
+        "MeasurementType": "CF",
+        "_id": {
+          "$oid": "69d41a9f47896466a8d7fcf4"
+        },
+        "postingDate": {
+          "$date": "2025-04-30T00:00:00.000Z"
+        },
+        "effectiveDate": {
+          "$date": "2025-04-30T00:00:00.000Z"
+        }
+      },
+      "69d41a9f47896466a8d7fcf3": {
+        "attributeId": "1.0",
+        "StartDate": {
+          "$date": "2025-09-29T18:30:00.000Z"
+        },
+        "ExpectedCF": 1700,
+        "instrumentId": "LN-1001",
+        "MeasurementType": "CF",
+        "_id": {
+          "$oid": "69d41a9f47896466a8d7fcf3"
+        },
+        "postingDate": {
+          "$date": "2025-04-30T00:00:00.000Z"
+        },
+        "effectiveDate": {
+          "$date": "2025-04-30T00:00:00.000Z"
+        }
+      },
+      "69d41a9f47896466a8d7fcf2": {
+        "attributeId": "1.0",
+        "StartDate": {
+          "$date": "2025-08-30T18:30:00.000Z"
+        },
+        "ExpectedCF": 1700,
+        "instrumentId": "LN-1001",
+        "MeasurementType": "CF",
+        "_id": {
+          "$oid": "69d41a9f47896466a8d7fcf2"
+        },
+        "postingDate": {
+          "$date": "2025-04-30T00:00:00.000Z"
+        },
+        "effectiveDate": {
+          "$date": "2025-04-30T00:00:00.000Z"
+        }
+      },
+      "69d41a9f47896466a8d7fcf1": {
+        "attributeId": "1.0",
+        "StartDate": {
+          "$date": "2025-07-30T18:30:00.000Z"
+        },
+        "ExpectedCF": 1030,
+        "instrumentId": "LN-1001",
+        "MeasurementType": "CF",
+        "_id": {
+          "$oid": "69d41a9f47896466a8d7fcf1"
+        },
+        "postingDate": {
+          "$date": "2025-04-30T00:00:00.000Z"
+        },
+        "effectiveDate": {
+          "$date": "2025-04-30T00:00:00.000Z"
+        }
+      }
+    }
+  },
+  "_class": "com.fyntrac.common.entity.Event"
+}]

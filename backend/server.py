@@ -321,6 +321,26 @@ def merge_event_data_by_instrument(event_data_dict: Dict[str, List[Dict]]) -> Li
     
     return list(merged_data.values())
 
+
+def filter_event_data_by_posting_date(
+    event_data_dict: Dict[str, List[Dict]], posting_date: str
+) -> Dict[str, List[Dict]]:
+    """
+    Return a copy of event_data_dict where each event's rows are restricted to those
+    whose postingdate (case-insensitive) matches the requested posting_date string.
+    Events with no matching rows keep an empty list (not removed, so callers can log
+    a warning instead of crashing).
+    """
+    filtered: Dict[str, List[Dict]] = {}
+    target = posting_date.strip()
+    for event_name, rows in event_data_dict.items():
+        filtered[event_name] = [
+            row for row in rows
+            if str(get_field_case_insensitive(row, "postingdate", "")).strip() == target
+        ]
+    return filtered
+
+
 def dsl_to_python_standalone(dsl_code: str) -> str:
     """Convert DSL code to Python for standalone execution (no events required)"""
     
@@ -1828,6 +1848,80 @@ async def upload_event_data(event_name: str, file: UploadFile = File(...)):
             pass
         raise HTTPException(status_code=400, detail=str(e))
 
+@api_router.get("/event-data")
+async def get_all_event_data():
+    """Get summary of all uploaded event data"""
+    event_data_list = await db.event_data.find({}, {"_id": 0}).to_list(1000)
+    summary = []
+    for event_data in event_data_list:
+        summary.append({
+            "event_name": event_data['event_name'],
+            "row_count": len(event_data.get('data_rows', [])),
+            "created_at": event_data.get('created_at')
+        })
+    return summary
+
+
+@api_router.get("/event-data/posting-dates")
+async def get_event_data_posting_dates():
+    """
+    Return all unique posting dates found across all activity (non-custom/reference) event data,
+    sorted ascending.  Custom / reference events have no posting date and are excluded.
+    """
+    # Identify activity event names
+    defs = await db.event_definitions.find({}, {"_id": 0, "event_name": 1, "eventType": 1}).to_list(1000)
+    activity_names: set = {
+        d["event_name"] for d in defs
+        if d.get("eventType", "activity") != "reference"
+    }
+
+    # Collect posting dates from activity event data
+    unique_dates: set = set()
+    event_data_list = await db.event_data.find({}, {"_id": 0, "event_name": 1, "data_rows": 1}).to_list(1000)
+    for ed in event_data_list:
+        if ed.get("event_name") not in activity_names:
+            continue
+        for row in ed.get("data_rows", []):
+            pd_val = get_field_case_insensitive(row, "postingdate", "")
+            if pd_val:
+                unique_dates.add(str(pd_val).strip())
+
+    return {"posting_dates": sorted(unique_dates)}
+
+
+@api_router.get("/event-data/download/{event_name}")
+async def download_event_data(event_name: str):
+    """Download event data as CSV"""
+    event_data = await db.event_data.find_one({"event_name": event_name}, {"_id": 0})
+    if not event_data:
+        raise HTTPException(status_code=404, detail=f"No data found for event '{event_name}'")
+
+    # Create CSV. Collect ALL unique headers across every row so rows with different
+    # field sets (common with JSON-imported data) do not cause DictWriter to crash.
+    output = io.StringIO()
+    rows = event_data.get('data_rows', [])
+    if rows:
+        all_keys: list = []
+        seen_keys: set = set()
+        for row in rows:
+            for k in row.keys():
+                if k not in seen_keys:
+                    all_keys.append(k)
+                    seen_keys.add(k)
+        writer = csv.DictWriter(
+            output, fieldnames=all_keys, extrasaction='ignore', restval=''
+        )
+        writer.writeheader()
+        writer.writerows(rows)
+
+    output.seek(0)
+    return StreamingResponse(
+        iter([output.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": f"attachment; filename={event_name}_data.csv"}
+    )
+
+
 @api_router.get("/event-data/{event_name}")
 async def get_event_data(event_name: str):
     """Get event data for a specific event"""
@@ -1839,44 +1933,6 @@ async def get_event_data(event_name: str):
         event_data['created_at'] = datetime.fromisoformat(event_data['created_at'])
     
     return event_data
-
-@api_router.get("/event-data")
-async def get_all_event_data():
-    """Get summary of all uploaded event data"""
-    event_data_list = await db.event_data.find({}, {"_id": 0}).to_list(1000)
-    
-    summary = []
-    for event_data in event_data_list:
-        summary.append({
-            "event_name": event_data['event_name'],
-            "row_count": len(event_data.get('data_rows', [])),
-            "created_at": event_data.get('created_at')
-        })
-    
-    return summary
-
-@api_router.get("/event-data/download/{event_name}")
-async def download_event_data(event_name: str):
-    """Download event data as CSV"""
-    event_data = await db.event_data.find_one({"event_name": event_name}, {"_id": 0})
-    if not event_data:
-        raise HTTPException(status_code=404, detail=f"No data found for event '{event_name}'")
-    
-    # Create CSV
-    output = io.StringIO()
-    
-    if event_data['data_rows']:
-        headers = list(event_data['data_rows'][0].keys())
-        writer = csv.DictWriter(output, fieldnames=headers)
-        writer.writeheader()
-        writer.writerows(event_data['data_rows'])
-    
-    output.seek(0)
-    return StreamingResponse(
-        iter([output.getvalue()]),
-        media_type="text/csv",
-        headers={"Content-Disposition": f"attachment; filename={event_name}_data.csv"}
-    )
 
 # DSL Validation and Conversion
 @api_router.post("/dsl/validate")
@@ -2037,7 +2093,13 @@ async def run_dsl_code(request: DSLRunRequest):
         # - If no activity data but reference events present, create a single dummy row so template runs once
         # - Otherwise, error (no data at all)
         if activity_events_with_data:
-            merged_data = merge_event_data_by_instrument(activity_event_data)
+            # Filter by requested posting date before merging (Console date-scoped runs)
+            scoped_activity = (
+                filter_event_data_by_posting_date(activity_event_data, request.posting_date)
+                if request.posting_date
+                else activity_event_data
+            )
+            merged_data = merge_event_data_by_instrument(scoped_activity)
         elif reference_events_with_data:
             # No activity rows but we have reference data — run template once with an empty merged row
             merged_data = [{}]
@@ -2427,7 +2489,13 @@ async def execute_template(request: TemplateExecuteRequest):
                 event_data_dict[event_def['event_name']] = []
         
         # Merge data from all events by instrumentid
-        merged_data = merge_event_data_by_instrument(event_data_dict)
+        # Filter by requested posting date before merging (batch date-scoped runs)
+        scoped_event_data = (
+            filter_event_data_by_posting_date(event_data_dict, request.posting_date)
+            if request.posting_date
+            else event_data_dict
+        )
+        merged_data = merge_event_data_by_instrument(scoped_event_data)
         
         if not merged_data:
             raise HTTPException(status_code=404, detail="No data found for the referenced events")
@@ -3076,12 +3144,38 @@ def _is_custom_event(records: list, event_id: str) -> bool:
     return True  # no inner row matched its enclosing event's instrumentId → custom
 
 
-def _build_event_definitions_from_import(records: list) -> list:
+def _select_instruments(records: list, max_count: int = 2) -> list:
+    """
+    Collect all unique instrument IDs that appear in standard (non-custom) event records
+    and randomly return up to max_count of them.
+    Custom/reference events are excluded — they carry no real instrument.
+    Returns a sorted (deterministic within selection) list of instrument IDs.
+    """
+    import random
+    seen: set = set()
+    for event in records:
+        instrument = (event.get("instrumentId") or event.get("InstrumentId") or "").strip()
+        if not instrument:
+            continue
+        event_id = event.get("eventId", "")
+        # Only count instruments from standard (non-custom) events
+        if not _is_custom_event(records, event_id):
+            seen.add(instrument)
+    population = sorted(seen)  # sort for reproducibility of the pool
+    count = min(max_count, len(population))
+    if count == 0:
+        return []
+    return random.sample(population, count)
+
+
+def _build_event_definitions_from_import(records: list, allowed_instruments: set | None = None) -> list:
     """
     Derive unique event definitions from the imported records.
     Groups by eventId, collects dynamic field names and infers datatypes.
     Excludes all fixed/system fields (both PascalCase and camelCase) and meta keys.
     Events with no real instrumentId are classified as custom/reference.
+    If allowed_instruments is given, standard event records whose outer instrumentId
+    is not in that set are skipped (custom/reference events are never filtered).
     Returns a list of dicts compatible with EventDefinition.model_dump().
     """
     from collections import defaultdict
@@ -3089,6 +3183,11 @@ def _build_event_definitions_from_import(records: list) -> list:
 
     for event in records:
         event_id = event.get("eventId", "")
+        outer_instrument = (event.get("instrumentId") or event.get("InstrumentId") or "").strip()
+        is_custom = _is_custom_event(records, event_id)
+        # Filter standard events by allowed instrument list
+        if not is_custom and allowed_instruments is not None and outer_instrument not in allowed_instruments:
+            continue
         for row_val in event.get("eventDetail", {}).get("values", {}).values():
             if not isinstance(row_val, dict):
                 continue
@@ -3115,7 +3214,7 @@ def _build_event_definitions_from_import(records: list) -> list:
     return definitions
 
 
-def _build_event_data_from_import(records: list) -> list:
+def _build_event_data_from_import(records: list, allowed_instruments: set | None = None) -> list:
     """
     Build event data rows from imported records.
     Groups rows by eventId. Each value entry in eventDetail.values becomes one data row.
@@ -3123,6 +3222,8 @@ def _build_event_data_from_import(records: list) -> list:
     Maps attributeId (either case) to SubInstrumentId — for standard events only.
     Custom/reference events (no instrumentId in inner rows) omit all standard fields.
     Normalises all date values to YYYY-MM-DD.
+    If allowed_instruments is given, standard event records whose outer instrumentId
+    is not in that set are skipped. Custom/reference events are never filtered.
     """
     from collections import defaultdict
 
@@ -3131,6 +3232,9 @@ def _build_event_data_from_import(records: list) -> list:
     custom_events = {eid for eid in event_ids if _is_custom_event(records, eid)}
 
     event_rows: dict = defaultdict(list)
+    # For custom/reference events, dedup by inner value-id so repeated event records
+    # (same data across different posting dates / instruments) don't multiply rows.
+    seen_custom_value_ids: dict = defaultdict(set)
 
     for event in records:
         event_id = event.get("eventId", "")
@@ -3139,10 +3243,20 @@ def _build_event_data_from_import(records: list) -> list:
         # Outer event-level fallbacks (always camelCase at top level)
         outer_posting = _parse_import_date(event.get("postingDate") or event.get("PostingDate", ""))
         outer_effective = _parse_import_date(event.get("effectiveDate") or event.get("EffectiveDate", ""))
-        outer_instrument = event.get("instrumentId") or event.get("InstrumentId", "")
+        outer_instrument = (event.get("instrumentId") or event.get("InstrumentId", "")).strip()
+
+        # Filter standard events by allowed instrument list
+        if not is_custom and allowed_instruments is not None and outer_instrument not in allowed_instruments:
+            continue
 
         raw_values = event.get("eventDetail", {}).get("values", {})
-        for row_val in raw_values.values():
+        for value_id, row_val in raw_values.items():
+            # Dedup: skip this inner row if we've already emitted it for this custom event
+            if is_custom:
+                if value_id in seen_custom_value_ids[event_id]:
+                    continue
+                seen_custom_value_ids[event_id].add(value_id)
+
             if not isinstance(row_val, dict):
                 continue
 
@@ -3274,8 +3388,13 @@ async def import_and_transform_events(file: UploadFile = File(...)):
         raise HTTPException(status_code=422, detail=validation_error)
 
     import_ts = datetime.now(timezone.utc).isoformat()
+    # ---- Instrument selection (1–2 instruments for activity data) ----
+    selected_instruments = _select_instruments(records, max_count=2)
+    allowed_instruments_set = set(selected_instruments) if selected_instruments else None
+
     result = {
         "imported_count": len(records),
+        "selected_instruments": selected_instruments,
         "event_definitions": None,
         "event_data": None,
     }
@@ -3297,7 +3416,7 @@ async def import_and_transform_events(file: UploadFile = File(...)):
     def_error = None
     definitions = []
     try:
-        definitions = _build_event_definitions_from_import(records)
+        definitions = _build_event_definitions_from_import(records, allowed_instruments=allowed_instruments_set)
         if not definitions:
             def_error = "No event types could be extracted from the uploaded file."
         else:
@@ -3319,7 +3438,7 @@ async def import_and_transform_events(file: UploadFile = File(...)):
     # ---- Step 3: Transform → Event Data (uses classification from Step 2) ----
     data_error = None
     try:
-        event_data_list = _build_event_data_from_import(records)
+        event_data_list = _build_event_data_from_import(records, allowed_instruments=allowed_instruments_set)
         if not event_data_list:
             data_error = "No event data rows could be extracted from the uploaded file."
         else:

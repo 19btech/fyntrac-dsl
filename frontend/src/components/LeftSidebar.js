@@ -2,6 +2,7 @@ import React from "react";
 import { Box, Button, Card, Collapse, List, ListItemButton, ListItemIcon, ListItemText } from '@mui/material';
 import { FileText, RefreshCw, ChevronDown, ChevronRight, Upload } from "lucide-react";
 import { useToast } from "./ToastProvider";
+import ImportEventsModal from "./ImportEventsModal";
 
 const formatDataType = (dt) => {
   const map = { string: 'text', decimal: 'number', integer: 'whole number', int: 'whole number', boolean: 'yes/no', bool: 'yes/no', date: 'date' };
@@ -10,8 +11,9 @@ const formatDataType = (dt) => {
 const formatEventTable = (t) => t;
 const formatEventType = (t) => t;
 
-const LeftSidebar = ({ events, selectedEvent, onEventSelect, onDownloadEvents }) => {
+const LeftSidebar = ({ events, selectedEvent, onEventSelect, onDownloadEvents, onImportSuccess }) => {
   const [expandedEvent, setExpandedEvent] = React.useState(null);
+  const [importModalOpen, setImportModalOpen] = React.useState(false);
   const toast = useToast();
 
   const toggleExpand = (eventName) => {
@@ -52,7 +54,7 @@ const LeftSidebar = ({ events, selectedEvent, onEventSelect, onDownloadEvents })
             <Button
               variant="contained"
               size="small"
-              onClick={() => toast.info('Coming soon')}
+              onClick={() => setImportModalOpen(true)}
               fullWidth
               startIcon={<Upload size={14} color="#FFFFFF" />}
               data-testid="import-events-button"
@@ -190,6 +192,27 @@ const LeftSidebar = ({ events, selectedEvent, onEventSelect, onDownloadEvents })
           )}
         </Box>
       </Box>
+      <ImportEventsModal
+        open={importModalOpen}
+        onClose={() => setImportModalOpen(false)}
+        onSuccess={(result) => {
+          setImportModalOpen(false);
+          const defNames = result?.event_definitions?.names?.join(', ');
+          const rowTotal = result?.event_data?.total_rows ?? 0;
+          const msg = defNames
+            ? `Events imported: ${defNames} — ${rowTotal} data row(s) loaded.`
+            : 'Events imported successfully.';
+          toast.success(msg);
+          // Show file labels in green in the Event Setup panel
+          try {
+            localStorage.setItem('uploadedEventFileName', 'Event.csv');
+            window.dispatchEvent(new CustomEvent('dsl-event-def-loaded', { detail: { filename: 'Event.csv' } }));
+            localStorage.setItem('uploadedExcelFileName', 'ActivityData.xlsx');
+            window.dispatchEvent(new CustomEvent('dsl-event-data-imported', { detail: { filename: 'ActivityData.xlsx' } }));
+          } catch (e) {}
+          if (onImportSuccess) onImportSuccess();
+        }}
+      />
     </Box>
   );
 };

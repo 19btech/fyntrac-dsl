@@ -105,13 +105,33 @@ const FileUploadPanel = ({ onUploadSuccess, events, addConsoleLog, selectedEvent
       } catch (e) {}
     };
 
+    const eventDefLoadedHandler = (e) => {
+      try {
+        const filename = e?.detail?.filename || 'Event.csv';
+        setUploadedEventFileName(filename);
+        localStorage.setItem('uploadedEventFileName', filename);
+      } catch (err) {}
+    };
+
+    const eventDataImportedHandler = (e) => {
+      try {
+        const filename = e?.detail?.filename || 'ActivityData.xlsx';
+        setUploadedExcelFileName(filename);
+        localStorage.setItem('uploadedExcelFileName', filename);
+      } catch (err) {}
+    };
+
     window.addEventListener('dsl-refresh-event-data', refreshHandler);
     window.addEventListener('dsl-clear-event-viewer', clearViewerHandler);
     window.addEventListener('dsl-upload-errors', uploadErrorsHandler);
+    window.addEventListener('dsl-event-def-loaded', eventDefLoadedHandler);
+    window.addEventListener('dsl-event-data-imported', eventDataImportedHandler);
     return () => {
       window.removeEventListener('dsl-refresh-event-data', refreshHandler);
       window.removeEventListener('dsl-clear-event-viewer', clearViewerHandler);
       window.removeEventListener('dsl-upload-errors', uploadErrorsHandler);
+      window.removeEventListener('dsl-event-def-loaded', eventDefLoadedHandler);
+      window.removeEventListener('dsl-event-data-imported', eventDataImportedHandler);
     };
   }, [events]);
 
@@ -342,7 +362,7 @@ const FileUploadPanel = ({ onUploadSuccess, events, addConsoleLog, selectedEvent
               {uploadedEventFileName && (
                 <Typography variant="caption" color="success.main" sx={{ display: 'flex', alignItems: 'center', gap: 0.5, mt: 1 }}>
                   <CheckCircle size={12} />
-                  {uploadedEventFileName}
+                  {uploadedEventFileName === 'event.csv' ? 'Event.csv' : uploadedEventFileName}
                 </Typography>
               )}
             </Box>

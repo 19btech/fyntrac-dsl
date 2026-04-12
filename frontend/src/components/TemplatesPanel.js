@@ -3,7 +3,7 @@ import { Card, CardContent, Button, IconButton, Box, Typography, Chip, Tooltip }
 import AppDialog, { useAppDialog } from './AppDialog';
 import { Play, FileText, Clock, Trash2, Rocket } from "lucide-react";
 
-const TemplatesPanel = ({ templates, onLoadTemplate, onRunTemplate, onDeleteTemplate, onDeployTemplate, selectedEvent }) => {
+const TemplatesPanel = ({ templates, onLoadTemplate, onRunTemplate, onDeleteTemplate, onDeployTemplate, selectedEvent, batchRunning }) => {
   const [deletingIds, setDeletingIds] = useState(new Set());
   const [deployingIds, setDeployingIds] = useState(new Set());
   const { confirmProps, openConfirm } = useAppDialog();
@@ -153,12 +153,12 @@ const TemplatesPanel = ({ templates, onLoadTemplate, onRunTemplate, onDeleteTemp
                     variant="contained"
                     size="small" 
                     onClick={() => onRunTemplate(template.id)}
-                    disabled={!selectedEvent}
+                    disabled={!selectedEvent || batchRunning}
                     sx={{ flex: 1 }}
                     startIcon={<Play size={16} />}
                     data-testid={`run-template-${template.id}`}
                   >
-                    Run
+                    {batchRunning ? 'Running...' : 'Run'}
                   </Button>
                 </Box>
               </CardContent>

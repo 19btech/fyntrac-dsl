@@ -2,7 +2,7 @@ import React, { useState, useEffect } from "react";
 import axios from "axios";
 import { useToast } from "./ToastProvider";
 import { X, Database, Download } from "lucide-react";
-import { Button, IconButton, Chip, Box, Typography, Table, TableHead, TableBody, TableRow, TableCell, Card, Tabs, Tab } from '@mui/material';
+import { Button, IconButton, Chip, Box, Typography, Table, TableHead, TableBody, TableRow, TableCell, Card, Tabs, Tab, Alert } from '@mui/material';
 import { API } from '../config';
 
 const EventDataViewer = ({ onClose }) => {
@@ -12,6 +12,7 @@ const EventDataViewer = ({ onClose }) => {
   const [loading, setLoading] = useState(false);
   const [leftTab, setLeftTab] = useState(0); // 0 = Events, 1 = Errors
   const [uploadErrors, setUploadErrors] = useState([]);
+  const [instrumentWarning, setInstrumentWarning] = useState(null); // array of instrument ids or null
   const toast = useToast();
 
   useEffect(() => {
@@ -20,6 +21,11 @@ const EventDataViewer = ({ onClose }) => {
     try {
       const raw = localStorage.getItem('lastEventDataUploadErrors');
       if (raw) setUploadErrors(JSON.parse(raw));
+    } catch (e) {}
+    // load instrument warning from last JSON import
+    try {
+      const raw = localStorage.getItem('importSelectedInstruments');
+      if (raw) setInstrumentWarning(JSON.parse(raw));
     } catch (e) {}
     const uploadErrorsHandler = (e) => {
       try {
@@ -34,11 +40,19 @@ const EventDataViewer = ({ onClose }) => {
         setSelectedEvent(null);
         setEventData(null);
         setUploadErrors([]);
+        setInstrumentWarning(null);
         setLeftTab(0);
       } catch (err) {}
     };
 
-    const refreshHandler = () => { loadEventDataSummary(); };
+    const refreshHandler = () => {
+      loadEventDataSummary();
+      // Re-read instrument warning in case a new import just completed
+      try {
+        const raw = localStorage.getItem('importSelectedInstruments');
+        setInstrumentWarning(raw ? JSON.parse(raw) : null);
+      } catch (e) {}
+    };
 
     window.addEventListener('dsl-upload-errors', uploadErrorsHandler);
     window.addEventListener('dsl-clear-event-viewer', clearViewerHandler);
@@ -158,6 +172,21 @@ const EventDataViewer = ({ onClose }) => {
             <X size={20} />
           </IconButton>
         </Box>
+
+        {/* Instrument scope warning banner (from JSON import) */}
+        {instrumentWarning && instrumentWarning.length > 0 && (
+          <Box sx={{ px: 2, pt: 1.5, pb: 0.5 }}>
+            <Alert
+              severity="warning"
+              onClose={() => setInstrumentWarning(null)}
+              sx={{ fontSize: '0.8125rem' }}
+            >
+              This import has been loaded for {instrumentWarning.length} instrument{instrumentWarning.length > 1 ? 's' : ''} only. Data has been randomly selected for{' '}
+              <strong>{instrumentWarning.join(' and ')}</strong>.
+              All other instruments from the source JSON have been excluded.
+            </Alert>
+          </Box>
+        )}
 
         <Box sx={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
           {/* Left Panel - Event List */}
