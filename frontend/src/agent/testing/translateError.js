@@ -253,12 +253,27 @@ export function formatErrorForChat(translated) {
 
 /**
  * Format a translated error as a single plain-text line for the console.
+ * Extracts [Line N] prefix from backend errors and prepends it.
  * @param {string} rawError - The raw error string from the backend
  * @returns {string}
  */
 export function formatErrorForConsole(rawError) {
-  const t = translateError(rawError);
-  return `${t.whatWentWrong} — ${t.howToFix}`;
+  if (!rawError || typeof rawError !== 'string') {
+    const t = translateError(rawError);
+    return `${t.whatWentWrong} — ${t.howToFix}`;
+  }
+
+  // Extract line number if present (e.g. "[Line 3] division by zero")
+  const lineMatch = rawError.match(/^\[Line (\d+)\]\s*/);
+  let linePrefix = '';
+  let cleanError = rawError;
+  if (lineMatch) {
+    linePrefix = `Line ${lineMatch[1]}: `;
+    cleanError = rawError.slice(lineMatch[0].length);
+  }
+
+  const t = translateError(cleanError);
+  return `${linePrefix}${t.whatWentWrong} — ${t.howToFix}`;
 }
 
 export default translateError;

@@ -261,8 +261,9 @@ def get_latest_data_per_instrument(data_rows: List[Dict[str, Any]]) -> Dict[str,
 def extract_event_names_from_dsl(dsl_code: str) -> List[str]:
     """Extract all event names referenced in DSL code (EVENT_NAME.field pattern)"""
     import re
-    # Match patterns like PMT.field_name or INT_ACC.field_name
-    pattern = r'\b([A-Z][A-Z0-9_]*)\.[A-Za-z_][A-Za-z0-9_]*'
+    # Match patterns like PMT.field_name, LoanEvent.principal, ProductConfig.fee_percent
+    # Event name: starts with uppercase, followed by alphanumerics/underscores
+    pattern = r'\b([A-Z][A-Za-z0-9_]*)\.[A-Za-z_][A-Za-z0-9_]*'
     matches = re.findall(pattern, dsl_code)
     # Return unique event names
     return list(set(matches))
@@ -341,6 +342,33 @@ def filter_event_data_by_posting_date(
     return filtered
 
 
+def _extract_dsl_line_from_exception(python_code: str, exc: Exception) -> Optional[int]:
+    """Extract the DSL line number from a Python exception using DSL_LINE comments.
+    
+    Looks at the traceback to find the Python line that failed, then reads the
+    corresponding source line from python_code to find a # DSL_LINE:N marker.
+    Returns the DSL line number (1-based) or None if it can't be determined.
+    """
+    import traceback as tb_mod
+    try:
+        tb = exc.__traceback__
+        if tb is None:
+            return None
+        # Walk to the innermost frame
+        while tb.tb_next:
+            tb = tb.tb_next
+        py_lineno = tb.tb_lineno
+        code_lines = python_code.split('\n')
+        if 1 <= py_lineno <= len(code_lines):
+            source_line = code_lines[py_lineno - 1]
+            m = re.search(r'# DSL_LINE:(\d+)', source_line)
+            if m:
+                return int(m.group(1))
+    except Exception:
+        pass
+    return None
+
+
 def dsl_to_python_standalone(dsl_code: str) -> str:
     """Convert DSL code to Python for standalone execution (no events required)"""
     
@@ -370,6 +398,11 @@ _builtin_print = print
 
 # Make all DSL functions available globally
 globals().update(DSL_FUNCTIONS)
+
+# Expose safe aliases for DSL functions whose names are Python keywords
+and_op = DSL_FUNCTIONS.get('and', lambda a, b: a and b)
+or_op = DSL_FUNCTIONS.get('or', lambda a, b: a or b)
+not_op = DSL_FUNCTIONS.get('not', lambda a: not a)
 
 # Restore Python built-ins (needed for native Python syntax)
 min = _builtin_min
@@ -462,8 +495,8 @@ def clear_print_outputs():
     import re
     processed_lines = []
     
-    lines = dsl_code.strip().split('\n')
-    for line in lines:
+    dsl_lines = dsl_code.split('\n')
+    for dsl_line_num, line in enumerate(dsl_lines, start=1):
         stripped = line.strip()
         
         if not stripped or stripped.startswith('#') or stripped.startswith('//'):
@@ -472,8 +505,13 @@ def clear_print_outputs():
             processed_lines.append(f"    {stripped}" if stripped else "")
             continue
         
-        # Simply add the line - transactions are created via createTransaction()
-        processed_lines.append(f"    {stripped}")
+        # Replace Python keyword function calls with safe aliases
+        stripped = re.sub(r'\band\s*\(', 'and_op(', stripped)
+        stripped = re.sub(r'\bor\s*\(', 'or_op(', stripped)
+        stripped = re.sub(r'\bnot\s*\(', 'not_op(', stripped)
+
+        # Simply add the line with DSL line marker
+        processed_lines.append(f"    {stripped}  # DSL_LINE:{dsl_line_num}")
     
     python_body = '\n'.join(processed_lines)
     
@@ -546,6 +584,11 @@ _builtin_print = print
 
 # Make all DSL functions available globally
 globals().update(DSL_FUNCTIONS)
+
+# Expose safe aliases for DSL functions whose names are Python keywords
+and_op = DSL_FUNCTIONS.get('and', lambda a, b: a and b)
+or_op = DSL_FUNCTIONS.get('or', lambda a, b: a or b)
+not_op = DSL_FUNCTIONS.get('not', lambda a: not a)
 
 # Restore Python built-ins (needed for native Python syntax)
 min = _builtin_min
@@ -871,9 +914,11 @@ def collect_effectivedates_for_subinstrument(subinstrument_id=None):
             if str(meta.get('eventType', 'activity')).lower() == 'reference':
                 reference_events.add(ename)
 
-    lines = dsl_code.strip().split('\n')
+    lines = dsl_code.split('\n')
     i = 0
+    dsl_line_num = 0
     while i < len(lines):
+        dsl_line_num = i + 1  # 1-based DSL line number
         line = lines[i].strip()
 
         if not line or line.startswith('#') or line.startswith('//'):
@@ -890,7 +935,7 @@ def collect_effectivedates_for_subinstrument(subinstrument_id=None):
                 return f"collect_all('{evt}_{fld}')"
             return f"collect('{evt}_{fld}')"
 
-        line = re.sub(r"collect\(\s*([A-Z][A-Z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)\s*\)", _collect_repl, line)
+        line = re.sub(r"collect\(\s*([A-Z][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)\s*\)", _collect_repl, line)
 
         # collect_by_instrument -> use collect_all for reference events
         def _collect_by_inst_repl(m):
@@ -899,16 +944,21 @@ def collect_effectivedates_for_subinstrument(subinstrument_id=None):
                 return f"collect_all('{evt}_{fld}')"
             return f"collect_by_instrument('{evt}_{fld}')"
 
-        line = re.sub(r"collect_by_instrument\(\s*([A-Z][A-Z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)\s*\)", _collect_by_inst_repl, line)
+        line = re.sub(r"collect_by_instrument\(\s*([A-Z][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)\s*\)", _collect_by_inst_repl, line)
 
         # collect_all(EVENT.field) - always becomes collect_all('EVENT_field')
-        line = re.sub(r"collect_all\(\s*([A-Z][A-Z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)\s*\)", r"collect_all('\1_\2')", line)
+        line = re.sub(r"collect_all\(\s*([A-Z][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)\s*\)", r"collect_all('\1_\2')", line)
 
         # Convert EVENT.field to EVENT_field
-        line = re.sub(r"\b([A-Z][A-Z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)", r"\1_\2", line)
+        line = re.sub(r"\b([A-Z][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)", r"\1_\2", line)
 
-        # Simply add the line - transactions are created via createTransaction()
-        processed_lines.append(f"        {line}")
+        # Replace Python keyword function calls with safe aliases
+        line = re.sub(r'\band\s*\(', 'and_op(', line)
+        line = re.sub(r'\bor\s*\(', 'or_op(', line)
+        line = re.sub(r'\bnot\s*\(', 'not_op(', line)
+
+        # Add the line with DSL line marker
+        processed_lines.append(f"        {line}  # DSL_LINE:{dsl_line_num}")
 
         i += 1
 
@@ -1070,8 +1120,12 @@ async def execute_python_template(python_code: str, event_data: List[Dict[str, A
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error executing python template: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        dsl_line = _extract_dsl_line_from_exception(python_code, e)
+        error_msg = str(e)
+        if dsl_line:
+            error_msg = f"[Line {dsl_line}] {error_msg}"
+        logger.error(f"Error executing python template: {error_msg}")
+        raise HTTPException(status_code=500, detail=error_msg)
 
 # ============= API Endpoints =============
 
@@ -1172,24 +1226,24 @@ async def load_sample_data():
         doc['created_at'] = doc['created_at'].isoformat()
         await db.event_data.insert_one(doc)
         
-        # Sample Event Data - PaymentEvent
+        # Sample Event Data - PaymentEvent (instrumentids match LoanEvent for join)
         payment_data = EventData(
             event_name="PaymentEvent",
             data_rows=[
                 {
-                    "postingdate": "2026-01-10",
-                    "effectivedate": "2026-01-10",
-                    "instrumentid": "PAY-001",
+                    "postingdate": "2026-01-01",
+                    "effectivedate": "2026-01-01",
+                    "instrumentid": "LOAN-001",
                     "payment_amount": "5000",
-                    "payment_date": "2026-01-10",
+                    "payment_date": "2026-01-01",
                     "payment_type": "Principal"
                 },
                 {
-                    "postingdate": "2026-01-20",
-                    "effectivedate": "2026-01-20",
-                    "instrumentid": "PAY-002",
+                    "postingdate": "2026-01-15",
+                    "effectivedate": "2026-01-15",
+                    "instrumentid": "LOAN-002",
                     "payment_amount": "2000",
-                    "payment_date": "2026-01-20",
+                    "payment_date": "2026-01-15",
                     "payment_type": "Interest"
                 }
             ]
@@ -1206,7 +1260,7 @@ async def load_sample_data():
                 {
                     "postingdate": "2026-01-01",
                     "effectivedate": "2026-01-01",
-                    "instrumentid": "INV-001",
+                    "instrumentid": "LOAN-001",
                     "initial_investment": "10000",
                     "return_rate": "0.08",
                     "years": "5"
@@ -1214,7 +1268,7 @@ async def load_sample_data():
                 {
                     "postingdate": "2026-01-15",
                     "effectivedate": "2026-01-15",
-                    "instrumentid": "INV-002",
+                    "instrumentid": "LOAN-002",
                     "initial_investment": "25000",
                     "return_rate": "0.10",
                     "years": "10"
@@ -1258,12 +1312,50 @@ async def load_sample_data():
         doc['created_at'] = doc['created_at'].isoformat()
         await db.event_data.insert_one(doc)
 
-        # Sample DSL Code using createTransaction
-        sample_dsl_code = """// Calculate compound interest
-interest = compound_interest(principal, rate, term)
+        # Sample DSL Code - Loan Validation, Fee Calculation & Investment Projection
+        sample_dsl_code = """## 1. Loan Validation and Fee Calculation
+## Reference data access for single-row config
+min_p = ProductConfig.min_principal or 0
+max_p = ProductConfig.max_principal or 1000000
+principal = LoanEvent.principal or 0
 
-// Create the transaction with required dates
-createTransaction(postingdate, effectivedate, "Compound Interest", interest)"""
+## Check if loan principal is within allowed range
+is_valid = and(gte(principal, min_p), lte(principal, max_p))
+
+## Calculate fee using percentage from ProductConfig
+fee_pct = ProductConfig.fee_percent or 0.01
+loan_fee = iif(is_valid, multiply(principal, fee_pct), 0)
+print(concat("Calculated Loan Fee: ", loan_fee))
+
+## 2. Loan Payment Calculation
+annual_rate = LoanEvent.rate or 0.05
+monthly_rate = divide(annual_rate, 12)
+term_months = LoanEvent.term or 360
+
+## Use multiply to handle negation for the PV argument in pmt()
+neg_principal = multiply(principal, -1)
+monthly_pmt = pmt(monthly_rate, term_months, neg_principal)
+print(concat("Expected Monthly Payment: ", monthly_pmt))
+
+## 3. Investment Growth Projection
+init_inv = InvestmentEvent.initial_investment or 0
+ret_rate = InvestmentEvent.return_rate or 0
+inv_years = InvestmentEvent.years or 0
+
+## Future value calculation
+neg_inv = multiply(init_inv, -1)
+future_val = fv(ret_rate, inv_years, 0, neg_inv)
+print(concat("Projected Investment Value: ", future_val))
+
+## 4. Create Transactions
+## Use global postingdate and effectivedate (no prefixes needed)
+
+## Only create fee transaction if the amount is greater than 0
+iif(gt(loan_fee, 0), createTransaction(postingdate, effectivedate, "Loan Processing Fee", loan_fee), 0)
+
+## Record the monthly interest accrual
+monthly_interest = multiply(principal, monthly_rate)
+createTransaction(postingdate, effectivedate, "Interest Accrual", monthly_interest)"""
         
         return {
             "message": "Sample data loaded successfully",
@@ -1294,11 +1386,49 @@ createTransaction(postingdate, effectivedate, "Compound Interest", interest)"""
         except Exception:
             logger.exception("Failed to populate in-memory sample data")
 
-        sample_dsl_code = """// Calculate compound interest
-interest = compound_interest(principal, rate, term)
+        sample_dsl_code = """## 1. Loan Validation and Fee Calculation
+## Reference data access for single-row config
+min_p = ProductConfig.min_principal or 0
+max_p = ProductConfig.max_principal or 1000000
+principal = LoanEvent.principal or 0
 
-// Create the transaction with required dates
-createTransaction(postingdate, effectivedate, \"Compound Interest\", interest)"""
+## Check if loan principal is within allowed range
+is_valid = and(gte(principal, min_p), lte(principal, max_p))
+
+## Calculate fee using percentage from ProductConfig
+fee_pct = ProductConfig.fee_percent or 0.01
+loan_fee = iif(is_valid, multiply(principal, fee_pct), 0)
+print(concat("Calculated Loan Fee: ", loan_fee))
+
+## 2. Loan Payment Calculation
+annual_rate = LoanEvent.rate or 0.05
+monthly_rate = divide(annual_rate, 12)
+term_months = LoanEvent.term or 360
+
+## Use multiply to handle negation for the PV argument in pmt()
+neg_principal = multiply(principal, -1)
+monthly_pmt = pmt(monthly_rate, term_months, neg_principal)
+print(concat("Expected Monthly Payment: ", monthly_pmt))
+
+## 3. Investment Growth Projection
+init_inv = InvestmentEvent.initial_investment or 0
+ret_rate = InvestmentEvent.return_rate or 0
+inv_years = InvestmentEvent.years or 0
+
+## Future value calculation
+neg_inv = multiply(init_inv, -1)
+future_val = fv(ret_rate, inv_years, 0, neg_inv)
+print(concat("Projected Investment Value: ", future_val))
+
+## 4. Create Transactions
+## Use global postingdate and effectivedate (no prefixes needed)
+
+## Only create fee transaction if the amount is greater than 0
+iif(gt(loan_fee, 0), createTransaction(postingdate, effectivedate, "Loan Processing Fee", loan_fee), 0)
+
+## Record the monthly interest accrual
+monthly_interest = multiply(principal, monthly_rate)
+createTransaction(postingdate, effectivedate, "Interest Accrual", monthly_interest)"""
         return {
             "message": "Sample data loaded into memory (DB unavailable)",
             "events": [e['event_name'] for e in SAMPLE_EVENTS],
@@ -2066,6 +2196,32 @@ async def run_dsl_code(request: DSLRunRequest):
             # Create standalone execution template
             python_code = dsl_to_python_standalone(dsl_code)
             try:
+                try:
+                    compile(python_code, '<dsl_standalone>', 'exec')
+                except SyntaxError as se:
+                    # Log the problematic line for debugging
+                    py_lines = python_code.split('\n')
+                    err_lineno = se.lineno or 0
+                    context_start = max(0, err_lineno - 3)
+                    context_end = min(len(py_lines), err_lineno + 2)
+                    context = '\n'.join(f"  {'>>>' if i+1 == err_lineno else '   '} {i+1}: {py_lines[i]}" for i in range(context_start, context_end))
+                    logger.error(f"Syntax error in generated standalone code at Python line {err_lineno}:\n{context}")
+                    # Try to extract DSL line from the error line
+                    dsl_line = None
+                    if 1 <= err_lineno <= len(py_lines):
+                        m = re.search(r'# DSL_LINE:(\d+)', py_lines[err_lineno - 1])
+                        if m:
+                            dsl_line = int(m.group(1))
+                    error_msg = se.msg or "invalid syntax"
+                    if dsl_line:
+                        error_msg = f"[Line {dsl_line}] SyntaxError: {error_msg}"
+                    else:
+                        error_msg = f"SyntaxError: {error_msg}"
+                    return {
+                        "success": False,
+                        "error": error_msg,
+                        "transactions": []
+                    }
                 # Provide minimal globals including __file__ so any code
                 # referencing __file__ (e.g., os.path.dirname(__file__))
                 # does not raise NameError when executed here.
@@ -2101,10 +2257,14 @@ async def run_dsl_code(request: DSLRunRequest):
                     "mode": "standalone"
                 }
             except Exception as e:
-                logger.error(f"Standalone DSL error: {str(e)}")
+                dsl_line = _extract_dsl_line_from_exception(python_code, e)
+                error_msg = str(e)
+                if dsl_line:
+                    error_msg = f"[Line {dsl_line}] {error_msg}"
+                logger.error(f"Standalone DSL error: {error_msg}")
                 return {
                     "success": False,
-                    "error": str(e),
+                    "error": error_msg,
                     "transactions": []
                 }
         
@@ -2214,6 +2374,14 @@ async def run_dsl_code(request: DSLRunRequest):
             result["events_without_data"] = events_without_data
         
         return result
+    except HTTPException as he:
+        # Re-extract the detail from execute_python_template which already includes [Line N]
+        logger.error(f"DSL run error: {he.detail}")
+        return {
+            "success": False,
+            "error": he.detail,
+            "transactions": []
+        }
     except Exception as e:
         logger.error(f"DSL run error: {str(e)}")
         return {
