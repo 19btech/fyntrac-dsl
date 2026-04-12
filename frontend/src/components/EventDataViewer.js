@@ -42,6 +42,7 @@ const EventDataViewer = ({ onClose }) => {
         setUploadErrors([]);
         setInstrumentWarning(null);
         setLeftTab(0);
+        localStorage.removeItem('importSelectedInstruments');
       } catch (err) {}
     };
 

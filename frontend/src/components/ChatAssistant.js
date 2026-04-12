@@ -40,6 +40,14 @@ const ChatAssistantComponent = ({ dslFunctions, events, onInsertCode, onOverwrit
   }, []);
 
   React.useImperativeHandle(ref, () => ({
+    clearChat: () => {
+      setMessages([]);
+      setSessionId(null);
+      try {
+        localStorage.removeItem('chatMessages');
+        localStorage.removeItem('chatSessionId');
+      } catch (e) { /* ignore */ }
+    },
     sendMessage: (message) => {
       if (message.trim()) {
         setMessages(prev => [...prev, { role: "user", content: message }]);

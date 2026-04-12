@@ -1104,7 +1104,32 @@ async def load_sample_data():
                 {"name": "initial_investment", "datatype": "decimal"},
                 {"name": "return_rate", "datatype": "decimal"},
                 {"name": "years", "datatype": "decimal"}
-            ])
+            ]),
+            # Custom reference tables
+            EventDefinition(
+                event_name="RateTable",
+                fields=[
+                    {"name": "rate_code", "datatype": "string"},
+                    {"name": "rate_value", "datatype": "decimal"},
+                    {"name": "effective_date", "datatype": "date"},
+                    {"name": "expiry_date", "datatype": "date"},
+                ],
+                eventType="reference",
+                eventTable="custom",
+            ),
+            EventDefinition(
+                event_name="ProductConfig",
+                fields=[
+                    {"name": "product_code", "datatype": "string"},
+                    {"name": "product_name", "datatype": "string"},
+                    {"name": "max_term", "datatype": "integer"},
+                    {"name": "min_principal", "datatype": "decimal"},
+                    {"name": "max_principal", "datatype": "decimal"},
+                    {"name": "fee_percent", "datatype": "decimal"},
+                ],
+                eventType="reference",
+                eventTable="custom",
+            ),
         ]
         
         for event in sample_events:
@@ -1200,7 +1225,39 @@ async def load_sample_data():
         doc = investment_data.model_dump()
         doc['created_at'] = doc['created_at'].isoformat()
         await db.event_data.insert_one(doc)
-        
+
+        # Sample Custom Reference Data - RateTable
+        rate_table_data = EventData(
+            event_name="RateTable",
+            data_rows=[
+                {"rate_code": "PRIME", "rate_value": "0.0525", "effective_date": "2025-01-01", "expiry_date": "2025-06-30"},
+                {"rate_code": "PRIME", "rate_value": "0.0500", "effective_date": "2025-07-01", "expiry_date": "2025-12-31"},
+                {"rate_code": "PRIME", "rate_value": "0.0475", "effective_date": "2026-01-01", "expiry_date": "2026-12-31"},
+                {"rate_code": "BASE",  "rate_value": "0.0400", "effective_date": "2025-01-01", "expiry_date": "2025-12-31"},
+                {"rate_code": "BASE",  "rate_value": "0.0375", "effective_date": "2026-01-01", "expiry_date": "2026-12-31"},
+                {"rate_code": "LIBOR", "rate_value": "0.0310", "effective_date": "2025-01-01", "expiry_date": "2025-12-31"},
+                {"rate_code": "LIBOR", "rate_value": "0.0290", "effective_date": "2026-01-01", "expiry_date": "2026-12-31"},
+            ]
+        )
+        doc = rate_table_data.model_dump()
+        doc['created_at'] = doc['created_at'].isoformat()
+        await db.event_data.insert_one(doc)
+
+        # Sample Custom Reference Data - ProductConfig
+        product_config_data = EventData(
+            event_name="ProductConfig",
+            data_rows=[
+                {"product_code": "HL-STD",  "product_name": "Standard Home Loan",    "max_term": "360", "min_principal": "50000",  "max_principal": "2000000", "fee_percent": "0.005"},
+                {"product_code": "HL-FIX",  "product_name": "Fixed Rate Home Loan",  "max_term": "300", "min_principal": "100000", "max_principal": "1500000", "fee_percent": "0.0075"},
+                {"product_code": "PL-UNSEC","product_name": "Unsecured Personal Loan","max_term": "84",  "min_principal": "5000",   "max_principal": "100000",  "fee_percent": "0.010"},
+                {"product_code": "BL-SME",  "product_name": "SME Business Loan",     "max_term": "120", "min_principal": "20000",  "max_principal": "500000",  "fee_percent": "0.008"},
+                {"product_code": "INV-TERM","product_name": "Term Investment",        "max_term": "60",  "min_principal": "10000",  "max_principal": "5000000", "fee_percent": "0.000"},
+            ]
+        )
+        doc = product_config_data.model_dump()
+        doc['created_at'] = doc['created_at'].isoformat()
+        await db.event_data.insert_one(doc)
+
         # Sample DSL Code using createTransaction
         sample_dsl_code = """// Calculate compound interest
 interest = compound_interest(principal, rate, term)
@@ -1210,7 +1267,7 @@ createTransaction(postingdate, effectivedate, "Compound Interest", interest)"""
         
         return {
             "message": "Sample data loaded successfully",
-            "events": ["LoanEvent", "PaymentEvent", "InvestmentEvent"],
+            "events": ["LoanEvent", "PaymentEvent", "InvestmentEvent", "RateTable", "ProductConfig"],
             "sample_dsl_code": sample_dsl_code
         }
     except Exception as e:
@@ -1323,19 +1380,29 @@ async def upload_event_definitions(file: UploadFile = File(...)):
                 event_field = row[1].strip()
                 data_type = row[2].strip().lower()
 
-                # Optional eventType column (4th column)
+                # Optional columns 4 and 5: EventType and EventTable.
+                # Some CSVs omit EventType and put EventTable in column 4.
+                # Detect that case: if column 4 value matches EventTable values
+                # (standard/custom) but not EventType values (activity/reference),
+                # treat it as EventTable and default EventType to 'activity'.
                 event_type = 'activity'
-                if len(row) >= 4 and row[3].strip():
-                    event_type = row[3].strip().lower()
-                    if event_type not in VALID_EVENT_TYPES:
-                        raise HTTPException(status_code=400, detail=f"Invalid eventType '{row[3]}'. Must be one of: {', '.join(VALID_EVENT_TYPES)}")
-
-                # Optional eventTable column (5th column) - defaults to 'standard'
                 event_table = 'standard'
-                if len(row) >= 5 and row[4].strip():
-                    event_table = row[4].strip().lower()
-                    if event_table not in VALID_EVENT_TABLES:
-                        raise HTTPException(status_code=400, detail=f"Invalid eventTable '{row[4]}'. Must be one of: {', '.join(VALID_EVENT_TABLES)}")
+                col4 = row[3].strip().lower() if len(row) >= 4 and row[3].strip() else None
+                col5 = row[4].strip().lower() if len(row) >= 5 and row[4].strip() else None
+
+                if col4 is not None:
+                    if col4 in VALID_EVENT_TYPES:
+                        # Normal layout: col4 = EventType, col5 = EventTable
+                        event_type = col4
+                        if col5 is not None:
+                            if col5 not in VALID_EVENT_TABLES:
+                                raise HTTPException(status_code=400, detail=f"Invalid eventTable '{row[4]}'. Must be one of: {', '.join(VALID_EVENT_TABLES)}")
+                            event_table = col5
+                    elif col4 in VALID_EVENT_TABLES:
+                        # Shifted layout: col4 = EventTable, EventType defaults to 'activity'
+                        event_table = col4
+                    else:
+                        raise HTTPException(status_code=400, detail=f"Invalid value '{row[3]}' in column 4. Must be an eventType ({', '.join(VALID_EVENT_TYPES)}) or eventTable ({', '.join(VALID_EVENT_TABLES)}).")
 
                 # Validate eventTable + eventType combination
                 if event_table == 'standard' and event_type != 'activity':

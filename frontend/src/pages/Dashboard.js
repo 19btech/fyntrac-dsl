@@ -190,6 +190,15 @@ const Dashboard = () => {
           setTransactionReports([]);
           setSelectedEvent("");
           setDslCode('');
+          setShowEventDataViewer(false);
+
+          // Clear console output
+          setConsoleOutput([]);
+
+          // Clear chat assistant conversation
+          if (chatAssistantRef.current && chatAssistantRef.current.clearChat) {
+            chatAssistantRef.current.clearChat();
+          }
 
           try {
             localStorage.removeItem('dslCode');
@@ -202,6 +211,7 @@ const Dashboard = () => {
             localStorage.removeItem('lastEventDataUploadFileName');
             localStorage.removeItem('lastEventDataUploadStatus');
             localStorage.removeItem('lastEventDataUploadErrors');
+            localStorage.removeItem('importSelectedInstruments');
             try { window.dispatchEvent(new Event('dsl-clear-uploaded-files')); } catch(e) {}
             try { window.dispatchEvent(new Event('dsl-clear-event-viewer')); } catch(e) {}
           } catch (e) {
