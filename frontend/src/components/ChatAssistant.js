@@ -1,12 +1,12 @@
 import React, { useState, useRef, useEffect, useCallback } from "react";
 import { useToast } from "./ToastProvider";
-import { Send, RotateCcw, AlertTriangle, Square } from "lucide-react";
+import { Send, RotateCcw, AlertTriangle, Square, Sparkles } from "lucide-react";
 import ModelSelector from "./ModelSelector";
 import AgentMessage from "./agent/AgentMessage";
 import { runAgentPipeline, generateMessageId } from "../agent/agentPipeline";
 import "./ChatAssistant.css";
 
-const ChatAssistantComponent = ({ dslFunctions, events, onInsertCode, onOverwriteCode, editorCode, consoleOutput, providerRefreshKey }, ref) => {
+const ChatAssistantComponent = ({ dslFunctions, events, onInsertCode, onOverwriteCode, editorCode, consoleOutput, editorRef, monacoRef, providerRefreshKey }, ref) => {
   const toast = useToast();
 
   const [messages, setMessages] = useState(() => {
@@ -84,6 +84,8 @@ const ChatAssistantComponent = ({ dslFunctions, events, onInsertCode, onOverwrit
         editorCode: editorCode || '',
         consoleOutput: consoleOutput || [],
         dslFunctions: dslFunctions || [],
+        editorRef,
+        monacoRef,
         selectedModel: selectedModel || undefined,
         sessionId,
         history: messages
@@ -136,9 +138,14 @@ const ChatAssistantComponent = ({ dslFunctions, events, onInsertCode, onOverwrit
 
   return (
     <div className="vsc-chat" data-testid="chat-assistant">
-      {/* Header */}
+      {/* Header - Fyntrac style */}
       <div className="vsc-chat-header">
-        <span className="vsc-chat-title">DSL Agent</span>
+        <div className="vsc-header-left">
+          <div className="vsc-header-logo">
+            <Sparkles className="vsc-header-logo-icon" />
+          </div>
+          <span className="vsc-chat-title">AI Assistant</span>
+        </div>
         {messages.filter(m => !m._hidden).length > 0 && (
           <button className="vsc-icon-btn" onClick={handleClearChat} title="New conversation" disabled={loading}>
             <RotateCcw size={14} />

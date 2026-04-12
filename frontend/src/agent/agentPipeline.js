@@ -35,6 +35,8 @@ export async function runAgentPipeline(userMessage, opts = {}) {
     editorCode = '',
     consoleOutput = [],
     dslFunctions = [],
+    editorRef,
+    monacoRef,
     selectedModel,
     sessionId,
     history = [],
@@ -50,8 +52,41 @@ export async function runAgentPipeline(userMessage, opts = {}) {
     await tick(30);
 
     // ── STAGE 2: READING ───────────────────────────────────────
-    // Show reads as they resolve
+    // Capture real editor state from Monaco ref
+    let editorCursor = null;
+    let editorSelection = null;
+    let editorSyntaxErrors = null;
 
+    const editor = editorRef?.current;
+    const monaco = monacoRef?.current;
+    if (editor) {
+      try {
+        const pos = editor.getPosition();
+        if (pos) editorCursor = { line: pos.lineNumber, column: pos.column };
+
+        const sel = editor.getSelection();
+        if (sel && !sel.isEmpty()) {
+          editorSelection = editor.getModel()?.getValueInRange(sel) || null;
+        }
+
+        if (monaco && editor.getModel()) {
+          const markers = monaco.editor.getModelMarkers({ resource: editor.getModel().uri });
+          if (markers && markers.length > 0) {
+            editorSyntaxErrors = markers
+              .filter(m => m.severity >= 8) // Error severity
+              .slice(0, 10)
+              .map(m => ({
+                startLineNumber: m.startLineNumber,
+                message: m.message,
+              }));
+          }
+        }
+      } catch (e) {
+        // editor not ready — ignore
+      }
+    }
+
+    // Show reads as they resolve
     const editorLines = editorCode.trim() ? editorCode.split('\n').length : 0;
     const errorCount = (consoleOutput || []).filter(
       (l) => l.type === 'error' || l.type === 'stderr'
@@ -60,7 +95,7 @@ export async function runAgentPipeline(userMessage, opts = {}) {
 
     agentEventBus.readStep(msgId, '◧', 'Reading editor...',
       editorLines > 0
-        ? `${editorLines} lines · ${errorCount === 0 ? '0 errors ✓' : errorCount + ' error(s) ✗'}`
+        ? `${editorLines} lines` + (editorCursor ? ` · cursor L${editorCursor.line}` : '') + (editorSelection ? ' · has selection' : '') + (editorSyntaxErrors?.length ? ` · ${editorSyntaxErrors.length} error(s) ✗` : ' · 0 errors ✓')
         : 'Empty editor'
     );
     await tick(60);
@@ -80,7 +115,7 @@ export async function runAgentPipeline(userMessage, opts = {}) {
     await tick(60);
 
     agentEventBus.readStep(msgId, '◎', 'Loading context...',
-      `${eventsCount} event(s) · ${history.length} prior message(s) ✓`
+      `${eventsCount} event(s) · ${history.length} prior message(s)` + (errorCount > 0 ? ` · ${errorCount} console error(s)` : '') + ' ✓'
     );
     await tick(40);
 
@@ -106,9 +141,10 @@ export async function runAgentPipeline(userMessage, opts = {}) {
     const context = {
       events: events || [],
       editor_code: editorCode || '',
+      editor_cursor: editorCursor,
+      editor_selection: editorSelection,
+      editor_syntax_errors: editorSyntaxErrors,
       console_output: consoleOutput || [],
-      dsl_functions: dslFunctions || [],
-      ai_requirements: "IMPORTANT: Follow these code-generation rules for ALL DSL examples: use ## for inline comments (never //), do NOT create transactions or call createTransaction/createTransactions unless the user explicitly asks for them, compute required values and use print() to output the final variable when transactions are NOT requested, use only DSL functions supported by both frontend and backend, never output Python or other languages, and ensure code is syntactically valid and runnable. Wrap code in ```dsl blocks when providing examples.",
     };
 
     const body = {

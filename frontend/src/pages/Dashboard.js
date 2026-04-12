@@ -68,6 +68,8 @@ const Dashboard = ({ onSignOut }) => {
   const [showAISetup, setShowAISetup] = useState(false);
   const [providerRefreshKey, setProviderRefreshKey] = useState(0);
   const chatAssistantRef = useRef(null);
+  const editorRef = useRef(null);
+  const monacoRef = useRef(null);
   const toast = useToast();
   const { confirmProps, openConfirm, promptProps, openPrompt } = useAppDialog();
 
@@ -622,6 +624,7 @@ const Dashboard = ({ onSignOut }) => {
                     fixedOverflowWidgets: true,
                   }}
                   beforeMount={(monaco) => {
+                    monacoRef.current = monaco;
                     monaco.languages.registerCompletionItemProvider('python', {
                       provideCompletionItems: (model, position) => {
                         const suggestions = [];
@@ -726,6 +729,9 @@ const Dashboard = ({ onSignOut }) => {
                       }
                     });
                   }}
+                  onMount={(editor) => {
+                    editorRef.current = editor;
+                  }}
                 />
               </div>
               <ConsoleOutput 
@@ -773,6 +779,8 @@ const Dashboard = ({ onSignOut }) => {
               onOverwriteCode={(code) => setDslCode(code)}
               editorCode={dslCode}
               consoleOutput={consoleOutput}
+              editorRef={editorRef}
+              monacoRef={monacoRef}
               providerRefreshKey={providerRefreshKey}
             />
           </div>

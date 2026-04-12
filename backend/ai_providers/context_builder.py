@@ -1,39 +1,56 @@
-"""Standalone utility that builds the full agent system prompt.
+"""Two-tier context engine for the DSL agent.
 
-Pure function — no DB access, no provider coupling, no side effects.
-Can be tested independently.
+TIER 1 — STATIC CONTEXT (cached, rebuilt only when registry changes)
+  - DSL function reference (all 145+ functions)
+  - Application rules, syntax guide, examples
+  - Built once on first call, cached in module-level variable.
+  - Invalidated via invalidate_static_cache().
+
+TIER 2 — LIVE CONTEXT (fresh every message, must be < 50ms)
+  - Editor content, cursor, selection, syntax errors
+  - Console output & errors
+  - Event definitions
+  - Conversation history
+
+Final prompt = static_cache + live_snapshot.
 """
 
+from __future__ import annotations
+
+import hashlib
+import time
 from typing import Any
 
 
-def build_agent_context(
-    dsl_function_metadata: list[dict],
-    custom_functions: list[dict],
-    events: list[dict],
-    editor_code: str = "",
-    console_output: list[dict] | None = None,
-    conversation_history: list[dict] | None = None,
-) -> str:
-    """Return the complete system prompt string for the DSL agent.
+# ──────────────────────────────────────────────────────
+# Static context cache
+# ──────────────────────────────────────────────────────
 
-    Parameters
-    ----------
-    dsl_function_metadata : list[dict]
-        Each dict has keys: name, params, description, category.
-    custom_functions : list[dict]
-        User-defined functions from DB. Each has name, parameters, description.
-    events : list[dict]
-        Event definitions with event_name and fields.
-    editor_code : str
-        Current DSL code in the editor (may be empty).
-    console_output : list[dict] | None
-        Recent console log entries [{type, message}, ...].
-    conversation_history : list[dict] | None
-        Prior messages [{role, content}, ...].
+_static_cache: dict[str, Any] | None = None
+
+
+def _compute_registry_hash(metadata: list[dict]) -> str:
+    """Fast hash of DSL function names for staleness check."""
+    raw = "|".join(sorted(f.get("name", "") for f in metadata))
+    return hashlib.md5(raw.encode()).hexdigest()[:12]
+
+
+def build_static_context(dsl_function_metadata: list[dict]) -> str:
+    """Build Tier 1 static context. Returns cached version if fresh.
+
+    This contains everything that describes HOW the application works:
+    - Complete DSL function reference
+    - Code generation rules
+    - Syntax guide, examples, patterns
     """
+    global _static_cache
 
-    # ---- DSL functions by category ----
+    current_hash = _compute_registry_hash(dsl_function_metadata)
+
+    if _static_cache and _static_cache["registry_hash"] == current_hash:
+        return _static_cache["content"]
+
+    # ---- Build DSL function reference by category ----
     functions_by_category: dict[str, list[str]] = {}
     for func in dsl_function_metadata:
         category = func.get("category", "Other")
@@ -48,93 +65,182 @@ def build_agent_context(
         for category, funcs in functions_by_category.items()
     )
 
-    # ---- Custom functions ----
-    custom_functions_context = ""
-    if custom_functions:
-        custom_lines = []
-        for func in custom_functions:
-            params = ", ".join(
-                [f"{p['name']}: {p['type']}" for p in func.get("parameters", [])]
-            )
-            custom_lines.append(
-                f"  - {func.get('name')}({params}): {func.get('description', '')}"
-            )
-        custom_functions_context = (
-            "\n\nCustom Functions (User-Defined):\n" + "\n".join(custom_lines)
-        )
+    content = _STATIC_TEMPLATE.replace("{functions_context}", functions_context)
+
+    _static_cache = {
+        "content": content,
+        "registry_hash": current_hash,
+        "built_at": time.time(),
+        "function_count": len(dsl_function_metadata),
+    }
+
+    return content
+
+
+def invalidate_static_cache() -> None:
+    """Force a rebuild of static context on next call."""
+    global _static_cache
+    _static_cache = None
+
+
+def get_static_cache_info() -> dict | None:
+    """Return cache metadata (for diagnostics)."""
+    if not _static_cache:
+        return None
+    return {
+        "registry_hash": _static_cache["registry_hash"],
+        "built_at": _static_cache["built_at"],
+        "function_count": _static_cache["function_count"],
+    }
+
+
+# ──────────────────────────────────────────────────────
+# Live context builder (per-message, fast)
+# ──────────────────────────────────────────────────────
+
+def build_live_context(
+    events: list[dict],
+    editor_code: str = "",
+    editor_cursor: dict | None = None,
+    editor_selection: str | None = None,
+    editor_syntax_errors: list[dict] | None = None,
+    console_output: list[dict] | None = None,
+    conversation_history: list[dict] | None = None,
+) -> str:
+    """Build Tier 2 live context. Runs every message, must be fast.
+
+    This contains everything describing what is happening RIGHT NOW.
+    """
+
+    parts: list[str] = []
 
     # ---- Events ----
-    events_context = ""
     if events:
         event_lines = []
         for event in events:
             fields = event.get("fields", [])
             field_list = ", ".join(
-                [
-                    f"{f['name']} ({f.get('datatype', 'unknown')})"
-                    for f in fields
-                ]
+                f"{f['name']} ({f.get('datatype', 'unknown')})" for f in fields
             )
-            event_lines.append(f"- {event.get('event_name', 'Unknown')}: {field_list}")
-        events_context = "\n".join(event_lines)
+            event_type = event.get("eventType", "activity")
+            event_lines.append(
+                f"- {event.get('event_name', 'Unknown')} [{event_type}]: {field_list}"
+            )
+        parts.append(
+            "=== USER'S EVENTS AND FIELDS ===\n" + "\n".join(event_lines)
+        )
+    else:
+        parts.append("=== USER'S EVENTS AND FIELDS ===\nNo events defined.")
 
-    # ---- Editor code ----
-    editor_code_context = ""
+    # ---- Editor state ----
+    editor_parts = []
     if editor_code and editor_code.strip():
-        editor_code_context = f"\n\nCURRENT EDITOR CODE:\n```dsl\n{editor_code}\n```"
+        line_count = len(editor_code.split("\n"))
+        editor_parts.append(f"Lines: {line_count}")
+
+        if editor_cursor:
+            row = editor_cursor.get("line", editor_cursor.get("row", "?"))
+            col = editor_cursor.get("column", editor_cursor.get("col", "?"))
+            editor_parts.append(f"Cursor: Line {row}, Col {col}")
+
+        if editor_selection:
+            # Truncate selection display if very long
+            sel_display = editor_selection if len(editor_selection) <= 200 else editor_selection[:200] + "..."
+            editor_parts.append(f"Selected text: {sel_display}")
+
+        if editor_syntax_errors:
+            err_lines = [
+                f"  Line {e.get('startLineNumber', e.get('row', '?'))}: {e.get('message', str(e))}"
+                for e in editor_syntax_errors[:10]
+            ]
+            editor_parts.append("Syntax errors:\n" + "\n".join(err_lines))
+
+        parts.append(
+            "=== CURRENT EDITOR STATE ===\n"
+            + " | ".join(editor_parts[:3]) + "\n"
+            + ("\n".join(editor_parts[3:]) + "\n" if len(editor_parts) > 3 else "")
+            + f"```dsl\n{editor_code}\n```"
+        )
+    else:
+        parts.append("=== CURRENT EDITOR STATE ===\nEditor is empty.")
 
     # ---- Console output ----
-    console_context = ""
     if console_output:
-        recent = console_output[-10:] if len(console_output) > 10 else console_output
-        log_lines = []
-        for log in recent:
-            log_type = log.get("type", "info")
-            log_msg = log.get("message", "")
-            log_lines.append(f"[{log_type.upper()}] {log_msg}")
-        console_context = "\n\nRECENT CONSOLE OUTPUT:\n" + "\n".join(log_lines)
+        # Active errors first (most useful for debugging)
+        errors = [l for l in console_output if l.get("type") in ("error", "stderr")]
+        recent = console_output[-20:] if len(console_output) > 20 else console_output
+
+        console_parts = []
+        if errors:
+            console_parts.append(
+                f"ACTIVE ERRORS ({len(errors)}):\n"
+                + "\n".join(
+                    f"  [{e.get('timestamp', '')}] {e.get('message', '')}"
+                    for e in errors[-10:]
+                )
+            )
+        console_parts.append(
+            f"RECENT LOGS (last {len(recent)}):\n"
+            + "\n".join(
+                f"  [{l.get('type', 'info').upper()}] {l.get('message', '')}"
+                for l in recent
+            )
+        )
+        parts.append("=== CONSOLE OUTPUT ===\n" + "\n".join(console_parts))
 
     # ---- Conversation history ----
-    history_context = ""
     if conversation_history:
         history_lines = []
-        for msg in conversation_history[-20:]:  # last 20 messages
+        for msg in conversation_history[-20:]:
             role = msg.get("role", "user").upper()
             content = msg.get("content", "")
-            # Truncate very long messages in history
             if len(content) > 500:
                 content = content[:500] + "..."
             history_lines.append(f"[{role}]: {content}")
-        history_context = (
-            "\n\nCONVERSATION HISTORY:\n" + "\n".join(history_lines)
+        parts.append(
+            "=== CONVERSATION HISTORY ===\n" + "\n".join(history_lines)
         )
 
-    # ---- Assemble the system prompt ----
-    system_message = _SYSTEM_PROMPT_TEMPLATE.replace(
-        "{functions_context}", functions_context
-    ).replace(
-        "{custom_functions_context}", custom_functions_context
-    ).replace(
-        "{events_context}", events_context
-    ).replace(
-        "{editor_code_context}", editor_code_context
-    ).replace(
-        "{console_context}", console_context
-    ).replace(
-        "{history_context}", history_context
+    return "\n\n".join(parts)
+
+
+# ──────────────────────────────────────────────────────
+# Final assembler (backward-compatible)
+# ──────────────────────────────────────────────────────
+
+def build_agent_context(
+    dsl_function_metadata: list[dict],
+    events: list[dict],
+    editor_code: str = "",
+    editor_cursor: dict | None = None,
+    editor_selection: str | None = None,
+    editor_syntax_errors: list[dict] | None = None,
+    console_output: list[dict] | None = None,
+    conversation_history: list[dict] | None = None,
+) -> str:
+    """Assemble the full agent system prompt.
+
+    Tier 1 (from cache) + Tier 2 (fresh snapshot).
+    """
+    static = build_static_context(dsl_function_metadata)
+    live = build_live_context(
+        events=events,
+        editor_code=editor_code,
+        editor_cursor=editor_cursor,
+        editor_selection=editor_selection,
+        editor_syntax_errors=editor_syntax_errors,
+        console_output=console_output,
+        conversation_history=conversation_history,
     )
+    return static + "\n\n" + live
 
-    return system_message
 
+# ──────────────────────────────────────────────────────
+# TIER 1 TEMPLATE — Application knowledge & DSL reference
+# Everything below is STATIC and cached.
+# ──────────────────────────────────────────────────────
 
-# ---------------------------------------------------------------------------
-# The full system prompt template.
-# Placeholders: {functions_context}, {custom_functions_context},
-#   {events_context}, {editor_code_context}, {console_context},
-#   {history_context}
-# ---------------------------------------------------------------------------
-
-_SYSTEM_PROMPT_TEMPLATE = r"""You are an expert DSL agent for Fyntrac DSL Studio - a financial calculation and transaction processing system.
+_STATIC_TEMPLATE = r"""You are an expert DSL agent for Fyntrac DSL Studio - a financial calculation and transaction processing system.
 
 === SYSTEM OVERVIEW ===
 Fyntrac DSL Studio processes financial events (CSV data) through DSL code to create transactions. The workflow is:
@@ -202,11 +308,12 @@ If the user asks a general question (not requesting code), respond with plain te
 If you are unsure about the user's intent or the request is ambiguous, ask a clarifying question instead of guessing.
 
 === PROACTIVE ERROR DETECTION ===
-If the RECENT CONSOLE OUTPUT section below contains error messages, you should proactively detect them and offer a fix without the user asking. Analyze the error, explain what went wrong, and provide corrected DSL code in the structured JSON format.
+If the CURRENT EDITOR STATE or CONSOLE OUTPUT sections contain errors, you MUST proactively detect them and offer a fix without the user asking. Analyze the error, explain what went wrong, and provide corrected DSL code in the structured JSON format.
+
+When the user has selected text in the editor, focus your response on that selection — it tells you exactly what code the user wants help with.
 
 === AVAILABLE DSL FUNCTIONS ===
 {functions_context}
-{custom_functions_context}
 
 === DSL EXAMPLES GUIDANCE ===
 When a user asks "how" to perform a calculation or requests an example, reference the ready-made DSL examples and show a concise, step-by-step explanation using a self-contained hard-coded example. Follow these rules:
@@ -215,12 +322,6 @@ When a user asks "how" to perform a calculation or requests an example, referenc
 - If the user asks how to adapt an example to their event fields, explain which EVENT.field to substitute and provide a single-line mapping example (e.g., `principal = LOAN.principal or 100000`).
 - Do NOT load or assume external CSV rows when demonstrating — use literals for clarity.
 - Keep examples concise and focused on the calculation; avoid creating transactions unless the user explicitly requests them.
-
-=== USER'S EVENTS AND FIELDS ===
-{events_context}
-{editor_code_context}
-{console_context}
-{history_context}
 
 === CORE DSL SYNTAX ===
 Variables: lowercase names (result, amount, total)

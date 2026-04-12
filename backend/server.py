@@ -2762,11 +2762,6 @@ async def chat_with_assistant(message: ChatMessage):
             )
 
         # --- Gather context data ---
-        try:
-            custom_funcs = await db.custom_functions.find({}, {"_id": 0}).to_list(1000)
-        except Exception:
-            custom_funcs = in_memory_data.get('custom_functions', [])
-
         if message.context and message.context.get('events'):
             events = message.context['events']
         else:
@@ -2783,12 +2778,19 @@ async def chat_with_assistant(message: ChatMessage):
         if message.context and message.context.get('console_output'):
             console_output = message.context['console_output']
 
-        # --- Build system prompt via context_builder ---
+        # Rich editor context (cursor, selection, syntax errors)
+        editor_cursor = message.context.get('editor_cursor') if message.context else None
+        editor_selection = message.context.get('editor_selection') if message.context else None
+        editor_syntax_errors = message.context.get('editor_syntax_errors') if message.context else None
+
+        # --- Build system prompt via two-tier context engine ---
         system_prompt = build_agent_context(
             dsl_function_metadata=list(DSL_FUNCTION_METADATA),
-            custom_functions=custom_funcs,
             events=events,
             editor_code=editor_code,
+            editor_cursor=editor_cursor,
+            editor_selection=editor_selection,
+            editor_syntax_errors=editor_syntax_errors,
             console_output=console_output,
             conversation_history=message.history,
         )
@@ -3005,11 +3007,6 @@ async def chat_stream(message: ChatMessage):
             yield f"data: {json.dumps({'type': 'session', 'session_id': session_id})}\n\n"
 
             # Gather context
-            try:
-                custom_funcs = await db.custom_functions.find({}, {"_id": 0}).to_list(1000)
-            except Exception:
-                custom_funcs = in_memory_data.get('custom_functions', [])
-
             if message.context and message.context.get('events'):
                 events = message.context['events']
             else:
@@ -3026,12 +3023,19 @@ async def chat_stream(message: ChatMessage):
             if message.context and message.context.get('console_output'):
                 console_output = message.context['console_output']
 
-            # Build system prompt
+            # Rich editor context
+            editor_cursor = message.context.get('editor_cursor') if message.context else None
+            editor_selection = message.context.get('editor_selection') if message.context else None
+            editor_syntax_errors = message.context.get('editor_syntax_errors') if message.context else None
+
+            # Build system prompt via two-tier context engine
             system_prompt = build_agent_context(
                 dsl_function_metadata=list(DSL_FUNCTION_METADATA),
-                custom_functions=custom_funcs,
                 events=events,
                 editor_code=editor_code,
+                editor_cursor=editor_cursor,
+                editor_selection=editor_selection,
+                editor_syntax_errors=editor_syntax_errors,
                 console_output=console_output,
                 conversation_history=message.history,
             )
@@ -3061,6 +3065,25 @@ async def chat_stream(message: ChatMessage):
                 yield f"data: {json.dumps({'type': 'error', 'error_type': e.error_type, 'error_message': err_msg})}\n\n"
                 yield "data: [DONE]\n\n"
                 return
+
+            # Post-process the full response (same rules as /chat)
+            full_response = ''.join(full_text)
+            try:
+                import re as _pp_re
+                user_msg_lower = (message.message or '').lower()
+                user_requested_txn = any(k in user_msg_lower for k in [
+                    'createtransaction', 'create transaction', 'createtransactions',
+                    'create transactions', 'include transaction', 'emit transaction',
+                ])
+
+                def _pp_replace_comments(text):
+                    return _pp_re.sub(r'(^|\n)\s*//', r'\1##', text)
+
+                if not user_requested_txn and _pp_re.search(r'\bcreateTransactions?\s*\(', full_response):
+                    # AI included transactions the user didn't ask for — flag it
+                    yield f"data: {json.dumps({'type': 'post_process', 'warning': 'unrequested_transactions'})}\n\n"
+            except Exception:
+                pass
 
             # Send done event
             yield f"data: {json.dumps({'type': 'done'})}\n\n"
