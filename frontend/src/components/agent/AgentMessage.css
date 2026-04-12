@@ -216,6 +216,33 @@
   margin-top: 10px;
   flex-wrap: wrap;
 }
+.action-bar-compact {
+  margin-top: 6px;
+  padding: 4px 8px 2px;
+  gap: 5px;
+  border-top: 1px solid #333;
+  background: #1a1a1a;
+  border-radius: 0 0 4px 4px;
+}
+.action-bar-compact .action-btn {
+  font-size: 10px;
+  padding: 2px 6px;
+  border-color: #555;
+  background: #2a2a2a;
+  color: #ccc;
+}
+.action-bar-compact .action-btn:hover {
+  background: #3a3a3a;
+  border-color: #888;
+}
+.action-bar-compact .action-btn.primary {
+  background: #005fb8;
+  border-color: #005fb8;
+  color: #fff;
+}
+.action-bar-compact .action-btn.primary:hover {
+  background: #004c96;
+}
 .action-btn {
   display: flex;
   align-items: center;

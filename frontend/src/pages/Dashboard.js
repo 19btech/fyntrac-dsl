@@ -16,6 +16,7 @@ import EventDataViewer from "../components/EventDataViewer";
 import AppDialog, { useAppDialog } from "../components/AppDialog";
 import AIAgentSetupWizard from "../components/AIAgentSetupWizard";
 import { API } from "../config";
+import { runAllTests } from "../agent/testing";
 
 // TabPanel component for MUI Tabs with animations
 function TabPanel({ children, value, index, ...other }) {
@@ -76,6 +77,17 @@ const Dashboard = () => {
     loadTransactionReports();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Run DSL function test suite in background after functions load
+  useEffect(() => {
+    if (!dslFunctions || dslFunctions.length === 0) return;
+    const timer = setTimeout(() => {
+      runAllTests({ dslFunctions }).catch((err) =>
+        console.warn('[DSL Test Runner] Background test failed:', err.message)
+      );
+    }, 3000);
+    return () => clearTimeout(timer);
+  }, [dslFunctions]);
 
   // Persist DSL editor content to localStorage whenever it changes
   useEffect(() => {
@@ -407,9 +419,9 @@ const Dashboard = () => {
     setDslCode(prev => prev + "\n" + functionCall);
   };
 
-  const handleAskAIAboutFunction = (message) => {
-    if (chatAssistantRef.current && chatAssistantRef.current.sendMessage) {
-      chatAssistantRef.current.sendMessage(message);
+  const handleAskAIAboutFunction = (funcName, message) => {
+    if (chatAssistantRef.current && chatAssistantRef.current.sendSilentMessage) {
+      chatAssistantRef.current.sendSilentMessage(funcName, message);
     }
   };
 

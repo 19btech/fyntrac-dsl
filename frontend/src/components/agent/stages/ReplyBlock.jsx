@@ -1,10 +1,12 @@
 import React, { useRef, useEffect } from 'react';
+import ActionBar from './ActionBar';
 
 /**
  * Stage 5: Streaming reply — renders markdown and DSL code blocks inline.
  * Shows a blinking cursor at the end while streaming.
+ * Each code block gets its own Insert/Copy/Replace action bar.
  */
-export default function ReplyBlock({ tokens, streaming }) {
+export default function ReplyBlock({ tokens, streaming, onInsertCode, onOverwriteCode }) {
   const endRef = useRef(null);
 
   useEffect(() => {
@@ -99,6 +101,14 @@ export default function ReplyBlock({ tokens, streaming }) {
           return (
             <div key={idx} className="reply-code-block">
               <pre><code>{part.content}</code></pre>
+              {!streaming && (onInsertCode || onOverwriteCode) && (
+                <ActionBar
+                  code={part.content}
+                  onInsert={onInsertCode}
+                  onReplace={onOverwriteCode}
+                  compact
+                />
+              )}
             </div>
           );
         }

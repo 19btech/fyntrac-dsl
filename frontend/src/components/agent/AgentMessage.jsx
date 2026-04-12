@@ -5,7 +5,6 @@ import ReadingBlock from './stages/ReadingBlock';
 import PlanningBlock from './stages/PlanningBlock';
 import ExecutingBlock from './stages/ExecutingBlock';
 import ReplyBlock from './stages/ReplyBlock';
-import ActionBar from './stages/ActionBar';
 import './AgentMessage.css';
 
 const STAGES = {
@@ -110,7 +109,12 @@ export default function AgentMessage({ messageId, onInsertCode, onOverwriteCode 
 
       {/* STAGE 5 — STREAMING REPLY */}
       {replyTokens && (
-        <ReplyBlock tokens={replyTokens} streaming={stage === STAGES.REPLYING} />
+        <ReplyBlock
+          tokens={replyTokens}
+          streaming={stage === STAGES.REPLYING}
+          onInsertCode={onInsertCode}
+          onOverwriteCode={onOverwriteCode}
+        />
       )}
 
       {/* ERROR */}
@@ -119,15 +123,6 @@ export default function AgentMessage({ messageId, onInsertCode, onOverwriteCode 
           <span className="agent-error-icon">⚠</span>
           <span>{errorMessage}</span>
         </div>
-      )}
-
-      {/* STAGE 6 — ACTION BAR */}
-      {stage === STAGES.COMPLETE && dslCode && (
-        <ActionBar
-          code={dslCode}
-          onInsert={onInsertCode}
-          onReplace={onOverwriteCode}
-        />
       )}
     </div>
   );

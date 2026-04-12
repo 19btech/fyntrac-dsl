@@ -356,7 +356,12 @@ min = _builtin_min
 max = _builtin_max
 sum = _builtin_sum
 len = _builtin_len
-range = _builtin_range
+# Smart range: DSL range(list)->max-min; Python range(int,...) for iterations
+_dsl_range_val = DSL_FUNCTIONS.get('range', lambda col: (_builtin_max(col) - _builtin_min(col)) if col else 0)
+def range(*args):
+    if len(args) == 1 and isinstance(args[0], list):
+        return _dsl_range_val(args[0])
+    return _builtin_range(*args)
 
 # Global list to capture print outputs
 _print_outputs = []
@@ -527,7 +532,12 @@ min = _builtin_min
 max = _builtin_max
 sum = _builtin_sum
 len = _builtin_len
-range = _builtin_range
+# Smart range: DSL range(list)->max-min; Python range(int,...) for iterations
+_dsl_range_val = DSL_FUNCTIONS.get('range', lambda col: (_builtin_max(col) - _builtin_min(col)) if col else 0)
+def range(*args):
+    if len(args) == 1 and isinstance(args[0], list):
+        return _dsl_range_val(args[0])
+    return _builtin_range(*args)
 
 # Global list to capture print outputs
 _print_outputs = []

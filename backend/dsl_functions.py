@@ -192,8 +192,9 @@ def normalize_date(date_value: Any) -> str:
             return date_str
         
         # Try to parse common formats
-        for fmt in ['%Y-%m-%dT%H:%M:%S', '%Y-%m-%dT%H:%M:%S.%f', '%Y-%m-%d %H:%M:%S', 
-                    '%Y-%m-%dT%H:%M:%SZ', '%Y-%m-%d %H:%M:%S.%f', '%m/%d/%Y', '%d/%m/%Y']:
+        for fmt in ['%Y-%m-%dT%H:%M:%S', '%Y-%m-%dT%H:%M:%S.%f', '%Y-%m-%d %H:%M:%S',
+                    '%Y-%m-%dT%H:%M:%SZ', '%Y-%m-%d %H:%M:%S.%f',
+                    '%m/%d/%Y', '%d/%m/%Y', '%m-%d-%Y', '%d-%m-%Y']:
             try:
                 dt = datetime.strptime(date_str[:min(len(date_str), 26)], fmt)
                 return dt.strftime('%Y-%m-%d')
@@ -243,12 +244,14 @@ def pv(rate: float, n: int, pmt: float, fv: float = 0, type: int = 0) -> float:
     if rate == 0:
         return -(fv + pmt * n)
     
-    pv_annuity = pmt * ((1 - (1 + rate) ** (-n)) / rate)
-    if type == 1:
-        pv_annuity *= (1 + rate)  # Adjust for beginning-of-period payments
-    
-    pv_lump_sum = fv / ((1 + rate) ** n)
-    return -(pv_annuity + pv_lump_sum)
+    try:
+        pv_annuity = pmt * ((1 - (1 + rate) ** (-n)) / rate)
+        if type == 1:
+            pv_annuity *= (1 + rate)  # Adjust for beginning-of-period payments
+        pv_lump_sum = fv / ((1 + rate) ** n)
+        return -(pv_annuity + pv_lump_sum)
+    except (OverflowError, ZeroDivisionError):
+        raise ValueError(f"pv: overflow — use rate as decimal (e.g., 0.05/12 for monthly 5% annual), got rate={rate}, n={n}")
 
 def fv(rate: float, n: int, pmt: float, pv: float = 0, type: int = 0) -> float:
     """Calculates future value
@@ -264,12 +267,14 @@ def fv(rate: float, n: int, pmt: float, pv: float = 0, type: int = 0) -> float:
     if rate == 0:
         return -(pv + pmt * n)
     
-    fv_lump_sum = -pv * (1 + rate) ** n
-    fv_annuity = pmt * (((1 + rate) ** n - 1) / rate)
-    if type == 1:
-        fv_annuity *= (1 + rate)  # Adjust for beginning-of-period payments
-    
-    return -(fv_lump_sum + fv_annuity)
+    try:
+        fv_lump_sum = -pv * (1 + rate) ** n
+        fv_annuity = pmt * (((1 + rate) ** n - 1) / rate)
+        if type == 1:
+            fv_annuity *= (1 + rate)  # Adjust for beginning-of-period payments
+        return -(fv_lump_sum + fv_annuity)
+    except (OverflowError, ZeroDivisionError):
+        raise ValueError(f"fv: overflow — use rate as decimal (e.g., 0.05/12 for monthly 5% annual), got rate={rate}, n={n}")
 
 def pmt(rate: float, n: int, pv: float, fv: float = 0, type: int = 0) -> float:
     """Fixed periodic payment
@@ -288,11 +293,16 @@ def pmt(rate: float, n: int, pv: float, fv: float = 0, type: int = 0) -> float:
     if rate == 0:
         return -(pv + fv) / n
     
-    payment = -(rate * (fv + pv * (1 + rate) ** n)) / ((1 + rate) ** n - 1)
-    if type == 1:
-        payment = payment / (1 + rate)  # Adjust for beginning-of-period payments
-    
-    return payment
+    try:
+        factor = (1 + rate) ** n
+        if abs(factor - 1) < 1e-12:
+            return -(pv + fv) / n  # Near-zero rate fallback
+        payment = -(rate * (fv + pv * factor)) / (factor - 1)
+        if type == 1:
+            payment = payment / (1 + rate)  # Adjust for beginning-of-period payments
+        return payment
+    except (OverflowError, ZeroDivisionError):
+        raise ValueError(f"pmt: overflow — use rate as decimal (e.g., 0.05/12 for monthly 5% annual), got rate={rate}, n={n}")
 
 def rate(n: int, pmt: float, pv: float, fv: float = 0, type: int = 0, guess: float = 0.1) -> float:
     """Calculate interest rate per period
@@ -322,33 +332,42 @@ def rate(n: int, pmt: float, pv: float, fv: float = 0, type: int = 0, guess: flo
     rate_est = guess
     max_iterations = 100
     tolerance = 1e-6
-    
+
     for _ in range(max_iterations):
+        # Clamp rate estimate to avoid overflow in (1+rate)^n
+        if rate_est < -0.9999:
+            rate_est = -0.9999
+        if rate_est > 1e4:
+            rate_est = 1e4
+
         if abs(rate_est) < 1e-10:
             # Use linear approximation when rate is near zero
             if abs(pmt_adj) < 1e-10:
                 return 0
             return -(pv + fv) / (pmt_adj * n)
-        
-        # Calculate function value
-        factor = (1 + rate_est) ** n
-        npv_val = pv + pmt_adj * (factor - 1) / rate_est + fv / factor
-        
-        # Calculate derivative
-        numerator = pmt_adj * (n * factor * rate_est - (factor - 1))
-        denominator = rate_est ** 2 * factor
-        derivative = numerator / denominator
-        
+
+        try:
+            # Calculate function value
+            factor = (1 + rate_est) ** n
+            npv_val = pv + pmt_adj * (factor - 1) / rate_est + fv / factor
+
+            # Calculate derivative
+            numerator = pmt_adj * (n * factor * rate_est - (factor - 1))
+            denominator = rate_est ** 2 * factor
+            derivative = numerator / denominator
+        except (OverflowError, ZeroDivisionError):
+            break
+
         if abs(derivative) < 1e-10:
             break
-        
+
         new_rate = rate_est - npv_val / derivative
-        
+
         if abs(new_rate - rate_est) < tolerance:
             return new_rate
-        
+
         rate_est = new_rate
-    
+
     return rate_est
 
 def nper(rate: float, pmt: float, pv: float, fv: float = 0, type: int = 0) -> float:
@@ -368,26 +387,37 @@ def nper(rate: float, pmt: float, pv: float, fv: float = 0, type: int = 0) -> fl
         if pmt == 0:
             return 0
         return -(pv + fv) / pmt
-    
+
     # Adjust payment for type
     pmt_adj = pmt * (1 + rate) if type == 1 else pmt
-    
-    # Solve: pv + pmt_adj * (1 - (1+rate)^(-n)) / rate + fv / (1+rate)^n = 0
-    # Rearrange to: (1+rate)^(-n) = (pmt_adj/rate + pv) / (pmt_adj/rate + fv)
-    numerator = pmt_adj / rate + pv
-    denominator = pmt_adj / rate + fv
-    
-    if denominator <= 0 or numerator <= 0:
+
+    # Solve: PV + PMT*(1-(1+r)^-n)/r + FV*(1+r)^-n = 0
+    # Let u = (1+r)^-n => u = (PMT/r + PV) / (PMT/r - FV)
+    # Then n = -log(u) / log(1+r)
+    try:
+        numerator = pmt_adj / rate + pv
+        denominator = pmt_adj / rate - fv  # Note: minus fv (was incorrectly +fv)
+
+        if denominator == 0:
+            return 0
+
+        ratio = numerator / denominator
+        if ratio <= 0:
+            return 0  # No real solution exists
+
+        n = -math.log(ratio) / math.log(1 + rate)
+        return n
+    except (ValueError, ZeroDivisionError, OverflowError):
         return 0
-    
-    n = -math.log(denominator / numerator) / math.log(1 + rate)
-    return n
 
 def npv(rate: float, cashflows: List[float]) -> float:
     """Net present value"""
     total = 0
     for i, cf in enumerate(cashflows, start=1):
-        total += cf / ((1 + rate) ** i)
+        try:
+            total += cf / ((1 + rate) ** i)
+        except (OverflowError, ZeroDivisionError):
+            break
     return total
 
 def irr(cashflows: List[float], guess: float = 0.1) -> float:
@@ -411,13 +441,19 @@ def irr(cashflows: List[float], guess: float = 0.1) -> float:
     
     for iteration in range(max_iterations):
         # Calculate NPV at current rate (starting from period 1, like Excel)
-        npv_val = sum(cf / ((1 + rate) ** i) for i, cf in enumerate(cashflows, start=1))
+        try:
+            npv_val = sum(cf / ((1 + rate) ** i) for i, cf in enumerate(cashflows, start=1))
+        except (OverflowError, ZeroDivisionError):
+            break
         
         if abs(npv_val) < tolerance:
             return rate
         
         # Calculate derivative of NPV
-        dnpv = sum(-i * cf / ((1 + rate) ** (i + 1)) for i, cf in enumerate(cashflows, start=1))
+        try:
+            dnpv = sum(-i * cf / ((1 + rate) ** (i + 1)) for i, cf in enumerate(cashflows, start=1))
+        except (OverflowError, ZeroDivisionError):
+            break
         
         # Handle zero derivative (try a different approach)
         if abs(dnpv) < 1e-10:
@@ -473,7 +509,10 @@ def xnpv(rate: float, cashflows: List[float], dates: List[str]) -> float:
             return 0
         date = datetime.fromisoformat(nd)
         days = (date - base_date).days
-        total += cf / ((1 + rate) ** (days / 365))  # Excel uses 365, not 365.25
+        try:
+            total += cf / ((1 + rate) ** (days / 365))  # Excel uses 365, not 365.25
+        except (OverflowError, ZeroDivisionError):
+            break
     return total
 
 def xirr(cashflows: List[float], dates: List[str], guess: float = 0.1) -> float:
@@ -538,15 +577,23 @@ def nominal_rate(effective: float, freq: int) -> float:
     return freq * ((1 + effective) ** (1 / freq) - 1)
 
 def yield_to_maturity(price: float, face: float, coupon: float, years: float) -> float:
-    """YTM approximation"""
+    """YTM approximation. coupon is decimal rate (e.g., 0.05 for 5%). years must be > 0."""
+    if years == 0:
+        raise ValueError("yield_to_maturity: years cannot be zero")
+    denom = (face + price) / 2
+    if denom == 0:
+        raise ValueError("yield_to_maturity: (face + price) cannot be zero")
     annual_coupon = face * coupon
-    ytm_approx = (annual_coupon + (face - price) / years) / ((face + price) / 2)
+    ytm_approx = (annual_coupon + (face - price) / years) / denom
     return ytm_approx
 
 # Interest Functions
 def compound_interest(principal: float, rate: float, periods: int) -> float:
     """Compound interest"""
-    return principal * ((1 + rate) ** periods - 1)
+    try:
+        return principal * ((1 + rate) ** periods - 1)
+    except OverflowError:
+        raise ValueError(f"compound_interest: overflow — rate must be decimal (e.g., 0.05 for 5%, not 5), got rate={rate}, periods={periods}")
 
 def interest_on_balance(balance: float, rate: float, days: int) -> float:
     """Interest using ACT/360"""
@@ -565,6 +612,9 @@ def amortized_cost(opening: float, interest: float, payment: float) -> float:
 # Depreciation
 def straight_line(cost: float, salvage: float, life: int) -> float:
     """Straight-line depreciation"""
+    life = _coerce_n_to_int(life, 'life')
+    if life == 0:
+        raise ValueError("straight_line: life must be greater than zero")
     return (cost - salvage) / life
 
 def reducing_balance(cost: float, rate: float) -> float:
@@ -573,6 +623,9 @@ def reducing_balance(cost: float, rate: float) -> float:
 
 def double_declining(cost: float, life: int) -> float:
     """Double declining balance"""
+    life = _coerce_n_to_int(life, 'life')
+    if life == 0:
+        raise ValueError("double_declining: life must be greater than zero")
     return cost * (2 / life)
 
 def sum_of_years(cost: float, salvage: float, life: int, year: int) -> float:
@@ -644,9 +697,16 @@ def divide(a: float, b: float) -> float:
     return to_number(a) / denom
 
 def power(a: float, b: float) -> float:
-    return a ** b
+    try:
+        return a ** b
+    except OverflowError:
+        raise ValueError(f"power({a}, {b}): result overflows float range")
+    except (ValueError, ZeroDivisionError):
+        raise ValueError(f"power({a}, {b}): mathematically undefined (e.g., negative base with fractional exponent or 0 to negative power)")
 
 def sqrt(x: float) -> float:
+    if x < 0:
+        raise ValueError(f"sqrt: input must be >= 0, got {x}")
     return math.sqrt(x)
 
 def abs_val(x: float) -> float:
@@ -689,6 +749,8 @@ def ceil(x: float) -> int:
     return math.ceil(x)
 
 def mod(a: float, b: float) -> float:
+    if b == 0:
+        raise ValueError("mod: divisor b cannot be zero")
     return a % b
 
 def truncate(x: float, decimals: int = 0) -> float:
@@ -3147,32 +3209,32 @@ DSL_FUNCTIONS = {
 # Function metadata for UI display (101 functions)
 DSL_FUNCTION_METADATA = [
         {"name": "lookup", "params": "value_array, match_array, target_value", "description": "Retrieve a value from value_array by matching match_array[i] == target_value (type-agnostic, supports date, string, number, enum, etc.). Returns value_array[i] or null if not found. Raises error for mismatched array lengths.", "category": "Array Utilities"},
-        {"name": "normalize_arraydate", "params": "array", "description": "Normalize all date values in an array to yyyy-mm-dd format. Raises error if a non-date value is encountered.", "category": "Date"},
+        {"name": "normalize_arraydate", "params": "array", "description": "Normalize an array of string dates to YYYY-MM-DD. Pass plain strings only (e.g. '01/15/2024', '2024-02-28'). Do not use date() objects.", "category": "Date"},
     # Financial (24)
-    {"name": "pv", "params": "rate, n, pmt, fv=0, type=0", "description": "Present value of future cash flows (type: 0=end, 1=beginning)", "category": "Financial"},
-    {"name": "fv", "params": "rate, n, pmt, pv=0, type=0", "description": "Future value of cash flows (type: 0=end, 1=beginning)", "category": "Financial"},
-    {"name": "pmt", "params": "rate, n, pv, fv=0, type=0", "description": "Fixed periodic payment (type: 0=end, 1=beginning)", "category": "Financial"},
-    {"name": "rate", "params": "n, pmt, pv, fv=0, type=0, guess=0.1", "description": "Interest rate per period (type: 0=end, 1=beginning)", "category": "Financial"},
-    {"name": "nper", "params": "rate, pmt, pv, fv=0, type=0", "description": "Number of periods (type: 0=end, 1=beginning)", "category": "Financial"},
-    {"name": "npv", "params": "rate, cashflows", "description": "Net present value", "category": "Financial"},
-    {"name": "irr", "params": "cashflows", "description": "Internal rate of return", "category": "Financial"},
-    {"name": "xnpv", "params": "rate, cashflows, dates", "description": "NPV with specific dates (365-day convention)", "category": "Financial"},
-    {"name": "xirr", "params": "cashflows, dates", "description": "IRR with specific dates", "category": "Financial"},
-    {"name": "discount_factor", "params": "rate, dcf", "description": "Discount factor for period", "category": "Financial"},
-    {"name": "accumulation_factor", "params": "rate, dcf", "description": "Growth factor", "category": "Financial"},
-    {"name": "effective_rate", "params": "nominal, freq", "description": "Nominal to effective rate", "category": "Financial"},
-    {"name": "nominal_rate", "params": "effective, freq", "description": "Effective to nominal rate", "category": "Financial"},
-    {"name": "yield_to_maturity", "params": "price, face, coupon, years", "description": "Bond YTM (approximation)", "category": "Financial"},
-    {"name": "compound_interest", "params": "principal, rate, periods", "description": "Compound interest", "category": "Financial"},
-    {"name": "interest_on_balance", "params": "balance, rate, days", "description": "Interest using ACT/360", "category": "Financial"},
+    {"name": "pv", "params": "rate, n, pmt, fv=0, type=0", "description": "Present value of future cash flows. pmt is negative for payments made (e.g., pv(0.05/12, 120, -1000) for $1,000/month payments over 10 years at 5% annual). type: 0=end, 1=beginning.", "category": "Financial"},
+    {"name": "fv", "params": "rate, n, pmt, pv=0, type=0", "description": "Future value of cash flows. pmt is negative for deposits made (e.g., fv(0.05/12, 12, -100, -1000) for $100/month deposits plus $1,000 initial at 5% annual). type: 0=end, 1=beginning.", "category": "Financial"},
+    {"name": "pmt", "params": "rate, n, pv, fv=0, type=0", "description": "Fixed periodic payment amount. Returns a negative number representing money paid out (e.g., pmt(0.05/12, 120, 10000) returns negative monthly payment for a $10,000 loan at 5% annual over 10 years). type: 0=end, 1=beginning.", "category": "Financial"},
+    {"name": "rate", "params": "n, pmt, pv, fv=0, type=0, guess=0.1", "description": "Interest rate per period. Sign convention: pmt is negative when pv is positive (e.g., rate(10, -1000, 7722) for a $7,722 loan with $1,000 payments over 10 periods). type: 0=end, 1=beginning.", "category": "Financial"},
+    {"name": "nper", "params": "rate, pmt, pv, fv=0, type=0", "description": "Number of periods. pmt must be negative when pv is positive (e.g., nper(0.05/12, -500, 20000) for $20,000 loan at 5% annual with $500/month payments). type: 0=end, 1=beginning.", "category": "Financial"},
+    {"name": "npv", "params": "rate, cashflows", "description": "Net present value. rate is decimal. cashflows start from period 1 (not 0). Example: npv(0.1, [-1000, 300, 400, 500, 600])", "category": "Financial"},
+    {"name": "irr", "params": "cashflows", "description": "Internal rate of return. First cashflow is typically negative (initial investment). Returns decimal (0.2 = 20%). Example: irr([-1000, 300, 400, 500, 600])", "category": "Financial"},
+    {"name": "xnpv", "params": "rate, cashflows, dates", "description": "NPV with specific dates (365-day convention). dates as YYYY-MM-DD strings. Example: xnpv(0.1, [-1000, 1200], ['2024-01-01', '2025-01-01'])", "category": "Financial"},
+    {"name": "xirr", "params": "cashflows, dates", "description": "IRR with specific dates (YYYY-MM-DD). First cashflow typically negative. Example: xirr([-1000, 1200], ['2024-01-01', '2025-01-01'])", "category": "Financial"},
+    {"name": "discount_factor", "params": "rate, dcf", "description": "Discount factor = 1/(1+rate*dcf). rate is decimal, dcf is day count fraction (years). Example: discount_factor(0.05, 1) → 0.9524", "category": "Financial"},
+    {"name": "accumulation_factor", "params": "rate, dcf", "description": "Growth factor = 1+rate*dcf. Example: accumulation_factor(0.05, 1) → 1.05", "category": "Financial"},
+    {"name": "effective_rate", "params": "nominal, freq", "description": "Nominal to effective annual rate. Both as decimals, freq = compounding periods/year. Example: effective_rate(0.12, 12) → 0.1268 (12% nominal monthly → 12.68% effective)", "category": "Financial"},
+    {"name": "nominal_rate", "params": "effective, freq", "description": "Effective to nominal rate. Both as decimals, freq = compounding periods/year. Example: nominal_rate(0.1268, 12) → ~0.12 (12.68% effective → ~12% nominal monthly)", "category": "Financial"},
+    {"name": "yield_to_maturity", "params": "price, face, coupon, years", "description": "Bond YTM approximation. coupon is decimal rate (0.05 for 5%), years > 0. Example: yield_to_maturity(950, 1000, 0.05, 5)", "category": "Financial"},
+    {"name": "compound_interest", "params": "principal, rate, periods", "description": "Compound interest earned. rate is decimal (0.05 for 5%, NOT 5). Returns interest only. Example: compound_interest(10000, 0.05, 2) → 1025", "category": "Financial"},
+    {"name": "interest_on_balance", "params": "balance, rate, days", "description": "Interest using ACT/360. rate is decimal annual rate (0.05 for 5%). Example: interest_on_balance(100000, 0.05, 30) → 416.67", "category": "Financial"},
     {"name": "capitalization", "params": "interest, balance", "description": "Add interest to principal", "category": "Financial"},
     {"name": "amortized_cost", "params": "opening, interest, payment", "description": "Balance after payment", "category": "Financial"},
     
     # Depreciation (5)
-    {"name": "straight_line", "params": "cost, salvage, life", "description": "Straight-line depreciation", "category": "Depreciation"},
+    {"name": "straight_line", "params": "cost, salvage, life", "description": "Straight-line depreciation per period. life > 0. Example: straight_line(10000, 1000, 5) → 1800 per year", "category": "Depreciation"},
     {"name": "reducing_balance", "params": "cost, rate", "description": "Declining balance", "category": "Depreciation"},
-    {"name": "double_declining", "params": "cost, life", "description": "Double declining balance", "category": "Depreciation"},
-    {"name": "sum_of_years", "params": "cost, salvage, life, year", "description": "Sum of years digits", "category": "Depreciation"},
+    {"name": "double_declining", "params": "cost, life", "description": "Double declining balance depreciation per period. life > 0. Example: double_declining(10000, 5) → 4000 (first year at 40% = 2/5)", "category": "Depreciation"},
+    {"name": "sum_of_years", "params": "cost, salvage, life, year", "description": "Sum of years digits depreciation. year is 1-indexed (year=1 for first year, year=life for last). Example: sum_of_years(10000, 0, 5, 1) → 3333.33", "category": "Depreciation"},
     {"name": "units_of_production", "params": "cost, units, total", "description": "Usage-based depreciation", "category": "Depreciation"},
     
     # Allocation (5)
@@ -3226,7 +3288,7 @@ DSL_FUNCTION_METADATA = [
     {"name": "iif", "params": "cond, true_val, false_val", "description": "Inline IF: iif(condition, value_if_true, value_if_false)", "category": "Logical"},
     {"name": "coalesce", "params": "*args", "description": "First non-null (use for default values)", "category": "Logical"},
     {"name": "clamp", "params": "x, min, max", "description": "Clamp value", "category": "Logical"},
-    {"name": "switch", "params": "value, cases, default", "description": "Switch case", "category": "Logical"},
+    {"name": "switch", "params": "value, cases, default", "description": "Switch case lookup. cases must be a dict (e.g., switch(x, {1: 'one', 2: 'two'}, 'other')). Returns cases[value] or default.", "category": "Logical"},
     
     # Date (19)
     # (Removed duplicate normalize_date entry)
@@ -3274,7 +3336,7 @@ DSL_FUNCTION_METADATA = [
     {"name": "median", "params": "col", "description": "Median value", "category": "Aggregation"},
     {"name": "variance", "params": "col", "description": "Variance", "category": "Aggregation"},
     {"name": "std_dev", "params": "col", "description": "Standard deviation", "category": "Aggregation"},
-    {"name": "percentile", "params": "col, p", "description": "Percentile value", "category": "Aggregation"},
+    {"name": "percentile", "params": "col, p", "description": "Percentile value. p must be a fraction 0-1 (e.g., 0.75 for 75th percentile, NOT 75)", "category": "Aggregation"},
     {"name": "range", "params": "col", "description": "Range (max-min)", "category": "Aggregation"},
     
     # Conversion (6)

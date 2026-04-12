@@ -2,6 +2,7 @@ import React, { useState, useMemo } from "react";
 import { Dialog, DialogContent, DialogTitle, Card, CardContent, Button, TextField, IconButton, InputAdornment, Chip, Box, Typography, Tooltip } from '@mui/material';
 import { Search, BookOpen, Copy, X, Sparkles } from "lucide-react";
 import { useToast } from "./ToastProvider";
+import { getExplanation } from "../agent/testing/explanationStore";
 
 const FunctionBrowser = ({ dslFunctions, onInsertFunction, onClose, onAskAI }) => {
   const [searchQuery, setSearchQuery] = useState("");
@@ -190,7 +191,24 @@ const FunctionBrowser = ({ dslFunctions, onInsertFunction, onClose, onAskAI }) =
                         variant="contained"
                         size="small"
                         onClick={() => {
-                          onAskAI(`Explain how to use the ${func.name} function with examples. Parameters: ${func.params}. Description: ${func.description}`);
+                          const explanation = getExplanation(func.name);
+                          const exampleCode = explanation?.dslExample
+                            ? explanation.dslExample
+                            : `## ${func.name} example\nresult = ${func.name}(${func.params})\nprint(result)`;
+                          const outputHint = explanation?.tested && explanation?.sampleOutput
+                            ? `\nExpected output: ${explanation.sampleOutput}`
+                            : '';
+                          onAskAI(
+                            func.name,
+                            `Show me a working example of the ${func.name}() DSL function.\n` +
+                            `Parameters: ${func.params}\n` +
+                            `Description: ${func.description}\n\n` +
+                            `Here is a verified working example (standalone mode, no event fields):\n` +
+                            `\`\`\`dsl\n${exampleCode}\n\`\`\`${outputHint}\n\n` +
+                            `Please explain what this code does and generate a clear standalone DSL example ` +
+                            `using only literal values (no EVENT.field references). ` +
+                            `Use print() to display the result.`
+                          );
                           onClose();
                         }}
                         startIcon={<Sparkles size={14} />}

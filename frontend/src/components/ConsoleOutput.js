@@ -5,6 +5,7 @@ import AppDialog, { useAppDialog } from './AppDialog';
 import { Trash2, Terminal, Play, Table2, Code, Wand2, Download, Save, X } from "lucide-react";
 import { useToast } from "./ToastProvider";
 import { API } from '../config';
+import { formatErrorForConsole } from '../agent/testing/translateError';
 
 // Helper to check if a string is JSON array/object
 const tryParseJSON = (str) => {
@@ -440,10 +441,10 @@ const ConsoleOutput = ({ output, onClear, dslCode, addConsoleLog, onCodeChange, 
           );
         });
       } else {
-        addConsoleLog(`✗ Error: ${response.data.error}`, "error");
+        addConsoleLog(`✗ ${formatErrorForConsole(response.data.error)}`, "error");
       }
     } catch (error) {
-      addConsoleLog(`✗ Error: ${error.response?.data?.detail || error.message}`, "error");
+      addConsoleLog(`✗ ${formatErrorForConsole(error.response?.data?.detail || error.message)}`, "error");
     } finally {
       setRunning(false);
     }

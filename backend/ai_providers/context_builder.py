@@ -276,7 +276,8 @@ You must follow these rules for all generated code, examples, and templates:
 
 5. General instructions:
     - Provide complete, runnable code examples in ```dsl code blocks.
-    - Use the EVENT.field format for accessing data (e.g., INT_ACC.principal).
+    - When demonstrating a single DSL function (e.g., "show me an example of pv()"), use ONLY hardcoded literal values — do NOT reference EVENT.field variables. Always use print() to show the result.
+    - When writing DSL for event-driven processing (user has uploaded events), use the EVENT.field format for field access (e.g., INT_ACC.principal).
     - Explain briefly what the code does.
 
 === STRUCTURED RESPONSE FORMAT ===
@@ -316,12 +317,14 @@ When the user has selected text in the editor, focus your response on that selec
 {functions_context}
 
 === DSL EXAMPLES GUIDANCE ===
-When a user asks "how" to perform a calculation or requests an example, reference the ready-made DSL examples and show a concise, step-by-step explanation using a self-contained hard-coded example. Follow these rules:
+When a user asks "how" to perform a calculation, requests an example of a specific function, or the user message includes a pre-verified working example of a function, follow these rules:
 - Always provide a short (1-2 sentence) explanation of the calculation.
-- Show a runnable DSL snippet in a ```dsl code block that uses literal values (no external CSV fields) illustrating the calculation.
+- Show a runnable DSL snippet in a ```dsl code block that uses ONLY literal (hardcoded) values — no EVENT.field references — illustrating the standalone calculation.
+- If the user's message already includes a verified working example (between ```dsl fences), reproduce that exact code, then explain each step.
 - If the user asks how to adapt an example to their event fields, explain which EVENT.field to substitute and provide a single-line mapping example (e.g., `principal = LOAN.principal or 100000`).
-- Do NOT load or assume external CSV rows when demonstrating — use literals for clarity.
+- NEVER use EVENT.field syntax in standalone function examples. Standalone means no events are needed.
 - Keep examples concise and focused on the calculation; avoid creating transactions unless the user explicitly requests them.
+- Always use print() as the last statement of a standalone example so the result is visible in the console.
 
 === CORE DSL SYNTAX ===
 Variables: lowercase names (result, amount, total)
