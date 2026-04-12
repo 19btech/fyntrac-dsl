@@ -3048,11 +3048,34 @@ def _parse_import_date(val) -> str:
         return str(val)
 
 
+# Sentinel for "system" / placeholder instrument IDs with no real business meaning
+_SYSTEM_INSTRUMENT_IDS = {"system", ""}
+
+
+def _is_custom_event(records: list, event_id: str) -> bool:
+    """
+    Return True if the event has no real InstrumentId in any inner row.
+    'Real' means the value is non-empty and not the reserved word 'system'.
+    Such events are classified as eventTable='custom', eventType='reference'.
+    """
+    for event in records:
+        if event.get("eventId") != event_id:
+            continue
+        for row_val in event.get("eventDetail", {}).get("values", {}).values():
+            if not isinstance(row_val, dict):
+                continue
+            raw = row_val.get("instrumentId") or row_val.get("InstrumentId") or ""
+            if isinstance(raw, str) and raw.lower() not in _SYSTEM_INSTRUMENT_IDS:
+                return False  # found a real instrument ID — standard event
+    return True  # no real instrument found — custom/reference event
+
+
 def _build_event_definitions_from_import(records: list) -> list:
     """
     Derive unique event definitions from the imported records.
     Groups by eventId, collects dynamic field names and infers datatypes.
     Excludes all fixed/system fields (both PascalCase and camelCase) and meta keys.
+    Events with no real instrumentId are classified as custom/reference.
     Returns a list of dicts compatible with EventDefinition.model_dump().
     """
     from collections import defaultdict
@@ -3074,12 +3097,13 @@ def _build_event_definitions_from_import(records: list) -> list:
             {"name": fn, "datatype": _infer_field_datatype(sv)}
             for fn, sv in fields.items()
         ]
+        is_custom = _is_custom_event(records, event_id)
         definitions.append({
             "id": str(uuid.uuid4()),
             "event_name": event_id,
             "fields": field_list,
-            "eventType": "activity",
-            "eventTable": "standard",
+            "eventType": "reference" if is_custom else "activity",
+            "eventTable": "custom" if is_custom else "standard",
             "created_at": ts,
         })
     return definitions
@@ -3090,14 +3114,22 @@ def _build_event_data_from_import(records: list) -> list:
     Build event data rows from imported records.
     Groups rows by eventId. Each value entry in eventDetail.values becomes one data row.
     Handles both PascalCase (EOD) and camelCase (ECF/MeasurementType) inner row keys.
-    Maps attributeId (either case) to SubInstrumentId.
+    Maps attributeId (either case) to SubInstrumentId — for standard events only.
+    Custom/reference events (no real instrumentId) omit all standard fields.
     Normalises all date values to YYYY-MM-DD.
     """
     from collections import defaultdict
+
+    # Pre-classify each event_id so we only scan once
+    event_ids = list({evt.get("eventId", "") for evt in records})
+    custom_events = {eid for eid in event_ids if _is_custom_event(records, eid)}
+
     event_rows: dict = defaultdict(list)
 
     for event in records:
         event_id = event.get("eventId", "")
+        is_custom = event_id in custom_events
+
         # Outer event-level fallbacks (always camelCase at top level)
         outer_posting = _parse_import_date(event.get("postingDate") or event.get("PostingDate", ""))
         outer_effective = _parse_import_date(event.get("effectiveDate") or event.get("EffectiveDate", ""))
@@ -3108,36 +3140,38 @@ def _build_event_data_from_import(records: list) -> list:
             if not isinstance(row_val, dict):
                 continue
 
-            # Extract fixed fields — accept both PascalCase and camelCase
-            inner_posting = _parse_import_date(
-                row_val.get("PostingDate") or row_val.get("postingDate")
-            ) or outer_posting
-            inner_effective = _parse_import_date(
-                row_val.get("EffectiveDate") or row_val.get("effectiveDate")
-            ) or outer_effective
-            inner_instrument = (
-                row_val.get("InstrumentId") or row_val.get("instrumentId") or outer_instrument
-            )
-            # attributeId (either case) maps to SubInstrumentId
-            inner_subinstr = str(
-                row_val.get("AttributeId") or row_val.get("attributeId") or ""
-            )
-
-            row: dict = {
-                "PostingDate":     inner_posting,
-                "EffectiveDate":   inner_effective,
-                "InstrumentId":    inner_instrument,
-                "SubInstrumentId": inner_subinstr,
-            }
+            if is_custom:
+                # Custom/reference events: no standard fields at all
+                row: dict = {}
+            else:
+                # Standard events: include the four standard fields
+                inner_posting = _parse_import_date(
+                    row_val.get("PostingDate") or row_val.get("postingDate")
+                ) or outer_posting
+                inner_effective = _parse_import_date(
+                    row_val.get("EffectiveDate") or row_val.get("effectiveDate")
+                ) or outer_effective
+                inner_instrument = (
+                    row_val.get("InstrumentId") or row_val.get("instrumentId") or outer_instrument
+                )
+                # attributeId (either case) maps to SubInstrumentId
+                inner_subinstr = str(
+                    row_val.get("AttributeId") or row_val.get("attributeId") or ""
+                )
+                row = {
+                    "PostingDate":     inner_posting,
+                    "EffectiveDate":   inner_effective,
+                    "InstrumentId":    inner_instrument,
+                    "SubInstrumentId": inner_subinstr,
+                }
 
             for key, value in row_val.items():
                 if key in _IMPORT_FIXED_KEYS:
                     continue
-                # Normalise any {$date: ...} values to YYYY-MM-DD string
                 if isinstance(value, dict) and "$date" in value:
                     row[key] = _parse_import_date(value)
                 elif isinstance(value, dict) and "$oid" in value:
-                    # Skip embedded object-id fields (e.g. nested _id)
+                    # Skip embedded object-id fields
                     continue
                 else:
                     row[key] = value
@@ -3253,8 +3287,9 @@ async def import_and_transform_events(file: UploadFile = File(...)):
         logger.warning(f"Could not persist raw events to imported_events: {e}")
         # Non-fatal — continue with transformation
 
-    # ---- Step 2: Transform → Event Definitions ----
+    # ---- Step 2: Transform → Event Definitions (MUST complete before Event Data) ----
     def_error = None
+    definitions = []
     try:
         definitions = _build_event_definitions_from_import(records)
         if not definitions:
@@ -3266,6 +3301,7 @@ async def import_and_transform_events(file: UploadFile = File(...)):
                 "success": True,
                 "count": len(definitions),
                 "names": [d["event_name"] for d in definitions],
+                "types": {d["event_name"]: d["eventTable"] for d in definitions},
             }
     except Exception as e:
         logger.error(f"Event definition transformation failed: {e}")
@@ -3274,7 +3310,7 @@ async def import_and_transform_events(file: UploadFile = File(...)):
     if def_error:
         result["event_definitions"] = {"success": False, "error": def_error}
 
-    # ---- Step 3: Transform → Event Data ----
+    # ---- Step 3: Transform → Event Data (uses classification from Step 2) ----
     data_error = None
     try:
         event_data_list = _build_event_data_from_import(records)
