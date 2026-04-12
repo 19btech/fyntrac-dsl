@@ -999,7 +999,7 @@ async def execute_python_template(python_code: str, event_data: List[Dict[str, A
         exec_globals = {
             '__file__': os.path.abspath(__file__),
             '__name__': '__dsl_template__',
-            '__builtins__': {k: v for k, v in __builtins__.items() if k not in ('exec', 'eval', 'compile', '__import__', 'open', 'input', 'breakpoint')} if isinstance(__builtins__, dict) else {k: getattr(__builtins__, k) for k in dir(__builtins__) if k not in ('exec', 'eval', 'compile', '__import__', 'open', 'input', 'breakpoint')},
+            '__builtins__': {k: v for k, v in __builtins__.items() if k not in ('exec', 'eval', 'compile', 'open', 'input', 'breakpoint')} if isinstance(__builtins__, dict) else {k: getattr(__builtins__, k) for k in dir(__builtins__) if k not in ('exec', 'eval', 'compile', 'open', 'input', 'breakpoint')},
         }
         # Execute the template which defines helper functions like process_event_data, get_print_outputs
         exec(compile(python_code, '<dsl_template>', 'exec'), exec_globals)
@@ -1939,7 +1939,7 @@ async def run_dsl_code(request: DSLRunRequest):
                 exec_globals = {
                     '__file__': os.path.abspath(__file__),
                     '__name__': '__dsl_standalone__',
-                    '__builtins__': {k: v for k, v in __builtins__.items() if k not in ('exec', 'eval', 'compile', '__import__', 'open', 'input', 'breakpoint')} if isinstance(__builtins__, dict) else {k: getattr(__builtins__, k) for k in dir(__builtins__) if k not in ('exec', 'eval', 'compile', '__import__', 'open', 'input', 'breakpoint')},
+                    '__builtins__': {k: v for k, v in __builtins__.items() if k not in ('exec', 'eval', 'compile', 'open', 'input', 'breakpoint')} if isinstance(__builtins__, dict) else {k: getattr(__builtins__, k) for k in dir(__builtins__) if k not in ('exec', 'eval', 'compile', 'open', 'input', 'breakpoint')},
                 }
                 exec(compile(python_code, '<dsl_standalone>', 'exec'), exec_globals)
                 
