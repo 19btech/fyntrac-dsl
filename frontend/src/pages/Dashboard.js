@@ -332,6 +332,8 @@ const Dashboard = () => {
     if (postingDates.length <= 1) {
       // Zero or one posting date — run exactly as before (pass the single date if present)
       try {
+        // Wipe previous transaction reports before running
+        try { await axios.delete(`${API}/transaction-reports/all`); } catch (_) {}
         addConsoleLog("Executing template on event data...", "info");
         const response = await axios.post(`${API}/templates/execute`, {
           template_id: templateId,
@@ -351,6 +353,8 @@ const Dashboard = () => {
     }
 
     // Multiple posting dates — run sequentially across all dates
+    // Wipe previous transaction reports before batch run
+    try { await axios.delete(`${API}/transaction-reports/all`); } catch (_) {}
     setBatchRunning(true);
     setBatchStatus({ total: postingDates.length, current: 0, currentDate: null, results: [], errors: [] });
     addConsoleLog(`Starting batch execution across ${postingDates.length} posting dates...`, "info");

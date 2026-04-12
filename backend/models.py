@@ -70,6 +70,7 @@ class TransactionReport(BaseModel):
     event_name: str
     transactions: List[Dict[str, Any]]
     executed_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    batch_id: Optional[str] = Field(default_factory=lambda: str(uuid.uuid4()))
 
 
 class ChatMessage(BaseModel):

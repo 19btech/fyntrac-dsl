@@ -12,9 +12,7 @@ const TransactionReports = ({ reports, onDownloadReport, onDeleteReport }) => {
   const [modalOpen, setModalOpen] = useState(false);
 
   const displayReports = useMemo(() => {
-    const map = new Map();
-    (reports || []).forEach(r => map.set(r.template_name, r));
-    return Array.from(map.values());
+    return reports || [];
   }, [reports]);
 
   const openReport = (report) => {
@@ -32,7 +30,8 @@ const TransactionReports = ({ reports, onDownloadReport, onDeleteReport }) => {
       return (
         (tx.instrumentid && String(tx.instrumentid).toLowerCase().includes(txt)) ||
         (tx.subinstrumentid && String(tx.subinstrumentid).toLowerCase().includes(txt)) ||
-        (tx.transactiontype && String(tx.transactiontype).toLowerCase().includes(txt))
+        (tx.transactiontype && String(tx.transactiontype).toLowerCase().includes(txt)) ||
+        (tx.batch_id && String(tx.batch_id).toLowerCase().includes(txt))
       );
     });
   }, [selectedReport, filterText]);
@@ -129,6 +128,7 @@ const TransactionReports = ({ reports, onDownloadReport, onDeleteReport }) => {
                         <Table size="small">
                           <TableHead>
                             <TableRow>
+                              <TableCell>Batch</TableCell>
                               <TableCell>Posting Date</TableCell>
                               <TableCell>Instrument</TableCell>
                               <TableCell>Type</TableCell>
@@ -138,6 +138,7 @@ const TransactionReports = ({ reports, onDownloadReport, onDeleteReport }) => {
                           <TableBody>
                             {report.transactions.slice(0, 5).map((tx, idx) => (
                               <TableRow key={idx} hover>
+                                <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.8125rem' }}>{tx.batch_id ? tx.batch_id.slice(0, 8) : ''}</TableCell>
                                 <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.8125rem' }}>{tx.postingdate}</TableCell>
                                 <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.8125rem' }}>{tx.instrumentid}</TableCell>
                                 <TableCell sx={{ fontSize: '0.8125rem' }}>{tx.transactiontype}</TableCell>
@@ -204,6 +205,7 @@ const TransactionReports = ({ reports, onDownloadReport, onDeleteReport }) => {
             <Table>
               <TableHead>
                 <TableRow>
+                  <TableCell>Batch ID</TableCell>
                   <TableCell>Posting Date</TableCell>
                   <TableCell>Instrument ID</TableCell>
                   <TableCell>Sub-Instrument</TableCell>
@@ -215,6 +217,7 @@ const TransactionReports = ({ reports, onDownloadReport, onDeleteReport }) => {
               <TableBody>
                 {pageRows.map((tx, i) => (
                   <TableRow key={i} hover>
+                    <TableCell sx={{ fontFamily: 'monospace' }}>{tx.batch_id ? tx.batch_id.slice(0, 8) : ''}</TableCell>
                     <TableCell sx={{ fontFamily: 'monospace' }}>{tx.postingdate}</TableCell>
                     <TableCell sx={{ fontFamily: 'monospace' }}>{tx.instrumentid}</TableCell>
                     <TableCell sx={{ fontFamily: 'monospace' }}>{tx.subinstrumentid || '1'}</TableCell>

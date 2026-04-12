@@ -135,7 +135,7 @@ createTransaction("2026-12-31", "2026-12-31", "Compound Interest", interest)`,
   },
   {
     id: 12,
-    title: "Loan Amortization Schedule",
+    title: "Loan Accrual Schedule",
     description: "Generate loan payment schedule with interest and principal",
     category: "Schedule",
     dslCode: `## Define loan parameters

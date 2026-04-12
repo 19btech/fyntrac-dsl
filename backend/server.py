@@ -2752,7 +2752,7 @@ async def execute_template(request: TemplateExecuteRequest):
         transactions = execution_result["transactions"]
         print_outputs = execution_result["print_outputs"]
         
-        # Save transaction report (DB or in-memory)
+        # Save transaction report (DB or in-memory) — append each batch
         transaction_dicts = [t.model_dump() for t in transactions]
         report = TransactionReport(
             template_name=template.get('name', ''),
@@ -2762,16 +2762,13 @@ async def execute_template(request: TemplateExecuteRequest):
         doc = report.model_dump()
         doc['executed_at'] = doc['executed_at'].isoformat()
         try:
-            # Overwrite existing report for the same template_name to keep a single instance
-            await db.transaction_reports.delete_many({"template_name": report.template_name})
+            # Append new batch — each execution gets its own document
             await db.transaction_reports.insert_one(doc)
         except Exception:
-            # Fallback to in-memory storage: replace any existing entry for template_name
+            # Fallback to in-memory storage
             global USE_IN_MEMORY  # noqa: F811
             USE_IN_MEMORY = True
             lst = in_memory_data.setdefault('transaction_reports', [])
-            # Remove existing docs for same template_name
-            lst = [r for r in lst if r.get('template_name') != report.template_name]
             lst.append(doc)
             in_memory_data['transaction_reports'] = lst
         
@@ -2790,40 +2787,68 @@ async def execute_template(request: TemplateExecuteRequest):
 
 @api_router.get("/transaction-reports")
 async def get_transaction_reports():
-    """Get all transaction reports"""
+    """Get all transaction reports, merging batches per template with batch_id preserved"""
     try:
-        reports = await db.transaction_reports.find({}, {"_id": 0}).sort("executed_at", -1).to_list(1000)
+        reports = await db.transaction_reports.find({}, {"_id": 0}).sort("executed_at", 1).to_list(10000)
+        # Merge all batches for the same template_name into one report
+        merged = {}
         for report in reports:
-            if isinstance(report.get('executed_at'), str):
-                report['executed_at'] = datetime.fromisoformat(report['executed_at'])
-        return reports
+            name = report.get('template_name', '')
+            batch_id = report.get('batch_id', '')
+            # Tag each transaction with its batch_id
+            for tx in report.get('transactions', []):
+                tx['batch_id'] = batch_id
+            if name not in merged:
+                merged[name] = report
+            else:
+                merged[name]['transactions'].extend(report.get('transactions', []))
+                # Keep the latest executed_at
+                merged[name]['executed_at'] = report.get('executed_at', merged[name]['executed_at'])
+        result = list(merged.values())
+        # Sort transactions within each report by batch_id
+        for r in result:
+            r['transactions'].sort(key=lambda tx: tx.get('batch_id', ''))
+            if isinstance(r.get('executed_at'), str):
+                r['executed_at'] = datetime.fromisoformat(r['executed_at'])
+        return result
     except Exception as e:
         logger.warning(f"Could not load transaction reports from database: {str(e)}")
         return []
 
 @api_router.get("/transaction-reports/download/{report_id}")
 async def download_transaction_report(report_id: str):
-    """Download transaction report as CSV"""
-    report = await db.transaction_reports.find_one({"id": report_id}, {"_id": 0})
-    if not report:
+    """Download transaction report as CSV (merges all batches for the template)"""
+    # Find the report to get its template_name, then merge all batches
+    anchor = await db.transaction_reports.find_one({"id": report_id}, {"_id": 0})
+    if not anchor:
         raise HTTPException(status_code=404, detail="Report not found")
+    
+    template_name = anchor.get('template_name', '')
+    all_batches = await db.transaction_reports.find(
+        {"template_name": template_name}, {"_id": 0}
+    ).sort("executed_at", 1).to_list(10000)
+    
+    all_transactions = []
+    for batch in all_batches:
+        all_transactions.extend(batch.get('transactions', []))
     
     # Create CSV
     output = io.StringIO()
     
-    if report['transactions']:
-        headers = ['postingdate', 'effectivedate', 'instrumentid', 'subinstrumentid', 'transactiontype', 'amount']
+    if all_transactions:
+        headers = ['batch_id', 'postingdate', 'effectivedate', 'instrumentid', 'subinstrumentid', 'transactiontype', 'amount']
         writer = csv.DictWriter(output, fieldnames=headers, extrasaction='ignore')
         writer.writeheader()
-        # Ensure subinstrumentid has a default value
-        for tx in report['transactions']:
+        for tx in all_transactions:
             if 'subinstrumentid' not in tx or not tx.get('subinstrumentid'):
                 tx['subinstrumentid'] = '1'
-        writer.writerows(report['transactions'])
+            if 'batch_id' not in tx:
+                tx['batch_id'] = ''
+        writer.writerows(all_transactions)
     
     output.seek(0)
-    timestamp = datetime.fromisoformat(report['executed_at']).strftime('%Y%m%d_%H%M%S')
-    filename = f"transactions_{report['template_name']}_{timestamp}.csv"
+    timestamp = datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')
+    filename = f"transactions_{template_name}_{timestamp}.csv"
     
     return StreamingResponse(
         iter([output.getvalue()]),
@@ -2831,13 +2856,26 @@ async def download_transaction_report(report_id: str):
         headers={"Content-Disposition": f"attachment; filename={filename}"}
     )
 
+@api_router.delete("/transaction-reports/all")
+async def delete_all_transaction_reports():
+    """Wipe all transaction reports"""
+    try:
+        result = await db.transaction_reports.delete_many({})
+        return {"message": f"Deleted {result.deleted_count} report(s)"}
+    except Exception:
+        in_memory_data['transaction_reports'] = []
+        return {"message": "Cleared in-memory reports"}
+
 @api_router.delete("/transaction-reports/{report_id}")
 async def delete_transaction_report(report_id: str):
-    """Delete a transaction report"""
-    result = await db.transaction_reports.delete_one({"id": report_id})
-    if result.deleted_count == 0:
+    """Delete all batches for a transaction report"""
+    anchor = await db.transaction_reports.find_one({"id": report_id}, {"_id": 0})
+    if not anchor:
         raise HTTPException(status_code=404, detail="Report not found")
-    return {"message": "Transaction report deleted successfully"}
+    # Delete all batches belonging to the same template
+    template_name = anchor.get('template_name', '')
+    result = await db.transaction_reports.delete_many({"template_name": template_name})
+    return {"message": f"Deleted {result.deleted_count} batch(es) for '{template_name}'"}
 
 # ============= AI Provider Configuration =============
 
