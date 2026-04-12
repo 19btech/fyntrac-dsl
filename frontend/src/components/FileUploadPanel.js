@@ -446,9 +446,11 @@ const FileUploadPanel = ({ onUploadSuccess, events, addConsoleLog, selectedEvent
         <CardContent sx={{ p: 3 }}>
           <Typography variant="h6" sx={{ mb: 1.5, color: '#5B5FED' }}>Upload Instructions</Typography>
             <Box component="ul" sx={{ m: 0, pl: 2.5, '& li': { mb: 1, fontSize: '0.8125rem', color: '#495057', lineHeight: 1.6 } }}>
-            <li><strong>Event Definitions (CSV):</strong> Columns: EventName, EventField, DataType, EventType</li>
+            <li><strong>Event Definitions (CSV):</strong> Columns: EventName, EventField, DataType, EventType, EventTable</li>
+            <li><strong>EventTable:</strong> <code>standard</code> (always activity) or <code>custom</code> (activity or reference)</li>
             <li><strong>Event Data (Excel):</strong> Sheet name must match event name</li>
-            <li><strong>Required Columns:</strong> PostingDate, EffectiveDate, InstrumentId + event fields</li>
+            <li><strong>Required Columns (activity):</strong> PostingDate, EffectiveDate, InstrumentId + event fields</li>
+            <li><strong>Reference events (custom):</strong> Tenant-level data — no PostingDate, EffectiveDate, or InstrumentId needed</li>
             <li><strong>DSL Functions:</strong> 100+ pre-loaded financial functions available</li>
           </Box>
         </CardContent>

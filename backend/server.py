@@ -117,6 +117,8 @@ class EventDefinition(BaseModel):
     fields: List[Dict[str, str]]  # Changed to list of dicts with field name and datatype
     # New: eventType indicates whether this event is activity (default) or reference
     eventType: str = 'activity'
+    # eventTable: 'standard' (always activity) or 'custom' (activity or reference)
+    eventTable: str = 'standard'
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 class DSLFunction(BaseModel):
@@ -232,7 +234,8 @@ SAMPLE_EVENTS = [
             {"name": "term", "datatype": "decimal"}
         ],
         "created_at": datetime.now(timezone.utc),
-        "eventType": "activity"
+        "eventType": "activity",
+        "eventTable": "standard"
     },
     {
         "id": "evt2",
@@ -243,7 +246,8 @@ SAMPLE_EVENTS = [
             {"name": "payment_type", "datatype": "string"}
         ],
         "created_at": datetime.now(timezone.utc),
-        "eventType": "activity"
+        "eventType": "activity",
+        "eventTable": "standard"
     },
     {
         "id": "evt3",
@@ -254,7 +258,8 @@ SAMPLE_EVENTS = [
             {"name": "years", "datatype": "decimal"}
         ],
         "created_at": datetime.now(timezone.utc),
-        "eventType": "activity"
+        "eventType": "activity",
+        "eventTable": "standard"
     }
 ]
 
@@ -1317,7 +1322,7 @@ async def truncate_event_collections():
 # Event Definitions
 @api_router.post("/events/upload")
 async def upload_event_definitions(file: UploadFile = File(...)):
-    """Upload event definitions CSV (EventName, EventField, DataType)"""
+    """Upload event definitions CSV (EventName, EventField, DataType[, EventType[, EventTable]])"""
     try:
         # Clear existing event definitions (preserve other collections)
         try:
@@ -1335,15 +1340,17 @@ async def upload_event_definitions(file: UploadFile = File(...)):
         events_dict = {}
         header = rows[0]
         
-        # Validate header - support optional EventType column as the 4th column
+        # Validate header - support optional EventType (4th) and EventTable (5th) columns
         if len(header) < 3 or header[0].lower() != 'eventname' or header[1].lower() != 'eventfield' or header[2].lower() != 'datatype':
-            raise HTTPException(status_code=400, detail="CSV must have columns: EventName, EventField, DataType[, EventType]")
+            raise HTTPException(status_code=400, detail="CSV must have columns: EventName, EventField, DataType[, EventType[, EventTable]]")
 
-        # Supported event types
+        # Supported event types and event table values
         VALID_EVENT_TYPES = ('activity', 'reference')
+        VALID_EVENT_TABLES = ('standard', 'custom')
 
-        # Temporary map to capture event-level eventType values
+        # Temporary maps to capture event-level values
         event_type_map = {}
+        event_table_map = {}
 
         for row in rows[1:]:
             if len(row) >= 3:
@@ -1358,6 +1365,17 @@ async def upload_event_definitions(file: UploadFile = File(...)):
                     if event_type not in VALID_EVENT_TYPES:
                         raise HTTPException(status_code=400, detail=f"Invalid eventType '{row[3]}'. Must be one of: {', '.join(VALID_EVENT_TYPES)}")
 
+                # Optional eventTable column (5th column) - defaults to 'standard'
+                event_table = 'standard'
+                if len(row) >= 5 and row[4].strip():
+                    event_table = row[4].strip().lower()
+                    if event_table not in VALID_EVENT_TABLES:
+                        raise HTTPException(status_code=400, detail=f"Invalid eventTable '{row[4]}'. Must be one of: {', '.join(VALID_EVENT_TABLES)}")
+
+                # Validate eventTable + eventType combination
+                if event_table == 'standard' and event_type != 'activity':
+                    raise HTTPException(status_code=400, detail=f"Event '{event_name}': standard event table must have eventType 'activity', got '{event_type}'")
+
                 # Validate datatype
                 if data_type not in ['string', 'date', 'boolean', 'decimal', 'integer', 'int']:
                     raise HTTPException(status_code=400, detail=f"Invalid datatype '{data_type}'. Must be one of: string, date, boolean, decimal, integer")
@@ -1366,6 +1384,11 @@ async def upload_event_definitions(file: UploadFile = File(...)):
                 if event_name in event_type_map and event_type_map[event_name] != event_type:
                     raise HTTPException(status_code=400, detail=f"Conflicting eventType values for event '{event_name}'")
                 event_type_map[event_name] = event_type
+
+                # Ensure event_table is consistent across rows for same event
+                if event_name in event_table_map and event_table_map[event_name] != event_table:
+                    raise HTTPException(status_code=400, detail=f"Conflicting eventTable values for event '{event_name}'")
+                event_table_map[event_name] = event_table
 
                 if event_name not in events_dict:
                     events_dict[event_name] = []
@@ -1379,7 +1402,8 @@ async def upload_event_definitions(file: UploadFile = File(...)):
             # Store in database
             for event_name, fields in events_dict.items():
                 evt_type = event_type_map.get(event_name, 'activity')
-                event = EventDefinition(event_name=event_name, fields=fields, eventType=evt_type)
+                evt_table = event_table_map.get(event_name, 'standard')
+                event = EventDefinition(event_name=event_name, fields=fields, eventType=evt_type, eventTable=evt_table)
                 doc = event.model_dump()
                 doc['created_at'] = doc['created_at'].isoformat()
                 await db.event_definitions.insert_one(doc)
@@ -1394,7 +1418,8 @@ async def upload_event_definitions(file: UploadFile = File(...)):
             in_memory_defs = []
             for event_name, fields in events_dict.items():
                 evt_type = event_type_map.get(event_name, 'activity')
-                event = EventDefinition(event_name=event_name, fields=fields, eventType=evt_type)
+                evt_table = event_table_map.get(event_name, 'standard')
+                event = EventDefinition(event_name=event_name, fields=fields, eventType=evt_type, eventTable=evt_table)
                 doc = event.model_dump()
                 # store created_at as ISO string for consistency with DB format
                 doc['created_at'] = doc['created_at'].isoformat()
@@ -1475,12 +1500,13 @@ async def download_event_definitions():
 
         output = io.StringIO()
         writer = csv.writer(output)
-        writer.writerow(['EventName', 'EventField', 'DataType', 'EventType'])
+        writer.writerow(['EventName', 'EventField', 'DataType', 'EventType', 'EventTable'])
 
         for event in events:
             evt_type = event.get('eventType', 'activity')
+            evt_table = event.get('eventTable', 'standard')
             for field in event.get('fields', []):
-                writer.writerow([event.get('event_name'), field.get('name'), field.get('datatype'), evt_type])
+                writer.writerow([event.get('event_name'), field.get('name'), field.get('datatype'), evt_type, evt_table])
 
         output.seek(0)
         return StreamingResponse(
@@ -1509,14 +1535,30 @@ async def upload_event_data_excel(file: UploadFile = File(...)):
         sheet_names = excel_file.sheet_names
         
         # First pass: Collect all postingdates across all sheets to validate single date
+        # Only collect from activity events (not custom reference events which are tenant-level data)
         all_posting_dates = set()
         sheet_data_cache = {}  # Cache sheet data to avoid re-reading
+        # Pre-fetch event definitions for each sheet to determine eventType/eventTable
+        sheet_event_defs = {}
         
         for sheet_name in sheet_names:
             df = pd.read_excel(excel_file, sheet_name=sheet_name)
             sheet_data_cache[sheet_name] = df
             
-            if df.empty:
+            # Look up the event definition for this sheet
+            try:
+                evt_def = await db.event_definitions.find_one(
+                    {"event_name": {"$regex": f"^{sheet_name}$", "$options": "i"}},
+                    {"_id": 0}
+                )
+            except Exception:
+                evt_def = next((e for e in in_memory_data.get('event_definitions', []) if str(e.get('event_name', '')).lower() == sheet_name.lower()), None)
+            sheet_event_defs[sheet_name] = evt_def
+            
+            # Determine if this is a custom reference event (tenant-level, no instrument/date fields)
+            is_reference = (evt_def and evt_def.get('eventTable') == 'custom' and evt_def.get('eventType') == 'reference')
+            
+            if df.empty or is_reference:
                 continue
             
             # Look for postingdate column (case-insensitive)
@@ -1558,15 +1600,15 @@ async def upload_event_data_excel(file: UploadFile = File(...)):
         # Note: do not wipe all event data here; only replace data for the target event below.
         
         for sheet_name in sheet_names:
-            # Check if event exists (case-insensitive match)
-            event = await db.event_definitions.find_one(
-                {"event_name": {"$regex": f"^{sheet_name}$", "$options": "i"}}, 
-                {"_id": 0}
-            )
+            # Use pre-fetched event definition from first pass
+            event = sheet_event_defs.get(sheet_name)
             
             if not event:
                 errors.append(f"Sheet '{sheet_name}' - No matching event definition found")
                 continue
+            
+            # Determine if this is a custom reference event
+            is_reference = (event.get('eventTable') == 'custom' and event.get('eventType') == 'reference')
             
             # Use cached data
             df = sheet_data_cache.get(sheet_name)
@@ -1650,15 +1692,16 @@ async def upload_event_data_excel(file: UploadFile = File(...)):
                     else:
                         cleaned_row[str(key)] = str(value)
                 cleaned_rows.append(cleaned_row)
-            # Ensure standard date fields are normalized even if not declared as date type
-            for r in cleaned_rows:
-                for dkey in list(r.keys()):
-                    if str(dkey).lower() in ('postingdate', 'effectivedate', 'posting_date', 'effective_date'):
-                        r[dkey] = _normalize_ingest_date_value(r.get(dkey))
-                # Ensure standard date fields are normalized even if not declared as date type
-                for dkey in list(cleaned_row.keys()):
-                    if str(dkey).lower() in ('postingdate', 'effectivedate', 'posting_date', 'effective_date'):
-                        cleaned_row[dkey] = _normalize_ingest_date_value(cleaned_row.get(dkey))
+            # Normalize standard date fields only for non-reference events
+            if not is_reference:
+                for r in cleaned_rows:
+                    for dkey in list(r.keys()):
+                        if str(dkey).lower() in ('postingdate', 'effectivedate', 'posting_date', 'effective_date'):
+                            r[dkey] = _normalize_ingest_date_value(r.get(dkey))
+                    # Ensure standard date fields are normalized even if not declared as date type
+                    for dkey in list(cleaned_row.keys()):
+                        if str(dkey).lower() in ('postingdate', 'effectivedate', 'posting_date', 'effective_date'):
+                            cleaned_row[dkey] = _normalize_ingest_date_value(cleaned_row.get(dkey))
 
             # Store event data
             event_data = EventData(event_name=event['event_name'], data_rows=cleaned_rows)

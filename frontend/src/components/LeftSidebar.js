@@ -125,9 +125,30 @@ const LeftSidebar = ({ events, selectedEvent, onEventSelect, onDownloadEvents, o
                         <Box sx={{ fontSize: '0.75rem', color: '#6C757D', lineHeight: 1.6 }}>
                           {(() => {
                             const evtType = (event.eventType || event.event_type || '').toString().toLowerCase();
-                            const showStandard = evtType !== 'reference';
+                            const evtTable = (event.eventTable || event.event_table || 'standard').toString().toLowerCase();
+                            // Hide standard system fields for custom reference events
+                            const isCustomReference = evtTable === 'custom' && evtType === 'reference';
+                            const showStandard = !isCustomReference;
                             return (
                               <>
+                                {/* Show eventTable tag */}
+                                <Box sx={{ mb: 1, display: 'flex', gap: 0.5 }}>
+                                  <Box component="span" sx={{
+                                    fontSize: '0.625rem', fontWeight: 600, px: 0.75, py: 0.25, borderRadius: 0.5,
+                                    bgcolor: evtTable === 'standard' ? '#E8F5E9' : '#FFF3E0',
+                                    color: evtTable === 'standard' ? '#2E7D32' : '#E65100'
+                                  }}>
+                                    {evtTable}
+                                  </Box>
+                                  <Box component="span" sx={{
+                                    fontSize: '0.625rem', fontWeight: 600, px: 0.75, py: 0.25, borderRadius: 0.5,
+                                    bgcolor: evtType === 'activity' ? '#E3F2FD' : '#F3E5F5',
+                                    color: evtType === 'activity' ? '#1565C0' : '#7B1FA2'
+                                  }}>
+                                    {evtType}
+                                  </Box>
+                                </Box>
+
                                 {showStandard && (
                                   <>
                                     <Box sx={{ mb: 0.5 }}>
