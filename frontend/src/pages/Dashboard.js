@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from "react";
 import axios from "axios";
 import { useToast } from "../components/ToastProvider";
-import { Upload, FileText, Code, Play, List, BookOpen, Download, Sparkles, Trash2, BarChart3, Search as SearchIcon, Lightbulb, Settings, ChevronDown, Brackets, Database } from "lucide-react";
+import { Upload, FileText, Code, Play, List, BookOpen, Download, Sparkles, Trash2, BarChart3, Search as SearchIcon, Lightbulb, Settings, ChevronDown } from "lucide-react";
 import { Button, Tabs, Tab, Box, Menu, MenuItem, Divider } from '@mui/material';
 import Editor from "@monaco-editor/react";
 import FileUploadPanel from "../components/FileUploadPanel";
@@ -12,15 +12,10 @@ import TemplatesPanel from "../components/TemplatesPanel";
 import TransactionReports from "../components/TransactionReports";
 import FunctionBrowser from "../components/FunctionBrowser";
 import DSLExamples from "../components/DSLExamples";
-// import CustomFunctionBuilder from "../components/CustomFunctionBuilder";
 import EventDataViewer from "../components/EventDataViewer";
 import AppDialog, { useAppDialog } from "../components/AppDialog";
 import AIAgentSetupWizard from "../components/AIAgentSetupWizard";
-
-// API URL - use relative path since setupProxy.js handles the forwarding
-const API = '/api';
-
-console.log('[Dashboard] Using API:', API);
+import { API } from "../config";
 
 // TabPanel component for MUI Tabs with animations
 function TabPanel({ children, value, index, ...other }) {
@@ -44,7 +39,7 @@ function TabPanel({ children, value, index, ...other }) {
   );
 }
 
-const Dashboard = ({ onSignOut }) => {
+const Dashboard = () => {
   const [events, setEvents] = useState([]);
   const [dslFunctions, setDslFunctions] = useState([]);
   const [dslCode, setDslCode] = useState(() => {
@@ -74,7 +69,7 @@ const Dashboard = ({ onSignOut }) => {
   const { confirmProps, openConfirm, promptProps, openPrompt } = useAppDialog();
 
   useEffect(() => {
-    console.log('[useEffect] Loading initial data');
+
     loadEvents();
     loadDslFunctions();
     loadTemplates();
@@ -108,10 +103,8 @@ const Dashboard = ({ onSignOut }) => {
   };
 
   const loadDslFunctions = async () => {
-    console.log('[loadDslFunctions] Starting to load functions from:', `${API}/dsl-functions`);
     try {
       const response = await axios.get(`${API}/dsl-functions`);
-      console.log('[loadDslFunctions] Received', response.data.length, 'functions');
       setDslFunctions(response.data);
     } catch (error) {
       console.error("Error loading DSL functions:", error);
@@ -429,7 +422,6 @@ const Dashboard = ({ onSignOut }) => {
           selectedEvent={selectedEvent}
           onEventSelect={setSelectedEvent}
           onDownloadEvents={handleDownloadEvents}
-          onSignOut={onSignOut}
         />
       </div>
 
@@ -797,14 +789,6 @@ const Dashboard = ({ onSignOut }) => {
         />
       )}
 
-      {/* CustomFunctionBuilder temporarily disabled due to Tooltip migration issues
-      {showCustomFunctionBuilder && (
-        <CustomFunctionBuilder 
-          onClose={() => setShowCustomFunctionBuilder(false)}
-          onFunctionSaved={loadDslFunctions}
-        />
-      )}
-      */}
 
       {showEventDataViewer && (
         <EventDataViewer 

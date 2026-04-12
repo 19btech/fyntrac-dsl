@@ -129,7 +129,7 @@ const ChatAssistantComponent = ({ dslFunctions, events, onInsertCode, onOverwrit
     } catch (e) { /* ignore */ }
   };
 
-  const handleKeyPress = (e) => {
+  const handleKeyDown = (e) => {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       handleSendMessage();
@@ -231,7 +231,7 @@ const ChatAssistantComponent = ({ dslFunctions, events, onInsertCode, onOverwrit
             ref={inputRef}
             value={input}
             onChange={(e) => setInput(e.target.value)}
-            onKeyPress={handleKeyPress}
+            onKeyDown={handleKeyDown}
             placeholder={loading ? "Generating..." : "Ask a question..."}
             className="vsc-input"
             rows={1}

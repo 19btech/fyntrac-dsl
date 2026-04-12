@@ -1,11 +1,9 @@
 import React from "react";
 import { Box, Button, Card, Collapse, List, ListItemButton, ListItemIcon, ListItemText } from '@mui/material';
-import { FileText, Code2, RefreshCw, LogOut, ChevronDown, ChevronRight, Upload } from "lucide-react";
+import { FileText, RefreshCw, ChevronDown, ChevronRight, Upload } from "lucide-react";
 import { useToast } from "./ToastProvider";
 
-const FYNTRAC_LOGO = "/logo.png";
-
-const LeftSidebar = ({ events, selectedEvent, onEventSelect, onDownloadEvents, onSignOut }) => {
+const LeftSidebar = ({ events, selectedEvent, onEventSelect, onDownloadEvents }) => {
   const [expandedEvent, setExpandedEvent] = React.useState(null);
   const toast = useToast();
 
@@ -184,29 +182,6 @@ const LeftSidebar = ({ events, selectedEvent, onEventSelect, onDownloadEvents, o
             </List>
           )}
         </Box>
-      </Box>
-
-      <Box sx={{ p: 2, borderTop: '1px solid #E9ECEF' }}>
-        <Button 
-          variant="outlined" 
-          size="small" 
-          onClick={onSignOut}
-          fullWidth
-          startIcon={<LogOut size={16} />}
-          data-testid="signout-button"
-          sx={{
-            justifyContent: 'flex-start',
-            color: '#6C757D',
-            borderColor: '#CED4DA',
-            '&:hover': {
-              color: '#DC3545',
-              borderColor: '#F8D7DA',
-              bgcolor: '#FFF5F6',
-            },
-          }}
-        >
-          Sign Out
-        </Button>
       </Box>
     </Box>
   );

@@ -4,8 +4,7 @@ import {
   Box, Select, MenuItem, Typography, Tooltip, CircularProgress,
 } from "@mui/material";
 import { Bot } from "lucide-react";
-
-const API = "/api";
+import { API } from "../config";
 
 const ModelSelector = ({ onModelChange, refreshKey, sx }) => {
   const [status, setStatus] = useState(null); // { configured, provider, selected_model, available_models }

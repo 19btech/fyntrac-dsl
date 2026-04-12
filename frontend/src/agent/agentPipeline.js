@@ -5,13 +5,12 @@
 
 import { agentEventBus } from './agentEventBus';
 import { classifyIntent, buildPlanSteps } from './buildExecutionPlan';
+import { API } from '../config';
 
 let _idCounter = 0;
 export function generateMessageId() {
   return `agent-msg-${Date.now()}-${++_idCounter}`;
 }
-
-const API = '/api';
 
 /**
  * Run the agent pipeline for a user message.
@@ -245,10 +244,13 @@ export async function runAgentPipeline(userMessage, opts = {}) {
     }
 
     agentEventBus.complete(msgId);
+    // Clean up event history to prevent memory leak
+    setTimeout(() => agentEventBus.cleanup(msgId), 5000);
     return { messageId: msgId, fullText, sessionId: newSessionId };
 
   } catch (err) {
     agentEventBus.error(msgId, err.message || 'An unexpected error occurred.');
+    setTimeout(() => agentEventBus.cleanup(msgId), 5000);
     return { messageId: msgId, fullText: '', sessionId: opts.sessionId, error: err };
   }
 }

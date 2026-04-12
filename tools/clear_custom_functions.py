@@ -13,7 +13,7 @@ except Exception as e:
     raise SystemExit("pymongo is required; run: pip install pymongo")
 
 MONGO_URL = os.environ.get('MONGO_URL', 'mongodb://localhost:27017')
-DB_NAME = os.environ.get('DB_NAME', 'dsl')
+DB_NAME = os.environ.get('DB_NAME', 'dsl_db')
 
 def main():
     print(f"Connecting to MongoDB at {MONGO_URL}, DB: {DB_NAME}")

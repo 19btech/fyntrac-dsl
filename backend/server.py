@@ -1,14 +1,10 @@
-print('DEBUG: server.py is running')
-from fastapi import FastAPI, APIRouter, UploadFile, File, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi import FastAPI, APIRouter, UploadFile, File, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import StreamingResponse
-from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 import os
 import logging
 from pathlib import Path
-from pydantic import BaseModel, Field, ConfigDict
 from typing import List, Dict, Any, Optional
 import uuid
 from datetime import datetime, timezone
@@ -57,7 +53,6 @@ def _normalize_ingest_date_value(value):
         return normalize_date(s)
     except Exception:
         return ''
-import asyncio
 # AI provider abstraction layer
 try:
     from backend.ai_providers import (
@@ -90,14 +85,31 @@ try:
 except Exception:
     ObjectId = None
 
+# Load configuration
+try:
+    from backend.config import settings
+except Exception:
+    try:
+        from config import settings
+    except Exception:
+        from .config import settings
+
 ROOT_DIR = Path(__file__).parent
-load_dotenv(ROOT_DIR / '.env')
 
 # MongoDB connection
-mongo_url = os.environ.get('MONGO_URL', 'mongodb://localhost:27017')
-db_name = os.environ.get('DB_NAME', 'dsl_db')
-client = AsyncIOMotorClient(mongo_url, serverSelectionTimeoutMS=5000)
-db = client[db_name]
+client = AsyncIOMotorClient(settings.mongo_url, serverSelectionTimeoutMS=settings.mongo_timeout_ms)
+db = client[settings.db_name]
+
+# --- Shared error message table for AI chat endpoints ---
+ERROR_MESSAGES = {
+    "no_provider": "You haven't set up an AI provider yet. Go to Settings \u2192 AI Agent Setup to get started.",
+    "invalid_key": "Your API key appears to be invalid or has expired. Please update it in Settings \u2192 AI Agent Setup.",
+    "quota_exceeded": "You've reached the usage limit for your {provider} account. Please check your plan or billing.",
+    "rate_limited": "You're sending messages too quickly. Please wait a moment before trying again.",
+    "model_premium": "The selected model ({model}) requires a paid subscription on {provider}. Switch to a free-tier model or upgrade your account.",
+    "network": "Couldn't reach {provider} right now. Check your internet connection and try again.",
+    "model_deprecated": "The model '{model}' is no longer available on {provider}. Please select a different model in the chatbot settings.",
+}
 
 # Create the main app
 app = FastAPI()
@@ -124,135 +136,29 @@ in_memory_data = {
 # Flag to track if we should use in-memory storage
 USE_IN_MEMORY = False
 
-# ============= Models =============
-
-class EventDefinition(BaseModel):
-    model_config = ConfigDict(extra="ignore")
-    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    event_name: str
-    fields: List[Dict[str, str]]  # Changed to list of dicts with field name and datatype
-    # New: eventType indicates whether this event is activity (default) or reference
-    eventType: str = 'activity'
-    # eventTable: 'standard' (always activity) or 'custom' (activity or reference)
-    eventTable: str = 'standard'
-    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-
-class DSLFunction(BaseModel):
-    model_config = ConfigDict(extra="ignore")
-    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    function_name: str
-    parameters: str
-    description: str
-    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-
-class EventData(BaseModel):
-    model_config = ConfigDict(extra="ignore")
-    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    event_name: str
-    data_rows: List[Dict[str, Any]]
-    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-
-class DSLTemplate(BaseModel):
-    model_config = ConfigDict(extra="ignore")
-    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    name: str
-    dsl_code: str
-    python_code: str
-    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-
-
-class DSLTemplateArtifact(BaseModel):
-    model_config = ConfigDict(extra="ignore")
-    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    template_id: str
-    template_name: str
-    version: int = 1
-    python_code: str
-    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-    read_only: bool = True
-
-class TransactionOutput(BaseModel):
-    model_config = ConfigDict(extra="ignore")
-    postingdate: str
-    effectivedate: str
-    instrumentid: str
-    subinstrumentid: str = '1'
-    transactiontype: str
-    amount: float
-
-class TransactionReport(BaseModel):
-    model_config = ConfigDict(extra="ignore")
-    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    template_name: str
-    event_name: str
-    transactions: List[Dict[str, Any]]
-    executed_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-
-class ChatMessage(BaseModel):
-    message: str
-    session_id: Optional[str] = None
-    context: Optional[Dict[str, Any]] = None
-    model: Optional[str] = None
-    history: Optional[List[Dict[str, str]]] = None
-
-class ChatResponse(BaseModel):
-    response: str
-    session_id: str
-    structured: Optional[Dict[str, Any]] = None
-    error_type: Optional[str] = None
-    error_message: Optional[str] = None
-
-class AIProviderTestRequest(BaseModel):
-    provider: str
-    api_key: str
-
-class AIProviderSaveRequest(BaseModel):
-    provider: str
-    api_key: str
-    selected_model: str
-    available_models: List[Dict[str, str]]
-
-class DSLValidationRequest(BaseModel):
-    dsl_code: str
-
-class SaveTemplateRequest(BaseModel):
-    name: str
-    dsl_code: str
-    event_name: str
-    replace: bool = False
-
-class DSLRunRequest(BaseModel):
-    dsl_code: str
-    posting_date: Optional[str] = None
-    effective_date: Optional[str] = None
-
-class TemplateExecuteRequest(BaseModel):
-    template_id: str
-    event_name: str
-    posting_date: Optional[str] = None
-    effective_date: Optional[str] = None
-
-class CustomFunctionCreate(BaseModel):
-    model_config = ConfigDict(extra="ignore")
-    name: str
-    category: str = "Custom"
-    description: str
-    parameters: List[Dict[str, str]]
-    returnType: str = "decimal"
-    formula: str
-    example: str = ""
-
-class CustomFunction(BaseModel):
-    model_config = ConfigDict(extra="ignore")
-    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    name: str
-    category: str
-    description: str
-    parameters: List[Dict[str, str]]
-    return_type: str
-    formula: str
-    example: str
-    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+# ============= Models (imported from models.py) =============
+try:
+    from backend.models import (
+        EventDefinition, DSLFunction, EventData, DSLTemplate, DSLTemplateArtifact,
+        TransactionOutput, TransactionReport, ChatMessage, ChatResponse,
+        AIProviderTestRequest, AIProviderSaveRequest, DSLValidationRequest,
+        SaveTemplateRequest, DSLRunRequest, TemplateExecuteRequest,
+    )
+except Exception:
+    try:
+        from models import (
+            EventDefinition, DSLFunction, EventData, DSLTemplate, DSLTemplateArtifact,
+            TransactionOutput, TransactionReport, ChatMessage, ChatResponse,
+            AIProviderTestRequest, AIProviderSaveRequest, DSLValidationRequest,
+            SaveTemplateRequest, DSLRunRequest, TemplateExecuteRequest,
+        )
+    except Exception:
+        from .models import (
+            EventDefinition, DSLFunction, EventData, DSLTemplate, DSLTemplateArtifact,
+            TransactionOutput, TransactionReport, ChatMessage, ChatResponse,
+            AIProviderTestRequest, AIProviderSaveRequest, DSLValidationRequest,
+            SaveTemplateRequest, DSLRunRequest, TemplateExecuteRequest,
+        )
 
 # ============= Sample Data (for when MongoDB is unavailable) =============
 SAMPLE_EVENTS = [
@@ -500,7 +406,7 @@ def dsl_print(*args, **kwargs):
             if isinstance(arg, (list, dict)):
                 try:
                     output_parts.append(json.dumps(arg, indent=2, default=str))
-                except:
+                except Exception:
                     output_parts.append(str(arg))
             else:
                 output_parts.append(str(arg))
@@ -508,7 +414,6 @@ def dsl_print(*args, **kwargs):
         sep = kwargs.get('sep', ' ')
         output = sep.join(output_parts)
         _print_outputs.append(output)
-        _builtin_print(output)
     except Exception:
         try:
             _builtin_print(' '.join(map(str, args)))
@@ -674,7 +579,7 @@ def dsl_print(*args, **kwargs):
                 # Pretty print complex objects
                 try:
                     output_parts.append(json.dumps(arg, indent=2, default=str))
-                except:
+                except Exception:
                     output_parts.append(str(arg))
             else:
                 output_parts.append(str(arg))
@@ -682,8 +587,6 @@ def dsl_print(*args, **kwargs):
         sep = kwargs.get('sep', ' ')
         output = sep.join(output_parts)
         _print_outputs.append(output)
-        # Also print to stdout for debugging
-        _builtin_print(output)
     except Exception:
         try:
             _builtin_print(' '.join(map(str, args)))
@@ -1096,6 +999,7 @@ async def execute_python_template(python_code: str, event_data: List[Dict[str, A
         exec_globals = {
             '__file__': os.path.abspath(__file__),
             '__name__': '__dsl_template__',
+            '__builtins__': {k: v for k, v in __builtins__.items() if k not in ('exec', 'eval', 'compile', '__import__', 'open', 'input', 'breakpoint')} if isinstance(__builtins__, dict) else {k: getattr(__builtins__, k) for k in dir(__builtins__) if k not in ('exec', 'eval', 'compile', '__import__', 'open', 'input', 'breakpoint')},
         }
         # Execute the template which defines helper functions like process_event_data, get_print_outputs
         exec(compile(python_code, '<dsl_template>', 'exec'), exec_globals)
@@ -2035,8 +1939,9 @@ async def run_dsl_code(request: DSLRunRequest):
                 exec_globals = {
                     '__file__': os.path.abspath(__file__),
                     '__name__': '__dsl_standalone__',
+                    '__builtins__': {k: v for k, v in __builtins__.items() if k not in ('exec', 'eval', 'compile', '__import__', 'open', 'input', 'breakpoint')} if isinstance(__builtins__, dict) else {k: getattr(__builtins__, k) for k in dir(__builtins__) if k not in ('exec', 'eval', 'compile', '__import__', 'open', 'input', 'breakpoint')},
                 }
-                exec(python_code, exec_globals)
+                exec(compile(python_code, '<dsl_standalone>', 'exec'), exec_globals)
                 
                 # Clear any previous print outputs
                 clear_prints = exec_globals.get('clear_print_outputs')
@@ -2180,8 +2085,6 @@ async def run_dsl_code(request: DSLRunRequest):
 
 # Templates
 @api_router.post("/templates")
-
-@api_router.post("/templates")
 async def save_template(request: SaveTemplateRequest):
     """Save DSL code as a reusable template"""
     try:
@@ -2234,6 +2137,7 @@ async def save_template(request: SaveTemplateRequest):
             await db.dsl_templates.insert_one(doc)
         except Exception:
             # DB unavailable - store in-memory
+            global USE_IN_MEMORY
             USE_IN_MEMORY = True
             in_memory_data.setdefault('templates', []).append(doc)
 
@@ -2263,6 +2167,7 @@ async def save_template(request: SaveTemplateRequest):
         except Exception as e:
             # DB unavailable - persist artifact in-memory
             logger.warning(f"Could not persist template artifact for {template.id}: {str(e)} - saving in memory")
+            # USE_IN_MEMORY already declared global above in this function
             USE_IN_MEMORY = True
             artifact_doc = {
                 "template_id": template.id,
@@ -2549,6 +2454,7 @@ async def execute_template(request: TemplateExecuteRequest):
             await db.transaction_reports.insert_one(doc)
         except Exception:
             # Fallback to in-memory storage: replace any existing entry for template_name
+            global USE_IN_MEMORY  # noqa: F811
             USE_IN_MEMORY = True
             lst = in_memory_data.setdefault('transaction_reports', [])
             # Remove existing docs for same template_name
@@ -2719,17 +2625,6 @@ async def chat_with_assistant(message: ChatMessage):
     """Chat with AI assistant for DSL help - with full context awareness"""
     try:
         session_id = message.session_id or str(uuid.uuid4())
-
-        # --- Error message table ---
-        ERROR_MESSAGES = {
-            "no_provider": "You haven't set up an AI provider yet. Go to Settings \u2192 AI Agent Setup to get started.",
-            "invalid_key": "Your API key appears to be invalid or has expired. Please update it in Settings \u2192 AI Agent Setup.",
-            "quota_exceeded": "You've reached the usage limit for your {provider} account. Please check your plan or billing.",
-            "rate_limited": "You're sending messages too quickly. Please wait a moment before trying again.",
-            "model_premium": "The selected model ({model}) requires a paid subscription on {provider}. Switch to a free-tier model or upgrade your account.",
-            "network": "Couldn't reach {provider} right now. Check your internet connection and try again.",
-            "model_deprecated": "The model '{model}' is no longer available on {provider}. Please select a different model in the chatbot settings.",
-        }
 
         # --- Load provider config ---
         try:
@@ -2967,17 +2862,6 @@ async def chat_stream(message: ChatMessage):
 
     session_id = message.session_id or str(uuid.uuid4())
 
-    # --- Error message table (shared with non-streaming endpoint) ---
-    ERROR_MESSAGES = {
-        "no_provider": "You haven't set up an AI provider yet. Go to Settings → AI Agent Setup to get started.",
-        "invalid_key": "Your API key appears to be invalid or has expired. Please update it in Settings → AI Agent Setup.",
-        "quota_exceeded": "You've reached the usage limit for your {provider} account. Please check your plan or billing.",
-        "rate_limited": "You're sending messages too quickly. Please wait a moment before trying again.",
-        "model_premium": "The selected model ({model}) requires a paid subscription on {provider}. Switch to a free-tier model or upgrade your account.",
-        "network": "Couldn't reach {provider} right now. Check your internet connection and try again.",
-        "model_deprecated": "The model '{model}' is no longer available on {provider}. Please select a different model in the chatbot settings.",
-    }
-
     async def event_stream():
         try:
             # Load provider config
@@ -3105,37 +2989,15 @@ async def chat_stream(message: ChatMessage):
     )
 
 
-# ============= Custom Functions API =============
+from contextlib import asynccontextmanager
 
-@api_router.get("/custom-functions")
-async def get_custom_functions():
-    """Get all custom user-defined functions"""
-    # Custom functions feature removed; return 404 to indicate endpoint unavailable
-    raise HTTPException(status_code=404, detail="Custom functions feature has been removed")
-
-@api_router.post("/custom-functions")
-async def create_custom_function(func_data: CustomFunctionCreate):
-    """Create a new custom function"""
-    # Custom functions feature removed
-    raise HTTPException(status_code=404, detail="Custom functions feature has been removed")
-
-@api_router.delete("/custom-functions/{function_id}")
-async def delete_custom_function(function_id: str):
-    """Delete a custom function"""
-    # Custom functions feature removed
-    raise HTTPException(status_code=404, detail="Custom functions feature has been removed")
-
-@api_router.put("/custom-functions/{function_id}")
-async def update_custom_function(function_id: str, func_data: CustomFunctionCreate):
-    """Update an existing custom function"""
-    # Custom functions feature removed
-    raise HTTPException(status_code=404, detail="Custom functions feature has been removed")
-
-async def register_custom_function_runtime(func: CustomFunction):
-    """Register a custom function in the DSL runtime"""
-    # Custom functions feature removed - do not register runtime functions
-    logger.info(f"Skipping registration of custom function '{getattr(func, 'name', '<unknown>')}' because custom functions feature is disabled")
-    return
+@asynccontextmanager
+async def lifespan(app):
+    """Application lifespan: startup and shutdown hooks."""
+    logger.info("Application startup")
+    yield
+    client.close()
+    logger.info("Application shutdown — MongoDB client closed")
 
 # Include router under /api so frontend proxying to /api/* resolves correctly
 app.include_router(api_router, prefix="/api")
@@ -3146,25 +3008,17 @@ app.include_router(api_router, prefix="/api")
 # prevents 404s when the proxy rewrites paths unexpectedly.
 app.include_router(api_router)
 
+# Set lifespan on app
+app.router.lifespan_context = lifespan
+
 # CORS
 app.add_middleware(
     CORSMiddleware,
     allow_credentials=True,
-    allow_origins=os.environ.get('CORS_ORIGINS', '*').split(','),
+    allow_origins=settings.cors_origins,
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-@app.on_event("startup")
-async def startup_load_custom_functions():
-    """Load all custom functions into the DSL runtime on startup"""
-    # Custom functions feature has been disabled; skip loading and registration
-    logger.info("Custom functions feature is disabled — skipping loading and registration at startup")
-    return
-
-@app.on_event("shutdown")
-async def shutdown_db_client():
-    client.close()
 
 # WebSocket endpoint for development (supports hot reload, live updates)
 @app.websocket("/ws")
@@ -3183,4 +3037,4 @@ async def websocket_endpoint(websocket: WebSocket):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(app, host=settings.host, port=settings.port)

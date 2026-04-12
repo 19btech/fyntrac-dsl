@@ -1,6 +1,5 @@
 
 # ============= Imports (must be at top) =============
-import ast
 import math
 from datetime import datetime, timedelta
 from typing import List, Dict, Any, Optional
@@ -165,9 +164,6 @@ def lookup(value_array: list, match_array: list, target_value: Any) -> Any:
 """
 Complete DSL Functions Library - 101 Financial Functions
 """
-import math
-from datetime import datetime, timedelta
-from typing import List, Dict, Any, Optional
 
 # ============= Date Normalization Helper =============
 
@@ -1490,12 +1486,6 @@ def schedule(period_def: Dict[str, Any], columns: Dict[str, str], context: Dict[
 
             # Evaluate each column expression in order
             for col_name, expression in columns.items():
-                # Debug row/context snapshot
-                try:
-                    _builtin_print(f"DBG_ROW idx={idx} expr=\"{expression}\" period_index={idx} normalized_keys={list(normalized_arrays.keys()) if 'normalized_arrays' in locals() else []}")
-                    _builtin_print(f"DBG_ctx replay_upb={eval_context.get('replay_upb')} replay_upb_full_len={len(eval_context.get('replay_upb_full')) if eval_context.get('replay_upb_full') is not None else None} computed_End_UPB={computed_columns.get('End_UPB')}")
-                except Exception:
-                    pass
 
                 # Handle special keywords
                 if expression == "period_date":
@@ -1506,11 +1496,6 @@ def schedule(period_def: Dict[str, Any], columns: Dict[str, str], context: Dict[
                     value = dcf_value
                 else:
                     try:
-                        # Debug: print evaluation context keys helpful for tracing
-                        try:
-                            _builtin_print(f"EVAL_CTX expr=\"{expression}\" period_index={idx} keys={list(eval_context.keys())}")
-                        except Exception:
-                            pass
                         # Evaluate expression with full DSL context using safe evaluator
                         expr_str = str(expression)
                         # Lazy-evaluate top-level iif(...) to avoid evaluating both branches
@@ -1549,19 +1534,6 @@ def schedule(period_def: Dict[str, Any], columns: Dict[str, str], context: Dict[
                         if value is None:
                             value = 0
                     except Exception as e:
-                        # Print error for debug and return error marker
-                        try:
-                            ctx_summary = {}
-                            for ck in ('replay_upb', 'replay_upb_full', 'End_UPB', 'Beg_UPB'):
-                                if ck in eval_context:
-                                    try:
-                                        ctx_summary[ck] = type(eval_context.get(ck)).__name__
-                                    except Exception:
-                                        ctx_summary[ck] = str(eval_context.get(ck))
-                            prior_keys = list(prior_snapshot.keys()) if 'prior_snapshot' in locals() else []
-                            _builtin_print(f"EVAL_ERROR expr=\"{expression}\" error={repr(e)} ctx_types={ctx_summary} prior_keys={prior_keys}")
-                        except Exception:
-                            pass
                         value = f"ERROR: {str(e)}"
 
                 row[col_name] = value
@@ -2189,7 +2161,7 @@ def print_schedule(sched: List[Dict[str, Any]], title: str = "Schedule") -> List
     _dsl_print(f"═══ {title} ═══")
     try:
         _dsl_print(json.dumps(sched, indent=2, default=str))
-    except:
+    except Exception:
         _dsl_print(str(sched))
     
     return sched
@@ -2993,12 +2965,12 @@ def array_filter(array: List[Any], var_name: str, condition: str, context: Dict[
         local_context.update(dsl_funcs)
         if context:
             local_context.update(context)
-        
-            try:
-                if safe_eval_expression(condition, local_context):
-                    results.append(item)
-            except Exception:
-                pass
+
+        try:
+            if safe_eval_expression(condition, local_context):
+                results.append(item)
+        except Exception:
+            pass
     
     return results
 
@@ -3032,6 +3004,8 @@ def op_mul(a: Any, b: Any) -> Any:
     return a * b
 
 def op_div(a: Any, b: Any) -> Any:
+    a = to_number(a)
+    b = to_number(b)
     if b == 0:
         raise ValueError("Division by zero")
     return a / b

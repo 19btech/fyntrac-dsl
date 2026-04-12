@@ -1,4 +1,4 @@
-"""Google Gemini provider implementation."""
+"""Google Gemini provider implementation using the modern google-genai SDK."""
 
 import asyncio
 import re
@@ -22,7 +22,7 @@ _INCLUDE_PREFIX = 'gemini-'
 
 
 def _classify_error(exc: Exception) -> tuple[str, str]:
-    """Map a google.generativeai exception to (error_type, detail)."""
+    """Map a google-genai exception to (error_type, detail)."""
     msg = str(exc).lower()
     if "api key not valid" in msg or "api_key_invalid" in msg or "401" in msg:
         return ERROR_INVALID_KEY, "The API key was not accepted by Google."
@@ -37,13 +37,18 @@ def _classify_error(exc: Exception) -> tuple[str, str]:
     return ERROR_NETWORK, str(exc)
 
 
+def _get_client(api_key: str):
+    """Create a google.genai Client instance (thread-safe, no global state)."""
+    from google import genai
+    return genai.Client(api_key=api_key)
+
+
 class GeminiProvider(AIProvider):
 
     async def validate_key(self, api_key: str) -> bool:
-        import google.generativeai as genai
         try:
-            genai.configure(api_key=api_key)
-            models = await asyncio.to_thread(lambda: list(genai.list_models()))
+            client = _get_client(api_key)
+            models = await asyncio.to_thread(lambda: list(client.models.list()))
             return len(models) > 0
         except Exception as exc:
             err_type, _ = _classify_error(exc)
@@ -52,10 +57,9 @@ class GeminiProvider(AIProvider):
             raise
 
     async def list_models(self, api_key: str) -> list[ModelInfo]:
-        import google.generativeai as genai
         try:
-            genai.configure(api_key=api_key)
-            raw_models = await asyncio.to_thread(lambda: list(genai.list_models()))
+            client = _get_client(api_key)
+            raw_models = await asyncio.to_thread(lambda: list(client.models.list()))
         except Exception as exc:
             err_type, detail = _classify_error(exc)
             raise AIError(err_type, "gemini", detail)
@@ -65,8 +69,6 @@ class GeminiProvider(AIProvider):
         results = []
         seen = set()
         for m in raw_models:
-            if 'generateContent' not in m.supported_generation_methods:
-                continue
             model_id = m.name.replace('models/', '')
             if not model_id.startswith(_INCLUDE_PREFIX):
                 continue
@@ -78,12 +80,12 @@ class GeminiProvider(AIProvider):
             if model_id in seen:
                 continue
             seen.add(model_id)
-            results.append(ModelInfo(id=model_id, name=m.display_name))
+            display = getattr(m, 'display_name', model_id)
+            results.append(ModelInfo(id=model_id, name=display))
 
         # Sort: stable releases first, then previews; within each group newest version first
         def _sort_key(m):
             is_preview = 1 if 'preview' in m.id else 0
-            # Extract version number for ordering (e.g. 2.5 -> 2.5, 3.1 -> 3.1)
             ver_match = re.search(r'(\d+\.?\d*)', m.id)
             version = float(ver_match.group(1)) if ver_match else 0
             return (is_preview, -version, m.id)
@@ -98,23 +100,25 @@ class GeminiProvider(AIProvider):
         user_message: str,
         history: list[dict] | None = None,
     ) -> AIResponse:
-        import google.generativeai as genai
+        from google.genai import types
         try:
-            genai.configure(api_key=api_key)
-            model = genai.GenerativeModel(
-                model_id,
-                system_instruction=system_prompt,
-            )
+            client = _get_client(api_key)
 
-            # Build history for multi-turn
-            gemini_history = []
+            # Build contents list for multi-turn
+            contents = []
             if history:
                 for msg in history:
                     role = "user" if msg.get("role") == "user" else "model"
-                    gemini_history.append({"role": role, "parts": [msg.get("content", "")]})
+                    contents.append(types.Content(role=role, parts=[types.Part.from_text(text=msg.get("content", ""))]))
+            contents.append(types.Content(role="user", parts=[types.Part.from_text(text=user_message)]))
 
-            chat = model.start_chat(history=gemini_history)
-            response = await asyncio.to_thread(chat.send_message, user_message)
+            config = types.GenerateContentConfig(system_instruction=system_prompt)
+            response = await asyncio.to_thread(
+                client.models.generate_content,
+                model=model_id,
+                contents=contents,
+                config=config,
+            )
             return AIResponse(text=response.text)
         except Exception as exc:
             error_type, detail = _classify_error(exc)
@@ -128,29 +132,30 @@ class GeminiProvider(AIProvider):
         user_message: str,
         history: list[dict] | None = None,
     ) -> AsyncIterator[str]:
-        import google.generativeai as genai
+        from google.genai import types
         import queue, threading
         try:
-            genai.configure(api_key=api_key)
-            model = genai.GenerativeModel(
-                model_id,
-                system_instruction=system_prompt,
-            )
-            gemini_history = []
+            client = _get_client(api_key)
+
+            contents = []
             if history:
                 for msg in history:
                     role = "user" if msg.get("role") == "user" else "model"
-                    gemini_history.append({"role": role, "parts": [msg.get("content", "")]})
+                    contents.append(types.Content(role=role, parts=[types.Part.from_text(text=msg.get("content", ""))]))
+            contents.append(types.Content(role="user", parts=[types.Part.from_text(text=user_message)]))
 
-            chat = model.start_chat(history=gemini_history)
+            config = types.GenerateContentConfig(system_instruction=system_prompt)
 
-            # Use a queue to bridge sync Gemini streaming into async iteration
             q = queue.Queue()
             _SENTINEL = object()
 
             def _stream_worker():
                 try:
-                    response = chat.send_message(user_message, stream=True)
+                    response = client.models.generate_content_stream(
+                        model=model_id,
+                        contents=contents,
+                        config=config,
+                    )
                     for chunk in response:
                         if chunk.text:
                             q.put(chunk.text)

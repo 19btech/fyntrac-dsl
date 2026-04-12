@@ -4,8 +4,7 @@ import { Button, Box } from '@mui/material';
 import AppDialog, { useAppDialog } from './AppDialog';
 import { Trash2, Terminal, Play, Table2, Code, Wand2, Download, Save, X } from "lucide-react";
 import { useToast } from "./ToastProvider";
-
-const API = '/api';
+import { API } from '../config';
 
 // Helper to check if a string is JSON array/object
 const tryParseJSON = (str) => {

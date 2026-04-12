@@ -3,8 +3,7 @@ import axios from "axios";
 import { useToast } from "./ToastProvider";
 import { X, Database, Download } from "lucide-react";
 import { Button, IconButton, Chip, Box, Typography, Table, TableHead, TableBody, TableRow, TableCell, Card, Tabs, Tab } from '@mui/material';
-
-const API = '/api';
+import { API } from '../config';
 
 const EventDataViewer = ({ onClose }) => {
   const [eventDataSummary, setEventDataSummary] = useState([]);

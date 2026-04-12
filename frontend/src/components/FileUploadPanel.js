@@ -3,8 +3,7 @@ import axios from "axios";
 import { useToast } from "./ToastProvider";
 import { Upload, FileText, FileSpreadsheet, Download, CheckCircle, Eye, X } from "lucide-react";
 import { Button, Card, CardContent, Box, Typography, LinearProgress, IconButton, Tooltip } from '@mui/material';
-
-const API = '/api';
+import { API } from '../config';
 
 const FileUploadPanel = ({ onUploadSuccess, events, addConsoleLog, selectedEvent, onViewEvent }) => {
   const [eventFile, setEventFile] = useState(null);

@@ -59,7 +59,6 @@ export const ToastProvider = ({ children }) => {
 export const toast = {
   success: (message) => {
     // Will be overridden by context
-    console.log('Toast (fallback):', message);
   },
   error: (message) => {
     console.error('Toast (fallback):', message);

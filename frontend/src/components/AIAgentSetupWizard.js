@@ -8,8 +8,7 @@ import {
 } from "@mui/material";
 import { X, Eye, EyeOff, Check, AlertTriangle, ExternalLink, Unplug, RefreshCw } from "lucide-react";
 import { useToast } from "./ToastProvider";
-
-const API = "/api";
+import { API } from "../config";
 
 // Inline SVG logos
 const GeminiLogo = () => (
