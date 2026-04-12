@@ -14,6 +14,7 @@ import FunctionBrowser from "../components/FunctionBrowser";
 import DSLExamples from "../components/DSLExamples";
 // import CustomFunctionBuilder from "../components/CustomFunctionBuilder";
 import EventDataViewer from "../components/EventDataViewer";
+import AppDialog, { useAppDialog } from "../components/AppDialog";
 
 // API URL - use relative path since setupProxy.js handles the forwarding
 const API = '/api';
@@ -65,6 +66,7 @@ const Dashboard = ({ onSignOut }) => {
   const [showEventDataViewer, setShowEventDataViewer] = useState(false);
   const chatAssistantRef = useRef(null);
   const toast = useToast();
+  const { confirmProps, openConfirm, promptProps, openPrompt } = useAppDialog();
 
   useEffect(() => {
     console.log('[useEffect] Loading initial data');
@@ -157,48 +159,53 @@ const Dashboard = ({ onSignOut }) => {
   };
 
   const handleClearAllData = async () => {
-    const confirmed = window.confirm("Are you sure you want to clear all data? This will delete all events, DSL functions, event data, and templates. This action cannot be undone.");
-    if (!confirmed) return;
+    openConfirm({
+      title: "Clear All Data",
+      message: "Are you sure you want to clear all data? This will delete all events, DSL functions, event data, and templates. This action cannot be undone.",
+      confirmLabel: "Clear All",
+      confirmColor: "error",
+      onConfirm: async () => {
+        try {
+          addConsoleLog("Clearing all data...", "info");
+          const response = await axios.delete(`${API}/clear-all-data`);
+          
+          addConsoleLog(`✓ ${response.data.message}`, "success");
+          
+          setEvents([]);
+          setDslFunctions([]);
+          setTemplates([]);
+          setTransactionReports([]);
+          setSelectedEvent("");
+          setDslCode('');
 
-    try {
-      addConsoleLog("Clearing all data...", "info");
-      const response = await axios.delete(`${API}/clear-all-data`);
-      
-      addConsoleLog(`✓ ${response.data.message}`, "success");
-      
-      setEvents([]);
-      setDslFunctions([]);
-      setTemplates([]);
-      setTransactionReports([]);
-      setSelectedEvent("");
-      setDslCode('');
+          try {
+            localStorage.removeItem('dslCode');
+            localStorage.removeItem('chatMessages');
+            localStorage.removeItem('chatSessionId');
+            // Remove uploaded filenames and upload state
+            localStorage.removeItem('uploadedEventFileName');
+            localStorage.removeItem('uploadedExcelFileName');
+            localStorage.removeItem('lastEventDataUploadFailedFile');
+            localStorage.removeItem('lastEventDataUploadFileName');
+            localStorage.removeItem('lastEventDataUploadStatus');
+            localStorage.removeItem('lastEventDataUploadErrors');
+            try { window.dispatchEvent(new Event('dsl-clear-uploaded-files')); } catch(e) {}
+            try { window.dispatchEvent(new Event('dsl-clear-event-viewer')); } catch(e) {}
+          } catch (e) {
+            // ignore
+          }
 
-      try {
-        localStorage.removeItem('dslCode');
-        localStorage.removeItem('chatMessages');
-        localStorage.removeItem('chatSessionId');
-        // Remove uploaded filenames and upload state
-        localStorage.removeItem('uploadedEventFileName');
-        localStorage.removeItem('uploadedExcelFileName');
-        localStorage.removeItem('lastEventDataUploadFailedFile');
-        localStorage.removeItem('lastEventDataUploadFileName');
-        localStorage.removeItem('lastEventDataUploadStatus');
-        localStorage.removeItem('lastEventDataUploadErrors');
-        try { window.dispatchEvent(new Event('dsl-clear-uploaded-files')); } catch(e) {}
-        try { window.dispatchEvent(new Event('dsl-clear-event-viewer')); } catch(e) {}
-      } catch (e) {
-        // ignore
+          await loadDslFunctions();
+          await loadTemplates();
+          await loadTransactionReports();
+
+          toast.success("All data cleared! Fresh environment ready.");
+        } catch (error) {
+          addConsoleLog(`✗ Error clearing data: ${error.message}`, "error");
+          toast.error("Failed to clear data");
+        }
       }
-
-      await loadDslFunctions();
-      await loadTemplates();
-      await loadTransactionReports();
-
-      toast.success("All data cleared! Fresh environment ready.");
-    } catch (error) {
-      addConsoleLog(`✗ Error clearing data: ${error.message}`, "error");
-      toast.error("Failed to clear data");
-    }
+    });
   };
 
   const handleDownloadEvents = async () => {
@@ -225,39 +232,63 @@ const Dashboard = ({ onSignOut }) => {
       return;
     }
     
-    const templateName = prompt("Enter template name:");
-    if (!templateName) return;
-
-    try {
-      const checkResponse = await axios.get(`${API}/templates/check-name/${encodeURIComponent(templateName)}`);
-      
-      let shouldReplace = false;
-      if (checkResponse.data.exists) {
-        shouldReplace = window.confirm(`A template named "${templateName}" already exists. Do you want to replace it?`);
-        if (!shouldReplace) {
-          toast.info("Template save cancelled");
-          return;
+    openPrompt({
+      title: "Save Template",
+      message: "Enter a name for this template.",
+      label: "Template name",
+      onSubmit: async (templateName) => {
+        try {
+          const checkResponse = await axios.get(`${API}/templates/check-name/${encodeURIComponent(templateName)}`);
+          
+          if (checkResponse.data.exists) {
+            openConfirm({
+              title: "Replace Template",
+              message: `A template named "${templateName}" already exists. Do you want to replace it?`,
+              confirmLabel: "Replace",
+              onConfirm: async () => {
+                try {
+                  addConsoleLog(`Saving template '${templateName}' (replacing existing)...`, "info");
+                  await axios.post(
+                    `${API}/templates`,
+                    {
+                      name: templateName,
+                      dsl_code: dslCode,
+                      event_name: selectedEvent,
+                      replace: true
+                    }
+                  );
+                  addConsoleLog(`✓ Template replaced successfully!`, "success");
+                  toast.success("Template replaced!");
+                  loadTemplates();
+                } catch (error) {
+                  const errorMsg = error.response?.data?.detail || error.message;
+                  addConsoleLog(`✗ Error saving template: ${errorMsg}`, "error");
+                  toast.error("Failed to save template");
+                }
+              }
+            });
+          } else {
+            addConsoleLog(`Saving template '${templateName}'...`, "info");
+            const response = await axios.post(
+              `${API}/templates`,
+              {
+                name: templateName,
+                dsl_code: dslCode,
+                event_name: selectedEvent,
+                replace: false
+              }
+            );
+            addConsoleLog(`✓ Template saved successfully!`, "success");
+            toast.success("Template saved!");
+            loadTemplates();
+          }
+        } catch (error) {
+          const errorMsg = error.response?.data?.detail || error.message;
+          addConsoleLog(`✗ Error saving template: ${errorMsg}`, "error");
+          toast.error("Failed to save template");
         }
       }
-
-      addConsoleLog(`Saving template '${templateName}'${shouldReplace ? ' (replacing existing)' : ''}...`, "info");
-      const response = await axios.post(
-        `${API}/templates`,
-        {
-          name: templateName,
-          dsl_code: dslCode,
-          event_name: selectedEvent,
-          replace: shouldReplace
-        }
-      );
-      addConsoleLog(`✓ Template ${shouldReplace ? 'replaced' : 'saved'} successfully!`, "success");
-      toast.success(shouldReplace ? "Template replaced!" : "Template saved!");
-      loadTemplates();
-    } catch (error) {
-      const errorMsg = error.response?.data?.detail || error.message;
-      addConsoleLog(`✗ Error saving template: ${errorMsg}`, "error");
-      toast.error("Failed to save template");
-    }
+    });
   };
 
   const handleRunTemplate = async (templateId) => {
@@ -326,20 +357,25 @@ const Dashboard = ({ onSignOut }) => {
   };
 
   const handleDeleteReport = async (reportId, reportName) => {
-    const confirmed = window.confirm(`Are you sure you want to delete report "${reportName}"?`);
-    if (!confirmed) return;
-
-    try {
-      addConsoleLog(`Deleting report '${reportName}'...`, "info");
-      await axios.delete(`${API}/transaction-reports/${reportId}`);
-      
-      addConsoleLog(`✓ Report deleted successfully!`, "success");
-      toast.success("Report deleted!");
-      loadTransactionReports();
-    } catch (error) {
-      addConsoleLog(`✗ Error deleting report: ${error.message}`, "error");
-      toast.error("Failed to delete report");
-    }
+    openConfirm({
+      title: "Delete Report",
+      message: `Are you sure you want to delete report "${reportName}"?`,
+      confirmLabel: "Delete",
+      confirmColor: "error",
+      onConfirm: async () => {
+        try {
+          addConsoleLog(`Deleting report '${reportName}'...`, "info");
+          await axios.delete(`${API}/transaction-reports/${reportId}`);
+          
+          addConsoleLog(`✓ Report deleted successfully!`, "success");
+          toast.success("Report deleted!");
+          loadTransactionReports();
+        } catch (error) {
+          addConsoleLog(`✗ Error deleting report: ${error.message}`, "error");
+          toast.error("Failed to delete report");
+        }
+      }
+    });
   };
 
   const handleDeleteTemplate = async (templateId, templateName) => {
@@ -751,6 +787,9 @@ const Dashboard = ({ onSignOut }) => {
           onClose={() => setShowEventDataViewer(false)}
         />
       )}
+
+      <AppDialog {...confirmProps} />
+      <AppDialog {...promptProps} />
     </div>
   );
 };

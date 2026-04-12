@@ -1,6 +1,7 @@
 import React, { useState } from "react";
 import axios from "axios";
 import { Button, Box } from '@mui/material';
+import AppDialog, { useAppDialog } from './AppDialog';
 import { Trash2, Terminal, Play, Table2, Code, Wand2, Download, Save, X } from "lucide-react";
 import { useToast } from "./ToastProvider";
 
@@ -382,19 +383,23 @@ const ConsoleOutput = ({ output, onClear, dslCode, addConsoleLog, onCodeChange, 
     }
   };
 
+  const { confirmProps, openConfirm } = useAppDialog();
+
   // Clear the editor content with confirmation
   const handleClearEditor = () => {
-    const confirmed = window.confirm("This action will clear all content from the editor. Do you want to proceed?");
-    if (!confirmed) {
-      addConsoleLog("Cancelled clear editor action", "info");
-      return;
-    }
-
-    if (onCodeChange) {
-      onCodeChange("");
-      addConsoleLog("✓ Editor cleared", "success");
-      toast.success("Editor cleared");
-    }
+    openConfirm({
+      title: "Clear Editor",
+      message: "This action will clear all content from the editor. Do you want to proceed?",
+      confirmLabel: "Clear",
+      confirmColor: "error",
+      onConfirm: () => {
+        if (onCodeChange) {
+          onCodeChange("");
+          addConsoleLog("✓ Editor cleared", "success");
+          toast.success("Editor cleared");
+        }
+      }
+    });
   };
 
   const handleRunCode = async () => {
@@ -645,6 +650,7 @@ const ConsoleOutput = ({ output, onClear, dslCode, addConsoleLog, onCodeChange, 
           )}
         </div>
       </Box>
+      <AppDialog {...confirmProps} />
     </div>
   );
 };

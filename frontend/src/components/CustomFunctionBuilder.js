@@ -3,6 +3,7 @@ import axios from "axios";
 import { useToast } from "./ToastProvider";
 import { Plus, Trash2, Save, X, Code, Brackets, FileCode, Info, ChevronDown, ChevronUp, Edit2, HelpCircle, BookOpen, Lightbulb } from "lucide-react";
 import { Button, Card, CardContent, TextField, Box, Chip, Tooltip, IconButton, Dialog, DialogTitle, DialogContent } from '@mui/material';
+import AppDialog, { useAppDialog } from './AppDialog';
 
 const API = '/api';
 
@@ -345,20 +346,27 @@ const CustomFunctionBuilder = ({ onClose, onFunctionSaved }) => {
     }
   };
 
-  const handleDeleteFunction = async (functionId, functionName) => {
-    const confirmed = window.confirm(`Are you sure you want to delete "${functionName}"?`);
-    if (!confirmed) return;
+  const { confirmProps, openConfirm } = useAppDialog();
 
-    try {
-      await axios.delete(`${API}/custom-functions/${functionId}`);
-      toast.success("Function deleted successfully!");
-      loadCustomFunctions();
-      if (onFunctionSaved) {
-        onFunctionSaved();
+  const handleDeleteFunction = async (functionId, functionName) => {
+    openConfirm({
+      title: "Delete Function",
+      message: `Are you sure you want to delete "${functionName}"?`,
+      confirmLabel: "Delete",
+      confirmColor: "error",
+      onConfirm: async () => {
+        try {
+          await axios.delete(`${API}/custom-functions/${functionId}`);
+          toast.success("Function deleted successfully!");
+          loadCustomFunctions();
+          if (onFunctionSaved) {
+            onFunctionSaved();
+          }
+        } catch (error) {
+          toast.error("Failed to delete function");
+        }
       }
-    } catch (error) {
-      toast.error("Failed to delete function");
-    }
+    });
   };
 
   const formatParams = (params) => {
@@ -820,6 +828,7 @@ const CustomFunctionBuilder = ({ onClose, onFunctionSaved }) => {
           </div>
         </div>
       </div>
+      <AppDialog {...confirmProps} />
     </div>
   );
 };

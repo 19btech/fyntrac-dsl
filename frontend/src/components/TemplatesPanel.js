@@ -1,10 +1,12 @@
 import React, { useState } from "react";
 import { Card, CardContent, Button, IconButton, Box, Typography, Chip, Tooltip } from '@mui/material';
+import AppDialog, { useAppDialog } from './AppDialog';
 import { Play, FileText, Clock, Trash2, Rocket } from "lucide-react";
 
 const TemplatesPanel = ({ templates, onLoadTemplate, onRunTemplate, onDeleteTemplate, onDeployTemplate, selectedEvent }) => {
   const [deletingIds, setDeletingIds] = useState(new Set());
   const [deployingIds, setDeployingIds] = useState(new Set());
+  const { confirmProps, openConfirm } = useAppDialog();
   
   return (
     <Box sx={{ p: 3, bgcolor: '#F8F9FA', minHeight: '100%' }} data-testid="templates-panel">
@@ -45,23 +47,28 @@ const TemplatesPanel = ({ templates, onLoadTemplate, onRunTemplate, onDeleteTemp
                     <span>
                       <IconButton
                     size="small"
-                    onClick={async (e) => {
+                    onClick={(e) => {
                       e.stopPropagation();
-                      const confirmed = window.confirm(`Delete template "${template.name}"?`);
-                      if (!confirmed) return;
-
-                      try {
-                        setDeletingIds(prev => new Set(prev).add(template.id));
-                        await onDeleteTemplate(template.id, template.name);
-                      } catch (err) {
-                        console.error('Error deleting template', err);
-                      } finally {
-                        setDeletingIds(prev => {
-                          const copy = new Set(prev);
-                          copy.delete(template.id);
-                          return copy;
-                        });
-                      }
+                      openConfirm({
+                        title: "Delete Template",
+                        message: `Delete template "${template.name}"?`,
+                        confirmLabel: "Delete",
+                        confirmColor: "error",
+                        onConfirm: async () => {
+                          try {
+                            setDeletingIds(prev => new Set(prev).add(template.id));
+                            await onDeleteTemplate(template.id, template.name);
+                          } catch (err) {
+                            console.error('Error deleting template', err);
+                          } finally {
+                            setDeletingIds(prev => {
+                              const copy = new Set(prev);
+                              copy.delete(template.id);
+                              return copy;
+                            });
+                          }
+                        }
+                      });
                     }}
                     sx={{ color: '#6C757D' }}
                     data-testid={`delete-template-${template.id}`}
@@ -75,26 +82,32 @@ const TemplatesPanel = ({ templates, onLoadTemplate, onRunTemplate, onDeleteTemp
                     <span>
                       <IconButton
                         size="small"
-                        onClick={async (e) => {
+                        onClick={(e) => {
                           e.stopPropagation();
-                          if (!window.confirm(`Deploy template "${template.name}" as model?`)) return;
-                          try {
-                            setDeployingIds(prev => new Set(prev).add(template.id));
-                            if (typeof onDeployTemplate === 'function') {
-                              await onDeployTemplate(template.id, template.name);
-                            } else {
-                              // fallback: simulate deploy
-                              await new Promise(res => setTimeout(res, 800));
+                          openConfirm({
+                            title: "Deploy Template",
+                            message: `Deploy template "${template.name}" as model?`,
+                            confirmLabel: "Deploy",
+                            onConfirm: async () => {
+                              try {
+                                setDeployingIds(prev => new Set(prev).add(template.id));
+                                if (typeof onDeployTemplate === 'function') {
+                                  await onDeployTemplate(template.id, template.name);
+                                } else {
+                                  // fallback: simulate deploy
+                                  await new Promise(res => setTimeout(res, 800));
+                                }
+                              } catch (err) {
+                                console.error('Error deploying template', err);
+                              } finally {
+                                setDeployingIds(prev => {
+                                  const copy = new Set(prev);
+                                  copy.delete(template.id);
+                                  return copy;
+                                });
+                              }
                             }
-                          } catch (err) {
-                            console.error('Error deploying template', err);
-                          } finally {
-                            setDeployingIds(prev => {
-                              const copy = new Set(prev);
-                              copy.delete(template.id);
-                              return copy;
-                            });
-                          }
+                          });
                         }}
                         sx={{
                           color: deployingIds.has(template.id) ? '#FFC107' : '#5B5FED',
@@ -153,6 +166,8 @@ const TemplatesPanel = ({ templates, onLoadTemplate, onRunTemplate, onDeleteTemp
           ))}
         </Box>
       )}
+
+      <AppDialog {...confirmProps} />
     </Box>
   );
 };
