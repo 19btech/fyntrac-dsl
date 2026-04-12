@@ -36,7 +36,7 @@ const PostingDateModal = ({ open, postingDates, onConfirm, onCancel }) => {
         </Typography>
       </DialogTitle>
 
-      <DialogContent sx={{ pt: 2, pb: 1 }}>
+      <DialogContent sx={{ pt: 3, pb: 1, overflow: 'visible' }}>
         <FormControl fullWidth size="small">
           <InputLabel id="posting-date-label">Posting Date</InputLabel>
           <Select
