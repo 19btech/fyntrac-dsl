@@ -50,12 +50,12 @@ const FunctionBrowser = ({ dslFunctions, onInsertFunction, onClose, onAskAI }) =
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
             <BookOpen size={24} color="#5B5FED" />
             <Box>
-              <Typography variant="h4">DSL Function Browser</Typography>
+              <Typography variant="h4">Formula Library</Typography>
               <Typography variant="body2" color="text.secondary">
-                {dslFunctions.length} functions available
+                {dslFunctions.length} formulas available
                 {customCount > 0 && (
                   <Box component="span" sx={{ ml: 1, color: '#7C3AED' }}>
-                    ({customCount} custom)
+                    ({customCount} user-created)
                   </Box>
                 )}
               </Typography>
@@ -70,7 +70,7 @@ const FunctionBrowser = ({ dslFunctions, onInsertFunction, onClose, onAskAI }) =
       <DialogContent sx={{ display: 'flex', flexDirection: 'column', p: 3 }}>
         <Box sx={{ mb: 3 }}>
           <TextField
-            placeholder="Search functions by name, description, or parameters..."
+            placeholder="Search formulas by name or description..."
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
             fullWidth
@@ -112,7 +112,7 @@ const FunctionBrowser = ({ dslFunctions, onInsertFunction, onClose, onAskAI }) =
           </Box>
 
           <Typography variant="body2" color="text.secondary">
-            Showing {filteredFunctions.length} of {dslFunctions.length} functions
+            Showing {filteredFunctions.length} of {dslFunctions.length} formulas
           </Typography>
         </Box>
 
@@ -145,7 +145,7 @@ const FunctionBrowser = ({ dslFunctions, onInsertFunction, onClose, onAskAI }) =
                       {func.is_custom && (
                         <Chip
                           icon={<Sparkles size={10} />}
-                          label="Custom"
+                          label="User-Created"
                           size="small"
                           sx={{ 
                             ml: 0.5,
@@ -180,11 +180,11 @@ const FunctionBrowser = ({ dslFunctions, onInsertFunction, onClose, onAskAI }) =
                       sx={{ flex: 1 }}
                       onClick={() => {
                         onInsertFunction(`${func.name}(${func.params})`);
-                        toast.success(`Inserted: ${func.name}()`);
+                        toast.success(`Added: ${func.name}()`);
                       }}
                       data-testid={`insert-${func.name}`}
                     >
-                      Insert into Editor
+                      Add to Calculation
                     </Button>
                     {onAskAI && (
                       <Button
@@ -231,9 +231,9 @@ const FunctionBrowser = ({ dslFunctions, onInsertFunction, onClose, onAskAI }) =
           {filteredFunctions.length === 0 && (
             <Box sx={{ textAlign: 'center', py: 6 }}>
               <Search size={48} color="#CED4DA" style={{ marginBottom: 16 }} />
-              <Typography variant="h5" sx={{ mb: 1 }}>No functions found</Typography>
+              <Typography variant="h5" sx={{ mb: 1 }}>No formulas found</Typography>
               <Typography variant="body2" color="text.secondary">
-                Try adjusting your search or filter criteria
+                Try a different search term or category
               </Typography>
             </Box>
           )}
@@ -241,7 +241,7 @@ const FunctionBrowser = ({ dslFunctions, onInsertFunction, onClose, onAskAI }) =
 
         <Box sx={{ pt: 2, borderTop: '1px solid #E9ECEF', bgcolor: '#F8F9FA', px: 2, py: 1.5, mx: -3, mb: -3, mt: 2 }}>
           <Typography variant="caption" color="text.secondary" sx={{ textAlign: 'center', display: 'block' }}>
-            Use "Build Function" to create custom DSL functions
+            Use "Build Formula" to create your own custom formulas
           </Typography>
         </Box>
       </DialogContent>

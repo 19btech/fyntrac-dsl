@@ -209,15 +209,15 @@ const ChatAssistantComponent = ({ dslFunctions, events, onInsertCode, onOverwrit
         {/* Empty state */}
         {messages.filter(m => !m._hidden).length === 0 && (
           <div className="vsc-empty-state">
-            <p className="vsc-empty-title">How can I help you with DSL?</p>
+            <p className="vsc-empty-title">How can I help with your calculations?</p>
             <p className="vsc-empty-subtitle">
-              Ask me to generate code, debug rules, explain functions, or create financial calculations.
+              Ask me to write formulas, troubleshoot errors, explain calculations, or build financial rules.
             </p>
             <div className="vsc-suggestions">
               {[
                 "How do I create a simple interest calculation?",
                 "Show me a loan amortization schedule",
-                "What date functions are available?",
+                "What date formulas are available?",
               ].map((q, i) => (
                 <button key={i} className="vsc-suggestion-btn" onClick={() => setInput(q)}>
                   {q}

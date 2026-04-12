@@ -3206,190 +3206,187 @@ DSL_FUNCTIONS = {
     'array_filter': array_filter,
 }
 
-# Function metadata for UI display (101 functions)
+# Function metadata for UI display (145 functions)
 DSL_FUNCTION_METADATA = [
-        {"name": "lookup", "params": "value_array, match_array, target_value", "description": "Retrieve a value from value_array by matching match_array[i] == target_value (type-agnostic, supports date, string, number, enum, etc.). Returns value_array[i] or null if not found. Raises error for mismatched array lengths.", "category": "Array Utilities"},
-        {"name": "normalize_arraydate", "params": "array", "description": "Normalize an array of string dates to YYYY-MM-DD. Pass plain strings only (e.g. '01/15/2024', '2024-02-28'). Do not use date() objects.", "category": "Date"},
-    # Financial (24)
-    {"name": "pv", "params": "rate, n, pmt, fv=0, type=0", "description": "Present value of future cash flows. pmt is negative for payments made (e.g., pv(0.05/12, 120, -1000) for $1,000/month payments over 10 years at 5% annual). type: 0=end, 1=beginning.", "category": "Financial"},
-    {"name": "fv", "params": "rate, n, pmt, pv=0, type=0", "description": "Future value of cash flows. pmt is negative for deposits made (e.g., fv(0.05/12, 12, -100, -1000) for $100/month deposits plus $1,000 initial at 5% annual). type: 0=end, 1=beginning.", "category": "Financial"},
-    {"name": "pmt", "params": "rate, n, pv, fv=0, type=0", "description": "Fixed periodic payment amount. Returns a negative number representing money paid out (e.g., pmt(0.05/12, 120, 10000) returns negative monthly payment for a $10,000 loan at 5% annual over 10 years). type: 0=end, 1=beginning.", "category": "Financial"},
-    {"name": "rate", "params": "n, pmt, pv, fv=0, type=0, guess=0.1", "description": "Interest rate per period. Sign convention: pmt is negative when pv is positive (e.g., rate(10, -1000, 7722) for a $7,722 loan with $1,000 payments over 10 periods). type: 0=end, 1=beginning.", "category": "Financial"},
-    {"name": "nper", "params": "rate, pmt, pv, fv=0, type=0", "description": "Number of periods. pmt must be negative when pv is positive (e.g., nper(0.05/12, -500, 20000) for $20,000 loan at 5% annual with $500/month payments). type: 0=end, 1=beginning.", "category": "Financial"},
-    {"name": "npv", "params": "rate, cashflows", "description": "Net present value. rate is decimal. cashflows start from period 1 (not 0). Example: npv(0.1, [-1000, 300, 400, 500, 600])", "category": "Financial"},
-    {"name": "irr", "params": "cashflows", "description": "Internal rate of return. First cashflow is typically negative (initial investment). Returns decimal (0.2 = 20%). Example: irr([-1000, 300, 400, 500, 600])", "category": "Financial"},
-    {"name": "xnpv", "params": "rate, cashflows, dates", "description": "NPV with specific dates (365-day convention). dates as YYYY-MM-DD strings. Example: xnpv(0.1, [-1000, 1200], ['2024-01-01', '2025-01-01'])", "category": "Financial"},
-    {"name": "xirr", "params": "cashflows, dates", "description": "IRR with specific dates (YYYY-MM-DD). First cashflow typically negative. Example: xirr([-1000, 1200], ['2024-01-01', '2025-01-01'])", "category": "Financial"},
-    {"name": "discount_factor", "params": "rate, dcf", "description": "Discount factor = 1/(1+rate*dcf). rate is decimal, dcf is day count fraction (years). Example: discount_factor(0.05, 1) → 0.9524", "category": "Financial"},
-    {"name": "accumulation_factor", "params": "rate, dcf", "description": "Growth factor = 1+rate*dcf. Example: accumulation_factor(0.05, 1) → 1.05", "category": "Financial"},
-    {"name": "effective_rate", "params": "nominal, freq", "description": "Nominal to effective annual rate. Both as decimals, freq = compounding periods/year. Example: effective_rate(0.12, 12) → 0.1268 (12% nominal monthly → 12.68% effective)", "category": "Financial"},
-    {"name": "nominal_rate", "params": "effective, freq", "description": "Effective to nominal rate. Both as decimals, freq = compounding periods/year. Example: nominal_rate(0.1268, 12) → ~0.12 (12.68% effective → ~12% nominal monthly)", "category": "Financial"},
-    {"name": "yield_to_maturity", "params": "price, face, coupon, years", "description": "Bond YTM approximation. coupon is decimal rate (0.05 for 5%), years > 0. Example: yield_to_maturity(950, 1000, 0.05, 5)", "category": "Financial"},
-    {"name": "compound_interest", "params": "principal, rate, periods", "description": "Compound interest earned. rate is decimal (0.05 for 5%, NOT 5). Returns interest only. Example: compound_interest(10000, 0.05, 2) → 1025", "category": "Financial"},
-    {"name": "interest_on_balance", "params": "balance, rate, days", "description": "Interest using ACT/360. rate is decimal annual rate (0.05 for 5%). Example: interest_on_balance(100000, 0.05, 30) → 416.67", "category": "Financial"},
-    {"name": "capitalization", "params": "interest, balance", "description": "Add interest to principal", "category": "Financial"},
-    {"name": "amortized_cost", "params": "opening, interest, payment", "description": "Balance after payment", "category": "Financial"},
-    
-    # Depreciation (5)
-    {"name": "straight_line", "params": "cost, salvage, life", "description": "Straight-line depreciation per period. life > 0. Example: straight_line(10000, 1000, 5) → 1800 per year", "category": "Depreciation"},
-    {"name": "reducing_balance", "params": "cost, rate", "description": "Declining balance", "category": "Depreciation"},
-    {"name": "double_declining", "params": "cost, life", "description": "Double declining balance depreciation per period. life > 0. Example: double_declining(10000, 5) → 4000 (first year at 40% = 2/5)", "category": "Depreciation"},
-    {"name": "sum_of_years", "params": "cost, salvage, life, year", "description": "Sum of years digits depreciation. year is 1-indexed (year=1 for first year, year=life for last). Example: sum_of_years(10000, 0, 5, 1) → 3333.33", "category": "Depreciation"},
-    {"name": "units_of_production", "params": "cost, units, total", "description": "Usage-based depreciation", "category": "Depreciation"},
-    
-    # Allocation (5)
-    {"name": "prorate", "params": "value, part, total", "description": "Proportional allocation", "category": "Allocation"},
-    {"name": "allocate", "params": "value, weights", "description": "Weight-based allocation", "category": "Allocation"},
-    {"name": "split", "params": "value, n", "description": "Equal split", "category": "Allocation"},
-    {"name": "percentage_of", "params": "value, pct", "description": "Calculate percentage", "category": "Allocation"},
-    {"name": "ratio_split", "params": "value, ratios", "description": "Split by ratios", "category": "Allocation"},
-    
-    # Balance (3)
-    {"name": "rolling_balance", "params": "opening, flows", "description": "Running balance", "category": "Balance"},
-    {"name": "average_balance", "params": "balances", "description": "Average balance", "category": "Balance"},
-    {"name": "weighted_balance", "params": "balances, days", "description": "Weighted average balance", "category": "Balance"},
-    
-    # Arithmetic (15)
-    {"name": "add", "params": "a, b", "description": "Sum", "category": "Arithmetic"},
-    {"name": "subtract", "params": "a, b", "description": "Difference", "category": "Arithmetic"},
-    {"name": "multiply", "params": "a, b", "description": "Product", "category": "Arithmetic"},
-    {"name": "divide", "params": "a, b", "description": "Quotient", "category": "Arithmetic"},
-    {"name": "power", "params": "a, b", "description": "Power", "category": "Arithmetic"},
-    {"name": "sqrt", "params": "x", "description": "Square root", "category": "Arithmetic"},
-    {"name": "abs", "params": "x", "description": "Absolute value", "category": "Arithmetic"},
-    {"name": "sign", "params": "x", "description": "Sign (-1, 0, 1)", "category": "Arithmetic"},
-    {"name": "round", "params": "x, n=0", "description": "Round to n decimals", "category": "Arithmetic"},
-    {"name": "floor", "params": "x", "description": "Round down", "category": "Arithmetic"},
-    {"name": "ceil", "params": "x", "description": "Round up", "category": "Arithmetic"},
-    {"name": "mod", "params": "a, b", "description": "Remainder", "category": "Arithmetic"},
-    {"name": "truncate", "params": "x, decimals=0", "description": "Truncate", "category": "Arithmetic"},
-    {"name": "percentage", "params": "value, total", "description": "Percentage of total", "category": "Arithmetic"},
-    {"name": "change_pct", "params": "old, new", "description": "Percentage change", "category": "Arithmetic"},
-    
-    # Comparison (8)
-    {"name": "eq", "params": "a, b", "description": "Equal", "category": "Comparison"},
-    {"name": "neq", "params": "a, b", "description": "Not equal", "category": "Comparison"},
-    {"name": "gt", "params": "a, b", "description": "Greater than", "category": "Comparison"},
-    {"name": "gte", "params": "a, b", "description": "Greater or equal", "category": "Comparison"},
-    {"name": "lt", "params": "a, b", "description": "Less than", "category": "Comparison"},
-    {"name": "lte", "params": "a, b", "description": "Less or equal", "category": "Comparison"},
-    {"name": "between", "params": "x, l, u", "description": "In range", "category": "Comparison"},
-    {"name": "is_null", "params": "x", "description": "Is null", "category": "Comparison"},
-    {"name": "is_positive", "params": "x", "description": "Is positive", "category": "Comparison"},
-    {"name": "is_negative", "params": "x", "description": "Is negative", "category": "Comparison"},
-    
-    # Logical (10)
-    {"name": "and", "params": "a, b", "description": "Logical AND", "category": "Logical"},
-    {"name": "or", "params": "a, b", "description": "Logical OR", "category": "Logical"},
-    {"name": "not", "params": "a", "description": "Logical NOT", "category": "Logical"},
-    {"name": "xor", "params": "a, b", "description": "Exclusive OR", "category": "Logical"},
-    {"name": "all", "params": "list", "description": "All true", "category": "Logical"},
-    {"name": "any", "params": "list", "description": "Any true", "category": "Logical"},
-    {"name": "iif", "params": "cond, true_val, false_val", "description": "Inline IF: iif(condition, value_if_true, value_if_false)", "category": "Logical"},
-    {"name": "coalesce", "params": "*args", "description": "First non-null (use for default values)", "category": "Logical"},
-    {"name": "clamp", "params": "x, min, max", "description": "Clamp value", "category": "Logical"},
-    {"name": "switch", "params": "value, cases, default", "description": "Switch case lookup. cases must be a dict (e.g., switch(x, {1: 'one', 2: 'two'}, 'other')). Returns cases[value] or default.", "category": "Logical"},
-    
-    # Date (19)
-    # (Removed duplicate normalize_date entry)
-    {"name": "days_between", "params": "d1, d2", "description": "Days between dates", "category": "Date"},
-    {"name": "months_between", "params": "d1, d2", "description": "Months between", "category": "Date"},
-    {"name": "years_between", "params": "d1, d2", "description": "Years between", "category": "Date"},
-    {"name": "add_days", "params": "d, n", "description": "Add days to date", "category": "Date"},
-    {"name": "add_months", "params": "d, n", "description": "Add months", "category": "Date"},
-    {"name": "add_years", "params": "d, n", "description": "Add years", "category": "Date"},
-    {"name": "subtract_days", "params": "d, n", "description": "Subtract days from date", "category": "Date"},
-    {"name": "subtract_months", "params": "d, n", "description": "Subtract months", "category": "Date"},
-    {"name": "subtract_years", "params": "d, n", "description": "Subtract years", "category": "Date"},
-    {"name": "start_of_month", "params": "d", "description": "First day of month", "category": "Date"},
-    {"name": "end_of_month", "params": "d", "description": "Last day of month", "category": "Date"},
-    {"name": "day_count_fraction", "params": "d1, d2, conv='ACT/360'", "description": "Year fraction", "category": "Date"},
-    {"name": "is_leap_year", "params": "year", "description": "Check leap year", "category": "Date"},
-    {"name": "days_in_year", "params": "year", "description": "Days in year", "category": "Date"},
-    {"name": "quarter", "params": "d", "description": "Get quarter", "category": "Date"},
-    {"name": "day_of_week", "params": "d", "description": "Day of week (0-6)", "category": "Date"},
-    {"name": "is_weekend", "params": "d", "description": "Is weekend", "category": "Date"},
+    {"name": "lookup", "params": "value_array, match_array, target_value", "description": "Search a list for a matching value and return the corresponding item from a second list. Returns null if no match is found.", "category": "Array Utilities"},
+    {"name": "normalize_arraydate", "params": "array", "description": "Convert a list of dates written in various formats into the standard YYYY-MM-DD format.", "category": "Date"},
 
-    {"name": "normalize_date", "params": "date_value", "description": "Normalize a date to YYYY-MM-DD string format.", "category": "Date"},
-    {"name": "business_days", "params": "d1, d2", "description": "Business days", "category": "Date"},
-    
-    # Schedule (5) - Time-based schedule generation for amortization, revenue, FAS-91, etc.
-    {"name": "schedule", "params": "period, columns", "description": "Create deterministic time-based schedule table (amortization, revenue, FAS-91, accruals)", "category": "Schedule"},
-    {"name": "period", "params": "start, end, freq, conv?", "description": "Define time axis: freq=M/Q/A/W/D, conv=ACT/360|ACT/365|30/360", "category": "Schedule"},
-    {"name": "schedule_sum", "params": "schedule, column", "description": "Sum a column from schedule", "category": "Schedule"},
-    {"name": "schedule_last", "params": "schedule, column", "description": "Get last value of column", "category": "Schedule"},
-    {"name": "schedule_first", "params": "schedule, column", "description": "Get first value of column", "category": "Schedule"},
-    {"name": "schedule_column", "params": "schedule, column", "description": "Return column values from schedule. For multiple schedules returns list of lists per subInstrumentId.", "category": "Schedule"},
-    {"name": "schedule_filter", "params": "schedule, match_column, match_value, return_column", "description": "Find first row where match_column == match_value and return return_column (per-schedule).", "category": "Schedule"},
-    
-    # Multi Schedules (internal only) - implementations retained but not shown in DSL UI
-    
+    # Financial (24)
+    {"name": "pv", "params": "rate, n, pmt, fv=0, type=0", "description": "Calculate the present value of a series of future payments, given an interest rate and number of periods. Use type=1 if payments are made at the start of each period.", "category": "Financial"},
+    {"name": "fv", "params": "rate, n, pmt, pv=0, type=0", "description": "Calculate the future value of an investment based on regular payments and a fixed interest rate. Use type=1 if payments are made at the start of each period.", "category": "Financial"},
+    {"name": "pmt", "params": "rate, n, pv, fv=0, type=0", "description": "Calculate the fixed periodic payment required to fully repay a loan or reach a savings target over a given number of periods.", "category": "Financial"},
+    {"name": "rate", "params": "n, pmt, pv, fv=0, type=0, guess=0.1", "description": "Calculate the interest rate per period needed to repay a loan given the number of payments, payment amount, and loan amount.", "category": "Financial"},
+    {"name": "nper", "params": "rate, pmt, pv, fv=0, type=0", "description": "Calculate how many payment periods are required to fully repay a loan or reach a savings goal.", "category": "Financial"},
+    {"name": "npv", "params": "rate, cashflows", "description": "Calculate the net present value of a series of cash flows discounted at a given annual rate. The rate is entered as a decimal.", "category": "Financial"},
+    {"name": "irr", "params": "cashflows", "description": "Calculate the internal rate of return for a series of cash flows — the discount rate at which the net present value equals zero.", "category": "Financial"},
+    {"name": "xnpv", "params": "rate, cashflows, dates", "description": "Calculate the net present value of cash flows that occur on specific calendar dates, using a 365-day year convention.", "category": "Financial"},
+    {"name": "xirr", "params": "cashflows, dates", "description": "Calculate the internal rate of return for cash flows that occur on specific calendar dates.", "category": "Financial"},
+    {"name": "discount_factor", "params": "rate, dcf", "description": "Calculate the factor used to discount a future cash flow back to its present value, given a rate and the time period as a year fraction.", "category": "Financial"},
+    {"name": "accumulation_factor", "params": "rate, dcf", "description": "Calculate the growth factor applied to a present value to arrive at its future value, given a rate and time period as a year fraction.", "category": "Financial"},
+    {"name": "effective_rate", "params": "nominal, freq", "description": "Convert a nominal interest rate to its effective annual rate, accounting for the number of compounding periods per year.", "category": "Financial"},
+    {"name": "nominal_rate", "params": "effective, freq", "description": "Convert an effective annual interest rate back to its nominal rate for a given number of compounding periods per year.", "category": "Financial"},
+    {"name": "yield_to_maturity", "params": "price, face, coupon, years", "description": "Calculate the approximate yield to maturity of a bond based on its market price, face value, annual coupon rate, and remaining years to maturity.", "category": "Financial"},
+    {"name": "compound_interest", "params": "principal, rate, periods", "description": "Calculate the total interest earned when a principal is compounded over a number of periods at a given rate. The rate is entered as a decimal.", "category": "Financial"},
+    {"name": "interest_on_balance", "params": "balance, rate, days", "description": "Calculate the interest accrued on a balance for a given number of days using an annual rate under the ACT/360 day count convention.", "category": "Financial"},
+    {"name": "capitalization", "params": "interest, balance", "description": "Add accrued interest to an existing balance to produce the new outstanding principal balance.", "category": "Financial"},
+    {"name": "amortized_cost", "params": "opening, interest, payment", "description": "Calculate the closing balance of a financial instrument after applying the period interest and deducting the payment from the opening balance.", "category": "Financial"},
+
+    # Depreciation (5)
+    {"name": "straight_line", "params": "cost, salvage, life", "description": "Calculate the annual depreciation charge by spreading the depreciable cost evenly over the useful life of an asset.", "category": "Depreciation"},
+    {"name": "reducing_balance", "params": "cost, rate", "description": "Calculate the depreciation charge for the period by applying a fixed percentage rate to the current book value of the asset.", "category": "Depreciation"},
+    {"name": "double_declining", "params": "cost, life", "description": "Calculate the depreciation charge using double the straight-line rate applied to the current book value, front-loading higher charges in early years.", "category": "Depreciation"},
+    {"name": "sum_of_years", "params": "cost, salvage, life, year", "description": "Calculate the depreciation charge for a specific year using the sum-of-years-digits method, which assigns higher charges to earlier years.", "category": "Depreciation"},
+    {"name": "units_of_production", "params": "cost, units, total", "description": "Calculate the depreciation charge based on actual usage in the period, such as units produced or hours of operation.", "category": "Depreciation"},
+
+    # Allocation (5)
+    {"name": "prorate", "params": "value, part, total", "description": "Allocate a portion of a value in proportion to a partial period or partial quantity relative to a defined total.", "category": "Allocation"},
+    {"name": "allocate", "params": "value, weights", "description": "Distribute a total value across multiple recipients according to a list of weights, returning the allocated amount for each.", "category": "Allocation"},
+    {"name": "split", "params": "value, n", "description": "Divide a value into a specified number of equal portions.", "category": "Allocation"},
+    {"name": "percentage_of", "params": "value, pct", "description": "Calculate the monetary amount that corresponds to a given percentage of a value.", "category": "Allocation"},
+    {"name": "ratio_split", "params": "value, ratios", "description": "Split a total amount across multiple recipients according to a list of ratios.", "category": "Allocation"},
+
+    # Balance (3)
+    {"name": "rolling_balance", "params": "opening, flows", "description": "Calculate the running balance by applying a series of inflows and outflows to an opening balance.", "category": "Balance"},
+    {"name": "average_balance", "params": "balances", "description": "Calculate the simple arithmetic average of a list of balance amounts.", "category": "Balance"},
+    {"name": "weighted_balance", "params": "balances, days", "description": "Calculate the average balance weighted by the number of days each balance was held during the period.", "category": "Balance"},
+
+    # Arithmetic (15)
+    {"name": "add", "params": "a, b", "description": "Add two numbers together.", "category": "Arithmetic"},
+    {"name": "subtract", "params": "a, b", "description": "Subtract the second number from the first.", "category": "Arithmetic"},
+    {"name": "multiply", "params": "a, b", "description": "Multiply two numbers together.", "category": "Arithmetic"},
+    {"name": "divide", "params": "a, b", "description": "Divide the first number by the second.", "category": "Arithmetic"},
+    {"name": "power", "params": "a, b", "description": "Raise a number to the power of a given exponent.", "category": "Arithmetic"},
+    {"name": "sqrt", "params": "x", "description": "Calculate the square root of a non-negative number.", "category": "Arithmetic"},
+    {"name": "abs", "params": "x", "description": "Return the absolute value of a number, removing any negative sign.", "category": "Arithmetic"},
+    {"name": "sign", "params": "x", "description": "Return -1 if the number is negative, 0 if zero, or 1 if positive.", "category": "Arithmetic"},
+    {"name": "round", "params": "x, n=0", "description": "Round a number to a specified number of decimal places.", "category": "Arithmetic"},
+    {"name": "floor", "params": "x", "description": "Round a number down to the nearest whole number.", "category": "Arithmetic"},
+    {"name": "ceil", "params": "x", "description": "Round a number up to the nearest whole number.", "category": "Arithmetic"},
+    {"name": "mod", "params": "a, b", "description": "Return the remainder left over after dividing one number by another.", "category": "Arithmetic"},
+    {"name": "truncate", "params": "x, decimals=0", "description": "Remove decimal places beyond a specified number of positions without any rounding.", "category": "Arithmetic"},
+    {"name": "percentage", "params": "value, total", "description": "Calculate what percentage one number represents of a given total.", "category": "Arithmetic"},
+    {"name": "change_pct", "params": "old, new", "description": "Calculate the percentage change between an old value and a new value.", "category": "Arithmetic"},
+
+    # Comparison (10)
+    {"name": "eq", "params": "a, b", "description": "Check whether two values are equal.", "category": "Comparison"},
+    {"name": "neq", "params": "a, b", "description": "Check whether two values are not equal.", "category": "Comparison"},
+    {"name": "gt", "params": "a, b", "description": "Check whether the first value is greater than the second.", "category": "Comparison"},
+    {"name": "gte", "params": "a, b", "description": "Check whether the first value is greater than or equal to the second.", "category": "Comparison"},
+    {"name": "lt", "params": "a, b", "description": "Check whether the first value is less than the second.", "category": "Comparison"},
+    {"name": "lte", "params": "a, b", "description": "Check whether the first value is less than or equal to the second.", "category": "Comparison"},
+    {"name": "between", "params": "x, l, u", "description": "Check whether a value falls within a specified lower and upper boundary, inclusive.", "category": "Comparison"},
+    {"name": "is_null", "params": "x", "description": "Check whether a value is empty or missing.", "category": "Comparison"},
+    {"name": "is_positive", "params": "x", "description": "Check whether a number is greater than zero.", "category": "Comparison"},
+    {"name": "is_negative", "params": "x", "description": "Check whether a number is less than zero.", "category": "Comparison"},
+
+    # Logical (10)
+    {"name": "and", "params": "a, b", "description": "Return true only if both conditions are true.", "category": "Logical"},
+    {"name": "or", "params": "a, b", "description": "Return true if at least one of the two conditions is true.", "category": "Logical"},
+    {"name": "not", "params": "a", "description": "Reverse a condition — returns true if the condition is false, and false if it is true.", "category": "Logical"},
+    {"name": "xor", "params": "a, b", "description": "Return true if exactly one of the two conditions is true, but not both.", "category": "Logical"},
+    {"name": "all", "params": "list", "description": "Return true only if every item in a list evaluates to true.", "category": "Logical"},
+    {"name": "any", "params": "list", "description": "Return true if at least one item in a list evaluates to true.", "category": "Logical"},
+    {"name": "iif", "params": "cond, true_val, false_val", "description": "Return one of two values based on a condition — works like an IF statement in a spreadsheet.", "category": "Logical"},
+    {"name": "coalesce", "params": "*args", "description": "Return the first non-empty value from a list — useful for providing a fallback default when a value may be missing.", "category": "Logical"},
+    {"name": "clamp", "params": "x, min, max", "description": "Restrict a value so it falls within a specified minimum and maximum range.", "category": "Logical"},
+    {"name": "switch", "params": "value, cases, default", "description": "Look up a value against a set of named cases and return the matching result, or a default value if no match is found.", "category": "Logical"},
+
+    # Date (19)
+    {"name": "days_between", "params": "d1, d2", "description": "Calculate the number of calendar days between two dates.", "category": "Date"},
+    {"name": "months_between", "params": "d1, d2", "description": "Calculate the number of complete months between two dates.", "category": "Date"},
+    {"name": "years_between", "params": "d1, d2", "description": "Calculate the number of complete years between two dates.", "category": "Date"},
+    {"name": "add_days", "params": "d, n", "description": "Add a specified number of days to a date and return the resulting date.", "category": "Date"},
+    {"name": "add_months", "params": "d, n", "description": "Add a specified number of months to a date and return the resulting date.", "category": "Date"},
+    {"name": "add_years", "params": "d, n", "description": "Add a specified number of years to a date and return the resulting date.", "category": "Date"},
+    {"name": "subtract_days", "params": "d, n", "description": "Subtract a specified number of days from a date and return the resulting date.", "category": "Date"},
+    {"name": "subtract_months", "params": "d, n", "description": "Subtract a specified number of months from a date and return the resulting date.", "category": "Date"},
+    {"name": "subtract_years", "params": "d, n", "description": "Subtract a specified number of years from a date and return the resulting date.", "category": "Date"},
+    {"name": "start_of_month", "params": "d", "description": "Return the first calendar day of the month for a given date.", "category": "Date"},
+    {"name": "end_of_month", "params": "d", "description": "Return the last calendar day of the month for a given date.", "category": "Date"},
+    {"name": "day_count_fraction", "params": "d1, d2, conv='ACT/360'", "description": "Calculate the fraction of a year between two dates using a specified day count convention such as ACT/360 or ACT/365.", "category": "Date"},
+    {"name": "is_leap_year", "params": "year", "description": "Determine whether a given year is a leap year.", "category": "Date"},
+    {"name": "days_in_year", "params": "year", "description": "Return the total number of days in a given year — 365 for standard years and 366 for leap years.", "category": "Date"},
+    {"name": "quarter", "params": "d", "description": "Return the calendar quarter (1 to 4) that a given date falls in.", "category": "Date"},
+    {"name": "day_of_week", "params": "d", "description": "Return the day of the week for a date as a number, where 0 is Monday and 6 is Sunday.", "category": "Date"},
+    {"name": "is_weekend", "params": "d", "description": "Check whether a given date falls on a Saturday or Sunday.", "category": "Date"},
+    {"name": "normalize_date", "params": "date_value", "description": "Convert a date written in any common format to the standard YYYY-MM-DD format.", "category": "Date"},
+    {"name": "business_days", "params": "d1, d2", "description": "Calculate the number of working days between two dates, excluding weekends.", "category": "Date"},
+
+    # Schedule (7)
+    {"name": "schedule", "params": "period, columns", "description": "Generate a time-based schedule table with calculated columns, suitable for amortisation, accrual, revenue, or depreciation schedules.", "category": "Schedule"},
+    {"name": "period", "params": "start, end, freq, conv?", "description": "Define a time period with a start date, end date, frequency (monthly, quarterly, annual, etc.), and an optional day count convention.", "category": "Schedule"},
+    {"name": "schedule_sum", "params": "schedule, column", "description": "Add up all values in a specified column of a generated schedule.", "category": "Schedule"},
+    {"name": "schedule_last", "params": "schedule, column", "description": "Retrieve the value from the last row of a specified column in a schedule.", "category": "Schedule"},
+    {"name": "schedule_first", "params": "schedule, column", "description": "Retrieve the value from the first row of a specified column in a schedule.", "category": "Schedule"},
+    {"name": "schedule_column", "params": "schedule, column", "description": "Return all values from a specified column of a schedule as a list.", "category": "Schedule"},
+    {"name": "schedule_filter", "params": "schedule, match_column, match_value, return_column", "description": "Find the first row in a schedule where a column matches a given value and return the corresponding value from another column.", "category": "Schedule"},
+
     # Aggregation (13)
-    {"name": "sum", "params": "col", "description": "Sum of values (None values ignored)", "category": "Aggregation"},
-    {"name": "sum_field", "params": "array, field", "description": "Sum a specific field from array of objects (None values treated as 0)", "category": "Aggregation"},
-    {"name": "avg", "params": "col", "description": "Average/Mean", "category": "Aggregation"},
-    {"name": "min", "params": "col", "description": "Minimum", "category": "Aggregation"},
-    {"name": "max", "params": "col", "description": "Maximum", "category": "Aggregation"},
-    {"name": "count", "params": "col", "description": "Count items", "category": "Aggregation"},
-    {"name": "weighted_avg", "params": "v, w", "description": "Weighted average", "category": "Aggregation"},
-    {"name": "cumulative_sum", "params": "col", "description": "Running total", "category": "Aggregation"},
-    {"name": "median", "params": "col", "description": "Median value", "category": "Aggregation"},
-    {"name": "variance", "params": "col", "description": "Variance", "category": "Aggregation"},
-    {"name": "std_dev", "params": "col", "description": "Standard deviation", "category": "Aggregation"},
-    {"name": "percentile", "params": "col, p", "description": "Percentile value. p must be a fraction 0-1 (e.g., 0.75 for 75th percentile, NOT 75)", "category": "Aggregation"},
-    {"name": "range", "params": "col", "description": "Range (max-min)", "category": "Aggregation"},
-    
+    {"name": "sum", "params": "col", "description": "Add up all values in a list, ignoring any empty entries.", "category": "Aggregation"},
+    {"name": "sum_field", "params": "array, field", "description": "Add up a specific named field from a list of records, treating any missing values as zero.", "category": "Aggregation"},
+    {"name": "avg", "params": "col", "description": "Calculate the arithmetic average of a list of values.", "category": "Aggregation"},
+    {"name": "min", "params": "col", "description": "Return the smallest value from a list.", "category": "Aggregation"},
+    {"name": "max", "params": "col", "description": "Return the largest value from a list.", "category": "Aggregation"},
+    {"name": "count", "params": "col", "description": "Count the number of items in a list.", "category": "Aggregation"},
+    {"name": "weighted_avg", "params": "v, w", "description": "Calculate the average of a list of values, where each value is weighted by a corresponding weight factor.", "category": "Aggregation"},
+    {"name": "cumulative_sum", "params": "col", "description": "Calculate the running total of a list, returning a new list where each entry is the accumulated sum up to that point.", "category": "Aggregation"},
+    {"name": "median", "params": "col", "description": "Return the middle value of a sorted list — half the values fall above and half fall below.", "category": "Aggregation"},
+    {"name": "variance", "params": "col", "description": "Measure how spread out the values in a list are by calculating the average of squared differences from the mean.", "category": "Aggregation"},
+    {"name": "std_dev", "params": "col", "description": "Measure how spread out the values in a list are around the average, expressed on the same scale as the values.", "category": "Aggregation"},
+    {"name": "percentile", "params": "col, p", "description": "Return the value below which a given share of values in the list fall. Supply p as a decimal between 0 and 1.", "category": "Aggregation"},
+    {"name": "range", "params": "col", "description": "Return the difference between the largest and smallest values in a list.", "category": "Aggregation"},
+
     # Conversion (6)
-    {"name": "fx_convert", "params": "v, rate", "description": "Currency conversion", "category": "Conversion"},
-    {"name": "normalize", "params": "v, base", "description": "Normalize to base", "category": "Conversion"},
-    {"name": "basis_points", "params": "rate", "description": "To basis points", "category": "Conversion"},
-    {"name": "from_bps", "params": "bps", "description": "From basis points", "category": "Conversion"},
-    {"name": "to_percentage", "params": "decimal", "description": "To percentage", "category": "Conversion"},
-    {"name": "from_percentage", "params": "pct", "description": "From percentage", "category": "Conversion"},
-    
+    {"name": "fx_convert", "params": "v, rate", "description": "Convert an amount from one currency to another using a given exchange rate.", "category": "Conversion"},
+    {"name": "normalize", "params": "v, base", "description": "Scale a value relative to a base amount, expressing it as a proportion of that base.", "category": "Conversion"},
+    {"name": "basis_points", "params": "rate", "description": "Convert a decimal interest rate to basis points, where one percent equals 100 basis points.", "category": "Conversion"},
+    {"name": "from_bps", "params": "bps", "description": "Convert a basis point value back to its decimal interest rate equivalent.", "category": "Conversion"},
+    {"name": "to_percentage", "params": "decimal", "description": "Convert a decimal value to a percentage by multiplying by 100.", "category": "Conversion"},
+    {"name": "from_percentage", "params": "pct", "description": "Convert a percentage value back to its decimal equivalent by dividing by 100.", "category": "Conversion"},
+
     # Statistical (3)
-    {"name": "correlation", "params": "x, y", "description": "Pearson correlation", "category": "Statistical"},
-    {"name": "covariance", "params": "x, y", "description": "Covariance", "category": "Statistical"},
-    {"name": "zscore", "params": "value, mean, std", "description": "Z-score", "category": "Statistical"},
-    
-    # String Functions (9) - For string manipulation
-    {"name": "lower", "params": "s", "description": "Convert string to lowercase", "category": "String"},
-    {"name": "upper", "params": "s", "description": "Convert string to uppercase", "category": "String"},
-    {"name": "concat", "params": "s1, s2, ...", "description": "Concatenate multiple strings", "category": "String"},
-    {"name": "contains", "params": "s, substring", "description": "Check if string contains substring", "category": "String"},
-    {"name": "eq_ignore_case", "params": "a, b", "description": "Case-insensitive string equality", "category": "String"},
-    {"name": "starts_with", "params": "s, prefix", "description": "Check if string starts with prefix", "category": "String"},
-    {"name": "ends_with", "params": "s, suffix", "description": "Check if string ends with suffix", "category": "String"},
-    {"name": "trim", "params": "s", "description": "Remove leading/trailing whitespace", "category": "String"},
-    {"name": "str_length", "params": "s", "description": "Get string length", "category": "String"},
-    
-    # Array Collection (6) - For collecting field values across rows
-    {"name": "collect", "params": "EVENT.field", "description": "Collect all values of a field for current instrument/date (use with npv, irr, etc.)", "category": "Array"},
-    {"name": "collect_by_instrument", "params": "EVENT.field", "description": "Collect all values for current instrument (ignores dates)", "category": "Array"},
-    {"name": "collect_all", "params": "EVENT.field", "description": "Collect ALL values across all rows (no filtering)", "category": "Array"},
-    {"name": "collect_by_subinstrument", "params": "EVENT.field", "description": "Collect values for current instrumentId AND subInstrumentId", "category": "Array"},
-    {"name": "collect_subinstrumentids", "params": "", "description": "Get all unique subInstrumentIds for current instrumentId", "category": "Array"},
-    {"name": "collect_effectivedates_for_subinstrument", "params": "subinstrument_id?", "description": "Get all effectiveDates for a specific subInstrumentId", "category": "Array"},
-    
-    # Iteration (4) - For processing multi-row data with optional context
-    {"name": "for_each", "params": "dates_arr, amounts_arr, date_var, amt_var, expr", "description": "Iterate paired arrays, execute expression for each (e.g., create transactions)", "category": "Iteration"},
-    {"name": "for_each_with_index", "params": "array, var_name, expression, context?", "description": "Iterate array with index. Context dict allows passing other arrays/variables.", "category": "Iteration"},
-    {"name": "map_array", "params": "array, var_name, expression, context?", "description": "Transform each element. Context dict allows accessing other arrays by index.", "category": "Iteration"},
-    {"name": "array_filter", "params": "array, var_name, condition, context?", "description": "Filter array elements by condition. Context allows referencing other arrays.", "category": "Iteration"},
-    
-    # Array Utilities (8) - For array manipulation
-    {"name": "zip_arrays", "params": "*arrays", "description": "Combine arrays into list of tuples for parallel iteration", "category": "Array Utilities"},
-    {"name": "array_length", "params": "array", "description": "Get length of array", "category": "Array Utilities"},
-    {"name": "array_get", "params": "array, index, default=None", "description": "Get element at index with default for out-of-bounds", "category": "Array Utilities"},
-    {"name": "array_first", "params": "array, default=None", "description": "Get first element of array", "category": "Array Utilities"},
-    {"name": "array_last", "params": "array, default=None", "description": "Get last element of array", "category": "Array Utilities"},
-    {"name": "array_slice", "params": "array, start, end=None", "description": "Get slice of array from start to end", "category": "Array Utilities"},
-    {"name": "array_reverse", "params": "array", "description": "Reverse array order", "category": "Array Utilities"},
-    {"name": "array_append", "params": "array, item", "description": "Return new array with item appended (does not mutate original)", "category": "Array Utilities"},
-    {"name": "array_extend", "params": "array, items", "description": "Return new array with items concatenated to array", "category": "Array Utilities"},
-    
-    # Transaction (1) - For creating transactions
-    {"name": "createTransaction", "params": "postingdate, effectivedate, transactiontype, amount, subinstrumentid='1'", "description": "Create a transaction with optional subinstrumentid (defaults to '1')", "category": "Transaction"},
+    {"name": "correlation", "params": "x, y", "description": "Measure the linear relationship between two sets of values, returning a result between -1 (inverse) and 1 (perfect match).", "category": "Statistical"},
+    {"name": "covariance", "params": "x, y", "description": "Measure how two sets of values move together — a positive result means they tend to increase and decrease together.", "category": "Statistical"},
+    {"name": "zscore", "params": "value, mean, std", "description": "Calculate how many standard deviations a single value sits above or below the mean of a distribution.", "category": "Statistical"},
+
+    # String (9)
+    {"name": "lower", "params": "s", "description": "Convert all characters in a text value to lowercase.", "category": "String"},
+    {"name": "upper", "params": "s", "description": "Convert all characters in a text value to uppercase.", "category": "String"},
+    {"name": "concat", "params": "s1, s2, ...", "description": "Join two or more text values together into a single combined string.", "category": "String"},
+    {"name": "contains", "params": "s, substring", "description": "Check whether a piece of text contains a specific word or phrase.", "category": "String"},
+    {"name": "eq_ignore_case", "params": "a, b", "description": "Check whether two text values are equal, ignoring any differences in upper or lower case.", "category": "String"},
+    {"name": "starts_with", "params": "s, prefix", "description": "Check whether a text value begins with a specified word or prefix.", "category": "String"},
+    {"name": "ends_with", "params": "s, suffix", "description": "Check whether a text value ends with a specified word or suffix.", "category": "String"},
+    {"name": "trim", "params": "s", "description": "Remove any extra spaces from the beginning and end of a text value.", "category": "String"},
+    {"name": "str_length", "params": "s", "description": "Return the number of characters in a text value.", "category": "String"},
+
+    # Array Collection (6)
+    {"name": "collect", "params": "EVENT.field", "description": "Gather all values of an event field for the current instrument and posting date into a list, for use in calculations such as NPV or IRR.", "category": "Array"},
+    {"name": "collect_by_instrument", "params": "EVENT.field", "description": "Gather all values of an event field for the current instrument across all dates into a single list.", "category": "Array"},
+    {"name": "collect_all", "params": "EVENT.field", "description": "Gather every value of an event field across all rows in the dataset without any filtering.", "category": "Array"},
+    {"name": "collect_by_subinstrument", "params": "EVENT.field", "description": "Gather all values of an event field for a specific instrument and sub-instrument combination.", "category": "Array"},
+    {"name": "collect_subinstrumentids", "params": "", "description": "Return a list of all unique sub-instrument IDs associated with the current instrument.", "category": "Array"},
+    {"name": "collect_effectivedates_for_subinstrument", "params": "subinstrument_id?", "description": "Return a list of all effective dates associated with a specified sub-instrument.", "category": "Array"},
+
+    # Iteration (4)
+    {"name": "for_each", "params": "dates_arr, amounts_arr, date_var, amt_var, expr", "description": "Loop through two paired lists of dates and amounts, running a specified action for each pair — commonly used to create multiple transactions.", "category": "Iteration"},
+    {"name": "for_each_with_index", "params": "array, var_name, expression, context?", "description": "Loop through a list, making each item and its position number available inside the loop body.", "category": "Iteration"},
+    {"name": "map_array", "params": "array, var_name, expression, context?", "description": "Apply a calculation to every item in a list and return the transformed results as a new list.", "category": "Iteration"},
+    {"name": "array_filter", "params": "array, var_name, condition, context?", "description": "Return a new list containing only the items from the original list that meet a specified condition.", "category": "Iteration"},
+
+    # Array Utilities (9)
+    {"name": "zip_arrays", "params": "*arrays", "description": "Combine two or more lists element-by-element, pairing items at matching positions for use in parallel processing.", "category": "Array Utilities"},
+    {"name": "array_length", "params": "array", "description": "Return the number of items in a list.", "category": "Array Utilities"},
+    {"name": "array_get", "params": "array, index, default=None", "description": "Return the item at a specified position in a list, with a fallback value if the position is beyond the end of the list.", "category": "Array Utilities"},
+    {"name": "array_first", "params": "array, default=None", "description": "Return the first item in a list, with an optional fallback value if the list is empty.", "category": "Array Utilities"},
+    {"name": "array_last", "params": "array, default=None", "description": "Return the last item in a list, with an optional fallback value if the list is empty.", "category": "Array Utilities"},
+    {"name": "array_slice", "params": "array, start, end=None", "description": "Extract a portion of a list from a starting position to an optional ending position.", "category": "Array Utilities"},
+    {"name": "array_reverse", "params": "array", "description": "Return a new list with all items in the reverse order.", "category": "Array Utilities"},
+    {"name": "array_append", "params": "array, item", "description": "Return a new list with one additional item added to the end, without modifying the original list.", "category": "Array Utilities"},
+    {"name": "array_extend", "params": "array, items", "description": "Return a new list formed by joining two lists together, without modifying the original.", "category": "Array Utilities"},
+
+    # Transaction (1)
+    {"name": "createTransaction", "params": "postingdate, effectivedate, transactiontype, amount, subinstrumentid='1'", "description": "Record a financial transaction with a posting date, effective date, transaction type, and amount. The sub-instrument ID defaults to '1' if not provided.", "category": "Transaction"},
 ]
 
 print(f"Loaded {len(DSL_FUNCTIONS)} functions across {len(set(f['category'] for f in DSL_FUNCTION_METADATA))} categories")

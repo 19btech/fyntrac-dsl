@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from "react";
 import axios from "axios";
 import { useToast } from "../components/ToastProvider";
-import { Upload, FileText, Code, Play, List, BookOpen, Download, Sparkles, Trash2, BarChart3, Search as SearchIcon, Lightbulb, Settings, ChevronDown } from "lucide-react";
+import { Upload, FileText, Code, Play, List, BookOpen, Download, Sparkles, Trash2, BarChart3, Search as SearchIcon, Lightbulb, Settings, ChevronDown, Database } from "lucide-react";
 import { Button, Tabs, Tab, Box, Menu, MenuItem, Divider } from '@mui/material';
 import Editor from "@monaco-editor/react";
 import FileUploadPanel from "../components/FileUploadPanel";
@@ -444,7 +444,7 @@ const Dashboard = () => {
           <div className="flex items-center justify-between">
             <div>
               <h1 className="text-2xl font-bold text-[#14213d] tracking-tight" style={{ fontFamily: "'Inter', sans-serif" }}>Logic Studio</h1>
-              <p className="text-sm text-[#6C757D] mt-1">Design calculation logic using a Domain-Specific Language (DSL) that is intuitive for finance professionals</p>
+              <p className="text-sm text-[#6C757D] mt-1">Design and test your financial calculation logic using built-in formulas</p>
             </div>
             <div className="flex gap-2">
               <Button 
@@ -452,7 +452,7 @@ const Dashboard = () => {
                 size="small" 
                 onClick={() => setShowFunctionBrowser(true)}
                 data-testid="browse-functions-button"
-                title={`${dslFunctions.length} functions loaded`}
+                title={`${dslFunctions.length} formulas loaded`}
                 startIcon={<SearchIcon className="w-4 h-4" />}
                 sx={{
                   bgcolor: '#D4EDDA',
@@ -470,7 +470,7 @@ const Dashboard = () => {
                   '& .MuiButton-startIcon svg': { color: '#155724' },
                 }}
               >
-                Browse Functions ({dslFunctions.length})
+                Browse Formulas ({dslFunctions.length})
               </Button>
               {/* Build Function removed */}
               <Button 
@@ -535,6 +535,18 @@ const Dashboard = () => {
                 <Divider />
                 <MenuItem
                   onClick={() => {
+                    setShowEventDataViewer(true);
+                    setSettingsAnchorEl(null);
+                  }}
+                  data-testid="menu-event-data-viewer"
+                  sx={{ fontSize: '0.875rem', py: 1.5 }}
+                >
+                  <Database className="w-4 h-4 text-[#6C757D] mr-2" />
+                  View Event Data
+                </MenuItem>
+                <Divider />
+                <MenuItem
+                  onClick={() => {
                     setShowAISetup(true);
                     setSettingsAnchorEl(null);
                   }}
@@ -566,7 +578,7 @@ const Dashboard = () => {
                 <Tab 
                   icon={<Code className="w-4 h-4" />} 
                   iconPosition="start" 
-                  label="DSL Editor" 
+                  label="Calculation Editor" 
                   data-testid="editor-tab"
                   sx={{ textTransform: 'none', fontSize: '0.875rem' }}
                 />

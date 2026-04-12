@@ -298,10 +298,10 @@ const FileUploadPanel = ({ onUploadSuccess, events, addConsoleLog, selectedEvent
               <Box>
                 <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1 }}>
                   <FileText size={20} color="#5B5FED" />
-                  <Typography variant="h5">Event Definitions</Typography>
+                  <Typography variant="h5">Event Setup File</Typography>
                 </Box>
                 <Typography variant="body2" color="text.secondary" sx={{ lineHeight: 1.6 }}>
-                  Upload CSV file with event schemas
+                  Upload CSV file with your event structure
                 </Typography>
               </Box>
               <Tooltip title="Download">
@@ -355,7 +355,7 @@ const FileUploadPanel = ({ onUploadSuccess, events, addConsoleLog, selectedEvent
               startIcon={<Upload size={16} />}
               data-testid="upload-events-button"
             >
-              Upload Events
+              Upload Setup File
             </Button>
           </CardContent>
         </Card>
@@ -445,12 +445,12 @@ const FileUploadPanel = ({ onUploadSuccess, events, addConsoleLog, selectedEvent
         <CardContent sx={{ p: 3 }}>
           <Typography variant="h6" sx={{ mb: 1.5, color: '#5B5FED' }}>Upload Instructions</Typography>
             <Box component="ul" sx={{ m: 0, pl: 2.5, '& li': { mb: 1, fontSize: '0.8125rem', color: '#495057', lineHeight: 1.6 } }}>
-            <li><strong>Event Definitions (CSV):</strong> Columns: EventName, EventField, DataType, EventType, EventTable</li>
-            <li><strong>EventTable:</strong> <code>standard</code> (always activity) or <code>custom</code> (activity or reference)</li>
+            <li><strong>Event Setup File (CSV):</strong> Columns: Event Name, Field Name, Data Format, Event Type, Event Table</li>
+            <li><strong>Event Table:</strong> <code>standard</code> (always a transaction event) or <code>custom</code> (transaction event or reference table)</li>
             <li><strong>Event Data (Excel):</strong> Sheet name must match event name</li>
-            <li><strong>Required Columns (activity):</strong> PostingDate, EffectiveDate, InstrumentId + event fields</li>
-            <li><strong>Reference events (custom):</strong> Tenant-level data — no PostingDate, EffectiveDate, or InstrumentId needed</li>
-            <li><strong>DSL Functions:</strong> 100+ pre-loaded financial functions available</li>
+            <li><strong>Required Columns (transaction events):</strong> PostingDate, EffectiveDate, InstrumentId + event fields</li>
+            <li><strong>Reference table events (custom):</strong> Tenant-level data — no PostingDate, EffectiveDate, or InstrumentId needed</li>
+            <li><strong>Financial Formulas:</strong> 100+ built-in financial calculation formulas are available</li>
           </Box>
         </CardContent>
       </Card>

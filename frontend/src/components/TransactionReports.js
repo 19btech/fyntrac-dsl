@@ -55,7 +55,7 @@ const TransactionReports = ({ reports, onDownloadReport, onDeleteReport }) => {
             <TrendingUp size={48} color="#CED4DA" style={{ marginBottom: 16 }} />
             <Typography variant="h5" sx={{ mb: 1 }}>No Transaction Report</Typography>
             <Typography variant="body2" color="text.secondary">
-              Execute templates to generate transaction reports
+              Run a template to generate transaction reports
             </Typography>
           </CardContent>
         </Card>

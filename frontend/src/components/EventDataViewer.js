@@ -217,7 +217,7 @@ const EventDataViewer = ({ onClose }) => {
                     <Table size="small">
                       <TableHead>
                         <TableRow>
-                          <TableCell sx={{ fontWeight: 600, bgcolor: '#F8F9FA' }}>ErrorType</TableCell>
+                          <TableCell sx={{ fontWeight: 600, bgcolor: '#F8F9FA' }}>Error Type</TableCell>
                           <TableCell sx={{ fontWeight: 600, bgcolor: '#F8F9FA' }}>Message</TableCell>
                         </TableRow>
                       </TableHead>

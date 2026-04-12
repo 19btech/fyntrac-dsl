@@ -190,7 +190,7 @@ const DSLExamples = ({ onLoadExample }) => {
       <Box sx={{ mb: 3 }}>
         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5, mb: 1 }}>
           <Lightbulb size={24} color="#5B5FED" />
-          <Typography variant="h3">DSL Example Snippets</Typography>
+          <Typography variant="h3">Calculation Examples</Typography>
         </Box>
         <Typography variant="body2" color="text.secondary">
           Ready-to-use examples for common financial calculations

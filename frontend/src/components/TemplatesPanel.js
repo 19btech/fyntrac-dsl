@@ -12,7 +12,7 @@ const TemplatesPanel = ({ templates, onLoadTemplate, onRunTemplate, onDeleteTemp
     <Box sx={{ p: 3, bgcolor: '#F8F9FA', minHeight: '100%' }} data-testid="templates-panel">
       <Box sx={{ mb: 3 }}>
         <Typography variant="h3" sx={{ mb: 0.5 }}>Saved Templates</Typography>
-        <Typography variant="body2" color="text.secondary">Load and execute your saved DSL templates</Typography>
+        <Typography variant="body2" color="text.secondary">Load and run your saved calculation templates</Typography>
       </Box>
 
       {templates.length === 0 ? (
@@ -21,7 +21,7 @@ const TemplatesPanel = ({ templates, onLoadTemplate, onRunTemplate, onDeleteTemp
             <FileText size={48} color="#CED4DA" style={{ marginBottom: 16 }} />
             <Typography variant="h5" sx={{ mb: 1 }}>No Templates Yet</Typography>
             <Typography variant="body2" color="text.secondary">
-              Save your DSL code to create reusable templates
+              Save your calculations to create reusable templates
             </Typography>
           </CardContent>
         </Card>
@@ -78,7 +78,7 @@ const TemplatesPanel = ({ templates, onLoadTemplate, onRunTemplate, onDeleteTemp
                       </IconButton>
                     </span>
                   </Tooltip>
-                  <Tooltip title="Deploy model">
+                  <Tooltip title="Publish">
                     <span>
                       <IconButton
                         size="small"
