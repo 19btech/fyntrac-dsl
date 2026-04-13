@@ -7,7 +7,7 @@ import {
 } from "@mui/material";
 import {
   Plus, Trash2, ArrowUp, ArrowDown, GripVertical, Play, Code, Eye, Calendar,
-  Table as TableIcon, Hash, Columns, BarChart3, RefreshCw, FlaskConical,
+  Table as TableIcon, Hash, Columns, BarChart3, RefreshCw, FlaskConical, Save,
 } from "lucide-react";
 import { API } from "../../config";
 import FormulaBar from "./FormulaBar";
@@ -83,8 +83,12 @@ const ColumnCard = ({ column, index, events, variables, onUpdate, onRemove, onMo
  * ScheduleBuilder — Visual drag-and-drop schedule column builder.
  * Builds schedule() DSL code using a column palette and formula bars.
  */
-const ScheduleBuilder = ({ events, dslFunctions, onGenerate, onClose }) => {
+const ScheduleBuilder = ({ events, dslFunctions, onClose, onSave }) => {
   const [scheduleName, setScheduleName] = useState('');
+  const [schedulePriority, setSchedulePriority] = useState('');
+  const [scheduleId, setScheduleId] = useState(null);
+  const [saving, setSaving] = useState(false);
+  const [saveResult, setSaveResult] = useState(null);
   // Period type: 'date' (date-based) or 'number' (count-based)
   const [periodType, setPeriodType] = useState('date');
   // Date-based: start/end source = 'value' | 'field' | 'formula'
@@ -116,6 +120,18 @@ const ScheduleBuilder = ({ events, dslFunctions, onGenerate, onClose }) => {
   const [extractFirst, setExtractFirst] = useState(false);
   const [extractLast, setExtractLast] = useState(false);
   const [extractColumn, setExtractColumn] = useState('');
+  // Schedule Sum toggle
+  const [enableSum, setEnableSum] = useState(false);
+  const [sumColumn, setSumColumn] = useState('');
+  const [sumVarName, setSumVarName] = useState('');
+  // Schedule Column toggle
+  const [enableCol, setEnableCol] = useState(false);
+  const [colColumn, setColColumn] = useState('');
+  const [colVarName, setColVarName] = useState('');
+  // Schedule Filter toggle
+  const [enableFilter, setEnableFilter] = useState(false);
+  const [filterCondition, setFilterCondition] = useState('');
+  const [filterVarName, setFilterVarName] = useState('');
 
   const dateEventFields = useMemo(() => {
     if (!events?.length) return [];
@@ -250,6 +266,27 @@ const ScheduleBuilder = ({ events, dslFunctions, onGenerate, onClose }) => {
       lines.push(`print("Last ${targetCol}:", last_${targetCol})`);
     }
 
+    // Schedule Sum
+    if (enableSum && sumColumn && sumVarName) {
+      lines.push('');
+      lines.push(`${sumVarName} = schedule_sum(sched, "${sumColumn}")`);
+      lines.push(`print("${sumVarName}:", ${sumVarName})`);
+    }
+
+    // Schedule Column
+    if (enableCol && colColumn && colVarName) {
+      lines.push('');
+      lines.push(`${colVarName} = schedule_column(sched, "${colColumn}")`);
+      lines.push(`print("${colVarName}:", ${colVarName})`);
+    }
+
+    // Schedule Filter
+    if (enableFilter && filterCondition && filterVarName) {
+      lines.push('');
+      lines.push(`${filterVarName} = schedule_filter(sched, "${filterCondition}")`);
+      lines.push(`print(${filterVarName})`);
+    }
+
     // Create transaction from schedule results
     if (createTxn && txnType && txnAmountCol) {
       lines.push('');
@@ -259,7 +296,7 @@ const ScheduleBuilder = ({ events, dslFunctions, onGenerate, onClose }) => {
     }
 
     return lines.join('\n');
-  }, [scheduleName, periodType, startDate, startDateSource, startDateField, startDateFormula, endDate, endDateSource, endDateField, endDateFormula, periodCount, frequency, convention, columns, contextVars, createTxn, txnType, txnAmountCol, extractFirst, extractLast, extractColumn]);
+  }, [scheduleName, periodType, startDate, startDateSource, startDateField, startDateFormula, endDate, endDateSource, endDateField, endDateFormula, periodCount, frequency, convention, columns, contextVars, createTxn, txnType, txnAmountCol, extractFirst, extractLast, extractColumn, enableSum, sumColumn, sumVarName, enableCol, colColumn, colVarName, enableFilter, filterCondition, filterVarName]);
 
   const handleTest = useCallback(async () => {
     setTesting(true);
@@ -288,9 +325,51 @@ const ScheduleBuilder = ({ events, dslFunctions, onGenerate, onClose }) => {
     }
   }, [generatedCode]);
 
-  const handleApply = useCallback(() => {
-    onGenerate(generatedCode);
-  }, [generatedCode, onGenerate]);
+  const handleSave = useCallback(async () => {
+    if (!scheduleName.trim()) {
+      setSaveResult({ success: false, error: 'Please enter a schedule name before saving.' });
+      return;
+    }
+    if (schedulePriority === '' || schedulePriority === null || schedulePriority === undefined) {
+      setSaveResult({ success: false, error: 'Please enter a schedule priority before saving.' });
+      return;
+    }
+    setSaving(true);
+    setSaveResult(null);
+    try {
+      const payload = {
+        id: scheduleId,
+        name: scheduleName.trim(),
+        priority: Number(schedulePriority),
+        generatedCode,
+        config: {
+          periodType, startDate, startDateSource, startDateField, startDateFormula,
+          endDate, endDateSource, endDateField, endDateFormula,
+          periodCount, frequency, convention, columns, contextVars,
+          createTxn, txnType, txnAmountCol, extractFirst, extractLast, extractColumn,
+          enableSum, sumColumn, sumVarName, enableCol, colColumn, colVarName, enableFilter, filterCondition, filterVarName,
+        },
+      };
+      const response = await fetch(`${API}/saved-schedules`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const data = await response.json();
+      if (response.ok && data.success) {
+        setScheduleId(data.id);
+        setSaveResult({ success: true, output: data.message || 'Schedule saved successfully.' });
+        if (onSave) onSave();
+      } else {
+        const errMsg = data.detail || data.error || 'Save failed';
+        setSaveResult({ success: false, error: typeof errMsg === 'string' ? errMsg : JSON.stringify(errMsg) });
+      }
+    } catch (err) {
+      setSaveResult({ success: false, error: err.message || 'Network error' });
+    } finally {
+      setSaving(false);
+    }
+  }, [scheduleName, schedulePriority, scheduleId, generatedCode, periodType, startDate, startDateSource, startDateField, startDateFormula, endDate, endDateSource, endDateField, endDateFormula, periodCount, frequency, convention, columns, contextVars, createTxn, txnType, txnAmountCol, extractFirst, extractLast, extractColumn, enableSum, sumColumn, sumVarName, enableCol, colColumn, colVarName, enableFilter, filterCondition, filterVarName, onSave]);
 
   // Compute a simple mock preview of what the schedule table would look like
   const previewHeaders = useMemo(() => columns.filter(c => c.name).map(c => c.name), [columns]);
@@ -309,10 +388,25 @@ const ScheduleBuilder = ({ events, dslFunctions, onGenerate, onClose }) => {
       </Box>
 
       <Box sx={{ flex: 1, overflow: 'auto', p: 2 }}>
-        {/* Schedule Name */}
-        <TextField size="small" fullWidth label="Schedule Name" value={scheduleName}
-          onChange={(e) => setScheduleName(e.target.value)} sx={{ mb: 2 }}
-          placeholder="e.g., Loan Amortization Schedule" />
+        {/* Schedule Name & Priority */}
+        <Box sx={{ display: 'flex', gap: 1.5, mb: 2 }}>
+          <TextField size="small" label="Schedule Name *" value={scheduleName}
+            onChange={(e) => setScheduleName(e.target.value)}
+            placeholder="e.g., Loan Amortization Schedule"
+            required
+            error={!scheduleName.trim()}
+            helperText={!scheduleName.trim() ? 'Required' : ''}
+            sx={{ flex: 1 }} />
+          <TextField size="small" label="Schedule Priority *" value={schedulePriority}
+            onChange={(e) => { const v = e.target.value; if (v === '' || /^\d+$/.test(v)) setSchedulePriority(v === '' ? '' : Number(v)); }}
+            placeholder="e.g., 2"
+            type="number"
+            required
+            error={schedulePriority === '' || schedulePriority === null || schedulePriority === undefined}
+            helperText={schedulePriority === '' || schedulePriority === null || schedulePriority === undefined ? 'Required' : ''}
+            inputProps={{ min: 0, step: 1 }}
+            sx={{ width: 140 }} />
+        </Box>
 
         {/* Time Period */}
         <Typography variant="body2" fontWeight={600} sx={{ mb: 1 }}>
@@ -556,26 +650,81 @@ const ScheduleBuilder = ({ events, dslFunctions, onGenerate, onClose }) => {
         {/* Extract first/last */}
         <Card sx={{ mb: 1 }}>
           <CardContent sx={{ p: 1.5, '&:last-child': { pb: 1.5 } }}>
-            <Box sx={{ display: 'flex', alignItems: 'center', gap: 2, mb: extractFirst || extractLast ? 1 : 0 }}>
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 2, flexWrap: 'wrap', mb: (extractFirst || extractLast || enableSum || enableCol || enableFilter) ? 1 : 0 }}>
               <FormControlLabel
                 control={<Switch checked={extractFirst} onChange={(e) => setExtractFirst(e.target.checked)} size="small" />}
-                label={<Typography variant="body2">Extract first value</Typography>}
+                label={<Typography variant="body2">Schedule First</Typography>}
               />
               <FormControlLabel
                 control={<Switch checked={extractLast} onChange={(e) => setExtractLast(e.target.checked)} size="small" />}
-                label={<Typography variant="body2">Extract last value</Typography>}
+                label={<Typography variant="body2">Schedule Last</Typography>}
+              />
+              <FormControlLabel
+                control={<Switch checked={enableSum} onChange={(e) => setEnableSum(e.target.checked)} size="small" />}
+                label={<Typography variant="body2">Schedule Sum</Typography>}
+              />
+              <FormControlLabel
+                control={<Switch checked={enableCol} onChange={(e) => setEnableCol(e.target.checked)} size="small" />}
+                label={<Typography variant="body2">Schedule Column</Typography>}
+              />
+              <FormControlLabel
+                control={<Switch checked={enableFilter} onChange={(e) => setEnableFilter(e.target.checked)} size="small" />}
+                label={<Typography variant="body2">Schedule Filter</Typography>}
               />
             </Box>
             {(extractFirst || extractLast) && (
-              <FormControl size="small" fullWidth>
-                <InputLabel>Column to extract</InputLabel>
-                <Select value={extractColumn} label="Column to extract"
+              <FormControl size="small" fullWidth sx={{ mb: 1 }}>
+                <InputLabel>Column to extract (first/last)</InputLabel>
+                <Select value={extractColumn} label="Column to extract (first/last)"
                   onChange={(e) => setExtractColumn(e.target.value)}>
                   {columns.filter(c => c.name && c.formula !== 'period_date' && c.formula !== 'period_number').map(c => (
                     <MenuItem key={c.name} value={c.name}>{c.name}</MenuItem>
                   ))}
                 </Select>
               </FormControl>
+            )}
+            {enableSum && (
+              <Box sx={{ display: 'flex', gap: 1, mb: 1 }}>
+                <TextField size="small" label="Variable Name" value={sumVarName}
+                  onChange={(e) => setSumVarName(e.target.value.replace(/[^a-zA-Z0-9_]/g, ''))}
+                  placeholder="e.g., total_interest" sx={{ flex: 1 }} />
+                <FormControl size="small" sx={{ flex: 1 }}>
+                  <InputLabel>Sum Column</InputLabel>
+                  <Select value={sumColumn} label="Sum Column"
+                    onChange={(e) => setSumColumn(e.target.value)}>
+                    {columns.filter(c => c.name && c.formula !== 'period_date' && c.formula !== 'period_number').map(c => (
+                      <MenuItem key={c.name} value={c.name}>{c.name}</MenuItem>
+                    ))}
+                  </Select>
+                </FormControl>
+              </Box>
+            )}
+            {enableCol && (
+              <Box sx={{ display: 'flex', gap: 1, mb: 1 }}>
+                <TextField size="small" label="Variable Name" value={colVarName}
+                  onChange={(e) => setColVarName(e.target.value.replace(/[^a-zA-Z0-9_]/g, ''))}
+                  placeholder="e.g., interest_arr" sx={{ flex: 1 }} />
+                <FormControl size="small" sx={{ flex: 1 }}>
+                  <InputLabel>Column</InputLabel>
+                  <Select value={colColumn} label="Column"
+                    onChange={(e) => setColColumn(e.target.value)}>
+                    {columns.filter(c => c.name).map(c => (
+                      <MenuItem key={c.name} value={c.name}>{c.name}</MenuItem>
+                    ))}
+                  </Select>
+                </FormControl>
+              </Box>
+            )}
+            {enableFilter && (
+              <Box sx={{ display: 'flex', gap: 1, mb: 1 }}>
+                <TextField size="small" label="Variable Name" value={filterVarName}
+                  onChange={(e) => setFilterVarName(e.target.value.replace(/[^a-zA-Z0-9_]/g, ''))}
+                  placeholder="e.g., positive_rows" sx={{ flex: 1 }} />
+                <TextField size="small" label="Filter Condition" value={filterCondition}
+                  onChange={(e) => setFilterCondition(e.target.value)}
+                  placeholder='e.g., gt(balance, 0)' sx={{ flex: 1 }}
+                  InputProps={{ sx: { fontFamily: 'monospace', fontSize: '0.8125rem' } }} />
+              </Box>
             )}
           </CardContent>
         </Card>
@@ -634,6 +783,13 @@ const ScheduleBuilder = ({ events, dslFunctions, onGenerate, onClose }) => {
             )}
           </Alert>
         )}
+        {/* Save Result */}
+        {saveResult && (
+          <Alert severity={saveResult.success ? 'success' : 'error'} sx={{ mt: 2, '& .MuiAlert-message': { width: '100%' } }}
+            onClose={() => setSaveResult(null)}>
+            <Typography variant="body2">{saveResult.success ? saveResult.output : saveResult.error}</Typography>
+          </Alert>
+        )}
       </Box>
 
       {/* Action Bar */}
@@ -644,8 +800,10 @@ const ScheduleBuilder = ({ events, dslFunctions, onGenerate, onClose }) => {
           sx={{ borderColor: '#4CAF50', color: '#4CAF50', '&:hover': { borderColor: '#388E3C', bgcolor: '#E8F5E9' } }}>
           {testing ? 'Testing...' : 'Test'}
         </Button>
-        <Button variant="contained" onClick={handleApply} startIcon={<Play size={16} />}>
-          Load into Editor
+        <Button variant="outlined" onClick={handleSave} disabled={saving}
+          startIcon={saving ? <CircularProgress size={16} /> : <Save size={16} />}
+          sx={{ borderColor: '#1976D2', color: '#1976D2', '&:hover': { borderColor: '#1565C0', bgcolor: '#E3F2FD' } }}>
+          {saving ? 'Saving...' : 'Save Schedule'}
         </Button>
       </Box>
     </Box>

@@ -3802,8 +3802,34 @@ async def save_rule(request: dict):
             detail=f"A rule named \"{name}\" already exists. Please choose a different name.",
         )
 
+    # Priority uniqueness across rules AND schedules
+    priority = request.get("priority")
+    if priority is not None:
+        priority = int(priority)
+        # Check other rules
+        rule_with_priority = await db.saved_rules.find_one(
+            {"priority": priority, **({"id": {"$ne": rule_id}} if rule_id else {})},
+            {"_id": 0, "id": 1, "name": 1},
+        )
+        if rule_with_priority:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Priority {priority} is already used by rule \"{rule_with_priority['name']}\". Please choose a different priority.",
+            )
+        # Check schedules collection
+        sched_with_priority = await db.saved_schedules.find_one(
+            {"priority": priority},
+            {"_id": 0, "id": 1, "name": 1},
+        )
+        if sched_with_priority:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Priority {priority} is already used by schedule \"{sched_with_priority['name']}\". Please choose a different priority.",
+            )
+
     doc = {
         "name": name,
+        "priority": priority,
         "ruleType": request.get("ruleType", "simple_calc"),
         "variables": request.get("variables", []),
         "conditions": request.get("conditions", []),
@@ -3834,6 +3860,117 @@ async def delete_saved_rule(rule_id: str):
     if result.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Rule not found.")
     return {"success": True, "message": "Rule deleted."}
+
+
+# ── Saved Schedules CRUD ────────────────────────────────────────────────
+
+@api_router.get("/saved-schedules")
+async def list_saved_schedules():
+    """List all saved schedule builder configurations."""
+    try:
+        schedules = await db.saved_schedules.find({}, {"_id": 0}).sort("updated_at", -1).to_list(500)
+        return schedules
+    except Exception as e:
+        logger.error(f"Error listing saved schedules: {e}")
+        return []
+
+@api_router.post("/saved-schedules")
+async def save_schedule(request: dict):
+    """Save or update a schedule builder configuration."""
+    name = (request.get("name") or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Schedule name is required.")
+
+    schedule_id = request.get("id")
+    now = datetime.now(timezone.utc).isoformat()
+
+    # Check uniqueness: no other schedule with same name (case-insensitive)
+    existing = await db.saved_schedules.find_one(
+        {"name": {"$regex": f"^{re.escape(name)}$", "$options": "i"}},
+        {"_id": 0, "id": 1},
+    )
+    if existing and (not schedule_id or existing["id"] != schedule_id):
+        raise HTTPException(
+            status_code=409,
+            detail=f"A schedule named \"{name}\" already exists. Please choose a different name.",
+        )
+
+    # Priority uniqueness across rules AND schedules
+    priority = request.get("priority")
+    if priority is not None:
+        priority = int(priority)
+        # Check rules collection
+        rule_with_priority = await db.saved_rules.find_one(
+            {"priority": priority, **({"id": {"$ne": schedule_id}} if schedule_id else {})},
+            {"_id": 0, "id": 1, "name": 1},
+        )
+        if rule_with_priority:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Priority {priority} is already used by rule \"{rule_with_priority['name']}\". Please choose a different priority.",
+            )
+        # Check schedules collection
+        sched_with_priority = await db.saved_schedules.find_one(
+            {"priority": priority, **({"id": {"$ne": schedule_id}} if schedule_id else {})},
+            {"_id": 0, "id": 1, "name": 1},
+        )
+        if sched_with_priority:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Priority {priority} is already used by schedule \"{sched_with_priority['name']}\". Please choose a different priority.",
+            )
+
+    doc = {
+        "name": name,
+        "priority": priority,
+        "generatedCode": request.get("generatedCode", ""),
+        "config": request.get("config", {}),
+        "updated_at": now,
+    }
+
+    if schedule_id:
+        doc["id"] = schedule_id
+        await db.saved_schedules.replace_one({"id": schedule_id}, doc, upsert=True)
+    else:
+        doc["id"] = str(uuid.uuid4())
+        doc["created_at"] = now
+        await db.saved_schedules.insert_one(doc)
+
+    return {"success": True, "id": doc["id"], "message": f"Schedule \"{name}\" saved."}
+
+@api_router.delete("/saved-schedules/{schedule_id}")
+async def delete_saved_schedule(schedule_id: str):
+    """Delete a saved schedule by its id."""
+    result = await db.saved_schedules.delete_one({"id": schedule_id})
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Schedule not found.")
+    return {"success": True, "message": "Schedule deleted."}
+
+
+# ── Combined code endpoint (rules + schedules ordered by priority) ──────
+
+@api_router.get("/combined-code")
+async def get_combined_code():
+    """Return generated code from all saved rules and schedules, ordered by priority (ascending)."""
+    try:
+        rules = await db.saved_rules.find({}, {"_id": 0}).to_list(500)
+        schedules = await db.saved_schedules.find({}, {"_id": 0}).to_list(500)
+
+        items = []
+        for r in rules:
+            p = r.get("priority")
+            items.append({"priority": p if p is not None else float('inf'), "code": r.get("generatedCode", ""), "name": r.get("name", "")})
+        for s in schedules:
+            p = s.get("priority")
+            items.append({"priority": p if p is not None else float('inf'), "code": s.get("generatedCode", ""), "name": s.get("name", "")})
+
+        items.sort(key=lambda x: (x["priority"], x["name"]))
+        code_blocks = [item["code"] for item in items if item["code"]]
+        combined = "\n\n".join(code_blocks)
+        return {"success": True, "code": combined, "count": len(code_blocks)}
+    except Exception as e:
+        logger.error(f"Error generating combined code: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 from contextlib import asynccontextmanager

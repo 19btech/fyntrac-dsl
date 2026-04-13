@@ -188,9 +188,10 @@ const ConditionRow = ({ condition, index, events, definedVarNames, onUpdate, onR
  * AccountingRuleBuilder — Form-based rule builder for accounting calculations.
  * Supports: simple calculations, conditional logic, iteration, collect.
  */
-const AccountingRuleBuilder = ({ events, dslFunctions, onGenerate, onClose, onSave, initialData }) => {
+const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialData }) => {
   const [ruleType, setRuleType] = useState(initialData?.ruleType || 'simple_calc');
   const [ruleName, setRuleName] = useState(initialData?.name || '');
+  const [rulePriority, setRulePriority] = useState(initialData?.priority ?? '');
   const [ruleId, setRuleId] = useState(initialData?.id || null);
 
   // Fetch all saved-rules for FormulaBar hints and per-variable testing
@@ -463,13 +464,13 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onGenerate, onClose, onSa
     return lines.join('\n');
   }, [ruleName, ruleType, variables, outputs, conditions, elseFormula, conditionResultVar, iterConfig, inlineComment, commentText, savedRulesVars]);
 
-  const handleApply = useCallback(() => {
-    onGenerate(generatedCode);
-  }, [generatedCode, onGenerate]);
-
   const handleSave = useCallback(async () => {
     if (!ruleName.trim()) {
       setSaveResult({ success: false, error: 'Please enter a rule name before saving.' });
+      return;
+    }
+    if (rulePriority === '' || rulePriority === null || rulePriority === undefined) {
+      setSaveResult({ success: false, error: 'Please enter a rule priority before saving.' });
       return;
     }
     setSaving(true);
@@ -478,6 +479,7 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onGenerate, onClose, onSa
       const payload = {
         id: ruleId,
         name: ruleName.trim(),
+        priority: rulePriority === '' ? null : Number(rulePriority),
         ruleType,
         variables,
         conditions,
@@ -508,7 +510,7 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onGenerate, onClose, onSa
     } finally {
       setSaving(false);
     }
-  }, [ruleName, ruleId, ruleType, variables, conditions, elseFormula, conditionResultVar, iterConfig, outputs, inlineComment, commentText, generatedCode, onSave]);
+  }, [ruleName, rulePriority, ruleId, ruleType, variables, conditions, elseFormula, conditionResultVar, iterConfig, outputs, inlineComment, commentText, generatedCode, onSave]);
 
   return (
     <Box sx={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0, height: '100%' }}>
@@ -523,10 +525,25 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onGenerate, onClose, onSa
       </Box>
 
       <Box sx={{ flex: 1, overflow: 'auto', p: 2 }}>
-        {/* Rule Name */}
-        <TextField size="small" fullWidth label="Rule Name" value={ruleName}
-          onChange={(e) => setRuleName(e.target.value)} sx={{ mb: 2 }}
-          placeholder="e.g., Monthly Interest Accrual" />
+        {/* Rule Name & Priority */}
+        <Box sx={{ display: 'flex', gap: 1.5, mb: 2 }}>
+          <TextField size="small" label="Rule Name *" value={ruleName}
+            onChange={(e) => setRuleName(e.target.value)}
+            placeholder="e.g., Monthly Interest Accrual"
+            required
+            error={!ruleName.trim()}
+            helperText={!ruleName.trim() ? 'Required' : ''}
+            sx={{ flex: 1 }} />
+          <TextField size="small" label="Rule Priority *" value={rulePriority}
+            onChange={(e) => { const v = e.target.value; if (v === '' || /^\d+$/.test(v)) setRulePriority(v === '' ? '' : Number(v)); }}
+            placeholder="e.g., 1"
+            type="number"
+            required
+            error={rulePriority === '' || rulePriority === null || rulePriority === undefined}
+            helperText={rulePriority === '' || rulePriority === null || rulePriority === undefined ? 'Required' : ''}
+            inputProps={{ min: 0, step: 1 }}
+            sx={{ width: 140 }} />
+        </Box>
 
         {/* Rule Type */}
         <Typography variant="body2" fontWeight={600} sx={{ mb: 1 }}>Calculation Type</Typography>
@@ -559,7 +576,7 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onGenerate, onClose, onSa
 
         {variables.map((variable, idx) => (
           <VariableRow key={idx} variable={variable} index={idx} events={events}
-            definedVarNames={[...new Set([...variables.slice(0, idx).filter(v => v.name).map(v => v.name), ...savedRulesVarNames])]}
+            definedVarNames={[...new Set([...variables.filter(v => v.name).map(v => v.name), ...savedRulesVarNames])]}
             onUpdate={updateVariable} onRemove={removeVariable}
             onMoveUp={() => moveVariable(idx, -1)} onMoveDown={() => moveVariable(idx, 1)}
             isFirst={idx === 0} isLast={idx === variables.length - 1}
@@ -831,9 +848,6 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onGenerate, onClose, onSa
           startIcon={saving ? <CircularProgress size={16} /> : <Save size={16} />}
           sx={{ borderColor: '#1976D2', color: '#1976D2', '&:hover': { borderColor: '#1565C0', bgcolor: '#E3F2FD' } }}>
           {saving ? 'Saving...' : 'Save Rule'}
-        </Button>
-        <Button variant="contained" onClick={handleApply} startIcon={<Play size={16} />}>
-          Load into Editor
         </Button>
       </Box>
     </Box>

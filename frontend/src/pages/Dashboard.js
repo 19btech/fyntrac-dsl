@@ -36,13 +36,11 @@ function TabPanel({ children, value, index, ...other }) {
       style={{ height: '100%', display: value === index ? 'flex' : 'none', flexDirection: 'column', overflow: 'auto' }}
       {...other}
     >
-      {value === index && (
-        <div className="tab-panel-enter h-full flex flex-col">
-          <div className="tab-panel-content h-full flex flex-col">
-            {children}
-          </div>
+      <div className="tab-panel-enter h-full flex flex-col">
+        <div className="tab-panel-content h-full flex flex-col">
+          {children}
         </div>
-      )}
+      </div>
     </div>
   );
 }
@@ -94,6 +92,7 @@ const Dashboard = () => {
     loadDslFunctions();
     loadTemplates();
     loadTransactionReports();
+    loadCombinedCode();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -519,6 +518,17 @@ const Dashboard = () => {
     toast.success("Logic loaded into editor — click Run to execute");
   };
 
+  const loadCombinedCode = async () => {
+    try {
+      const response = await axios.get(`${API}/combined-code`);
+      if (response.data?.success && response.data.code) {
+        setDslCode(response.data.code);
+      }
+    } catch (error) {
+      console.error("Error loading combined code:", error);
+    }
+  };
+
   const handleAskAIAboutFunction = (funcName, message) => {
     if (chatAssistantRef.current && chatAssistantRef.current.sendSilentMessage) {
       chatAssistantRef.current.sendSilentMessage(funcName, message);
@@ -909,18 +919,18 @@ const Dashboard = () => {
                 </>
               )}
 
-              {/* Rule Builder Mode */}
-              {editorMode === 'ruleBuilder' && (
+              {/* Rule Builder Mode — always mounted to preserve form state across tab switches */}
+              <Box sx={{ display: editorMode === 'ruleBuilder' ? 'flex' : 'none', flexDirection: 'column', flex: 1, overflow: 'auto' }}>
                 <AccountingRuleBuilder
                   key={editingRule?.id || 'new'}
                   events={events}
                   dslFunctions={dslFunctions}
                   onGenerate={handleGeneratedCode}
                   onClose={() => { setEditorMode('code'); setEditingRule(null); }}
-                  onSave={() => { setSavedRulesRefreshKey(k => k + 1); }}
+                  onSave={() => { setSavedRulesRefreshKey(k => k + 1); loadCombinedCode(); }}
                   initialData={editingRule}
                 />
-              )}
+              </Box>
 
               {/* Schedule Builder Mode */}
               {editorMode === 'scheduleBuilder' && (
@@ -929,6 +939,7 @@ const Dashboard = () => {
                   dslFunctions={dslFunctions}
                   onGenerate={handleGeneratedCode}
                   onClose={() => setEditorMode('code')}
+                  onSave={() => { setSavedRulesRefreshKey(k => k + 1); loadCombinedCode(); }}
                 />
               )}
 
