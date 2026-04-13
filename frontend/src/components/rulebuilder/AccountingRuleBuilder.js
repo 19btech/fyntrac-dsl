@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useCallback } from "react";
+import React, { useState, useMemo, useCallback, useEffect } from "react";
 import {
   Box, Typography, Card, CardContent, Button, TextField, MenuItem, Chip, IconButton,
   Tooltip, Divider, Select, FormControl, InputLabel, Paper, Switch, FormControlLabel,
@@ -42,6 +42,9 @@ const VariableRow = ({ variable, index, events, definedVarNames, onUpdate, onRem
                 onChange={(e) => onUpdate(index, { ...variable, name: e.target.value.replace(/[^a-zA-Z0-9_]/g, '') })}
                 sx={{ flex: 1 }}
                 placeholder="e.g., monthly_payment"
+                required
+                error={!variable.name}
+                helperText={!variable.name ? 'Required' : ''}
               />
               <FormControl size="small" sx={{ minWidth: 150 }}>
                 <InputLabel>Source</InputLabel>
@@ -158,6 +161,23 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onGenerate, onClose, onSa
   const [ruleType, setRuleType] = useState(initialData?.ruleType || 'simple_calc');
   const [ruleName, setRuleName] = useState(initialData?.name || '');
   const [ruleId, setRuleId] = useState(initialData?.id || null);
+
+  // Fetch all saved-rules variable names for FormulaBar hints
+  const [savedRulesVarNames, setSavedRulesVarNames] = useState([]);
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await fetch(`${API}/saved-rules`);
+        if (!res.ok) return;
+        const data = await res.json();
+        const names = new Set();
+        (data.rules || []).forEach(r => {
+          (r.variables || []).forEach(v => { if (v.name) names.add(v.name); });
+        });
+        setSavedRulesVarNames([...names]);
+      } catch { /* ignore */ }
+    })();
+  }, []);
   const [variables, setVariables] = useState(
     initialData?.variables?.length ? initialData.variables :
     [{ name: '', source: 'value', value: '', formula: '', eventField: '', collectType: 'collect' }]
@@ -461,7 +481,7 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onGenerate, onClose, onSa
 
         {variables.map((variable, idx) => (
           <VariableRow key={idx} variable={variable} index={idx} events={events}
-            definedVarNames={variables.slice(0, idx).filter(v => v.name).map(v => v.name)}
+            definedVarNames={[...new Set([...variables.slice(0, idx).filter(v => v.name).map(v => v.name), ...savedRulesVarNames])]}
             onUpdate={updateVariable} onRemove={removeVariable}
             onMoveUp={() => moveVariable(idx, -1)} onMoveDown={() => moveVariable(idx, 1)}
             isFirst={idx === 0} isLast={idx === variables.length - 1} />
@@ -484,7 +504,7 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onGenerate, onClose, onSa
 
             {conditions.map((cond, idx) => (
               <ConditionRow key={idx} condition={cond} index={idx} events={events}
-                definedVarNames={variables.filter(v => v.name).map(v => v.name)}
+                definedVarNames={[...new Set([...variables.filter(v => v.name).map(v => v.name), ...savedRulesVarNames])]}
                 onUpdate={updateCondition} onRemove={removeCondition} />
             ))}
 
@@ -495,7 +515,7 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onGenerate, onClose, onSa
                   value={elseFormula}
                   onChange={setElseFormula}
                   events={events}
-                  variables={variables.filter(v => v.name).map(v => v.name)}
+                  variables={[...new Set([...variables.filter(v => v.name).map(v => v.name), ...savedRulesVarNames])]}
                   label="Default value"
                   placeholder="e.g., 0"
                 />
@@ -549,7 +569,7 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onGenerate, onClose, onSa
               value={iterConfig.expression}
               onChange={(val) => setIterConfig(prev => ({ ...prev, expression: val }))}
               events={events}
-              variables={variables.filter(v => v.name).map(v => v.name)}
+              variables={[...new Set([...variables.filter(v => v.name).map(v => v.name), ...savedRulesVarNames])]}
               label="Expression (applied to each element)"
               placeholder='e.g., multiply(item, 1.1)'
             />
@@ -592,7 +612,7 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onGenerate, onClose, onSa
             {outputs.createTransaction && (
               <>
                 {outputs.transactions.map((txn, idx) => {
-                  const allVarNames = variables.filter(v => v.name).map(v => v.name);
+                  const allVarNames = [...new Set([...variables.filter(v => v.name).map(v => v.name), ...savedRulesVarNames])];
                   const dateVarNames = allVarNames.filter(v => v.toLowerCase().includes('date'));
                   const eventFieldOptions = events?.flatMap(ev => [
                     ...['postingdate', 'effectivedate'].map(sf => `${ev.event_name}.${sf}`),
@@ -609,13 +629,14 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onGenerate, onClose, onSa
                       <TextField size="small" label="Transaction Type" value={txn.type} sx={{ flex: 1 }}
                         onChange={(e) => updateTransaction(idx, 'type', e.target.value)} />
                       <FormControl size="small" sx={{ flex: 1 }}>
-                        <InputLabel>Amount</InputLabel>
+                        <InputLabel shrink>Amount</InputLabel>
                         <Select
                           value={txn.amount || ''}
                           label="Amount"
                           onChange={(e) => updateTransaction(idx, 'amount', e.target.value)}
                           displayEmpty
-                          renderValue={(val) => val || <em style={{ color: '#999' }}>Select or type...</em>}
+                          notched
+                          renderValue={(val) => val || <em style={{ color: '#999' }}>Select amount...</em>}
                         >
                           {allVarNames.length > 0 && (
                             <MenuItem disabled sx={{ fontSize: '0.75rem', fontWeight: 600, color: '#5B5FED' }}>— Calculated Variables —</MenuItem>
@@ -637,20 +658,21 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onGenerate, onClose, onSa
                     </Box>
                     <Box sx={{ display: 'flex', gap: 1 }}>
                       <FormControl size="small" sx={{ flex: 1 }}>
-                        <InputLabel>Posting Date</InputLabel>
+                        <InputLabel shrink>Posting Date</InputLabel>
                         <Select
                           value={txn.postingDate || ''}
                           label="Posting Date"
                           onChange={(e) => updateTransaction(idx, 'postingDate', e.target.value)}
                           displayEmpty
+                          notched
                           renderValue={(val) => val || <em style={{ color: '#999' }}>postingdate</em>}
                         >
                           <MenuItem value="postingdate" sx={{ fontFamily: 'monospace', fontSize: '0.8125rem' }}>postingdate</MenuItem>
                           <MenuItem value="effectivedate" sx={{ fontFamily: 'monospace', fontSize: '0.8125rem' }}>effectivedate</MenuItem>
-                          {dateVarNames.length > 0 && (
+                          {allVarNames.length > 0 && (
                             <MenuItem disabled sx={{ fontSize: '0.75rem', fontWeight: 600, color: '#5B5FED' }}>— Variables —</MenuItem>
                           )}
-                          {dateVarNames.map(v => (
+                          {allVarNames.map(v => (
                             <MenuItem key={`dv-${v}`} value={v} sx={{ fontFamily: 'monospace', fontSize: '0.8125rem' }}>{v}</MenuItem>
                           ))}
                           {dateEventFields.length > 0 && (
@@ -662,20 +684,21 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onGenerate, onClose, onSa
                         </Select>
                       </FormControl>
                       <FormControl size="small" sx={{ flex: 1 }}>
-                        <InputLabel>Effective Date</InputLabel>
+                        <InputLabel shrink>Effective Date</InputLabel>
                         <Select
                           value={txn.effectiveDate || ''}
                           label="Effective Date"
                           onChange={(e) => updateTransaction(idx, 'effectiveDate', e.target.value)}
                           displayEmpty
+                          notched
                           renderValue={(val) => val || <em style={{ color: '#999' }}>same as posting</em>}
                         >
                           <MenuItem value="postingdate" sx={{ fontFamily: 'monospace', fontSize: '0.8125rem' }}>postingdate</MenuItem>
                           <MenuItem value="effectivedate" sx={{ fontFamily: 'monospace', fontSize: '0.8125rem' }}>effectivedate</MenuItem>
-                          {dateVarNames.length > 0 && (
+                          {allVarNames.length > 0 && (
                             <MenuItem disabled sx={{ fontSize: '0.75rem', fontWeight: 600, color: '#5B5FED' }}>— Variables —</MenuItem>
                           )}
-                          {dateVarNames.map(v => (
+                          {allVarNames.map(v => (
                             <MenuItem key={`edv-${v}`} value={v} sx={{ fontFamily: 'monospace', fontSize: '0.8125rem' }}>{v}</MenuItem>
                           ))}
                           {dateEventFields.length > 0 && (

@@ -2319,6 +2319,7 @@ async def run_dsl_code(request: DSLRunRequest):
         # - If we have activity events with data, merge them by instrument
         # - If no activity data but reference events present, create a single dummy row so template runs once
         # - Otherwise, error (no data at all)
+        date_fallback_warning = None
         if activity_events_with_data:
             # Filter by requested posting date before merging (Console date-scoped runs)
             scoped_activity = (
@@ -2327,6 +2328,23 @@ async def run_dsl_code(request: DSLRunRequest):
                 else activity_event_data
             )
             merged_data = merge_event_data_by_instrument(scoped_activity)
+            
+            # If no data for the requested posting date, fall back to all available data
+            if not merged_data and request.posting_date:
+                logger.info(f"No data for posting date {request.posting_date}, falling back to all available data")
+                merged_data = merge_event_data_by_instrument(activity_event_data)
+                if merged_data:
+                    # Collect available posting dates for the warning
+                    available_dates = set()
+                    for rows in activity_event_data.values():
+                        for row in rows:
+                            pd = str(get_field_case_insensitive(row, "postingdate", "")).strip()
+                            if pd:
+                                available_dates.add(pd)
+                    date_fallback_warning = (
+                        f"No data found for posting date {request.posting_date}. "
+                        f"Using all available data. Available posting dates: {sorted(available_dates)}"
+                    )
         elif reference_events_with_data:
             # No activity rows but we have reference data — run template once with an empty merged row
             merged_data = [{}]
@@ -2372,6 +2390,11 @@ async def run_dsl_code(request: DSLRunRequest):
         if events_without_data:
             result["warning"] = f"No data for events: {events_without_data}. Their fields defaulted to 0/empty."
             result["events_without_data"] = events_without_data
+        
+        # Add warning if we fell back to all dates
+        if date_fallback_warning:
+            existing_warning = result.get("warning", "")
+            result["warning"] = (existing_warning + " " + date_fallback_warning).strip()
         
         return result
     except HTTPException as he:

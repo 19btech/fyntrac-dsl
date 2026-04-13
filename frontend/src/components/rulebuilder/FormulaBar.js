@@ -1,9 +1,10 @@
-import React, { useState, useMemo, useCallback, useRef, useEffect } from "react";
+import React, { useState, useMemo, useCallback, useRef } from "react";
 import {
   Box, Typography, TextField, Paper, IconButton, Chip, Tooltip,
-  Autocomplete, Popper, ClickAwayListener, InputAdornment, Divider, Portal,
+  Popper, ClickAwayListener, InputAdornment, Divider,
+  Dialog, DialogTitle, DialogContent,
 } from "@mui/material";
-import { FunctionSquare, ChevronDown, ChevronUp, Info, X, Plus, Search, Variable } from "lucide-react";
+import { FunctionSquare, X, Search, Variable } from "lucide-react";
 
 /**
  * DSL functions organized into user-friendly categories with aliases.
@@ -210,7 +211,7 @@ const FunctionTooltip = ({ func }) => (
 
 /**
  * FormulaBar — Excel-style formula input with function autocomplete,
- * category browsing, and inline documentation.
+ * category browsing modal, and inline keyword hints.
  */
 const FormulaBar = ({ value, onChange, events, variables, label, placeholder }) => {
   const [showCatalog, setShowCatalog] = useState(false);
@@ -218,15 +219,12 @@ const FormulaBar = ({ value, onChange, events, variables, label, placeholder }) 
   const [selectedCategory, setSelectedCategory] = useState(null);
   const inputRef = useRef(null);
   const anchorRef = useRef(null);
-  const [anchorRect, setAnchorRect] = useState(null);
 
-  // Recalculate position when catalog opens
-  useEffect(() => {
-    if (showCatalog && anchorRef.current) {
-      const rect = anchorRef.current.getBoundingClientRect();
-      setAnchorRect(rect);
-    }
-  }, [showCatalog]);
+  // Inline autocomplete state
+  const [hintAnchor, setHintAnchor] = useState(null);
+  const [hintItems, setHintItems] = useState([]);
+  const [hintIndex, setHintIndex] = useState(0);
+  const [currentWord, setCurrentWord] = useState('');
 
   const filteredFunctions = useMemo(() => {
     let list = FORMULA_CATALOG;
@@ -255,6 +253,96 @@ const FormulaBar = ({ value, onChange, events, variables, label, placeholder }) 
     return variables.filter(v => typeof v === 'string' ? v : v?.name).map(v => typeof v === 'string' ? v : v.name);
   }, [variables]);
 
+  // Build a flat hint list: formulas, event fields, variables
+  const allHints = useMemo(() => {
+    const hints = [];
+    FORMULA_CATALOG.forEach(f => {
+      hints.push({ label: f.name, secondary: f.desc, type: 'function', insert: `${f.dsl}(${f.args.join(', ')})` });
+      if (f.dsl !== f.name.toLowerCase()) {
+        hints.push({ label: f.dsl, secondary: f.desc, type: 'function', insert: `${f.dsl}(${f.args.join(', ')})` });
+      }
+    });
+    eventFields.forEach(ef => {
+      hints.push({ label: ef, secondary: 'Event field', type: 'field', insert: ef });
+    });
+    variableNames.forEach(v => {
+      hints.push({ label: v, secondary: 'Variable', type: 'variable', insert: v });
+    });
+    return hints;
+  }, [eventFields, variableNames]);
+
+  // Extract the word being typed at cursor
+  const getWordAtCursor = useCallback((text, cursorPos) => {
+    if (!text || cursorPos === 0) return '';
+    const before = text.slice(0, cursorPos);
+    const match = before.match(/[A-Za-z_][A-Za-z0-9_.]*$/);
+    return match ? match[0] : '';
+  }, []);
+
+  // Handle input changes and inline hint matching
+  const handleInputChange = useCallback((e) => {
+    const newVal = e.target.value;
+    onChange(newVal);
+
+    const cursorPos = e.target.selectionStart;
+    const word = getWordAtCursor(newVal, cursorPos);
+    setCurrentWord(word);
+
+    if (word.length >= 2) {
+      const lower = word.toLowerCase();
+      const matches = allHints.filter(h => h.label.toLowerCase().includes(lower)).slice(0, 8);
+      if (matches.length > 0) {
+        setHintItems(matches);
+        setHintIndex(0);
+        setHintAnchor(inputRef.current);
+        return;
+      }
+    }
+    setHintItems([]);
+    setHintAnchor(null);
+  }, [onChange, getWordAtCursor, allHints]);
+
+  // Insert a hint, replacing the current word
+  const applyHint = useCallback((hint) => {
+    const text = value || '';
+    const input = inputRef.current;
+    const cursorPos = input?.selectionStart || text.length;
+    const before = text.slice(0, cursorPos);
+    const after = text.slice(cursorPos);
+    const wordStart = before.length - currentWord.length;
+    const newText = before.slice(0, wordStart) + hint.insert + after;
+    onChange(newText);
+    setHintItems([]);
+    setHintAnchor(null);
+
+    // Re-focus and set cursor
+    setTimeout(() => {
+      if (input) {
+        input.focus();
+        const newPos = wordStart + hint.insert.length;
+        input.setSelectionRange(newPos, newPos);
+      }
+    }, 0);
+  }, [value, onChange, currentWord]);
+
+  // Handle keyboard navigation in hints
+  const handleKeyDown = useCallback((e) => {
+    if (hintItems.length === 0) return;
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      setHintIndex(i => Math.min(i + 1, hintItems.length - 1));
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      setHintIndex(i => Math.max(i - 1, 0));
+    } else if (e.key === 'Enter' || e.key === 'Tab') {
+      e.preventDefault();
+      applyHint(hintItems[hintIndex]);
+    } else if (e.key === 'Escape') {
+      setHintItems([]);
+      setHintAnchor(null);
+    }
+  }, [hintItems, hintIndex, applyHint]);
+
   const insertFunction = useCallback((func) => {
     const snippet = `${func.dsl}(${func.args.join(', ')})`;
     const current = value || '';
@@ -275,9 +363,10 @@ const FormulaBar = ({ value, onChange, events, variables, label, placeholder }) 
         inputRef={inputRef}
         size="small" fullWidth
         label={label || 'Formula'}
-        placeholder={placeholder || 'Type a formula or click fx to browse functions...'}
+        placeholder={placeholder || 'Type a formula or click 🔍 to browse functions...'}
         value={value || ''}
-        onChange={(e) => onChange(e.target.value)}
+        onChange={handleInputChange}
+        onKeyDown={handleKeyDown}
         InputProps={{
           startAdornment: (
             <InputAdornment position="start">
@@ -287,8 +376,8 @@ const FormulaBar = ({ value, onChange, events, variables, label, placeholder }) 
           endAdornment: (
             <InputAdornment position="end">
               <Tooltip title="Browse functions">
-                <IconButton size="small" onClick={() => setShowCatalog(!showCatalog)}>
-                  {showCatalog ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
+                <IconButton size="small" onClick={() => { setShowCatalog(true); setCatalogFilter(''); setSelectedCategory(null); }}>
+                  <Search size={16} />
                 </IconButton>
               </Tooltip>
             </InputAdornment>
@@ -297,122 +386,139 @@ const FormulaBar = ({ value, onChange, events, variables, label, placeholder }) 
         }}
       />
 
-      {showCatalog && (
-        <Portal>
-          <ClickAwayListener onClickAway={() => setShowCatalog(false)}>
-            <Paper
-              elevation={8}
-              sx={{
-                position: 'fixed',
-                top: anchorRect ? anchorRect.bottom + 4 : 0,
-                left: anchorRect ? anchorRect.left : 0,
-                width: anchorRect ? anchorRect.width : 400,
-                zIndex: 1400,
-                maxHeight: 400, overflow: 'hidden', display: 'flex', flexDirection: 'column',
-                border: '1px solid #E9ECEF', borderRadius: 2,
-              }}
-            >
-              {/* Search */}
-              <Box sx={{ p: 1 }}>
-                <TextField
-                  size="small" fullWidth autoFocus
-                  placeholder="Search functions..."
-                  value={catalogFilter}
-                  onChange={(e) => setCatalogFilter(e.target.value)}
-                  InputProps={{
-                    startAdornment: <InputAdornment position="start"><Search size={14} /></InputAdornment>,
-                  }}
-                />
-              </Box>
-
-            {/* Category chips */}
-            <Box sx={{ px: 1, pb: 0.5, display: 'flex', gap: 0.5, flexWrap: 'wrap' }}>
-              <Chip size="small" label="All" variant={!selectedCategory ? 'filled' : 'outlined'}
-                color={!selectedCategory ? 'primary' : 'default'}
-                onClick={() => setSelectedCategory(null)} />
-              {CATEGORIES.map(cat => (
-                <Chip key={cat} size="small" label={cat}
-                  variant={selectedCategory === cat ? 'filled' : 'outlined'}
-                  color={selectedCategory === cat ? 'primary' : 'default'}
-                  onClick={() => setSelectedCategory(cat)} />
-              ))}
-            </Box>
-
-            <Divider />
-
-            {/* Function list */}
-            <Box sx={{ flex: 1, overflow: 'auto' }}>
-              {filteredFunctions.map((func) => (
-                <Box
-                  key={func.name}
-                  onClick={() => insertFunction(func)}
-                  sx={{
-                    px: 1.5, py: 0.75, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 1,
-                    '&:hover': { bgcolor: '#EEF0FE' },
-                  }}
-                >
-                  <FunctionSquare size={14} color="#5B5FED" />
-                  <Box sx={{ flex: 1, minWidth: 0 }}>
-                    <Typography variant="body2" fontWeight={600} fontFamily="monospace" fontSize="0.8125rem">
-                      {func.name}(<Typography component="span" variant="body2" color="text.secondary" fontFamily="monospace" fontSize="0.75rem">
-                        {func.args.join(', ')}
-                      </Typography>)
-                    </Typography>
-                    <Typography variant="caption" color="text.secondary" noWrap>{func.desc}</Typography>
-                  </Box>
-                  <Chip size="small" label={func.category} sx={{ fontSize: '0.625rem', height: 18, pointerEvents: 'none' }} />
-                </Box>
-              ))}
-              {filteredFunctions.length === 0 && (
-                <Typography variant="body2" color="text.secondary" sx={{ p: 2, textAlign: 'center' }}>
-                  No matching functions
-                </Typography>
-              )}
-            </Box>
-
-            {/* Variables section */}
-            {variableNames.length > 0 && (
-              <>
-                <Divider />
-                <Box sx={{ p: 1 }}>
-                  <Typography variant="caption" fontWeight={600} color="text.secondary">
-                    <Variable size={12} style={{ display: 'inline', verticalAlign: 'middle', marginRight: 4 }} />
-                    Defined Variables
+      {/* Inline autocomplete hints */}
+      <Popper open={hintItems.length > 0 && Boolean(hintAnchor)} anchorEl={hintAnchor} placement="bottom-start" sx={{ zIndex: 1500 }}>
+        <ClickAwayListener onClickAway={() => { setHintItems([]); setHintAnchor(null); }}>
+          <Paper elevation={6} sx={{ maxHeight: 220, overflow: 'auto', minWidth: 260, maxWidth: 400, mt: 0.5, border: '1px solid #E9ECEF', borderRadius: 1.5 }}>
+            {hintItems.map((hint, idx) => (
+              <Box
+                key={hint.label + hint.type}
+                onClick={() => applyHint(hint)}
+                sx={{
+                  px: 1.5, py: 0.5, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 1,
+                  bgcolor: idx === hintIndex ? '#EEF0FE' : 'transparent',
+                  '&:hover': { bgcolor: '#EEF0FE' },
+                }}
+              >
+                {hint.type === 'function' && <FunctionSquare size={13} color="#5B5FED" />}
+                {hint.type === 'field' && <Typography variant="caption" sx={{ color: '#e65100', fontWeight: 700, fontSize: '0.7rem' }}>EV</Typography>}
+                {hint.type === 'variable' && <Variable size={13} color="#7b1fa2" />}
+                <Box sx={{ flex: 1, minWidth: 0 }}>
+                  <Typography variant="body2" fontFamily="monospace" fontSize="0.8rem" fontWeight={600} noWrap>
+                    {hint.label}
                   </Typography>
-                  <Box sx={{ display: 'flex', gap: 0.5, flexWrap: 'wrap', mt: 0.5 }}>
-                    {variableNames.map(v => (
-                      <Chip key={v} size="small" label={v} variant="outlined" color="secondary"
-                        onClick={() => insertText(v)}
-                        sx={{ fontSize: '0.6875rem', cursor: 'pointer', fontFamily: 'monospace' }} />
-                    ))}
-                  </Box>
+                  <Typography variant="caption" color="text.secondary" noWrap>{hint.secondary}</Typography>
                 </Box>
-              </>
-            )}
-
-            {/* Event fields section */}
-            {eventFields.length > 0 && (
-              <>
-                <Divider />
-                <Box sx={{ p: 1 }}>
-                  <Typography variant="caption" fontWeight={600} color="text.secondary">Event Fields</Typography>
-                  <Box sx={{ display: 'flex', gap: 0.5, flexWrap: 'wrap', mt: 0.5 }}>
-                    {eventFields.slice(0, 12).map(ef => (
-                      <Chip key={ef} size="small" label={ef} variant="outlined"
-                        onClick={() => insertText(ef)}
-                        sx={{ fontSize: '0.6875rem', cursor: 'pointer' }} />
-                    ))}
-                    {eventFields.length > 12 && (
-                      <Chip size="small" label={`+${eventFields.length - 12} more`} variant="outlined" sx={{ fontSize: '0.6875rem' }} />
-                    )}
-                  </Box>
-                </Box>
-              </>
-            )}
+              </Box>
+            ))}
           </Paper>
         </ClickAwayListener>
-      </Portal>
-      )}
+      </Popper>
+
+      {/* Function catalog modal */}
+      <Dialog open={showCatalog} onClose={() => setShowCatalog(false)} maxWidth="sm" fullWidth PaperProps={{ sx: { maxHeight: '80vh' } }}>
+        <DialogTitle sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', pb: 1 }}>
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+            <FunctionSquare size={18} color="#5B5FED" />
+            <Typography variant="subtitle1" fontWeight={700}>Function Browser</Typography>
+          </Box>
+          <IconButton size="small" onClick={() => setShowCatalog(false)}><X size={16} /></IconButton>
+        </DialogTitle>
+        <DialogContent sx={{ display: 'flex', flexDirection: 'column', gap: 1, px: 2, pb: 2, pt: '0 !important' }}>
+          {/* Search */}
+          <TextField
+            size="small" fullWidth autoFocus
+            placeholder="Search functions..."
+            value={catalogFilter}
+            onChange={(e) => setCatalogFilter(e.target.value)}
+            InputProps={{
+              startAdornment: <InputAdornment position="start"><Search size={14} /></InputAdornment>,
+            }}
+          />
+
+          {/* Category chips */}
+          <Box sx={{ display: 'flex', gap: 0.5, flexWrap: 'wrap' }}>
+            <Chip size="small" label="All" variant={!selectedCategory ? 'filled' : 'outlined'}
+              color={!selectedCategory ? 'primary' : 'default'}
+              onClick={() => setSelectedCategory(null)} />
+            {CATEGORIES.map(cat => (
+              <Chip key={cat} size="small" label={cat}
+                variant={selectedCategory === cat ? 'filled' : 'outlined'}
+                color={selectedCategory === cat ? 'primary' : 'default'}
+                onClick={() => setSelectedCategory(cat)} />
+            ))}
+          </Box>
+
+          <Divider />
+
+          {/* Function list */}
+          <Box sx={{ flex: 1, overflow: 'auto', minHeight: 200 }}>
+            {filteredFunctions.map((func) => (
+              <Box
+                key={func.name}
+                onClick={() => insertFunction(func)}
+                sx={{
+                  px: 1.5, py: 0.75, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 1,
+                  '&:hover': { bgcolor: '#EEF0FE' }, borderRadius: 1,
+                }}
+              >
+                <FunctionSquare size={14} color="#5B5FED" />
+                <Box sx={{ flex: 1, minWidth: 0 }}>
+                  <Typography variant="body2" fontWeight={600} fontFamily="monospace" fontSize="0.8125rem">
+                    {func.name}(<Typography component="span" variant="body2" color="text.secondary" fontFamily="monospace" fontSize="0.75rem">
+                      {func.args.join(', ')}
+                    </Typography>)
+                  </Typography>
+                  <Typography variant="caption" color="text.secondary" noWrap>{func.desc}</Typography>
+                </Box>
+                <Chip size="small" label={func.category} sx={{ fontSize: '0.625rem', height: 18, pointerEvents: 'none' }} />
+              </Box>
+            ))}
+            {filteredFunctions.length === 0 && (
+              <Typography variant="body2" color="text.secondary" sx={{ p: 2, textAlign: 'center' }}>
+                No matching functions
+              </Typography>
+            )}
+          </Box>
+
+          {/* Variables section */}
+          {variableNames.length > 0 && (
+            <>
+              <Divider />
+              <Box>
+                <Typography variant="caption" fontWeight={600} color="text.secondary">
+                  <Variable size={12} style={{ display: 'inline', verticalAlign: 'middle', marginRight: 4 }} />
+                  Defined Variables
+                </Typography>
+                <Box sx={{ display: 'flex', gap: 0.5, flexWrap: 'wrap', mt: 0.5 }}>
+                  {variableNames.map(v => (
+                    <Chip key={v} size="small" label={v} variant="outlined" color="secondary"
+                      onClick={() => insertText(v)}
+                      sx={{ fontSize: '0.6875rem', cursor: 'pointer', fontFamily: 'monospace' }} />
+                  ))}
+                </Box>
+              </Box>
+            </>
+          )}
+
+          {/* Event fields section */}
+          {eventFields.length > 0 && (
+            <>
+              <Divider />
+              <Box>
+                <Typography variant="caption" fontWeight={600} color="text.secondary">Event Fields</Typography>
+                <Box sx={{ display: 'flex', gap: 0.5, flexWrap: 'wrap', mt: 0.5 }}>
+                  {eventFields.map(ef => (
+                    <Chip key={ef} size="small" label={ef} variant="outlined"
+                      onClick={() => insertText(ef)}
+                      sx={{ fontSize: '0.6875rem', cursor: 'pointer' }} />
+                  ))}
+                </Box>
+              </Box>
+            </>
+          )}
+        </DialogContent>
+      </Dialog>
     </Box>
   );
 };
