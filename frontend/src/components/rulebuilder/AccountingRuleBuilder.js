@@ -6,7 +6,7 @@ import {
 } from "@mui/material";
 import {
   Plus, Trash2, ArrowUp, ArrowDown, Play, Code, Eye, Save, Sparkles,
-  Calculator, Database, Hash, Type, List, ToggleLeft, GitBranch, Repeat, FlaskConical,
+  Calculator, Hash, Type, List, ToggleLeft, GitBranch, Repeat, FlaskConical,
 } from "lucide-react";
 import { API } from "../../config";
 import FormulaBar from "./FormulaBar";
@@ -15,7 +15,6 @@ const RULE_TYPES = [
   { value: 'simple_calc', label: 'Simple Calculation', description: 'Compute values using formulas', icon: Calculator },
   { value: 'conditional', label: 'Conditional Logic', description: 'Apply different formulas based on conditions', icon: GitBranch },
   { value: 'iteration', label: 'Iteration / Loop', description: 'Process arrays or collections with for_each / map', icon: Repeat },
-  { value: 'collect', label: 'Collect & Aggregate', description: 'Collect event data and aggregate across instruments', icon: Database },
 ];
 
 const VariableRow = ({ variable, index, events, definedVarNames, onUpdate, onRemove, onMoveUp, onMoveDown, isFirst, isLast, onTest }) => {
@@ -436,21 +435,6 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onGenerate, onClose, onSa
       lines.push('');
     }
 
-    // ── Collect ──
-    if (ruleType === 'collect') {
-      // Already handled in variable definitions — add aggregate print
-      const collectVars = variables.filter(v => v.source === 'collect' && v.name);
-      if (collectVars.length > 0) {
-        lines.push('## Aggregate Results');
-        collectVars.forEach(cv => {
-          lines.push(`print("Count of ${cv.name}:", count(${cv.name}))`);
-          lines.push(`print("Sum of ${cv.name}:", sum(${cv.name}))`);
-          lines.push(`print("Avg of ${cv.name}:", avg(${cv.name}))`);
-        });
-        lines.push('');
-      }
-    }
-
     // ── Print results ──
     if (outputs.printResult && ruleType === 'simple_calc') {
       const lastVar = definedVars[definedVars.length - 1];
@@ -568,7 +552,7 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onGenerate, onClose, onSa
         {/* Variables / Parameters */}
         <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 1.5 }}>
           <Typography variant="body2" fontWeight={600}>
-            {ruleType === 'collect' ? 'Data Collection' : 'Calculation Steps'}
+            Calculation Steps
           </Typography>
           <Button size="small" startIcon={<Plus size={14} />} onClick={addVariable}>Add Step</Button>
         </Box>
