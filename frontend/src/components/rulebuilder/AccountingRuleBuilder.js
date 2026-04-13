@@ -18,7 +18,7 @@ const RULE_TYPES = [
   { value: 'collect', label: 'Collect & Aggregate', description: 'Collect event data and aggregate across instruments', icon: Database },
 ];
 
-const VariableRow = ({ variable, index, events, onUpdate, onRemove, onMoveUp, onMoveDown, isFirst, isLast }) => {
+const VariableRow = ({ variable, index, events, definedVarNames, onUpdate, onRemove, onMoveUp, onMoveDown, isFirst, isLast }) => {
   const eventFields = useMemo(() => {
     if (!events || events.length === 0) return [];
     const result = [];
@@ -60,6 +60,7 @@ const VariableRow = ({ variable, index, events, onUpdate, onRemove, onMoveUp, on
                 value={variable.formula || ''}
                 onChange={(val) => onUpdate(index, { ...variable, formula: val })}
                 events={events}
+                variables={definedVarNames}
                 label="Formula"
                 placeholder="e.g., multiply(principal, rate)"
               />
@@ -118,7 +119,7 @@ const VariableRow = ({ variable, index, events, onUpdate, onRemove, onMoveUp, on
   );
 };
 
-const ConditionRow = ({ condition, index, events, onUpdate, onRemove }) => (
+const ConditionRow = ({ condition, index, events, definedVarNames, onUpdate, onRemove }) => (
   <Card sx={{ mb: 1, borderLeft: '3px solid #FF9800' }}>
     <CardContent sx={{ p: 1.5, '&:last-child': { pb: 1.5 } }}>
       <Typography variant="caption" fontWeight={600} color="text.secondary" sx={{ mb: 0.5, display: 'block' }}>
@@ -130,6 +131,7 @@ const ConditionRow = ({ condition, index, events, onUpdate, onRemove }) => (
             value={condition.condition || ''}
             onChange={(val) => onUpdate(index, { ...condition, condition: val })}
             events={events}
+            variables={definedVarNames}
             label="Condition"
             placeholder='e.g., gt(balance, 0)'
           />
@@ -140,6 +142,7 @@ const ConditionRow = ({ condition, index, events, onUpdate, onRemove }) => (
         value={condition.thenFormula || ''}
         onChange={(val) => onUpdate(index, { ...condition, thenFormula: val })}
         events={events}
+        variables={definedVarNames}
         label="Then (result)"
         placeholder="e.g., multiply(balance, rate)"
       />
@@ -151,35 +154,46 @@ const ConditionRow = ({ condition, index, events, onUpdate, onRemove }) => (
  * AccountingRuleBuilder — Form-based rule builder for accounting calculations.
  * Supports: simple calculations, conditional logic, iteration, collect.
  */
-const AccountingRuleBuilder = ({ events, dslFunctions, onGenerate, onClose }) => {
-  const [ruleType, setRuleType] = useState('simple_calc');
-  const [ruleName, setRuleName] = useState('');
-  const [variables, setVariables] = useState([
-    { name: '', source: 'value', value: '', formula: '', eventField: '', collectType: 'collect' },
-  ]);
+const AccountingRuleBuilder = ({ events, dslFunctions, onGenerate, onClose, onSave, initialData }) => {
+  const [ruleType, setRuleType] = useState(initialData?.ruleType || 'simple_calc');
+  const [ruleName, setRuleName] = useState(initialData?.name || '');
+  const [ruleId, setRuleId] = useState(initialData?.id || null);
+  const [variables, setVariables] = useState(
+    initialData?.variables?.length ? initialData.variables :
+    [{ name: '', source: 'value', value: '', formula: '', eventField: '', collectType: 'collect' }]
+  );
 
   // Conditional config
-  const [conditions, setConditions] = useState([
-    { condition: '', thenFormula: '' },
-  ]);
-  const [elseFormula, setElseFormula] = useState('');
-  const [conditionResultVar, setConditionResultVar] = useState('result');
+  const [conditions, setConditions] = useState(
+    initialData?.conditions?.length ? initialData.conditions :
+    [{ condition: '', thenFormula: '' }]
+  );
+  const [elseFormula, setElseFormula] = useState(initialData?.elseFormula || '');
+  const [conditionResultVar, setConditionResultVar] = useState(initialData?.conditionResultVar || 'result');
 
   // Iteration config
-  const [iterConfig, setIterConfig] = useState({
-    type: 'map_array', // map_array | for_each
-    sourceArray: '', varName: 'item', expression: '',
-    resultVar: 'mapped_result',
-    // for for_each paired:
-    secondArray: '', secondVar: 'amount',
-  });
+  const [iterConfig, setIterConfig] = useState(
+    initialData?.iterConfig?.type ? initialData.iterConfig :
+    {
+      type: 'map_array',
+      sourceArray: '', varName: 'item', expression: '',
+      resultVar: 'mapped_result',
+      secondArray: '', secondVar: 'amount',
+    }
+  );
 
   // Outputs
-  const [outputs, setOutputs] = useState({
-    printResult: true,
-    createTransaction: false,
-    transactions: [{ type: 'Calculation Result', amount: '', postingDate: '', effectiveDate: '' }],
-  });
+  const [outputs, setOutputs] = useState(
+    initialData?.outputs?.printResult !== undefined ? initialData.outputs :
+    {
+      printResult: true,
+      createTransaction: false,
+      transactions: [{ type: 'Calculation Result', amount: '', postingDate: '', effectiveDate: '' }],
+    }
+  );
+  const [inlineComment, setInlineComment] = useState(initialData?.inlineComment || false);
+  const [commentText, setCommentText] = useState(initialData?.commentText || '');
+  const [saving, setSaving] = useState(false);
   const [showCode, setShowCode] = useState(false);
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState(null); // { success, output, error }
@@ -225,6 +239,10 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onGenerate, onClose }) =>
 
   const generatedCode = useMemo(() => {
     const lines = [];
+    if (inlineComment && commentText.trim()) {
+      commentText.trim().split('\n').forEach(l => lines.push(`## ${l}`));
+      lines.push('');
+    }
     lines.push('## ═══════════════════════════════════════════════════════════════');
     lines.push(`## ${(ruleName || 'CUSTOM CALCULATION').toUpperCase()}`);
     lines.push('## ═══════════════════════════════════════════════════════════════');
@@ -318,7 +336,7 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onGenerate, onClose }) =>
     }
 
     return lines.join('\n');
-  }, [ruleName, ruleType, variables, outputs, conditions, elseFormula, conditionResultVar, iterConfig]);
+  }, [ruleName, ruleType, variables, outputs, conditions, elseFormula, conditionResultVar, iterConfig, inlineComment, commentText]);
 
   const handleTest = useCallback(async () => {
     setTesting(true);
@@ -328,7 +346,7 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onGenerate, onClose }) =>
       const response = await fetch(`${API}/dsl/run`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ code: generatedCode, posting_date: today }),
+        body: JSON.stringify({ dsl_code: generatedCode, posting_date: today }),
       });
       const data = await response.json();
       if (response.ok && data.success) {
@@ -337,7 +355,8 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onGenerate, onClose }) =>
         if (data.transactions?.length > 0) outputs.push(`Generated ${data.transactions.length} transaction(s)`);
         setTestResult({ success: true, output: outputs.join('\n') || 'Executed successfully (no output)', transactions: data.transactions || [] });
       } else {
-        setTestResult({ success: false, error: data.error || data.detail || 'Execution failed' });
+        const errMsg = data.error || (typeof data.detail === 'string' ? data.detail : JSON.stringify(data.detail)) || 'Execution failed';
+        setTestResult({ success: false, error: errMsg });
       }
     } catch (err) {
       setTestResult({ success: false, error: err.message || 'Network error' });
@@ -350,9 +369,52 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onGenerate, onClose }) =>
     onGenerate(generatedCode);
   }, [generatedCode, onGenerate]);
 
+  const handleSave = useCallback(async () => {
+    if (!ruleName.trim()) {
+      setTestResult({ success: false, error: 'Please enter a rule name before saving.' });
+      return;
+    }
+    setSaving(true);
+    setTestResult(null);
+    try {
+      const payload = {
+        id: ruleId,
+        name: ruleName.trim(),
+        ruleType,
+        variables,
+        conditions,
+        elseFormula,
+        conditionResultVar,
+        iterConfig,
+        outputs,
+        inlineComment,
+        commentText,
+        generatedCode,
+      };
+      const response = await fetch(`${API}/saved-rules`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const data = await response.json();
+      if (response.ok && data.success) {
+        setRuleId(data.id);
+        setTestResult({ success: true, output: data.message || 'Rule saved successfully.' });
+        if (onSave) onSave();
+      } else {
+        const errMsg = data.detail || data.error || 'Save failed';
+        setTestResult({ success: false, error: typeof errMsg === 'string' ? errMsg : JSON.stringify(errMsg) });
+      }
+    } catch (err) {
+      setTestResult({ success: false, error: err.message || 'Network error' });
+    } finally {
+      setSaving(false);
+    }
+  }, [ruleName, ruleId, ruleType, variables, conditions, elseFormula, conditionResultVar, iterConfig, outputs, inlineComment, commentText, generatedCode, onSave]);
+
   return (
-    <Box sx={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
-      <Box sx={{ p: 2, borderBottom: '1px solid #E9ECEF', bgcolor: 'white' }}>
+    <Box sx={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0, height: '100%' }}>
+      <Box sx={{ p: 2, borderBottom: '1px solid #E9ECEF', bgcolor: 'white', flexShrink: 0 }}>
         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5, mb: 1 }}>
           <Calculator size={20} color="#5B5FED" />
           <Typography variant="h5">Rule Builder</Typography>
@@ -399,6 +461,7 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onGenerate, onClose }) =>
 
         {variables.map((variable, idx) => (
           <VariableRow key={idx} variable={variable} index={idx} events={events}
+            definedVarNames={variables.slice(0, idx).filter(v => v.name).map(v => v.name)}
             onUpdate={updateVariable} onRemove={removeVariable}
             onMoveUp={() => moveVariable(idx, -1)} onMoveDown={() => moveVariable(idx, 1)}
             isFirst={idx === 0} isLast={idx === variables.length - 1} />
@@ -421,6 +484,7 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onGenerate, onClose }) =>
 
             {conditions.map((cond, idx) => (
               <ConditionRow key={idx} condition={cond} index={idx} events={events}
+                definedVarNames={variables.filter(v => v.name).map(v => v.name)}
                 onUpdate={updateCondition} onRemove={removeCondition} />
             ))}
 
@@ -431,6 +495,7 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onGenerate, onClose }) =>
                   value={elseFormula}
                   onChange={setElseFormula}
                   events={events}
+                  variables={variables.filter(v => v.name).map(v => v.name)}
                   label="Default value"
                   placeholder="e.g., 0"
                 />
@@ -484,6 +549,7 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onGenerate, onClose }) =>
               value={iterConfig.expression}
               onChange={(val) => setIterConfig(prev => ({ ...prev, expression: val }))}
               events={events}
+              variables={variables.filter(v => v.name).map(v => v.name)}
               label="Expression (applied to each element)"
               placeholder='e.g., multiply(item, 1.1)'
             />
@@ -494,6 +560,23 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onGenerate, onClose }) =>
 
         {/* ── Output Options ── */}
         <Typography variant="body2" fontWeight={600} sx={{ mb: 1 }}>Output Options</Typography>
+        <Card sx={{ mb: 1 }}>
+          <CardContent sx={{ p: 1.5, '&:last-child': { pb: 1.5 } }}>
+            <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: inlineComment ? 1 : 0 }}>
+              <Typography variant="body2">Inline comment</Typography>
+              <Switch checked={inlineComment} onChange={(e) => setInlineComment(e.target.checked)} size="small" />
+            </Box>
+            {inlineComment && (
+              <TextField
+                size="small" fullWidth multiline minRows={2} maxRows={4}
+                label="Description"
+                placeholder="Describe what this rule does — will appear as ## comment above the rule"
+                value={commentText}
+                onChange={(e) => setCommentText(e.target.value)}
+              />
+            )}
+          </CardContent>
+        </Card>
         <Card sx={{ mb: 1 }}>
           <CardContent sx={{ p: 1.5, '&:last-child': { pb: 1.5 }, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
             <Typography variant="body2">Print result to console</Typography>
@@ -508,28 +591,105 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onGenerate, onClose }) =>
             </Box>
             {outputs.createTransaction && (
               <>
-                {outputs.transactions.map((txn, idx) => (
+                {outputs.transactions.map((txn, idx) => {
+                  const allVarNames = variables.filter(v => v.name).map(v => v.name);
+                  const dateVarNames = allVarNames.filter(v => v.toLowerCase().includes('date'));
+                  const eventFieldOptions = events?.flatMap(ev => [
+                    ...['postingdate', 'effectivedate'].map(sf => `${ev.event_name}.${sf}`),
+                    ...ev.fields.map(f => `${ev.event_name}.${f.name}`),
+                  ]) || [];
+                  const dateEventFields = events?.flatMap(ev => [
+                    ...['postingdate', 'effectivedate'].map(sf => `${ev.event_name}.${sf}`),
+                    ...ev.fields.filter(f => f.datatype === 'date' || f.name.includes('date')).map(f => `${ev.event_name}.${f.name}`),
+                  ]) || [];
+
+                  return (
                   <Card key={idx} variant="outlined" sx={{ p: 1, mb: 1, bgcolor: '#FAFAFA' }}>
                     <Box sx={{ display: 'flex', gap: 1, mb: 0.5, alignItems: 'center' }}>
                       <TextField size="small" label="Transaction Type" value={txn.type} sx={{ flex: 1 }}
                         onChange={(e) => updateTransaction(idx, 'type', e.target.value)} />
-                      <TextField size="small" label="Amount (variable)" value={txn.amount} sx={{ flex: 1 }}
-                        onChange={(e) => updateTransaction(idx, 'amount', e.target.value)}
-                        placeholder="e.g., interest" />
+                      <FormControl size="small" sx={{ flex: 1 }}>
+                        <InputLabel>Amount</InputLabel>
+                        <Select
+                          value={txn.amount || ''}
+                          label="Amount"
+                          onChange={(e) => updateTransaction(idx, 'amount', e.target.value)}
+                          displayEmpty
+                          renderValue={(val) => val || <em style={{ color: '#999' }}>Select or type...</em>}
+                        >
+                          {allVarNames.length > 0 && (
+                            <MenuItem disabled sx={{ fontSize: '0.75rem', fontWeight: 600, color: '#5B5FED' }}>— Calculated Variables —</MenuItem>
+                          )}
+                          {allVarNames.map(v => (
+                            <MenuItem key={`var-${v}`} value={v} sx={{ fontFamily: 'monospace', fontSize: '0.8125rem' }}>{v}</MenuItem>
+                          ))}
+                          {eventFieldOptions.length > 0 && (
+                            <MenuItem disabled sx={{ fontSize: '0.75rem', fontWeight: 600, color: '#FF9800' }}>— Event Fields —</MenuItem>
+                          )}
+                          {eventFieldOptions.map(ef => (
+                            <MenuItem key={`ef-${ef}`} value={ef} sx={{ fontFamily: 'monospace', fontSize: '0.8125rem' }}>{ef}</MenuItem>
+                          ))}
+                        </Select>
+                      </FormControl>
                       {outputs.transactions.length > 1 && (
                         <IconButton size="small" onClick={() => removeTransaction(idx)} sx={{ color: '#F44336' }}><Trash2 size={12} /></IconButton>
                       )}
                     </Box>
                     <Box sx={{ display: 'flex', gap: 1 }}>
-                      <TextField size="small" label="Posting Date" value={txn.postingDate} sx={{ flex: 1 }}
-                        onChange={(e) => updateTransaction(idx, 'postingDate', e.target.value)}
-                        placeholder="postingdate" />
-                      <TextField size="small" label="Effective Date" value={txn.effectiveDate} sx={{ flex: 1 }}
-                        onChange={(e) => updateTransaction(idx, 'effectiveDate', e.target.value)}
-                        placeholder="same as posting" />
+                      <FormControl size="small" sx={{ flex: 1 }}>
+                        <InputLabel>Posting Date</InputLabel>
+                        <Select
+                          value={txn.postingDate || ''}
+                          label="Posting Date"
+                          onChange={(e) => updateTransaction(idx, 'postingDate', e.target.value)}
+                          displayEmpty
+                          renderValue={(val) => val || <em style={{ color: '#999' }}>postingdate</em>}
+                        >
+                          <MenuItem value="postingdate" sx={{ fontFamily: 'monospace', fontSize: '0.8125rem' }}>postingdate</MenuItem>
+                          <MenuItem value="effectivedate" sx={{ fontFamily: 'monospace', fontSize: '0.8125rem' }}>effectivedate</MenuItem>
+                          {dateVarNames.length > 0 && (
+                            <MenuItem disabled sx={{ fontSize: '0.75rem', fontWeight: 600, color: '#5B5FED' }}>— Variables —</MenuItem>
+                          )}
+                          {dateVarNames.map(v => (
+                            <MenuItem key={`dv-${v}`} value={v} sx={{ fontFamily: 'monospace', fontSize: '0.8125rem' }}>{v}</MenuItem>
+                          ))}
+                          {dateEventFields.length > 0 && (
+                            <MenuItem disabled sx={{ fontSize: '0.75rem', fontWeight: 600, color: '#FF9800' }}>— Event Fields —</MenuItem>
+                          )}
+                          {dateEventFields.map(ef => (
+                            <MenuItem key={`def-${ef}`} value={ef} sx={{ fontFamily: 'monospace', fontSize: '0.8125rem' }}>{ef}</MenuItem>
+                          ))}
+                        </Select>
+                      </FormControl>
+                      <FormControl size="small" sx={{ flex: 1 }}>
+                        <InputLabel>Effective Date</InputLabel>
+                        <Select
+                          value={txn.effectiveDate || ''}
+                          label="Effective Date"
+                          onChange={(e) => updateTransaction(idx, 'effectiveDate', e.target.value)}
+                          displayEmpty
+                          renderValue={(val) => val || <em style={{ color: '#999' }}>same as posting</em>}
+                        >
+                          <MenuItem value="postingdate" sx={{ fontFamily: 'monospace', fontSize: '0.8125rem' }}>postingdate</MenuItem>
+                          <MenuItem value="effectivedate" sx={{ fontFamily: 'monospace', fontSize: '0.8125rem' }}>effectivedate</MenuItem>
+                          {dateVarNames.length > 0 && (
+                            <MenuItem disabled sx={{ fontSize: '0.75rem', fontWeight: 600, color: '#5B5FED' }}>— Variables —</MenuItem>
+                          )}
+                          {dateVarNames.map(v => (
+                            <MenuItem key={`edv-${v}`} value={v} sx={{ fontFamily: 'monospace', fontSize: '0.8125rem' }}>{v}</MenuItem>
+                          ))}
+                          {dateEventFields.length > 0 && (
+                            <MenuItem disabled sx={{ fontSize: '0.75rem', fontWeight: 600, color: '#FF9800' }}>— Event Fields —</MenuItem>
+                          )}
+                          {dateEventFields.map(ef => (
+                            <MenuItem key={`edef-${ef}`} value={ef} sx={{ fontFamily: 'monospace', fontSize: '0.8125rem' }}>{ef}</MenuItem>
+                          ))}
+                        </Select>
+                      </FormControl>
                     </Box>
                   </Card>
-                ))}
+                  );
+                })}
                 <Button size="small" startIcon={<Plus size={14} />} onClick={addTransaction}>Add Transaction</Button>
               </>
             )}
@@ -565,12 +725,17 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onGenerate, onClose }) =>
       </Box>
 
       {/* Action Bar */}
-      <Box sx={{ p: 2, borderTop: '1px solid #E9ECEF', bgcolor: 'white', display: 'flex', gap: 1, justifyContent: 'flex-end' }}>
+      <Box sx={{ p: 2, borderTop: '1px solid #E9ECEF', bgcolor: 'white', display: 'flex', gap: 1, justifyContent: 'flex-end', flexShrink: 0 }}>
         {onClose && <Button onClick={onClose} color="inherit">Cancel</Button>}
         <Button variant="outlined" onClick={handleTest} disabled={testing}
           startIcon={testing ? <CircularProgress size={16} /> : <FlaskConical size={16} />}
           sx={{ borderColor: '#4CAF50', color: '#4CAF50', '&:hover': { borderColor: '#388E3C', bgcolor: '#E8F5E9' } }}>
           {testing ? 'Testing...' : 'Test'}
+        </Button>
+        <Button variant="outlined" onClick={handleSave} disabled={saving}
+          startIcon={saving ? <CircularProgress size={16} /> : <Save size={16} />}
+          sx={{ borderColor: '#1976D2', color: '#1976D2', '&:hover': { borderColor: '#1565C0', bgcolor: '#E3F2FD' } }}>
+          {saving ? 'Saving...' : 'Save Rule'}
         </Button>
         <Button variant="contained" onClick={handleApply} startIcon={<Play size={16} />}>
           Load into Editor

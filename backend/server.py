@@ -3746,6 +3746,73 @@ async def import_and_transform_events(file: UploadFile = File(...)):
     return result
 
 
+# ── Saved Rules CRUD ────────────────────────────────────────────────────
+
+@api_router.get("/saved-rules")
+async def list_saved_rules():
+    """List all saved rule builder configurations."""
+    try:
+        rules = await db.saved_rules.find({}, {"_id": 0}).sort("updated_at", -1).to_list(500)
+        return rules
+    except Exception as e:
+        logger.error(f"Error listing saved rules: {e}")
+        return []
+
+@api_router.post("/saved-rules")
+async def save_rule(request: dict):
+    """Save or update a rule builder configuration. Rule name must be unique."""
+    name = (request.get("name") or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Rule name is required.")
+
+    rule_id = request.get("id")
+    now = datetime.now(timezone.utc).isoformat()
+
+    # Check uniqueness: no other rule with same name (case-insensitive)
+    existing = await db.saved_rules.find_one(
+        {"name": {"$regex": f"^{re.escape(name)}$", "$options": "i"}},
+        {"_id": 0, "id": 1},
+    )
+    if existing and (not rule_id or existing["id"] != rule_id):
+        raise HTTPException(
+            status_code=409,
+            detail=f"A rule named \"{name}\" already exists. Please choose a different name.",
+        )
+
+    doc = {
+        "name": name,
+        "ruleType": request.get("ruleType", "simple_calc"),
+        "variables": request.get("variables", []),
+        "conditions": request.get("conditions", []),
+        "elseFormula": request.get("elseFormula", ""),
+        "conditionResultVar": request.get("conditionResultVar", "result"),
+        "iterConfig": request.get("iterConfig", {}),
+        "outputs": request.get("outputs", {}),
+        "inlineComment": request.get("inlineComment", False),
+        "commentText": request.get("commentText", ""),
+        "generatedCode": request.get("generatedCode", ""),
+        "updated_at": now,
+    }
+
+    if rule_id:
+        doc["id"] = rule_id
+        await db.saved_rules.replace_one({"id": rule_id}, doc, upsert=True)
+    else:
+        doc["id"] = str(uuid.uuid4())
+        doc["created_at"] = now
+        await db.saved_rules.insert_one(doc)
+
+    return {"success": True, "id": doc["id"], "message": f"Rule \"{name}\" saved."}
+
+@api_router.delete("/saved-rules/{rule_id}")
+async def delete_saved_rule(rule_id: str):
+    """Delete a saved rule by its id."""
+    result = await db.saved_rules.delete_one({"id": rule_id})
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Rule not found.")
+    return {"success": True, "message": "Rule deleted."}
+
+
 from contextlib import asynccontextmanager
 
 @asynccontextmanager

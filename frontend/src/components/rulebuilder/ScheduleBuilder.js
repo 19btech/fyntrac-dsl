@@ -269,7 +269,7 @@ const ScheduleBuilder = ({ events, dslFunctions, onGenerate, onClose }) => {
       const response = await fetch(`${API}/dsl/run`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ code: generatedCode, posting_date: today }),
+        body: JSON.stringify({ dsl_code: generatedCode, posting_date: today }),
       });
       const data = await response.json();
       if (response.ok && data.success) {
@@ -278,7 +278,8 @@ const ScheduleBuilder = ({ events, dslFunctions, onGenerate, onClose }) => {
         if (data.transactions?.length > 0) outputs.push(`Generated ${data.transactions.length} transaction(s)`);
         setTestResult({ success: true, output: outputs.join('\n') || 'Executed successfully (no output)' });
       } else {
-        setTestResult({ success: false, error: data.error || data.detail || 'Execution failed' });
+        const errMsg = data.error || (typeof data.detail === 'string' ? data.detail : JSON.stringify(data.detail)) || 'Execution failed';
+        setTestResult({ success: false, error: errMsg });
       }
     } catch (err) {
       setTestResult({ success: false, error: err.message || 'Network error' });
@@ -295,9 +296,9 @@ const ScheduleBuilder = ({ events, dslFunctions, onGenerate, onClose }) => {
   const previewHeaders = useMemo(() => columns.filter(c => c.name).map(c => c.name), [columns]);
 
   return (
-    <Box sx={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
+    <Box sx={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0, height: '100%' }}>
       {/* Header */}
-      <Box sx={{ p: 2, borderBottom: '1px solid #E9ECEF', bgcolor: 'white' }}>
+      <Box sx={{ p: 2, borderBottom: '1px solid #E9ECEF', bgcolor: 'white', flexShrink: 0 }}>
         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5, mb: 0.5 }}>
           <TableIcon size={20} color="#5B5FED" />
           <Typography variant="h5">Schedule Builder</Typography>
@@ -636,7 +637,7 @@ const ScheduleBuilder = ({ events, dslFunctions, onGenerate, onClose }) => {
       </Box>
 
       {/* Action Bar */}
-      <Box sx={{ p: 2, borderTop: '1px solid #E9ECEF', bgcolor: 'white', display: 'flex', gap: 1, justifyContent: 'flex-end' }}>
+      <Box sx={{ p: 2, borderTop: '1px solid #E9ECEF', bgcolor: 'white', display: 'flex', gap: 1, justifyContent: 'flex-end', flexShrink: 0 }}>
         {onClose && <Button onClick={onClose} color="inherit">Cancel</Button>}
         <Button variant="outlined" onClick={handleTest} disabled={testing}
           startIcon={testing ? <CircularProgress size={16} /> : <FlaskConical size={16} />}

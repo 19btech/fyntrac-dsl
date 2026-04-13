@@ -1,9 +1,9 @@
 import React, { useState, useMemo, useCallback, useRef, useEffect } from "react";
 import {
   Box, Typography, TextField, Paper, IconButton, Chip, Tooltip,
-  Autocomplete, Popper, ClickAwayListener, InputAdornment, Divider,
+  Autocomplete, Popper, ClickAwayListener, InputAdornment, Divider, Portal,
 } from "@mui/material";
-import { FunctionSquare, ChevronDown, ChevronUp, Info, X, Plus, Search } from "lucide-react";
+import { FunctionSquare, ChevronDown, ChevronUp, Info, X, Plus, Search, Variable } from "lucide-react";
 
 /**
  * DSL functions organized into user-friendly categories with aliases.
@@ -217,13 +217,23 @@ const FormulaBar = ({ value, onChange, events, variables, label, placeholder }) 
   const [catalogFilter, setCatalogFilter] = useState('');
   const [selectedCategory, setSelectedCategory] = useState(null);
   const inputRef = useRef(null);
+  const anchorRef = useRef(null);
+  const [anchorRect, setAnchorRect] = useState(null);
+
+  // Recalculate position when catalog opens
+  useEffect(() => {
+    if (showCatalog && anchorRef.current) {
+      const rect = anchorRef.current.getBoundingClientRect();
+      setAnchorRect(rect);
+    }
+  }, [showCatalog]);
 
   const filteredFunctions = useMemo(() => {
     let list = FORMULA_CATALOG;
     if (selectedCategory) list = list.filter(f => f.category === selectedCategory);
     if (catalogFilter) {
       const lower = catalogFilter.toLowerCase();
-      list = list.filter(f => f.name.toLowerCase().includes(lower) || f.desc.toLowerCase().includes(lower));
+      list = list.filter(f => f.name.toLowerCase().includes(lower) || f.desc.toLowerCase().includes(lower) || f.dsl.toLowerCase().includes(lower));
     }
     return list;
   }, [selectedCategory, catalogFilter]);
@@ -240,6 +250,11 @@ const FormulaBar = ({ value, onChange, events, variables, label, placeholder }) 
     return result;
   }, [events]);
 
+  const variableNames = useMemo(() => {
+    if (!variables || variables.length === 0) return [];
+    return variables.filter(v => typeof v === 'string' ? v : v?.name).map(v => typeof v === 'string' ? v : v.name);
+  }, [variables]);
+
   const insertFunction = useCallback((func) => {
     const snippet = `${func.dsl}(${func.args.join(', ')})`;
     const current = value || '';
@@ -248,8 +263,14 @@ const FormulaBar = ({ value, onChange, events, variables, label, placeholder }) 
     inputRef.current?.focus();
   }, [value, onChange]);
 
+  const insertText = useCallback((text) => {
+    onChange((value || '') + text);
+    setShowCatalog(false);
+    inputRef.current?.focus();
+  }, [value, onChange]);
+
   return (
-    <Box sx={{ position: 'relative' }}>
+    <Box ref={anchorRef} sx={{ position: 'relative' }}>
       <TextField
         inputRef={inputRef}
         size="small" fullWidth
@@ -277,27 +298,32 @@ const FormulaBar = ({ value, onChange, events, variables, label, placeholder }) 
       />
 
       {showCatalog && (
-        <ClickAwayListener onClickAway={() => setShowCatalog(false)}>
-          <Paper
-            elevation={6}
-            sx={{
-              position: 'absolute', top: '100%', left: 0, right: 0, zIndex: 1300,
-              maxHeight: 360, overflow: 'hidden', display: 'flex', flexDirection: 'column',
-              border: '1px solid #E9ECEF', borderRadius: 2, mt: 0.5,
-            }}
-          >
-            {/* Search */}
-            <Box sx={{ p: 1 }}>
-              <TextField
-                size="small" fullWidth autoFocus
-                placeholder="Search functions..."
-                value={catalogFilter}
-                onChange={(e) => setCatalogFilter(e.target.value)}
-                InputProps={{
-                  startAdornment: <InputAdornment position="start"><Search size={14} /></InputAdornment>,
-                }}
-              />
-            </Box>
+        <Portal>
+          <ClickAwayListener onClickAway={() => setShowCatalog(false)}>
+            <Paper
+              elevation={8}
+              sx={{
+                position: 'fixed',
+                top: anchorRect ? anchorRect.bottom + 4 : 0,
+                left: anchorRect ? anchorRect.left : 0,
+                width: anchorRect ? anchorRect.width : 400,
+                zIndex: 1400,
+                maxHeight: 400, overflow: 'hidden', display: 'flex', flexDirection: 'column',
+                border: '1px solid #E9ECEF', borderRadius: 2,
+              }}
+            >
+              {/* Search */}
+              <Box sx={{ p: 1 }}>
+                <TextField
+                  size="small" fullWidth autoFocus
+                  placeholder="Search functions..."
+                  value={catalogFilter}
+                  onChange={(e) => setCatalogFilter(e.target.value)}
+                  InputProps={{
+                    startAdornment: <InputAdornment position="start"><Search size={14} /></InputAdornment>,
+                  }}
+                />
+              </Box>
 
             {/* Category chips */}
             <Box sx={{ px: 1, pb: 0.5, display: 'flex', gap: 0.5, flexWrap: 'wrap' }}>
@@ -344,6 +370,26 @@ const FormulaBar = ({ value, onChange, events, variables, label, placeholder }) 
               )}
             </Box>
 
+            {/* Variables section */}
+            {variableNames.length > 0 && (
+              <>
+                <Divider />
+                <Box sx={{ p: 1 }}>
+                  <Typography variant="caption" fontWeight={600} color="text.secondary">
+                    <Variable size={12} style={{ display: 'inline', verticalAlign: 'middle', marginRight: 4 }} />
+                    Defined Variables
+                  </Typography>
+                  <Box sx={{ display: 'flex', gap: 0.5, flexWrap: 'wrap', mt: 0.5 }}>
+                    {variableNames.map(v => (
+                      <Chip key={v} size="small" label={v} variant="outlined" color="secondary"
+                        onClick={() => insertText(v)}
+                        sx={{ fontSize: '0.6875rem', cursor: 'pointer', fontFamily: 'monospace' }} />
+                    ))}
+                  </Box>
+                </Box>
+              </>
+            )}
+
             {/* Event fields section */}
             {eventFields.length > 0 && (
               <>
@@ -353,7 +399,7 @@ const FormulaBar = ({ value, onChange, events, variables, label, placeholder }) 
                   <Box sx={{ display: 'flex', gap: 0.5, flexWrap: 'wrap', mt: 0.5 }}>
                     {eventFields.slice(0, 12).map(ef => (
                       <Chip key={ef} size="small" label={ef} variant="outlined"
-                        onClick={() => { onChange((value || '') + ef); setShowCatalog(false); }}
+                        onClick={() => insertText(ef)}
                         sx={{ fontSize: '0.6875rem', cursor: 'pointer' }} />
                     ))}
                     {eventFields.length > 12 && (
@@ -365,6 +411,7 @@ const FormulaBar = ({ value, onChange, events, variables, label, placeholder }) 
             )}
           </Paper>
         </ClickAwayListener>
+      </Portal>
       )}
     </Box>
   );
