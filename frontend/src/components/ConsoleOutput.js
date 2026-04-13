@@ -245,7 +245,7 @@ const PrintOutputRenderer = ({ output }) => {
   return <span className="text-yellow-300">{output}</span>;
 };
 
-const ConsoleOutput = ({ output, onClear, dslCode, addConsoleLog, onCodeChange, events, handleSaveTemplate }) => {
+const ConsoleOutput = ({ output, onClear, dslCode, addConsoleLog, onCodeChange, events, handleSaveTemplate, onExecutionResult }) => {
   const [running, setRunning] = useState(false);
   const [postingDateModalOpen, setPostingDateModalOpen] = useState(false);
   const [availablePostingDates, setAvailablePostingDates] = useState([]);
@@ -468,6 +468,14 @@ const ConsoleOutput = ({ output, onClear, dslCode, addConsoleLog, onCodeChange, 
             "result"
           );
         });
+
+        // Propagate execution results for LivePreview
+        if (onExecutionResult) {
+          onExecutionResult({
+            transactions: response.data.transactions || [],
+            printOutputs: response.data.print_outputs || [],
+          });
+        }
       } else {
         addConsoleLog(`✗ ${formatErrorForConsole(response.data.error)}`, "error");
       }

@@ -3,7 +3,111 @@
  *
  * Input:  raw error string from backend (e.g. "TypeError: unsupported operand type(s)")
  * Output: { whatWentWrong, whyItHappened, howToFix, category }
+ *
+ * Enhanced with accounting-context-aware patterns for finance professionals.
  */
+
+// ── Accounting-context patterns (checked first for more specific messages) ──
+const ACCOUNTING_ERROR_PATTERNS = [
+  // Schedule column reference errors
+  {
+    pattern: /NameError.*name '(\w+)' is not defined/i,
+    category: 'schedule_context',
+    extract: (raw) => {
+      const m = raw.match(/name '(\w+)' is not defined/i);
+      return m ? m[1] : null;
+    },
+    build: (varName) => ({
+      whatWentWrong: `The schedule is trying to use "${varName}" but this value hasn't been defined.`,
+      whyItHappened: `The column formula references "${varName}", which isn't available. This could be: an event field not added to the schedule context, a column name that hasn't been defined yet, or a misspelled variable name.`,
+      howToFix: `If "${varName}" is an event field, add it to the schedule's data context (the third argument). If it's another column, make sure it appears earlier in the column definitions. Check spelling against your event field names.`,
+    }),
+  },
+  // createTransaction missing date
+  {
+    pattern: /createTransaction.*(?:posting.*(?:empty|missing|None|null)|effectivedate.*(?:empty|missing|None|null))/i,
+    category: 'transaction_date',
+    build: () => ({
+      whatWentWrong: 'The transaction couldn\'t be created because a required date is missing.',
+      whyItHappened: 'The posting date or effective date is empty. This usually means the event data doesn\'t have a row for this instrument on the selected posting date.',
+      howToFix: 'Check your event data to confirm each instrument has a row for this posting date. Use the Event Data Viewer to inspect the loaded data.',
+    }),
+  },
+  // NoneType in arithmetic (common when event field is missing)
+  {
+    pattern: /TypeError.*(?:unsupported operand|NoneType).*(?:float|int|subtract|multiply|divide|add)/i,
+    category: 'missing_data',
+    build: () => ({
+      whatWentWrong: 'A calculation failed because one of the values is empty (missing data).',
+      whyItHappened: 'One of the fields used in this formula returned no value. This typically happens when an event field has no data for this instrument or posting date, or when a previous calculation returned nothing.',
+      howToFix: 'Check that all fields referenced in the formula have data. You can use coalesce() to provide fallback values, e.g. coalesce(MY_FIELD, 0) to default to zero when data is missing.',
+    }),
+  },
+  // Schedule lag reference errors
+  {
+    pattern: /lag.*(?:not found|not defined|invalid|KeyError)/i,
+    category: 'schedule_lag',
+    build: () => ({
+      whatWentWrong: 'A schedule formula tried to reference a previous row value that doesn\'t exist.',
+      whyItHappened: 'The lag() function references a column name that doesn\'t match any defined column in the schedule. Column names in lag() must exactly match the keys in your column definitions.',
+      howToFix: 'Double-check the column name in lag(\'column_name\', offset, default). It must match exactly, including capitalization. Also ensure you provide a default value for the first row.',
+    }),
+  },
+  // Period date errors
+  {
+    pattern: /period.*(?:invalid|cannot parse|format|start.*after.*end)/i,
+    category: 'period_date',
+    build: () => ({
+      whatWentWrong: 'The schedule period definition has invalid dates.',
+      whyItHappened: 'Either the start date is after the end date, or one of the dates isn\'t in the correct format (YYYY-MM-DD).',
+      howToFix: 'Verify that your start date comes before your end date and both are in YYYY-MM-DD format. If using event fields, check the data contains valid dates.',
+    }),
+  },
+  // Division by zero in financial context
+  {
+    pattern: /(?:ZeroDivisionError|division by zero).*|divide.*(?:by zero|zero denominator)/i,
+    category: 'financial_division',
+    build: () => ({
+      whatWentWrong: 'A calculation tried to divide by zero.',
+      whyItHappened: 'A denominator in your formula evaluated to zero. In financial calculations, this commonly happens when: total SSP is zero (no standalone prices), term or period count is zero, or a balance has been fully paid down.',
+      howToFix: 'Wrap the division with a zero check: iif(gt(denominator, 0), divide(numerator, denominator), 0). For allocation calculations, ensure at least one item has a positive standalone value.',
+    }),
+  },
+  // collect/collect_by_instrument errors
+  {
+    pattern: /collect.*(?:no data|empty|not found|no event)/i,
+    category: 'event_data',
+    build: () => ({
+      whatWentWrong: 'The data collection function couldn\'t find any matching event data.',
+      whyItHappened: 'Either no event data has been uploaded for this event type, or there are no rows matching the current instrument ID and posting date.',
+      howToFix: 'Make sure you\'ve uploaded event data via the Upload Data tab. Use the Event Data Viewer to confirm data exists for the instruments and dates you expect.',
+    }),
+  },
+  // Schedule returns None/empty
+  {
+    pattern: /schedule.*(?:returned None|empty|no periods|no rows)/i,
+    category: 'empty_schedule',
+    build: () => ({
+      whatWentWrong: 'The schedule generated zero periods — it produced an empty table.',
+      whyItHappened: 'The period definition resulted in no dates. This happens when the start and end dates are the same, or the frequency is larger than the date range (e.g., yearly frequency for a 3-month range).',
+      howToFix: 'Verify your schedule\'s start/end dates span a long enough period for the chosen frequency. For monthly schedules, the range should be at least one month.',
+    }),
+  },
+  // KeyError in schedule context
+  {
+    pattern: /KeyError.*'(\w+)'/i,
+    category: 'key_error',
+    extract: (raw) => {
+      const m = raw.match(/KeyError.*'(\w+)'/i);
+      return m ? m[1] : null;
+    },
+    build: (keyName) => ({
+      whatWentWrong: `The field "${keyName}" was not found in the data.`,
+      whyItHappened: `Your code references "${keyName}", but it doesn't exist in the current context. This could be: a column name in a schedule that wasn't defined, an event field name that doesn't match the uploaded data, or a dictionary key that doesn't exist.`,
+      howToFix: `Check the exact spelling of "${keyName}" against your event definition fields and schedule column names. Field names are case-sensitive.`,
+    }),
+  },
+];
 
 const ERROR_PATTERNS = [
   // ── Syntax ──────────────────────────────────────────────────
@@ -220,6 +324,15 @@ export function translateError(rawError) {
       category: 'runtime_error',
       rawError: rawError || '',
     };
+  }
+
+  // Check accounting-context patterns FIRST (more specific, better messages)
+  for (const acctPattern of ACCOUNTING_ERROR_PATTERNS) {
+    if (acctPattern.pattern.test(rawError)) {
+      const extracted = acctPattern.extract ? acctPattern.extract(rawError) : null;
+      const result = acctPattern.build(extracted);
+      return { ...result, category: acctPattern.category, rawError };
+    }
   }
 
   for (const { pattern, category, whatWentWrong, whyItHappened, howToFix } of ERROR_PATTERNS) {

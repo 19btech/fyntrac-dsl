@@ -1,8 +1,8 @@
 import React, { useState, useEffect, useRef } from "react";
 import axios from "axios";
 import { useToast } from "../components/ToastProvider";
-import { Upload, FileText, Code, Play, List, BookOpen, Download, Sparkles, Trash2, BarChart3, Search as SearchIcon, Lightbulb, Settings, ChevronDown, Database } from "lucide-react";
-import { Button, Tabs, Tab, Box, Menu, MenuItem, Divider, Alert, LinearProgress, Typography } from '@mui/material';
+import { Upload, FileText, Code, Play, List, BookOpen, Download, Sparkles, Trash2, BarChart3, Search as SearchIcon, Lightbulb, Settings, ChevronDown, Database, Calculator, Table as TableIcon, Wand2, Eye, BookOpen as BookOpenIcon } from "lucide-react";
+import { Button, Tabs, Tab, Box, Menu, MenuItem, Divider, Alert, LinearProgress, Typography, ToggleButtonGroup, ToggleButton, Tooltip } from '@mui/material';
 import Editor from "@monaco-editor/react";
 import FileUploadPanel from "../components/FileUploadPanel";
 import LeftSidebar from "../components/LeftSidebar";
@@ -15,6 +15,12 @@ import DSLExamples from "../components/DSLExamples";
 import EventDataViewer from "../components/EventDataViewer";
 import AppDialog, { useAppDialog } from "../components/AppDialog";
 import AIAgentSetupWizard from "../components/AIAgentSetupWizard";
+import LivePreview from "../components/rulebuilder/LivePreview";
+import AccountingRuleBuilder from "../components/rulebuilder/AccountingRuleBuilder";
+import ScheduleBuilder from "../components/rulebuilder/ScheduleBuilder";
+import AIRuleTranslator from "../components/rulebuilder/AIRuleTranslator";
+import TemplateLibrary from "../components/rulebuilder/TemplateWizard";
+import ACCOUNTING_TEMPLATES from "../components/rulebuilder/AccountingTemplates";
 import { API } from "../config";
 import { runAllTests } from "../agent/testing";
 
@@ -63,6 +69,12 @@ const Dashboard = () => {
   const [showEventDataViewer, setShowEventDataViewer] = useState(false);
   const [showAISetup, setShowAISetup] = useState(false);
   const [providerRefreshKey, setProviderRefreshKey] = useState(0);
+  // Editor mode: 'code' | 'ruleBuilder' | 'scheduleBuilder' | 'aiGenerator'
+  const [editorMode, setEditorMode] = useState('code');
+  // Accounting template library dialog
+  const [showTemplateLibrary, setShowTemplateLibrary] = useState(false);
+  // Execution results for LivePreview
+  const [lastExecutionResult, setLastExecutionResult] = useState({ transactions: [], printOutputs: [] });
   // Template batch execution state
   const [batchRunning, setBatchRunning] = useState(false);
   const [batchStatus, setBatchStatus] = useState(null); // { total, current, currentDate, results, errors }
@@ -495,6 +507,14 @@ const Dashboard = () => {
     setDslCode(prev => prev + "\n" + functionCall);
   };
 
+  const handleGeneratedCode = (code) => {
+    setDslCode(code);
+    setEditorMode('code');
+    setTabValue(1);
+    addConsoleLog("Logic loaded into editor from builder", "info");
+    toast.success("Logic loaded into editor — click Run to execute");
+  };
+
   const handleAskAIAboutFunction = (funcName, message) => {
     if (chatAssistantRef.current && chatAssistantRef.current.sendSilentMessage) {
       chatAssistantRef.current.sendSilentMessage(funcName, message);
@@ -697,148 +717,228 @@ const Dashboard = () => {
             </TabPanel>
 
             <TabPanel value={tabValue} index={1}>
-              <div className="flex-1 bg-[#0A0A0A] min-w-0" data-testid="dsl-editor">
-                <Editor
-                  height="100%"
-                  defaultLanguage="python"
-                  value={dslCode}
-                  onChange={(value) => setDslCode(value || "")}
-                  theme="vs-dark"
-                  options={{
-                    fontSize: 14,
-                    fontFamily: "monospace",
-                    minimap: { enabled: false },
-                    lineNumbers: "on",
-                    scrollBeyondLastLine: false,
-                    automaticLayout: true,
-                    wordWrap: "on",
-                    tabSize: 2,
-                    insertSpaces: true,
-                    renderWhitespace: "none",
-                    cursorStyle: "line",
-                    cursorBlinking: "blink",
-                    fixedOverflowWidgets: true,
-                  }}
-                  beforeMount={(monaco) => {
-                    monacoRef.current = monaco;
-                    monaco.languages.registerCompletionItemProvider('python', {
-                      provideCompletionItems: (model, position) => {
-                        const suggestions = [];
-                        const existingNames = new Set();
-                        dslFunctions.forEach(func => {
-                          existingNames.add(func.name);
-                          suggestions.push({
-                            label: func.name,
-                            kind: monaco.languages.CompletionItemKind.Function,
-                            insertText: `${func.name}()`,
-                            detail: func.params || '',
-                            documentation: func.description || ''
-                          });
-                        });
+              {/* Editor Mode Switcher */}
+              <Box sx={{ px: 2, py: 1, bgcolor: 'white', borderBottom: '1px solid #E9ECEF', display: 'flex', alignItems: 'center', gap: 2 }}>
+                <Typography variant="caption" fontWeight={600} color="text.secondary" sx={{ whiteSpace: 'nowrap' }}>BUILD WITH:</Typography>
+                <ToggleButtonGroup
+                  value={editorMode}
+                  exclusive
+                  onChange={(e, val) => { if (val) setEditorMode(val); }}
+                  size="small"
+                  sx={{ '& .MuiToggleButton-root': { textTransform: 'none', fontSize: '0.75rem', px: 1.5, py: 0.5 } }}
+                >
+                  <ToggleButton value="code">
+                    <Tooltip title="Write DSL code directly"><Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}><Code size={14} /> Code Editor</Box></Tooltip>
+                  </ToggleButton>
+                  <ToggleButton value="ruleBuilder">
+                    <Tooltip title="Build calculations using forms"><Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}><Calculator size={14} /> Rule Builder</Box></Tooltip>
+                  </ToggleButton>
+                  <ToggleButton value="scheduleBuilder">
+                    <Tooltip title="Build amortization schedules visually"><Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}><TableIcon size={14} /> Schedule Builder</Box></Tooltip>
+                  </ToggleButton>
+                  <ToggleButton value="aiGenerator">
+                    <Tooltip title="Describe in plain English, AI generates the logic"><Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}><Wand2 size={14} /> AI Generator</Box></Tooltip>
+                  </ToggleButton>
+                  <ToggleButton value="preview">
+                    <Tooltip title="View business preview of execution results"><Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}><Eye size={14} /> Business Preview</Box></Tooltip>
+                  </ToggleButton>
+                </ToggleButtonGroup>
+                <Tooltip title="Browse accounting templates (ASC 310, 360, 606, 842...)">
+                  <Button size="small" variant="outlined" startIcon={<BookOpen size={14} />}
+                    onClick={() => setShowTemplateLibrary(true)}
+                    sx={{ textTransform: 'none', fontSize: '0.75rem', ml: 1, borderColor: '#CED4DA', color: '#495057',
+                      '&:hover': { borderColor: '#5B5FED', color: '#5B5FED', bgcolor: '#EEF0FE' } }}>
+                    Templates
+                  </Button>
+                </Tooltip>
+              </Box>
 
-                        const helperFunctions = [
-                          { name: 'lag', params: "col, offset, default", description: 'Get previous row value in schedule' },
-                          { name: 'schedule', params: 'period_def, columns, context?', description: 'Generate a schedule of periods and computed columns' },
-                          { name: 'schedule_sum', params: 'sched, col', description: 'Sum a schedule column' },
-                          { name: 'schedule_first', params: 'sched, col', description: 'First value of schedule column' },
-                          { name: 'schedule_last', params: 'sched, col', description: 'Last value of schedule column' },
-                          { name: 'period', params: 'start, end, freq, convention?', description: 'Create a period definition' },
-                          { name: 'print', params: 'value', description: 'Print value to console' },
-                          { name: 'collect', params: 'EVENT.field', description: 'Collect values for current instrument/postingdate' },
-                          { name: 'for_each', params: 'dates_arr, amounts_arr, date_var, amount_var, expression', description: 'Iterate paired arrays and evaluate expression' },
-                          { name: 'map_array', params: 'array, var_name, expression, context?', description: 'Transform array elements' },
-                          { name: 'sum_vals', params: 'array', description: 'Sum numeric values in array' }
-                        ];
-
-                        helperFunctions.forEach(h => {
-                          if (!existingNames.has(h.name)) {
-                            existingNames.add(h.name);
-                            suggestions.push({
-                              label: h.name,
-                              kind: monaco.languages.CompletionItemKind.Function,
-                              insertText: `${h.name}()`,
-                              detail: h.params,
-                              documentation: h.description
-                            });
-                          }
-                        });
-
-                        events.forEach(event => {
-                          ['postingdate', 'effectivedate', 'subinstrumentid'].forEach(sf => {
-                            suggestions.push({
-                              label: `${event.event_name}.${sf}`,
-                              kind: monaco.languages.CompletionItemKind.Field,
-                              insertText: `${event.event_name}.${sf}`,
-                              detail: '(date)',
-                              documentation: `Field from ${event.event_name}`
-                            });
-                            suggestions.push({
-                              label: sf,
-                              kind: monaco.languages.CompletionItemKind.Field,
-                              insertText: sf,
-                              detail: '(date)',
-                              documentation: `Standard event field (from ${event.event_name})`
-                            });
-                          });
-
-                          event.fields.forEach(field => {
-                            suggestions.push({
-                              label: `${event.event_name}.${field.name}`,
-                              kind: monaco.languages.CompletionItemKind.Field,
-                              insertText: `${event.event_name}.${field.name}`,
-                              detail: `(${field.datatype})`,
-                              documentation: `Event field from ${event.event_name}`
-                            });
-                            suggestions.push({
-                              label: field.name,
-                              kind: monaco.languages.CompletionItemKind.Field,
-                              insertText: field.name,
-                              detail: `(${field.datatype})`,
-                              documentation: `Field from ${event.event_name}`
-                            });
-                          });
-                        });
-
-                        try {
-                          const code = model.getValue();
-                          const assignRegex = /^\\s*([a-zA-Z_][a-zA-Z0-9_]*)\\s*=.*$/gm;
-                          const found = new Set();
-                          let m;
-                          while ((m = assignRegex.exec(code)) !== null) {
-                            const name = m[1];
-                            if (!found.has(name)) {
-                              found.add(name);
+              {/* Code Editor Mode */}
+              {editorMode === 'code' && (
+                <>
+                  <div className="flex-1 bg-[#0A0A0A] min-w-0" data-testid="dsl-editor">
+                    <Editor
+                      height="100%"
+                      defaultLanguage="python"
+                      value={dslCode}
+                      onChange={(value) => setDslCode(value || "")}
+                      theme="vs-dark"
+                      options={{
+                        fontSize: 14,
+                        fontFamily: "monospace",
+                        minimap: { enabled: false },
+                        lineNumbers: "on",
+                        scrollBeyondLastLine: false,
+                        automaticLayout: true,
+                        wordWrap: "on",
+                        tabSize: 2,
+                        insertSpaces: true,
+                        renderWhitespace: "none",
+                        cursorStyle: "line",
+                        cursorBlinking: "blink",
+                        fixedOverflowWidgets: true,
+                      }}
+                      beforeMount={(monaco) => {
+                        monacoRef.current = monaco;
+                        monaco.languages.registerCompletionItemProvider('python', {
+                          provideCompletionItems: (model, position) => {
+                            const suggestions = [];
+                            const existingNames = new Set();
+                            dslFunctions.forEach(func => {
+                              existingNames.add(func.name);
                               suggestions.push({
-                                label: name,
-                                kind: monaco.languages.CompletionItemKind.Variable,
-                                insertText: name,
-                                detail: 'User-defined variable',
-                                documentation: 'Variable defined in editor'
+                                label: func.name,
+                                kind: monaco.languages.CompletionItemKind.Function,
+                                insertText: `${func.name}()`,
+                                detail: func.params || '',
+                                documentation: func.description || ''
                               });
-                            }
-                          }
-                        } catch (e) {
-                          // ignore
-                        }
+                            });
 
-                        return { suggestions };
-                      }
-                    });
-                  }}
-                  onMount={(editor) => {
-                    editorRef.current = editor;
-                  }}
+                            const helperFunctions = [
+                              { name: 'lag', params: "col, offset, default", description: 'Get previous row value in schedule' },
+                              { name: 'schedule', params: 'period_def, columns, context?', description: 'Generate a schedule of periods and computed columns' },
+                              { name: 'schedule_sum', params: 'sched, col', description: 'Sum a schedule column' },
+                              { name: 'schedule_first', params: 'sched, col', description: 'First value of schedule column' },
+                              { name: 'schedule_last', params: 'sched, col', description: 'Last value of schedule column' },
+                              { name: 'period', params: 'start, end, freq, convention?', description: 'Create a period definition' },
+                              { name: 'print', params: 'value', description: 'Print value to console' },
+                              { name: 'collect', params: 'EVENT.field', description: 'Collect values for current instrument/postingdate' },
+                              { name: 'for_each', params: 'dates_arr, amounts_arr, date_var, amount_var, expression', description: 'Iterate paired arrays and evaluate expression' },
+                              { name: 'map_array', params: 'array, var_name, expression, context?', description: 'Transform array elements' },
+                              { name: 'sum_vals', params: 'array', description: 'Sum numeric values in array' }
+                            ];
+
+                            helperFunctions.forEach(h => {
+                              if (!existingNames.has(h.name)) {
+                                existingNames.add(h.name);
+                                suggestions.push({
+                                  label: h.name,
+                                  kind: monaco.languages.CompletionItemKind.Function,
+                                  insertText: `${h.name}()`,
+                                  detail: h.params,
+                                  documentation: h.description
+                                });
+                              }
+                            });
+
+                            events.forEach(event => {
+                              ['postingdate', 'effectivedate', 'subinstrumentid'].forEach(sf => {
+                                suggestions.push({
+                                  label: `${event.event_name}.${sf}`,
+                                  kind: monaco.languages.CompletionItemKind.Field,
+                                  insertText: `${event.event_name}.${sf}`,
+                                  detail: '(date)',
+                                  documentation: `Field from ${event.event_name}`
+                                });
+                                suggestions.push({
+                                  label: sf,
+                                  kind: monaco.languages.CompletionItemKind.Field,
+                                  insertText: sf,
+                                  detail: '(date)',
+                                  documentation: `Standard event field (from ${event.event_name})`
+                                });
+                              });
+
+                              event.fields.forEach(field => {
+                                suggestions.push({
+                                  label: `${event.event_name}.${field.name}`,
+                                  kind: monaco.languages.CompletionItemKind.Field,
+                                  insertText: `${event.event_name}.${field.name}`,
+                                  detail: `(${field.datatype})`,
+                                  documentation: `Event field from ${event.event_name}`
+                                });
+                                suggestions.push({
+                                  label: field.name,
+                                  kind: monaco.languages.CompletionItemKind.Field,
+                                  insertText: field.name,
+                                  detail: `(${field.datatype})`,
+                                  documentation: `Field from ${event.event_name}`
+                                });
+                              });
+                            });
+
+                            try {
+                              const code = model.getValue();
+                              const assignRegex = /^\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*=.*$/gm;
+                              const found = new Set();
+                              let m;
+                              while ((m = assignRegex.exec(code)) !== null) {
+                                const name = m[1];
+                                if (!found.has(name)) {
+                                  found.add(name);
+                                  suggestions.push({
+                                    label: name,
+                                    kind: monaco.languages.CompletionItemKind.Variable,
+                                    insertText: name,
+                                    detail: 'User-defined variable',
+                                    documentation: 'Variable defined in editor'
+                                  });
+                                }
+                              }
+                            } catch (e) {
+                              // ignore
+                            }
+
+                            return { suggestions };
+                          }
+                        });
+                      }}
+                      onMount={(editor) => {
+                        editorRef.current = editor;
+                      }}
+                    />
+                  </div>
+                  <ConsoleOutput 
+                    output={consoleOutput} 
+                    onClear={() => setConsoleOutput([])} 
+                    dslCode={dslCode}
+                    addConsoleLog={addConsoleLog}
+                    onCodeChange={setDslCode}
+                    events={events}
+                    handleSaveTemplate={handleSaveTemplate}
+                    onExecutionResult={setLastExecutionResult}
+                  />
+                </>
+              )}
+
+              {/* Rule Builder Mode */}
+              {editorMode === 'ruleBuilder' && (
+                <AccountingRuleBuilder
+                  events={events}
+                  dslFunctions={dslFunctions}
+                  onGenerate={handleGeneratedCode}
+                  onClose={() => setEditorMode('code')}
                 />
-              </div>
-              <ConsoleOutput 
-                output={consoleOutput} 
-                onClear={() => setConsoleOutput([])} 
-                dslCode={dslCode}
-                addConsoleLog={addConsoleLog}
-                onCodeChange={setDslCode}
-                events={events}
-                handleSaveTemplate={handleSaveTemplate}
-              />
+              )}
+
+              {/* Schedule Builder Mode */}
+              {editorMode === 'scheduleBuilder' && (
+                <ScheduleBuilder
+                  events={events}
+                  dslFunctions={dslFunctions}
+                  onGenerate={handleGeneratedCode}
+                  onClose={() => setEditorMode('code')}
+                />
+              )}
+
+              {/* AI Generator Mode */}
+              {editorMode === 'aiGenerator' && (
+                <AIRuleTranslator
+                  events={events}
+                  dslFunctions={dslFunctions}
+                  onGenerate={handleGeneratedCode}
+                />
+              )}
+
+              {/* Business Preview Mode */}
+              {editorMode === 'preview' && (
+                <LivePreview
+                  consoleOutput={consoleOutput}
+                  transactions={lastExecutionResult.transactions}
+                  visible={true}
+                />
+              )}
             </TabPanel>
 
             <TabPanel value={tabValue} index={2}>
@@ -878,6 +978,20 @@ const Dashboard = () => {
                 selectedEvent={selectedEvent}
                 batchRunning={batchRunning}
               />
+              <Box sx={{ px: 2, py: 1.5 }}>
+                <Divider sx={{ mb: 1.5 }} />
+                <Button
+                  variant="outlined"
+                  startIcon={<BookOpen size={16} />}
+                  onClick={() => setShowTemplateLibrary(true)}
+                  sx={{ textTransform: 'none' }}
+                >
+                  Browse Accounting Templates
+                </Button>
+                <Typography variant="caption" color="text.secondary" sx={{ ml: 1.5 }}>
+                  Pre-built templates for ASC 310, ASC 360, ASC 606, ASC 842 and more
+                </Typography>
+              </Box>
             </TabPanel>
 
             <TabPanel value={tabValue} index={3}>
@@ -925,6 +1039,15 @@ const Dashboard = () => {
       {showEventDataViewer && (
         <EventDataViewer 
           onClose={() => setShowEventDataViewer(false)}
+        />
+      )}
+
+      {showTemplateLibrary && (
+        <TemplateLibrary
+          templates={ACCOUNTING_TEMPLATES}
+          events={events}
+          onLoadTemplate={handleGeneratedCode}
+          onClose={() => setShowTemplateLibrary(false)}
         />
       )}
 
