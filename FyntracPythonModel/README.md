@@ -273,17 +273,15 @@ pulls it out and creates simple flat rows like:
 {PostingDate: "2026-01-01", InstrumentId: "LOAN-001", principal: 100000, rate: 0.05, term: 12}
 ```
 
-It also figures out which events are "activity" events (tied to real instruments,
-like loan data) and which are "reference" events (lookup tables like rate tables
-that apply to everyone).
+Custom/reference event data (like rate tables or product configs) is already
+included per-instrument in the incoming JSON from the main repo, so it gets
+parsed just like any other event — no special handling needed.
 
 ### Step 3: Filter by the posting date you specified
 
 Only rows that match the posting date you passed in are kept.
 If your JSON has data for January, February, and March, but you said
 `posting_date="2026-01-01"`, only January data is used.
-
-Reference/lookup table data is never filtered — it's always available.
 
 ### Step 4: Merge data across events for each instrument
 
