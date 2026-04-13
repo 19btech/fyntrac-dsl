@@ -253,6 +253,19 @@ const FormulaBar = ({ value, onChange, events, variables, label, placeholder }) 
     return variables.filter(v => typeof v === 'string' ? v : v?.name).map(v => typeof v === 'string' ? v : v.name);
   }, [variables]);
 
+  // Filter variables and event fields by catalog search too
+  const filteredVariableNames = useMemo(() => {
+    if (!catalogFilter) return variableNames;
+    const lower = catalogFilter.toLowerCase();
+    return variableNames.filter(v => v.toLowerCase().includes(lower));
+  }, [variableNames, catalogFilter]);
+
+  const filteredEventFields = useMemo(() => {
+    if (!catalogFilter) return eventFields;
+    const lower = catalogFilter.toLowerCase();
+    return eventFields.filter(ef => ef.toLowerCase().includes(lower));
+  }, [eventFields, catalogFilter]);
+
   // Build a flat hint list: formulas, event fields, variables
   const allHints = useMemo(() => {
     const hints = [];
@@ -482,16 +495,16 @@ const FormulaBar = ({ value, onChange, events, variables, label, placeholder }) 
           </Box>
 
           {/* Variables section */}
-          {variableNames.length > 0 && (
+          {filteredVariableNames.length > 0 && (
             <>
               <Divider />
               <Box>
                 <Typography variant="caption" fontWeight={600} color="text.secondary">
                   <Variable size={12} style={{ display: 'inline', verticalAlign: 'middle', marginRight: 4 }} />
-                  Defined Variables
+                  Defined Variables ({filteredVariableNames.length})
                 </Typography>
                 <Box sx={{ display: 'flex', gap: 0.5, flexWrap: 'wrap', mt: 0.5 }}>
-                  {variableNames.map(v => (
+                  {filteredVariableNames.map(v => (
                     <Chip key={v} size="small" label={v} variant="outlined" color="secondary"
                       onClick={() => insertText(v)}
                       sx={{ fontSize: '0.6875rem', cursor: 'pointer', fontFamily: 'monospace' }} />
@@ -502,13 +515,13 @@ const FormulaBar = ({ value, onChange, events, variables, label, placeholder }) 
           )}
 
           {/* Event fields section */}
-          {eventFields.length > 0 && (
+          {filteredEventFields.length > 0 && (
             <>
               <Divider />
               <Box>
-                <Typography variant="caption" fontWeight={600} color="text.secondary">Event Fields</Typography>
+                <Typography variant="caption" fontWeight={600} color="text.secondary">Event Fields ({filteredEventFields.length})</Typography>
                 <Box sx={{ display: 'flex', gap: 0.5, flexWrap: 'wrap', mt: 0.5 }}>
-                  {eventFields.map(ef => (
+                  {filteredEventFields.map(ef => (
                     <Chip key={ef} size="small" label={ef} variant="outlined"
                       onClick={() => insertText(ef)}
                       sx={{ fontSize: '0.6875rem', cursor: 'pointer' }} />

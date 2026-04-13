@@ -18,7 +18,10 @@ const RULE_TYPES = [
   { value: 'collect', label: 'Collect & Aggregate', description: 'Collect event data and aggregate across instruments', icon: Database },
 ];
 
-const VariableRow = ({ variable, index, events, definedVarNames, onUpdate, onRemove, onMoveUp, onMoveDown, isFirst, isLast }) => {
+const VariableRow = ({ variable, index, events, definedVarNames, onUpdate, onRemove, onMoveUp, onMoveDown, isFirst, isLast, onTest }) => {
+  const [varTesting, setVarTesting] = useState(false);
+  const [varTestResult, setVarTestResult] = useState(null);
+
   const eventFields = useMemo(() => {
     if (!events || events.length === 0) return [];
     const result = [];
@@ -112,11 +115,40 @@ const VariableRow = ({ variable, index, events, definedVarNames, onUpdate, onRem
           </Box>
 
           <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.25, pt: 0.5 }}>
+            <Tooltip title="Test up to this step">
+              <IconButton size="small" onClick={async () => {
+                if (!variable.name || !onTest) return;
+                setVarTesting(true);
+                setVarTestResult(null);
+                try {
+                  const result = await onTest(index);
+                  setVarTestResult(result);
+                } catch (e) {
+                  setVarTestResult({ success: false, error: e.message });
+                } finally {
+                  setVarTesting(false);
+                }
+              }} disabled={varTesting || !variable.name} sx={{ color: '#4CAF50' }}>
+                {varTesting ? <CircularProgress size={14} /> : <Play size={14} />}
+              </IconButton>
+            </Tooltip>
             <IconButton size="small" onClick={() => onMoveUp(index)} disabled={isFirst}><ArrowUp size={14} /></IconButton>
             <IconButton size="small" onClick={() => onMoveDown(index)} disabled={isLast}><ArrowDown size={14} /></IconButton>
             <IconButton size="small" onClick={() => onRemove(index)} sx={{ color: '#F44336' }}><Trash2 size={14} /></IconButton>
           </Box>
         </Box>
+        {varTestResult && (
+          <Alert severity={varTestResult.success ? 'success' : 'error'} sx={{ mt: 1, '& .MuiAlert-message': { width: '100%' } }}
+            onClose={() => setVarTestResult(null)}>
+            {varTestResult.success ? (
+              <Typography variant="body2" fontFamily="monospace" fontSize="0.8125rem" sx={{ whiteSpace: 'pre-wrap' }}>
+                {varTestResult.output}
+              </Typography>
+            ) : (
+              <Typography variant="body2">{varTestResult.error}</Typography>
+            )}
+          </Alert>
+        )}
       </CardContent>
     </Card>
   );
@@ -162,19 +194,28 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onGenerate, onClose, onSa
   const [ruleName, setRuleName] = useState(initialData?.name || '');
   const [ruleId, setRuleId] = useState(initialData?.id || null);
 
-  // Fetch all saved-rules variable names for FormulaBar hints
+  // Fetch all saved-rules for FormulaBar hints and per-variable testing
   const [savedRulesVarNames, setSavedRulesVarNames] = useState([]);
+  const [savedRulesVars, setSavedRulesVars] = useState([]); // full variable objects from all saved rules
   useEffect(() => {
     (async () => {
       try {
         const res = await fetch(`${API}/saved-rules`);
         if (!res.ok) return;
         const data = await res.json();
+        const rules = Array.isArray(data) ? data : (data.rules || []);
         const names = new Set();
-        (data.rules || []).forEach(r => {
-          (r.variables || []).forEach(v => { if (v.name) names.add(v.name); });
+        const allVars = [];
+        rules.forEach(r => {
+          (r.variables || []).forEach(v => {
+            if (v.name) {
+              names.add(v.name);
+              allVars.push(v);
+            }
+          });
         });
         setSavedRulesVarNames([...names]);
+        setSavedRulesVars(allVars);
       } catch { /* ignore */ }
     })();
   }, []);
@@ -215,8 +256,7 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onGenerate, onClose, onSa
   const [commentText, setCommentText] = useState(initialData?.commentText || '');
   const [saving, setSaving] = useState(false);
   const [showCode, setShowCode] = useState(false);
-  const [testing, setTesting] = useState(false);
-  const [testResult, setTestResult] = useState(null); // { success, output, error }
+  const [saveResult, setSaveResult] = useState(null); // { success, output, error }
 
   // Variable CRUD
   const addVariable = useCallback(() => {
@@ -237,6 +277,62 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onGenerate, onClose, onSa
       return arr;
     });
   }, []);
+
+  // Test a single variable (generates code for saved-rule vars + current vars up to this index, then runs it)
+  const testVariable = useCallback(async (varIndex) => {
+    const varsToTest = variables.slice(0, varIndex + 1);
+    const currentVarNames = new Set(varsToTest.filter(v => v.name).map(v => v.name));
+    const lines = [];
+
+    // First, emit definitions from saved rules (skip any that the current rule redefines)
+    const emittedSaved = new Set();
+    for (const v of savedRulesVars) {
+      if (!v.name || currentVarNames.has(v.name) || emittedSaved.has(v.name)) continue;
+      emittedSaved.add(v.name);
+      if (v.source === 'value') {
+        lines.push(`${v.name} = ${v.value || 0}`);
+      } else if (v.source === 'event_field') {
+        lines.push(`${v.name} = ${v.eventField}`);
+      } else if (v.source === 'formula') {
+        lines.push(`${v.name} = ${v.formula || 0}`);
+      } else if (v.source === 'collect') {
+        lines.push(`${v.name} = ${v.collectType || 'collect'}(${v.eventField})`);
+      }
+    }
+
+    // Then emit current rule variables up to varIndex
+    for (const v of varsToTest) {
+      if (!v.name) continue;
+      if (v.source === 'value') {
+        lines.push(`${v.name} = ${v.value || 0}`);
+      } else if (v.source === 'event_field') {
+        lines.push(`${v.name} = ${v.eventField}`);
+      } else if (v.source === 'formula') {
+        lines.push(`${v.name} = ${v.formula || 0}`);
+      } else if (v.source === 'collect') {
+        lines.push(`${v.name} = ${v.collectType || 'collect'}(${v.eventField})`);
+      }
+    }
+    // Print each variable's value
+    for (const v of varsToTest) {
+      if (v.name) lines.push(`print("${v.name} =", ${v.name})`);
+    }
+    const dslCode = lines.join('\n');
+    const today = new Date().toISOString().split('T')[0];
+    const response = await fetch(`${API}/dsl/run`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ dsl_code: dslCode, posting_date: today }),
+    });
+    const data = await response.json();
+    if (response.ok && data.success) {
+      const out = (data.print_outputs || []).map(p => String(p)).join('\n') || 'Executed successfully (no output)';
+      return { success: true, output: out };
+    } else {
+      const errMsg = data.error || (typeof data.detail === 'string' ? data.detail : JSON.stringify(data.detail)) || 'Execution failed';
+      return { success: false, error: errMsg };
+    }
+  }, [variables, savedRulesVars]);
 
   // Condition CRUD
   const addCondition = useCallback(() => setConditions(prev => [...prev, { condition: '', thenFormula: '' }]), []);
@@ -267,6 +363,31 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onGenerate, onClose, onSa
     lines.push(`## ${(ruleName || 'CUSTOM CALCULATION').toUpperCase()}`);
     lines.push('## ═══════════════════════════════════════════════════════════════');
     lines.push('');
+
+    // Collect current rule's variable names to avoid duplicating from saved rules
+    const currentVarNames = new Set(variables.filter(v => v.name).map(v => v.name));
+
+    // Prepend dependency variables from saved rules (skip any redefined in current rule)
+    const emittedSaved = new Set();
+    const depLines = [];
+    for (const v of savedRulesVars) {
+      if (!v.name || currentVarNames.has(v.name) || emittedSaved.has(v.name)) continue;
+      emittedSaved.add(v.name);
+      if (v.source === 'value') {
+        depLines.push(`${v.name} = ${v.value || 0}`);
+      } else if (v.source === 'event_field') {
+        depLines.push(`${v.name} = ${v.eventField}`);
+      } else if (v.source === 'formula') {
+        depLines.push(`${v.name} = ${v.formula || 0}`);
+      } else if (v.source === 'collect') {
+        depLines.push(`${v.name} = ${v.collectType || 'collect'}(${v.eventField})`);
+      }
+    }
+    if (depLines.length > 0) {
+      lines.push('## Dependencies from saved rules');
+      lines.push(...depLines);
+      lines.push('');
+    }
 
     // Emit variable definitions
     const definedVars = [];
@@ -356,34 +477,7 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onGenerate, onClose, onSa
     }
 
     return lines.join('\n');
-  }, [ruleName, ruleType, variables, outputs, conditions, elseFormula, conditionResultVar, iterConfig, inlineComment, commentText]);
-
-  const handleTest = useCallback(async () => {
-    setTesting(true);
-    setTestResult(null);
-    try {
-      const today = new Date().toISOString().split('T')[0];
-      const response = await fetch(`${API}/dsl/run`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ dsl_code: generatedCode, posting_date: today }),
-      });
-      const data = await response.json();
-      if (response.ok && data.success) {
-        const outputs = [];
-        if (data.print_outputs?.length > 0) outputs.push(...data.print_outputs.map(p => String(p)));
-        if (data.transactions?.length > 0) outputs.push(`Generated ${data.transactions.length} transaction(s)`);
-        setTestResult({ success: true, output: outputs.join('\n') || 'Executed successfully (no output)', transactions: data.transactions || [] });
-      } else {
-        const errMsg = data.error || (typeof data.detail === 'string' ? data.detail : JSON.stringify(data.detail)) || 'Execution failed';
-        setTestResult({ success: false, error: errMsg });
-      }
-    } catch (err) {
-      setTestResult({ success: false, error: err.message || 'Network error' });
-    } finally {
-      setTesting(false);
-    }
-  }, [generatedCode]);
+  }, [ruleName, ruleType, variables, outputs, conditions, elseFormula, conditionResultVar, iterConfig, inlineComment, commentText, savedRulesVars]);
 
   const handleApply = useCallback(() => {
     onGenerate(generatedCode);
@@ -391,11 +485,11 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onGenerate, onClose, onSa
 
   const handleSave = useCallback(async () => {
     if (!ruleName.trim()) {
-      setTestResult({ success: false, error: 'Please enter a rule name before saving.' });
+      setSaveResult({ success: false, error: 'Please enter a rule name before saving.' });
       return;
     }
     setSaving(true);
-    setTestResult(null);
+    setSaveResult(null);
     try {
       const payload = {
         id: ruleId,
@@ -419,14 +513,14 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onGenerate, onClose, onSa
       const data = await response.json();
       if (response.ok && data.success) {
         setRuleId(data.id);
-        setTestResult({ success: true, output: data.message || 'Rule saved successfully.' });
+        setSaveResult({ success: true, output: data.message || 'Rule saved successfully.' });
         if (onSave) onSave();
       } else {
         const errMsg = data.detail || data.error || 'Save failed';
-        setTestResult({ success: false, error: typeof errMsg === 'string' ? errMsg : JSON.stringify(errMsg) });
+        setSaveResult({ success: false, error: typeof errMsg === 'string' ? errMsg : JSON.stringify(errMsg) });
       }
     } catch (err) {
-      setTestResult({ success: false, error: err.message || 'Network error' });
+      setSaveResult({ success: false, error: err.message || 'Network error' });
     } finally {
       setSaving(false);
     }
@@ -484,7 +578,8 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onGenerate, onClose, onSa
             definedVarNames={[...new Set([...variables.slice(0, idx).filter(v => v.name).map(v => v.name), ...savedRulesVarNames])]}
             onUpdate={updateVariable} onRemove={removeVariable}
             onMoveUp={() => moveVariable(idx, -1)} onMoveDown={() => moveVariable(idx, 1)}
-            isFirst={idx === 0} isLast={idx === variables.length - 1} />
+            isFirst={idx === 0} isLast={idx === variables.length - 1}
+            onTest={testVariable} />
         ))}
 
         {/* ── Conditional Logic Section ── */}
@@ -732,16 +827,14 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onGenerate, onClose, onSa
             </pre>
           </Paper>
         )}
-        {/* Test Results */}
-        {testResult && (
-          <Alert severity={testResult.success ? 'success' : 'error'} sx={{ mt: 2, '& .MuiAlert-message': { width: '100%' } }}
-            onClose={() => setTestResult(null)}>
-            {testResult.success ? (
-              <pre style={{ margin: 0, fontFamily: 'monospace', fontSize: '0.8125rem', whiteSpace: 'pre-wrap', maxHeight: 200, overflow: 'auto' }}>
-                {testResult.output}
-              </pre>
+        {/* Save Result */}
+        {saveResult && (
+          <Alert severity={saveResult.success ? 'success' : 'error'} sx={{ mt: 2, '& .MuiAlert-message': { width: '100%' } }}
+            onClose={() => setSaveResult(null)}>
+            {saveResult.success ? (
+              <Typography variant="body2">{saveResult.output}</Typography>
             ) : (
-              <Typography variant="body2">{testResult.error}</Typography>
+              <Typography variant="body2">{saveResult.error}</Typography>
             )}
           </Alert>
         )}
@@ -750,11 +843,6 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onGenerate, onClose, onSa
       {/* Action Bar */}
       <Box sx={{ p: 2, borderTop: '1px solid #E9ECEF', bgcolor: 'white', display: 'flex', gap: 1, justifyContent: 'flex-end', flexShrink: 0 }}>
         {onClose && <Button onClick={onClose} color="inherit">Cancel</Button>}
-        <Button variant="outlined" onClick={handleTest} disabled={testing}
-          startIcon={testing ? <CircularProgress size={16} /> : <FlaskConical size={16} />}
-          sx={{ borderColor: '#4CAF50', color: '#4CAF50', '&:hover': { borderColor: '#388E3C', bgcolor: '#E8F5E9' } }}>
-          {testing ? 'Testing...' : 'Test'}
-        </Button>
         <Button variant="outlined" onClick={handleSave} disabled={saving}
           startIcon={saving ? <CircularProgress size={16} /> : <Save size={16} />}
           sx={{ borderColor: '#1976D2', color: '#1976D2', '&:hover': { borderColor: '#1565C0', bgcolor: '#E3F2FD' } }}>
