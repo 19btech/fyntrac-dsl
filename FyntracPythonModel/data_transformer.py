@@ -357,10 +357,23 @@ def transform(
     """
     Full transformation pipeline: raw import JSON → (event_data, raw_event_data).
 
+    The input JSON must be the EXACT same format that the DSL Studio UI receives
+    when you click the Import button in the left sidebar — an array of event
+    objects each containing instrumentId, eventId, eventName, postingDate,
+    effectiveDate, status, _class, and an eventDetail with a values dict.
+
+    Custom/reference event data is already included per-instrument in the
+    incoming JSON from the main repo, so no separate broadcast is needed.
+
+    Processing steps:
+      1. Validate incoming JSON structure
+      2. Extract per-event data rows from eventDetail.values
+      3. Merge all events by instrument, scoped to the given posting date
+      4. Return merged rows + raw data for collect() functions
+
     Args:
         records: The raw JSON array (same format as uploaded to DSL Studio Import).
         posting_date: Required. Only rows matching this posting date are processed.
-                      The main repo must always specify which posting date to run.
 
     Returns:
         A tuple of:
@@ -383,28 +396,19 @@ def transform(
     if not event_data_list:
         raise ValueError("No event data rows could be extracted from the input.")
 
-    # Separate activity vs reference events
-    event_ids = list({evt.get("eventId", "") for evt in records})
-    custom_events = {eid for eid in event_ids if _is_custom_event(records, eid)}
-
-    activity_event_data: Dict[str, List[Dict]] = {}
+    # Build dict of event_name → rows
     all_event_data: Dict[str, List[Dict]] = {}
-
     for ed in event_data_list:
-        event_name = ed["event_name"]
-        rows = ed["data_rows"]
-        all_event_data[event_name] = rows
-        if event_name not in custom_events:
-            activity_event_data[event_name] = rows
+        all_event_data[ed["event_name"]] = ed["data_rows"]
 
     # raw_event_data includes everything (activity + reference) for collect() functions
     raw_event_data = all_event_data
 
-    # Merge activity events by instrument, scoped to the given posting date
-    scoped = filter_event_data_by_posting_date(activity_event_data, posting_date)
+    # Merge all events by instrument, scoped to the given posting date
+    scoped = filter_event_data_by_posting_date(all_event_data, posting_date)
     merged_data = merge_event_data_by_instrument(scoped)
 
     if not merged_data:
-        raise ValueError("No instrument data found after merging events.")
+        raise ValueError("No instrument data found after merging events for the given posting date.")
 
     return merged_data, raw_event_data
