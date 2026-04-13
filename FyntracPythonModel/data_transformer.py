@@ -21,7 +21,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 try:
-    from FyntracParentCode.dsl_functions import normalize_date
+    from FyntracPythonModel.dsl_functions import normalize_date
 except ImportError:
     from dsl_functions import normalize_date
 
@@ -352,15 +352,15 @@ def filter_event_data_by_posting_date(
 # ---------------------------------------------------------------------------
 def transform(
     records: list,
-    posting_date: Optional[str] = None,
+    posting_date: str,
 ) -> Tuple[List[Dict], Dict[str, List[Dict]]]:
     """
     Full transformation pipeline: raw import JSON → (event_data, raw_event_data).
 
     Args:
         records: The raw JSON array (same format as uploaded to DSL Studio Import).
-        posting_date: Optional. If provided, only rows matching this posting date
-                      are included for activity events.
+        posting_date: Required. Only rows matching this posting date are processed.
+                      The main repo must always specify which posting date to run.
 
     Returns:
         A tuple of:
@@ -371,6 +371,8 @@ def transform(
 
     Iterates ALL instruments in the data — no limit.
     """
+    if not posting_date or not posting_date.strip():
+        raise ValueError("posting_date is required. Specify which posting date to process.")
     # Validate
     error = validate_import_json(records)
     if error:
@@ -398,12 +400,8 @@ def transform(
     # raw_event_data includes everything (activity + reference) for collect() functions
     raw_event_data = all_event_data
 
-    # Merge activity events by instrument, optionally scoped to a posting date
-    scoped = (
-        filter_event_data_by_posting_date(activity_event_data, posting_date)
-        if posting_date
-        else activity_event_data
-    )
+    # Merge activity events by instrument, scoped to the given posting date
+    scoped = filter_event_data_by_posting_date(activity_event_data, posting_date)
     merged_data = merge_event_data_by_instrument(scoped)
 
     if not merged_data:

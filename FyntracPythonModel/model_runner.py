@@ -10,7 +10,7 @@ Accepts either:
 In case B, the transformer is called automatically.
 
 Usage:
-    from FyntracParentCode.model_runner import ModelRunner
+    from FyntracPythonModel.model_runner import ModelRunner
 
     runner = ModelRunner()
     result = runner.run_from_json(python_code, raw_json_records)
@@ -21,7 +21,7 @@ import re
 from typing import Any, Dict, List, Optional
 
 try:
-    from FyntracParentCode.data_transformer import transform
+    from FyntracPythonModel.data_transformer import transform
 except ImportError:
     from data_transformer import transform
 
@@ -63,15 +63,15 @@ class ModelRunner:
     def _fix_import_paths(self, python_code: str) -> str:
         """
         Rewrite dsl_functions imports in the generated Python code so they
-        resolve to the copy sitting in this package (FyntracParentCode/).
+        resolve to the copy sitting in this package (FyntracPythonModel/).
         """
         python_code = python_code.replace(
             "from backend.dsl_functions import",
-            "from FyntracParentCode.dsl_functions import"
+            "from FyntracPythonModel.dsl_functions import"
         )
         python_code = python_code.replace(
             "from dsl_functions import",
-            "from FyntracParentCode.dsl_functions import"
+            "from FyntracPythonModel.dsl_functions import"
         )
         return python_code
 
@@ -222,22 +222,30 @@ class ModelRunner:
         self,
         python_code: str,
         raw_json_records: list,
-        posting_date: Optional[str] = None,
+        posting_date: str,
         effective_date: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         End-to-end: takes the raw import JSON (same format as DSL Studio Import),
-        transforms it, and runs the model against ALL instruments.
+        transforms it, and runs the model for the given posting date across
+        ALL instruments that have data for that date.
 
         Args:
             python_code: The generated Python code string (from dsl_template_artifacts).
             raw_json_records: The raw JSON array — same format as uploaded to
                              DSL Studio's Import functionality.
-            posting_date: Optional. Scope to a specific posting date.
+            posting_date: Required. Only instruments with this posting date are processed.
             effective_date: Optional override for effective date.
 
         Returns: Same shape as run().
         """
+        if not posting_date or not posting_date.strip():
+            return {
+                "transactions": [],
+                "print_outputs": [],
+                "error": "posting_date is required. Specify which posting date to process.",
+                "instrument_count": 0,
+            }
         try:
             event_data, raw_event_data = transform(raw_json_records, posting_date)
         except ValueError as e:
