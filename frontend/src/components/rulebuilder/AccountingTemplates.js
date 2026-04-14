@@ -65,12 +65,10 @@ const ACCOUNTING_TEMPLATES = [
       lines.push('');
 
       if (config.outputs_interest) {
-        lines.push('total_interest = schedule_sum(sched, "interest")');
-        lines.push('print("Total Interest:", total_interest)');
+        lines.push('print("Total Interest:", schedule_sum(sched, "interest"))');
       }
       if (config.outputs_principal_payment) {
-        lines.push('total_principal = schedule_sum(sched, "principal_pmt")');
-        lines.push('print("Total Principal:", total_principal)');
+        lines.push('print("Total Principal:", schedule_sum(sched, "principal_pmt"))');
       }
       lines.push('print(sched)');
 
