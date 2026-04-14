@@ -1070,6 +1070,12 @@ const Dashboard = () => {
                   }}
                   onPlayAll={(result) => {
                     setLastExecutionResult(result);
+                    // Forward print outputs to consoleOutput so LivePreview can extract schedule tables
+                    if (result.printOutputs?.length > 0) {
+                      const ts = new Date().toLocaleTimeString();
+                      const printLogs = result.printOutputs.map(p => ({ timestamp: ts, message: String(p), type: 'print' }));
+                      setConsoleOutput(prev => [...prev, ...printLogs]);
+                    }
                     setEditorMode('preview');
                   }}
                   onClearAll={() => {

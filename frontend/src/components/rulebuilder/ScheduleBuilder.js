@@ -184,10 +184,16 @@ const ScheduleBuilder = ({ events, dslFunctions, onClose, onSave, initialData })
   const [enableCol, setEnableCol] = useState(cfg.enableCol || false);
   const [colColumn, setColColumn] = useState(cfg.colColumn || '');
   const [colVarName, setColVarName] = useState(cfg.colVarName || '');
-  // Schedule Filter toggle
+  // Schedule Filter toggle: schedule_filter(sched, matchCol, matchValue, returnCol)
   const [enableFilter, setEnableFilter] = useState(cfg.enableFilter || false);
-  const [filterCondition, setFilterCondition] = useState(cfg.filterCondition || '');
   const [filterVarName, setFilterVarName] = useState(cfg.filterVarName || '');
+  const [filterMatchCol, setFilterMatchCol] = useState(cfg.filterMatchCol || '');
+  const [filterMatchValue, setFilterMatchValue] = useState(cfg.filterMatchValue || '');
+  const [filterReturnCol, setFilterReturnCol] = useState(cfg.filterReturnCol || '');
+  // Schedule Preview: run the actual schedule and show real rows
+  const [schedulePreviewTesting, setSchedulePreviewTesting] = useState(false);
+  const [schedulePreviewData, setSchedulePreviewData] = useState(null);
+  const [schedulePreviewError, setSchedulePreviewError] = useState(null);
 
   const dateEventFields = useMemo(() => {
     if (!events?.length) return [];
@@ -249,15 +255,15 @@ const ScheduleBuilder = ({ events, dslFunctions, onClose, onSave, initialData })
     const colsToTest = columns.slice(0, colIndex + 1).filter(c => c.name && c.formula);
     if (colsToTest.length === 0) return { success: false, error: 'No valid columns to test' };
     const lines = [];
-    // Emit dependency variables
-    for (const varName of autoDetectedVars) {
-      const savedVar = savedRulesVars.find(v => v.name === varName);
-      if (savedVar) {
-        if (savedVar.source === 'value') lines.push(`${savedVar.name} = ${savedVar.value || 0}`);
-        else if (savedVar.source === 'event_field') lines.push(`${savedVar.name} = ${savedVar.eventField}`);
-        else if (savedVar.source === 'formula') lines.push(`${savedVar.name} = ${savedVar.formula || 0}`);
-        else if (savedVar.source === 'collect') lines.push(`${savedVar.name} = ${savedVar.collectType || 'collect'}(${savedVar.eventField})`);
-      }
+    // Emit ALL saved rule vars in order so transitive dependencies are available.
+    // (Emitting only the directly-referenced autoDetectedVars can fail when those vars
+    // themselves depend on other vars that haven't been emitted yet.)
+    for (const v of savedRulesVars) {
+      if (!v.name) continue;
+      if (v.source === 'value') lines.push(`${v.name} = ${v.value || 0}`);
+      else if (v.source === 'event_field') lines.push(`${v.name} = ${v.eventField}`);
+      else if (v.source === 'formula') lines.push(`${v.name} = ${v.formula || 0}`);
+      else if (v.source === 'collect') lines.push(`${v.name} = ${v.collectType || 'collect'}(${v.eventField})`);
     }
     // Period
     if (periodType === 'number') {
@@ -416,11 +422,11 @@ const ScheduleBuilder = ({ events, dslFunctions, onClose, onSave, initialData })
       lines.push(`print("${colVarName}:", ${colVarName})`);
     }
 
-    // Schedule Filter
-    if (enableFilter && filterCondition && filterVarName) {
+    // Schedule Filter: schedule_filter(sched, matchCol, matchValue, returnCol)
+    if (enableFilter && filterVarName && filterMatchCol && filterMatchValue && filterReturnCol) {
       lines.push('');
-      lines.push(`${filterVarName} = schedule_filter(sched, "${filterCondition}")`);
-      lines.push(`print(${filterVarName})`);
+      lines.push(`${filterVarName} = schedule_filter(sched, "${filterMatchCol}", ${filterMatchValue}, "${filterReturnCol}")`);
+      lines.push(`print("${filterVarName}:", ${filterVarName})`);
     }
 
     // Create transaction from output variable
@@ -431,7 +437,89 @@ const ScheduleBuilder = ({ events, dslFunctions, onClose, onSave, initialData })
     }
 
     return lines.join('\n');
-  }, [scheduleName, periodType, startDate, startDateSource, startDateField, startDateFormula, endDate, endDateSource, endDateField, endDateFormula, periodCount, periodCountSource, periodCountField, periodCountFormula, frequency, convention, columns, autoDetectedVars, savedRulesVars, createTxn, txnType, txnAmountCol, extractFirst, extractLast, extractColumn, enableSum, sumColumn, sumVarName, enableCol, colColumn, colVarName, enableFilter, filterCondition, filterVarName]);
+  }, [scheduleName, periodType, startDate, startDateSource, startDateField, startDateFormula, endDate, endDateSource, endDateField, endDateFormula, periodCount, periodCountSource, periodCountField, periodCountFormula, frequency, convention, columns, autoDetectedVars, savedRulesVars, createTxn, txnType, txnAmountCol, extractFirst, extractLast, extractColumn, enableSum, sumColumn, sumVarName, enableCol, colColumn, colVarName, enableFilter, filterVarName, filterMatchCol, filterMatchValue, filterReturnCol]);
+
+  // Run only the schedule-definition code and return parsed rows for the preview table
+  const testSchedulePreview = useCallback(async () => {
+    setSchedulePreviewTesting(true);
+    setSchedulePreviewData(null);
+    setSchedulePreviewError(null);
+    try {
+      const lines = [];
+      // Emit all saved rule vars (full dependency chain)
+      for (const v of savedRulesVars) {
+        if (!v.name) continue;
+        if (v.source === 'value') lines.push(`${v.name} = ${v.value || 0}`);
+        else if (v.source === 'event_field') lines.push(`${v.name} = ${v.eventField}`);
+        else if (v.source === 'formula') lines.push(`${v.name} = ${v.formula || 0}`);
+        else if (v.source === 'collect') lines.push(`${v.name} = ${v.collectType || 'collect'}(${v.eventField})`);
+      }
+      // Period
+      if (periodType === 'number') {
+        const countExpr = periodCountSource === 'field' && periodCountField ? periodCountField
+          : periodCountSource === 'formula' && periodCountFormula ? periodCountFormula
+          : (periodCount || 12);
+        lines.push(`p = period(${countExpr})`);
+      } else {
+        const startExpr = startDateSource === 'field' && startDateField ? startDateField
+          : startDateSource === 'formula' && startDateFormula ? startDateFormula
+          : `"${startDate || '2026-01-01'}"`;
+        const endExpr = endDateSource === 'field' && endDateField ? endDateField
+          : endDateSource === 'formula' && endDateFormula ? endDateFormula
+          : `"${endDate || '2026-12-31'}"`;
+        let periodCall = `p = period(${startExpr}, ${endExpr}, "${frequency}"`;
+        if (convention) periodCall += `, "${convention}"`;
+        periodCall += ')';
+        lines.push(periodCall);
+      }
+      // Full schedule with all valid columns
+      const validCols = columns.filter(c => c.name && c.formula);
+      if (validCols.length === 0) {
+        setSchedulePreviewError('No valid columns defined yet.');
+        return;
+      }
+      lines.push('sched = schedule(p, {');
+      validCols.forEach((col, idx) => {
+        const comma = idx < validCols.length - 1 ? ',' : '';
+        lines.push(`    "${col.name}": "${col.formula}"${comma}`);
+      });
+      const contextPairs = autoDetectedVars.map(v => `"${v}": ${v}`);
+      if (contextPairs.length > 0) {
+        lines.push(`}, {${contextPairs.join(', ')}})`);
+      } else {
+        lines.push('})'); 
+      }
+      lines.push('print(sched)');
+      const today = new Date().toISOString().split('T')[0];
+      const response = await fetch(`${API}/dsl/run`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ dsl_code: lines.join('\n'), posting_date: today }),
+      });
+      const data = await response.json();
+      if (response.ok && data.success && data.print_outputs?.length > 0) {
+        try {
+          const parsed = JSON.parse(data.print_outputs[0]);
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            setSchedulePreviewData(parsed);
+          } else {
+            setSchedulePreviewError('Schedule ran but returned no rows.');
+          }
+        } catch {
+          setSchedulePreviewError('Ran successfully but output was not parseable JSON.');
+        }
+      } else {
+        setSchedulePreviewError(data.error || data.detail || 'Execution failed');
+      }
+    } catch (err) {
+      setSchedulePreviewError(err.message || 'Network error');
+    } finally {
+      setSchedulePreviewTesting(false);
+    }
+  }, [savedRulesVars, periodType, periodCount, periodCountSource, periodCountField, periodCountFormula,
+      startDateSource, startDateField, startDateFormula, startDate,
+      endDateSource, endDateField, endDateFormula, endDate,
+      frequency, convention, columns, autoDetectedVars]);
 
   const handleTest = useCallback(async () => {
     setTesting(true);
@@ -482,7 +570,8 @@ const ScheduleBuilder = ({ events, dslFunctions, onClose, onSave, initialData })
           endDate, endDateSource, endDateField, endDateFormula,
           periodCount, periodCountSource, periodCountField, periodCountFormula, frequency, convention, columns,
           createTxn, txnType, txnAmountCol, extractFirst, extractLast, extractColumn,
-          enableSum, sumColumn, sumVarName, enableCol, colColumn, colVarName, enableFilter, filterCondition, filterVarName,
+          enableSum, sumColumn, sumVarName, enableCol, colColumn, colVarName,
+          enableFilter, filterVarName, filterMatchCol, filterMatchValue, filterReturnCol,
         },
       };
       const response = await fetch(`${API}/saved-schedules`, {
@@ -504,7 +593,7 @@ const ScheduleBuilder = ({ events, dslFunctions, onClose, onSave, initialData })
     } finally {
       setSaving(false);
     }
-  }, [scheduleName, schedulePriority, scheduleId, generatedCode, periodType, startDate, startDateSource, startDateField, startDateFormula, endDate, endDateSource, endDateField, endDateFormula, periodCount, periodCountSource, periodCountField, periodCountFormula, frequency, convention, columns, createTxn, txnType, txnAmountCol, extractFirst, extractLast, extractColumn, enableSum, sumColumn, sumVarName, enableCol, colColumn, colVarName, enableFilter, filterCondition, filterVarName, onSave]);
+  }, [scheduleName, schedulePriority, scheduleId, generatedCode, periodType, startDate, startDateSource, startDateField, startDateFormula, endDate, endDateSource, endDateField, endDateFormula, periodCount, periodCountSource, periodCountField, periodCountFormula, frequency, convention, columns, createTxn, txnType, txnAmountCol, extractFirst, extractLast, extractColumn, enableSum, sumColumn, sumVarName, enableCol, colColumn, colVarName, enableFilter, filterVarName, filterMatchCol, filterMatchValue, filterReturnCol, onSave]);
 
   // Compute a simple mock preview of what the schedule table would look like
   const previewHeaders = useMemo(() => columns.filter(c => c.name).map(c => c.name), [columns]);
@@ -723,34 +812,79 @@ const ScheduleBuilder = ({ events, dslFunctions, onClose, onSave, initialData })
         {previewHeaders.length > 0 && (
           <>
             <Divider sx={{ my: 2 }} />
-            <Typography variant="body2" fontWeight={600} sx={{ mb: 1 }}>
-              <BarChart3 size={14} style={{ display: 'inline', marginRight: 6, verticalAlign: 'middle' }} />
-              Table Preview (structure)
-            </Typography>
-            <TableContainer component={Paper} variant="outlined" sx={{ mb: 2 }}>
-              <Table size="small">
+            <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 1 }}>
+              <Typography variant="body2" fontWeight={600}>
+                <BarChart3 size={14} style={{ display: 'inline', marginRight: 6, verticalAlign: 'middle' }} />
+                Schedule Preview
+              </Typography>
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                {schedulePreviewData && (
+                  <Chip label={`${schedulePreviewData.length} rows`} size="small"
+                    sx={{ fontSize: '0.6875rem', height: 20, bgcolor: '#EEF0FE', color: '#5B5FED' }} />
+                )}
+                <Tooltip title="Run schedule and show real data">
+                  <Button size="small" variant="outlined"
+                    startIcon={schedulePreviewTesting ? <CircularProgress size={12} /> : <Play size={12} />}
+                    onClick={testSchedulePreview}
+                    disabled={schedulePreviewTesting}
+                    sx={{ borderColor: '#4CAF50', color: '#4CAF50', fontSize: '0.7rem', py: 0.25, px: 1,
+                      '&:hover': { borderColor: '#388E3C', bgcolor: '#E8F5E9' } }}>
+                    {schedulePreviewTesting ? 'Running...' : 'Test'}
+                  </Button>
+                </Tooltip>
+              </Box>
+            </Box>
+            {schedulePreviewError && (
+              <Alert severity="error" sx={{ mb: 1, fontSize: '0.8125rem' }} onClose={() => setSchedulePreviewError(null)}>
+                {schedulePreviewError}
+              </Alert>
+            )}
+            <TableContainer component={Paper} variant="outlined" sx={{ mb: 2, maxHeight: 280, overflow: 'auto' }}>
+              <Table size="small" stickyHeader>
                 <TableHead>
                   <TableRow sx={{ bgcolor: '#F8F9FA' }}>
-                    <TableCell sx={{ fontWeight: 600, fontSize: '0.75rem' }}>#</TableCell>
-                    {previewHeaders.map(h => (
-                      <TableCell key={h} sx={{ fontWeight: 600, fontSize: '0.75rem' }}>{h}</TableCell>
+                    <TableCell sx={{ fontWeight: 600, fontSize: '0.75rem', bgcolor: '#F8F9FA' }}>#</TableCell>
+                    {(schedulePreviewData ? Object.keys(schedulePreviewData[0] || {}) : previewHeaders).map(h => (
+                      <TableCell key={h} sx={{ fontWeight: 600, fontSize: '0.75rem', bgcolor: '#F8F9FA', whiteSpace: 'nowrap' }}>{h}</TableCell>
                     ))}
                   </TableRow>
                 </TableHead>
                 <TableBody>
-                  {[1, 2, 3].map(row => (
-                    <TableRow key={row} sx={{ '&:last-child td': { borderBottom: 0 } }}>
-                      <TableCell sx={{ fontSize: '0.75rem', color: '#6C757D' }}>{row}</TableCell>
-                      {previewHeaders.map(h => (
-                        <TableCell key={h} sx={{ fontSize: '0.75rem', color: '#ADB5BD', fontStyle: 'italic' }}>
-                          {h === 'date' || h.includes('date') ? '2026-01-31' : '...'}
-                        </TableCell>
-                      ))}
-                    </TableRow>
-                  ))}
+                  {schedulePreviewData ? (
+                    schedulePreviewData.slice(0, 20).map((row, rowIdx) => (
+                      <TableRow key={rowIdx} hover sx={{ '&:last-child td': { borderBottom: 0 } }}>
+                        <TableCell sx={{ fontSize: '0.75rem', color: '#6C757D' }}>{rowIdx + 1}</TableCell>
+                        {Object.values(row).map((val, ci) => (
+                          <TableCell key={ci} sx={{ fontSize: '0.75rem',
+                            fontFamily: typeof val === 'number' ? 'monospace' : 'inherit',
+                            fontWeight: typeof val === 'number' ? 500 : 400 }}>
+                            {typeof val === 'number'
+                              ? (Number.isInteger(val) ? val.toLocaleString() : val.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 4 }))
+                              : String(val ?? '—')}
+                          </TableCell>
+                        ))}
+                      </TableRow>
+                    ))
+                  ) : (
+                    [1, 2, 3].map(row => (
+                      <TableRow key={row} sx={{ '&:last-child td': { borderBottom: 0 } }}>
+                        <TableCell sx={{ fontSize: '0.75rem', color: '#6C757D' }}>{row}</TableCell>
+                        {previewHeaders.map(h => (
+                          <TableCell key={h} sx={{ fontSize: '0.75rem', color: '#ADB5BD', fontStyle: 'italic' }}>
+                            {h === 'date' || h.includes('date') ? '2026-01-31' : '...'}
+                          </TableCell>
+                        ))}
+                      </TableRow>
+                    ))
+                  )}
                 </TableBody>
               </Table>
             </TableContainer>
+            {schedulePreviewData && schedulePreviewData.length > 20 && (
+              <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 1 }}>
+                Showing 20 of {schedulePreviewData.length} rows
+              </Typography>
+            )}
           </>
         )}
 
@@ -828,14 +962,39 @@ const ScheduleBuilder = ({ events, dslFunctions, onClose, onSave, initialData })
               </Box>
             )}
             {enableFilter && (
-              <Box sx={{ display: 'flex', gap: 1, mb: 1 }}>
-                <TextField size="small" label="Variable Name" value={filterVarName}
-                  onChange={(e) => setFilterVarName(e.target.value.replace(/[^a-zA-Z0-9_]/g, ''))}
-                  placeholder="e.g., positive_rows" sx={{ flex: 1 }} />
-                <TextField size="small" label="Filter Condition" value={filterCondition}
-                  onChange={(e) => setFilterCondition(e.target.value)}
-                  placeholder='e.g., gt(balance, 0)' sx={{ flex: 1 }}
-                  InputProps={{ sx: { fontFamily: 'monospace', fontSize: '0.8125rem' } }} />
+              <Box sx={{ mb: 1 }}>
+                <Box sx={{ display: 'flex', gap: 1, mb: 0.75 }}>
+                  <TextField size="small" label="Variable Name" value={filterVarName}
+                    onChange={(e) => setFilterVarName(e.target.value.replace(/[^a-zA-Z0-9_]/g, ''))}
+                    placeholder="e.g., interest_period" sx={{ flex: '0 0 150px' }} />
+                  <FormControl size="small" sx={{ flex: 1 }}>
+                    <InputLabel>Match Column</InputLabel>
+                    <Select value={filterMatchCol} label="Match Column"
+                      onChange={(e) => setFilterMatchCol(e.target.value)}>
+                      {columns.filter(c => c.name).map(c => (
+                        <MenuItem key={c.name} value={c.name}>{c.name}</MenuItem>
+                      ))}
+                    </Select>
+                  </FormControl>
+                  <TextField size="small" label="Match Value" value={filterMatchValue}
+                    onChange={(e) => setFilterMatchValue(e.target.value)}
+                    placeholder='e.g., postingdate'
+                    helperText={'Variable or quoted string (e.g., postingdate or "2026-01")'}
+                    sx={{ flex: 1 }}
+                    InputProps={{ sx: { fontFamily: 'monospace', fontSize: '0.8125rem' } }} />
+                  <FormControl size="small" sx={{ flex: 1 }}>
+                    <InputLabel>Return Column</InputLabel>
+                    <Select value={filterReturnCol} label="Return Column"
+                      onChange={(e) => setFilterReturnCol(e.target.value)}>
+                      {columns.filter(c => c.name && c.formula !== 'period_date' && c.formula !== 'period_number').map(c => (
+                        <MenuItem key={c.name} value={c.name}>{c.name}</MenuItem>
+                      ))}
+                    </Select>
+                  </FormControl>
+                </Box>
+                <Typography variant="caption" color="text.secondary" sx={{ pl: 0.5 }}>
+                  Generates: <code style={{fontFamily:'monospace'}}>{`${filterVarName || 'result'} = schedule_filter(sched, "${filterMatchCol || 'col'}", ${filterMatchValue || 'value'}, "${filterReturnCol || 'col'}")`}</code>
+                </Typography>
               </Box>
             )}
           </CardContent>
@@ -850,7 +1009,7 @@ const ScheduleBuilder = ({ events, dslFunctions, onClose, onSave, initialData })
                 const turning_on = e.target.checked;
                 if (turning_on) {
                   // Check if any output variable is defined
-                  const hasOutputVars = (extractFirst && extractColumn) || (extractLast && extractColumn) || (enableSum && sumVarName && sumColumn) || (enableCol && colVarName && colColumn) || (enableFilter && filterVarName && filterCondition);
+                  const hasOutputVars = (extractFirst && extractColumn) || (extractLast && extractColumn) || (enableSum && sumVarName && sumColumn) || (enableCol && colVarName && colColumn) || (enableFilter && filterVarName && filterMatchCol && filterMatchValue && filterReturnCol);
                   if (!hasOutputVars) {
                     setValidationMsg('Please define at least one output variable (Schedule First, Last, Sum, Column, or Filter) before creating a transaction.');
                     return;
@@ -866,7 +1025,7 @@ const ScheduleBuilder = ({ events, dslFunctions, onClose, onSave, initialData })
               if (extractLast && extractColumn) outputVars.push({ name: `last_${extractColumn}`, label: `Schedule Last (last_${extractColumn})` });
               if (enableSum && sumVarName && sumColumn) outputVars.push({ name: sumVarName, label: `Schedule Sum (${sumVarName})` });
               if (enableCol && colVarName && colColumn) outputVars.push({ name: colVarName, label: `Schedule Column (${colVarName})` });
-              if (enableFilter && filterVarName && filterCondition) outputVars.push({ name: filterVarName, label: `Schedule Filter (${filterVarName})` });
+              if (enableFilter && filterVarName && filterMatchCol && filterMatchValue && filterReturnCol) outputVars.push({ name: filterVarName, label: `Schedule Filter → ${filterReturnCol} (${filterVarName})` });
               if (outputVars.length === 0) return (
                 <Alert severity="warning" sx={{ mt: 1, fontSize: '0.8125rem' }}>
                   No output variables defined. Enable and configure at least one output option above (Schedule First, Last, Sum, Column, or Filter).

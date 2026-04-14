@@ -286,13 +286,15 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
   // Test a single variable (generates code for saved-rule vars + current vars up to this index, then runs it)
   const testVariable = useCallback(async (varIndex) => {
     const varsToTest = variables.slice(0, varIndex + 1);
-    const currentVarNames = new Set(varsToTest.filter(v => v.name).map(v => v.name));
+    // Use ALL current-rule variable names (not just up to varIndex) to avoid emitting
+    // other variables from the same saved rule out of order (fixes dependency ordering).
+    const allCurrentVarNames = new Set(variables.filter(v => v.name).map(v => v.name));
     const lines = [];
 
-    // First, emit definitions from saved rules (skip any that the current rule redefines)
+    // First, emit definitions from OTHER saved rules only (skip anything the current rule owns)
     const emittedSaved = new Set();
     for (const v of savedRulesVars) {
-      if (!v.name || currentVarNames.has(v.name) || emittedSaved.has(v.name)) continue;
+      if (!v.name || allCurrentVarNames.has(v.name) || emittedSaved.has(v.name)) continue;
       emittedSaved.add(v.name);
       if (v.source === 'value') {
         lines.push(`${v.name} = ${v.value || 0}`);
