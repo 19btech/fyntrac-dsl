@@ -316,7 +316,10 @@ const ScheduleBuilder = ({ events, dslFunctions, onClose, onSave, initialData })
         const ct = v.collectType || 'collect';
         const isDate = /date/i.test(v.name) || /date/i.test(v.eventField || '');
         if (ct === 'collect_subinstrumentids') lines.push(`${v.name} = ["sub_1", "sub_2", "sub_3"]`);
-        else if (isDate) lines.push(`${v.name} = ["2026-01-01", "2026-06-30", "2026-12-31"]`);
+        else if (isDate) {
+          const isEnd = /end/i.test(v.name) || /end/i.test(v.eventField || '');
+          lines.push(`${v.name} = ${isEnd ? '["2026-06-30", "2026-09-30", "2026-12-31"]' : '["2026-01-01", "2026-04-01", "2026-07-01"]'}`);
+        }
         else lines.push(`${v.name} = [100, 200, 300]`);
       }
     }
@@ -515,7 +518,10 @@ const ScheduleBuilder = ({ events, dslFunctions, onClose, onSave, initialData })
         const ct = v.collectType || 'collect';
         const isDate = /date/i.test(v.name) || /date/i.test(v.eventField || '');
         if (ct === 'collect_subinstrumentids') lines.push(`${v.name} = ["sub_1", "sub_2", "sub_3"]`);
-        else if (isDate) lines.push(`${v.name} = ["2026-01-01", "2026-06-30", "2026-12-31"]`);
+        else if (isDate) {
+          const isEnd = /end/i.test(v.name) || /end/i.test(v.eventField || '');
+          lines.push(`${v.name} = ${isEnd ? '["2026-06-30", "2026-09-30", "2026-12-31"]' : '["2026-01-01", "2026-04-01", "2026-07-01"]'}`);
+        }
         else lines.push(`${v.name} = [100, 200, 300]`);
       }
     }
@@ -573,11 +579,14 @@ const ScheduleBuilder = ({ events, dslFunctions, onClose, onSave, initialData })
       const data = await response.json();
       if (response.ok && data.success && data.print_outputs?.length > 0) {
         try {
-          // Each instrument emits its own print output — take the first instrument's schedule
+          // Parse schedule output — may be multi-instrument (array of {schedule:[...]}) or flat rows
           let parsed = JSON.parse(data.print_outputs[0]);
           // Normalise nested array-of-arrays (multi-instrument packed into one JSON)
           if (Array.isArray(parsed) && Array.isArray(parsed[0])) parsed = parsed[0];
-          else if (Array.isArray(parsed) && parsed[0]?.schedule) parsed = parsed[0].schedule;
+          // Multi-instrument: flatten all instruments' schedule rows
+          if (Array.isArray(parsed) && parsed[0]?.schedule) {
+            parsed = parsed.flatMap(item => item.schedule || []);
+          }
           if (Array.isArray(parsed) && parsed.length > 0 && typeof parsed[0] === 'object' && !Array.isArray(parsed[0])) {
             setSchedulePreviewData(parsed);
           } else {
