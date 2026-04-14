@@ -3948,6 +3948,10 @@ async def delete_user_template(template_id: str):
 @api_router.post("/template-sample-data/{template_id}")
 async def load_template_sample_data(template_id: str):
     """Load pre-defined sample event definitions and event data for a specific template."""
+    import importlib, sys, os
+    backend_dir = os.path.dirname(os.path.abspath(__file__))
+    if backend_dir not in sys.path:
+        sys.path.insert(0, backend_dir)
     from template_sample_data import TEMPLATE_SAMPLE_DATA
 
     if template_id not in TEMPLATE_SAMPLE_DATA:
