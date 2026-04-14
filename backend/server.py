@@ -3861,6 +3861,12 @@ async def delete_saved_rule(rule_id: str):
         raise HTTPException(status_code=404, detail="Rule not found.")
     return {"success": True, "message": "Rule deleted."}
 
+@api_router.delete("/saved-rules")
+async def delete_all_saved_rules():
+    """Delete ALL saved rules."""
+    result = await db.saved_rules.delete_many({})
+    return {"success": True, "deleted": result.deleted_count, "message": f"Deleted {result.deleted_count} rule(s)."}
+
 @api_router.put("/saved-rules/reorder")
 async def reorder_saved_rules(request: dict):
     """Batch-update priorities for saved rules based on drag-and-drop ordering.

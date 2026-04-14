@@ -4,7 +4,7 @@ import {
   CircularProgress, Alert, Tooltip, Divider,
   Dialog, DialogTitle, DialogContent, DialogContentText, DialogActions,
 } from "@mui/material";
-import { Trash2, Edit3, Calculator, GitBranch, Repeat, Database, Clock, Upload, Play, GripVertical, BookmarkPlus } from "lucide-react";
+import { Trash2, Edit3, Calculator, GitBranch, Repeat, Database, Clock, Upload, Play, GripVertical, BookmarkPlus, RotateCcw } from "lucide-react";
 import { API } from "../../config";
 
 const RULE_TYPE_META = {
@@ -14,7 +14,7 @@ const RULE_TYPE_META = {
   collect: { label: 'Collect', color: '#8BC34A', icon: Database },
 };
 
-const SavedRules = ({ onEditRule, refreshKey, onLoadToEditor, onPlayAll }) => {
+const SavedRules = ({ onEditRule, refreshKey, onLoadToEditor, onPlayAll, onClearAll }) => {
   const [rules, setRules] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -27,6 +27,8 @@ const SavedRules = ({ onEditRule, refreshKey, onLoadToEditor, onPlayAll }) => {
   const [templateCategory, setTemplateCategory] = useState('');
   const [savingTemplate, setSavingTemplate] = useState(false);
   const [templateResult, setTemplateResult] = useState(null);
+  const [showClearAll, setShowClearAll] = useState(false);
+  const [clearing, setClearing] = useState(false);
 
   const loadRules = useCallback(async () => {
     setLoading(true);
@@ -202,6 +204,12 @@ const SavedRules = ({ onEditRule, refreshKey, onLoadToEditor, onPlayAll }) => {
                   <BookmarkPlus size={16} />
                 </IconButton>
               </Tooltip>
+              <Divider orientation="vertical" flexItem sx={{ mx: 0.5 }} />
+              <Tooltip title="Clear everything — editor, console, preview & rules">
+                <IconButton size="small" onClick={() => setShowClearAll(true)} sx={{ color: '#F44336' }}>
+                  <RotateCcw size={16} />
+                </IconButton>
+              </Tooltip>
             </>
           )}
         </Box>
@@ -293,6 +301,48 @@ const SavedRules = ({ onEditRule, refreshKey, onLoadToEditor, onPlayAll }) => {
           </Card>
         );
       })}
+
+      {/* Clear All Confirmation Dialog */}
+      <Dialog open={showClearAll} onClose={() => setShowClearAll(false)} maxWidth="sm" fullWidth>
+        <DialogTitle sx={{ color: '#D32F2F' }}>Clear Everything</DialogTitle>
+        <DialogContent>
+          <DialogContentText sx={{ mb: 2 }}>
+            This will reset your workspace by clearing:
+          </DialogContentText>
+          <Box component="ul" sx={{ m: 0, pl: 3 }}>
+            <Box component="li" sx={{ mb: 0.75 }}><Typography variant="body2"><strong>Code Editor</strong> — all code in the editor will be removed</Typography></Box>
+            <Box component="li" sx={{ mb: 0.75 }}><Typography variant="body2"><strong>Console Output</strong> — all logs and results will be cleared</Typography></Box>
+            <Box component="li" sx={{ mb: 0.75 }}><Typography variant="body2"><strong>Business Preview</strong> — execution results will be reset</Typography></Box>
+            <Box component="li"><Typography variant="body2"><strong>Rule Manager</strong> — all {rules.length} saved rule{rules.length !== 1 ? 's' : ''} will be deleted</Typography></Box>
+          </Box>
+          <DialogContentText sx={{ mt: 2, fontWeight: 500 }}>
+            This action cannot be undone.
+          </DialogContentText>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setShowClearAll(false)} color="inherit">Cancel</Button>
+          <Button
+            onClick={async () => {
+              setClearing(true);
+              try {
+                await fetch(`${API}/saved-rules`, { method: 'DELETE' });
+                await loadRules();
+                if (onClearAll) onClearAll();
+              } catch (err) {
+                console.error('Clear all failed:', err);
+              } finally {
+                setClearing(false);
+                setShowClearAll(false);
+              }
+            }}
+            color="error" variant="contained"
+            disabled={clearing}
+            startIcon={clearing ? <CircularProgress size={16} color="inherit" /> : null}
+          >
+            {clearing ? 'Clearing…' : 'Clear Everything'}
+          </Button>
+        </DialogActions>
+      </Dialog>
 
       {/* Delete Confirmation Dialog */}
       <Dialog open={!!deleteTarget} onClose={() => setDeleteTarget(null)}>

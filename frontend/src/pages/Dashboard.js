@@ -1020,6 +1020,14 @@ const Dashboard = () => {
                     setLastExecutionResult(result);
                     setEditorMode('preview');
                   }}
+                  onClearAll={() => {
+                    setDslCode('');
+                    setConsoleOutput([]);
+                    setLastExecutionResult({ transactions: [], printOutputs: [] });
+                    setTransactionReports([]);
+                    try { localStorage.removeItem('dslCode'); } catch(e) {}
+                    addConsoleLog('Workspace cleared — editor, console, preview & rules', 'info');
+                  }}
                 />
               )}
             </TabPanel>
