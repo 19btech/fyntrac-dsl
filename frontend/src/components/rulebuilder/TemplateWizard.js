@@ -9,6 +9,7 @@ import {
   BookOpen, Search, ArrowRight, ArrowLeft, Play, Code, Eye, CheckCircle2,
   TrendingUp, TrendingDown, DollarSign, Percent, Receipt, Calculator, Building,
   Sparkles, Copy, Settings2, X, Trash2, FileText, Users, GitBranch, Repeat, Database,
+  Download,
 } from "lucide-react";
 import ACCOUNTING_TEMPLATES from "./AccountingTemplates";
 import { API } from "../../config";
@@ -111,6 +112,25 @@ const TemplateWizard = ({ template, events, onGenerate, onClose }) => {
   });
   const [generatedCode, setGeneratedCode] = useState('');
   const [showCode, setShowCode] = useState(false);
+  const [localEvents, setLocalEvents] = useState(events || []);
+  const [sampleLoaded, setSampleLoaded] = useState(false);
+  const [loadingSample, setLoadingSample] = useState(false);
+
+  const handleLoadSampleData = useCallback(async () => {
+    setLoadingSample(true);
+    try {
+      const res = await fetch(`${API}/template-sample-data/${template.id}`, { method: 'POST' });
+      const data = await res.json();
+      if (data.success && data.events) {
+        setLocalEvents(data.events);
+        setSampleLoaded(true);
+      }
+    } catch (err) {
+      console.error('Failed to load sample data:', err);
+    } finally {
+      setLoadingSample(false);
+    }
+  }, [template.id]);
 
   const steps = ['Configure Parameters', 'Select Outputs', 'Preview & Generate'];
 
@@ -173,12 +193,43 @@ const TemplateWizard = ({ template, events, onGenerate, onClose }) => {
         <Box sx={{ flex: 1, overflowY: 'auto' }}>
           {activeStep === 0 && (
             <Box>
+              {/* Sample Data Banner */}
+              <Box sx={{
+                mb: 2, p: 1.5, borderRadius: 1.5, display: 'flex', alignItems: 'center', gap: 1.5,
+                bgcolor: sampleLoaded ? '#D4EDDA' : '#F0F1FF', border: sampleLoaded ? '1px solid #C3E6CB' : '1px solid #D6D8FE',
+              }}>
+                {sampleLoaded ? (
+                  <>
+                    <CheckCircle2 size={18} color="#28A745" />
+                    <Typography variant="body2" color="#155724" sx={{ flex: 1 }}>
+                      Sample data loaded — select <strong>From Event Data</strong> on any field to use it.
+                    </Typography>
+                  </>
+                ) : (
+                  <>
+                    <Database size={18} color="#5B5FED" />
+                    <Typography variant="body2" color="text.secondary" sx={{ flex: 1 }}>
+                      No event data? Load sample data to try this template with pre-configured events.
+                    </Typography>
+                    <Button
+                      variant="contained" size="small"
+                      startIcon={loadingSample ? <CircularProgress size={14} color="inherit" /> : <Download size={14} />}
+                      onClick={handleLoadSampleData}
+                      disabled={loadingSample}
+                      sx={{ textTransform: 'none', whiteSpace: 'nowrap' }}
+                    >
+                      {loadingSample ? 'Loading…' : 'Load Sample Data'}
+                    </Button>
+                  </>
+                )}
+              </Box>
+
               <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
                 Set the parameters for your calculation. You can enter values directly or reference fields from your uploaded event data.
               </Typography>
               {template.fields.map((field) => (
                 <FieldInput
-                  key={field.key} field={field} events={events}
+                  key={field.key} field={field} events={localEvents}
                   value={config[field.key]}
                   source={config[`${field.key}_source`]}
                   fieldRef={config[`${field.key}_field`]}

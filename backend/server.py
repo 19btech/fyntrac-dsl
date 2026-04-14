@@ -3937,6 +3937,43 @@ async def delete_user_template(template_id: str):
         raise HTTPException(status_code=404, detail="Template not found.")
     return {"success": True, "message": "Template deleted."}
 
+# ── Template Sample Data ────────────────────────────────────────────────
+
+@api_router.post("/template-sample-data/{template_id}")
+async def load_template_sample_data(template_id: str):
+    """Load pre-defined sample event definitions and event data for a specific template."""
+    from template_sample_data import TEMPLATE_SAMPLE_DATA
+
+    if template_id not in TEMPLATE_SAMPLE_DATA:
+        raise HTTPException(status_code=404, detail=f"No sample data available for template '{template_id}'")
+
+    sample = TEMPLATE_SAMPLE_DATA[template_id]
+
+    for evt in sample["events"]:
+        existing = await db.event_definitions.find_one({"event_name": evt["event_name"]})
+        if not existing:
+            doc = {
+                "id": str(uuid.uuid4()),
+                "event_name": evt["event_name"],
+                "fields": evt["fields"],
+                "eventType": evt.get("eventType", "activity"),
+                "eventTable": evt.get("eventTable", "standard"),
+                "created_at": datetime.utcnow().isoformat(),
+            }
+            await db.event_definitions.insert_one(doc)
+
+    for ed in sample["event_data"]:
+        await db.event_data.delete_many({"event_name": ed["event_name"]})
+        doc = {
+            "event_name": ed["event_name"],
+            "data_rows": ed["data_rows"],
+            "created_at": datetime.utcnow().isoformat(),
+        }
+        await db.event_data.insert_one(doc)
+
+    events = await db.event_definitions.find({}, {"_id": 0}).to_list(1000)
+    return {"success": True, "events": events}
+
 # ── Saved Schedules CRUD ────────────────────────────────────────────────
 
 @api_router.get("/saved-schedules")
