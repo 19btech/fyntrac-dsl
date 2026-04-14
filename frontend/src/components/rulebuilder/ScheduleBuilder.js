@@ -8,7 +8,7 @@ import {
 } from "@mui/material";
 import {
   Plus, Trash2, ArrowUp, ArrowDown, GripVertical, Play, Code, Eye, Calendar,
-  Table as TableIcon, BarChart3, RefreshCw, FlaskConical, Save,
+  Table as TableIcon, BarChart3, RefreshCw, Save,
 } from "lucide-react";
 import { API } from "../../config";
 import FormulaBar from "./FormulaBar";
@@ -169,8 +169,6 @@ const ScheduleBuilder = ({ events, dslFunctions, onClose, onSave, initialData })
   }, [events]);
 
   const [showCode, setShowCode] = useState(false);
-  const [testing, setTesting] = useState(false);
-  const [testResult, setTestResult] = useState(null);
   const [createTxn, setCreateTxn] = useState(cfg.createTxn || false);
   const [txnType, setTxnType] = useState(cfg.txnType || '');
   const [txnAmountCol, setTxnAmountCol] = useState(cfg.txnAmountCol || '');
@@ -607,33 +605,6 @@ const ScheduleBuilder = ({ events, dslFunctions, onClose, onSave, initialData })
     }
   }, [buildScheduleBaseLines, extractColumn, sumVarName, sumColumn, colVarName, colColumn,
       filterVarName, filterMatchCol, filterMatchValue, filterReturnCol]);
-
-  const handleTest = useCallback(async () => {
-    setTesting(true);
-    setTestResult(null);
-    try {
-      const today = new Date().toISOString().split('T')[0];
-      const response = await fetch(`${API}/dsl/run`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ dsl_code: generatedCode, posting_date: today }),
-      });
-      const data = await response.json();
-      if (response.ok && data.success) {
-        const outputs = [];
-        if (data.print_outputs?.length > 0) outputs.push(...data.print_outputs.map(p => String(p)));
-        if (data.transactions?.length > 0) outputs.push(`Generated ${data.transactions.length} transaction(s)`);
-        setTestResult({ success: true, output: outputs.join('\n') || 'Executed successfully (no output)' });
-      } else {
-        const errMsg = data.error || (typeof data.detail === 'string' ? data.detail : JSON.stringify(data.detail)) || 'Execution failed';
-        setTestResult({ success: false, error: errMsg });
-      }
-    } catch (err) {
-      setTestResult({ success: false, error: err.message || 'Network error' });
-    } finally {
-      setTesting(false);
-    }
-  }, [generatedCode]);
 
   const handleSave = useCallback(async () => {
     if (!scheduleName.trim()) {
@@ -1287,19 +1258,6 @@ const ScheduleBuilder = ({ events, dslFunctions, onClose, onSave, initialData })
           </Paper>
         )}
 
-        {/* Test Results */}
-        {testResult && (
-          <Alert severity={testResult.success ? 'success' : 'error'} sx={{ mt: 2, '& .MuiAlert-message': { width: '100%' } }}
-            onClose={() => setTestResult(null)}>
-            {testResult.success ? (
-              <pre style={{ margin: 0, fontFamily: 'monospace', fontSize: '0.8125rem', whiteSpace: 'pre-wrap', maxHeight: 200, overflow: 'auto' }}>
-                {testResult.output}
-              </pre>
-            ) : (
-              <Typography variant="body2">{testResult.error}</Typography>
-            )}
-          </Alert>
-        )}
         {/* Save Result */}
         {saveResult && (
           <Alert severity={saveResult.success ? 'success' : 'error'} sx={{ mt: 2, '& .MuiAlert-message': { width: '100%' } }}
@@ -1323,11 +1281,6 @@ const ScheduleBuilder = ({ events, dslFunctions, onClose, onSave, initialData })
       {/* Action Bar */}
       <Box sx={{ p: 2, borderTop: '1px solid #E9ECEF', bgcolor: 'white', display: 'flex', gap: 1, justifyContent: 'flex-end', flexShrink: 0 }}>
         {onClose && <Button onClick={onClose} color="inherit">Cancel</Button>}
-        <Button variant="outlined" onClick={handleTest} disabled={testing}
-          startIcon={testing ? <CircularProgress size={16} /> : <FlaskConical size={16} />}
-          sx={{ borderColor: '#4CAF50', color: '#4CAF50', '&:hover': { borderColor: '#388E3C', bgcolor: '#E8F5E9' } }}>
-          {testing ? 'Testing...' : 'Test'}
-        </Button>
         <Button variant="outlined" onClick={handleSave} disabled={saving}
           startIcon={saving ? <CircularProgress size={16} /> : <Save size={16} />}
           sx={{ borderColor: '#1976D2', color: '#1976D2', '&:hover': { borderColor: '#1565C0', bgcolor: '#E3F2FD' } }}>

@@ -369,7 +369,7 @@ function parseScheduleConfig(schedStmts, journalStmts) {
     extractFirst: false, extractLast: false, extractColumn: '',
     enableSum: false, sumColumn: '', sumVarName: '',
     enableCol: false, colColumn: '', colVarName: '',
-    enableFilter: false, filterCondition: '', filterVarName: '',
+    enableFilter: false, filterVarName: '', filterMatchCol: '', filterMatchValue: '', filterReturnCol: '',
   };
 
   for (const stmt of schedStmts) {
@@ -435,8 +435,17 @@ function parseScheduleConfig(schedStmts, journalStmts) {
 
     // schedule_filter(sched, ...) → enableFilter
     if (/^schedule_filter\s*\(/.test(rhs)) {
-      const match = rhs.match(/schedule_filter\s*\(\w+,\s*(.*)\)/);
-      if (match) { cfg.enableFilter = true; cfg.filterCondition = match[1].replace(/^"|"$/g, ''); cfg.filterVarName = name; }
+      const inner = rhs.match(/^schedule_filter\s*\((.*)\)$/s);
+      if (inner) {
+        const args = splitArgs(inner[1]);
+        if (args.length >= 4) {
+          cfg.enableFilter = true;
+          cfg.filterVarName = name;
+          cfg.filterMatchCol = (args[1] || '').replace(/^"|"$/g, '');
+          cfg.filterMatchValue = (args[2] || '').trim();
+          cfg.filterReturnCol = (args[3] || '').replace(/^"|"$/g, '');
+        }
+      }
     }
 
     // schedule_first / schedule_last

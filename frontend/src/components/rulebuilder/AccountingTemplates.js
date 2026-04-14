@@ -77,7 +77,9 @@ const ACCOUNTING_TEMPLATES = [
       if (config.outputs_create_txn) {
         lines.push('');
         lines.push(`## Create transaction`);
-        lines.push(`createTransaction(${startDate}, ${startDate}, "${config.txn_type || 'Interest Accrual'}", total_interest)`);
+        lines.push('interest_for_postingdate = schedule_filter(sched, "date", postingdate, "interest")');
+        lines.push('print("Interest for posting date:", interest_for_postingdate)');
+        lines.push(`createTransaction(postingdate, postingdate, "${config.txn_type || 'Interest Accrual'}", interest_for_postingdate)`);
       }
 
       return lines.join('\n');
@@ -143,7 +145,13 @@ const ACCOUNTING_TEMPLATES = [
 
       if (config.outputs_create_txn) {
         lines.push('');
-        lines.push(`createTransaction(${startDate}, ${startDate}, "${config.txn_type || 'Depreciation Expense'}", annual_depr)`);
+        if (config.outputs_schedule) {
+          lines.push('depr_for_postingdate = schedule_filter(sched, "year", postingdate, "depreciation")');
+          lines.push('print("Depreciation for posting date:", depr_for_postingdate)');
+          lines.push(`createTransaction(postingdate, postingdate, "${config.txn_type || 'Depreciation Expense'}", depr_for_postingdate)`);
+        } else {
+          lines.push(`createTransaction(${startDate}, ${startDate}, "${config.txn_type || 'Depreciation Expense'}", annual_depr)`);
+        }
       }
 
       return lines.join('\n');
@@ -217,7 +225,13 @@ const ACCOUNTING_TEMPLATES = [
 
       if (config.outputs_create_txn) {
         lines.push('');
-        lines.push(`createTransaction(posting_date, posting_date, "${config.txn_type || 'Revenue'}", total_rev, subinstrument_ids)`);
+        if (config.outputs_schedule) {
+          lines.push('revenue_for_postingdate = schedule_filter(sched, "date", posting_date, "revenue")');
+          lines.push('print("Revenue for posting date:", revenue_for_postingdate)');
+          lines.push(`createTransaction(posting_date, posting_date, "${config.txn_type || 'Revenue'}", revenue_for_postingdate, subinstrument_ids)`);
+        } else {
+          lines.push(`createTransaction(posting_date, posting_date, "${config.txn_type || 'Revenue'}", total_rev, subinstrument_ids)`);
+        }
       }
 
       return lines.join('\n');
@@ -275,7 +289,9 @@ const ACCOUNTING_TEMPLATES = [
 
       if (config.outputs_create_txn) {
         lines.push('');
-        lines.push(`createTransaction(${startDate}, ${startDate}, "${config.txn_type || 'Interest Accrual'}", total_interest)`);
+        lines.push('interest_for_postingdate = schedule_filter(sched, "period_date", postingdate, "accrued_interest")');
+        lines.push('print("Interest for posting date:", interest_for_postingdate)');
+        lines.push(`createTransaction(postingdate, postingdate, "${config.txn_type || 'Interest Accrual'}", interest_for_postingdate)`);
       }
 
       return lines.join('\n');
@@ -329,7 +345,13 @@ const ACCOUNTING_TEMPLATES = [
 
       if (config.outputs_create_txn) {
         lines.push('');
-        lines.push(`createTransaction(${startDate}, ${startDate}, "${config.txn_type || 'Fee Amortization'}", monthly_amort)`);
+        if (config.outputs_schedule) {
+          lines.push('amort_for_postingdate = schedule_filter(sched, "date", postingdate, "amortization")');
+          lines.push('print("Amortization for posting date:", amort_for_postingdate)');
+          lines.push(`createTransaction(postingdate, postingdate, "${config.txn_type || 'Fee Amortization'}", amort_for_postingdate)`);
+        } else {
+          lines.push(`createTransaction(${startDate}, ${startDate}, "${config.txn_type || 'Fee Amortization'}", monthly_amort)`);
+        }
       }
 
       return lines.join('\n');
@@ -385,7 +407,13 @@ const ACCOUNTING_TEMPLATES = [
 
       if (config.outputs_create_txn) {
         lines.push('');
-        lines.push(`createTransaction(${startDate}, ${startDate}, "${config.txn_type || 'Depreciation Expense'}", total_depr)`);
+        if (config.outputs_schedule) {
+          lines.push('depr_for_postingdate = schedule_filter(sched, "year", postingdate, "depreciation")');
+          lines.push('print("Depreciation for posting date:", depr_for_postingdate)');
+          lines.push(`createTransaction(postingdate, postingdate, "${config.txn_type || 'Depreciation Expense'}", depr_for_postingdate)`);
+        } else {
+          lines.push(`createTransaction(${startDate}, ${startDate}, "${config.txn_type || 'Depreciation Expense'}", total_depr)`);
+        }
       }
 
       return lines.join('\n');
@@ -503,8 +531,9 @@ const ACCOUNTING_TEMPLATES = [
 
       if (config.outputs_create_txn) {
         lines.push('');
-        lines.push('total_expense = schedule_sum(sched, "interest_expense")');
-        lines.push(`createTransaction(${startDate}, ${startDate}, "${config.txn_type || 'Lease Expense'}", total_expense)`);
+        lines.push('interest_for_postingdate = schedule_filter(sched, "date", postingdate, "interest_expense")');
+        lines.push('print("Lease expense for posting date:", interest_for_postingdate)');
+        lines.push(`createTransaction(postingdate, postingdate, "${config.txn_type || 'Lease Expense'}", interest_for_postingdate)`);
       }
 
       return lines.join('\n');
