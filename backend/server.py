@@ -3861,6 +3861,28 @@ async def delete_saved_rule(rule_id: str):
         raise HTTPException(status_code=404, detail="Rule not found.")
     return {"success": True, "message": "Rule deleted."}
 
+@api_router.put("/saved-rules/reorder")
+async def reorder_saved_rules(request: dict):
+    """Batch-update priorities for saved rules based on drag-and-drop ordering.
+    Expects: { "order": [ { "id": "...", "priority": 1 }, ... ] }
+    """
+    order = request.get("order", [])
+    if not order:
+        raise HTTPException(status_code=400, detail="No ordering provided.")
+    try:
+        for item in order:
+            rule_id = item.get("id")
+            priority = item.get("priority")
+            if rule_id is not None and priority is not None:
+                await db.saved_rules.update_one(
+                    {"id": rule_id},
+                    {"$set": {"priority": int(priority)}},
+                )
+        return {"success": True, "message": f"Updated priorities for {len(order)} rules."}
+    except Exception as e:
+        logger.error(f"Error reordering rules: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 # ── Saved Schedules CRUD ────────────────────────────────────────────────
 

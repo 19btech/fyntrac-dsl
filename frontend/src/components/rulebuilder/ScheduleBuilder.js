@@ -34,7 +34,10 @@ const COLUMN_PRESETS = [
   { name: 'days_in_period', formula: "days_in_current_period", category: 'Date', description: 'Days in the current period' },
 ];
 
-const ColumnCard = ({ column, index, events, variables, onUpdate, onRemove, onMoveUp, onMoveDown, isFirst, isLast }) => {
+const ColumnCard = ({ column, index, events, variables, onUpdate, onRemove, onMoveUp, onMoveDown, isFirst, isLast, onTest }) => {
+  const [colTesting, setColTesting] = useState(false);
+  const [colTestResult, setColTestResult] = useState(null);
+
   return (
     <Card sx={{ mb: 1, borderLeft: `3px solid ${column.formula === 'period_date' ? '#2196F3' : '#4CAF50'}` }}>
       <CardContent sx={{ p: 1.5, '&:last-child': { pb: 1.5 } }}>
@@ -68,11 +71,42 @@ const ColumnCard = ({ column, index, events, variables, onUpdate, onRemove, onMo
                 References previous row — will use default value for first period
               </Alert>
             )}
+            {colTestResult && (
+              <Alert severity={colTestResult.success ? 'success' : 'error'} sx={{ mt: 0.5, '& .MuiAlert-message': { width: '100%' } }}
+                onClose={() => setColTestResult(null)}>
+                {colTestResult.success ? (
+                  <Typography variant="body2" fontFamily="monospace" fontSize="0.8125rem" sx={{ whiteSpace: 'pre-wrap', maxHeight: 100, overflow: 'auto' }}>
+                    {colTestResult.output}
+                  </Typography>
+                ) : (
+                  <Typography variant="body2">{colTestResult.error}</Typography>
+                )}
+              </Alert>
+            )}
           </Box>
 
-          <IconButton size="small" onClick={() => onRemove(index)} sx={{ color: '#F44336', mt: 0.5 }}>
-            <Trash2 size={14} />
-          </IconButton>
+          <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.25, pt: 0.5 }}>
+            <Tooltip title="Test schedule up to this column">
+              <IconButton size="small" onClick={async () => {
+                if (!column.name || !onTest) return;
+                setColTesting(true);
+                setColTestResult(null);
+                try {
+                  const result = await onTest(index);
+                  setColTestResult(result);
+                } catch (e) {
+                  setColTestResult({ success: false, error: e.message });
+                } finally {
+                  setColTesting(false);
+                }
+              }} disabled={colTesting || !column.name} sx={{ color: '#4CAF50' }}>
+                {colTesting ? <CircularProgress size={14} /> : <Play size={14} />}
+              </IconButton>
+            </Tooltip>
+            <IconButton size="small" onClick={() => onRemove(index)} sx={{ color: '#F44336' }}>
+              <Trash2 size={14} />
+            </IconButton>
+          </Box>
         </Box>
       </CardContent>
     </Card>
@@ -196,6 +230,65 @@ const ScheduleBuilder = ({ events, dslFunctions, onClose, onSave }) => {
   }, []);
 
   const usedPresets = useMemo(() => new Set(columns.map(c => c.name)), [columns]);
+
+  // Test a single column — generates schedule code for columns up to this index and executes
+  const testColumn = useCallback(async (colIndex) => {
+    const colsToTest = columns.slice(0, colIndex + 1).filter(c => c.name && c.formula);
+    if (colsToTest.length === 0) return { success: false, error: 'No valid columns to test' };
+    const lines = [];
+    // Emit dependency variables
+    for (const varName of autoDetectedVars) {
+      const savedVar = savedRulesVars.find(v => v.name === varName);
+      if (savedVar) {
+        if (savedVar.source === 'value') lines.push(`${savedVar.name} = ${savedVar.value || 0}`);
+        else if (savedVar.source === 'event_field') lines.push(`${savedVar.name} = ${savedVar.eventField}`);
+        else if (savedVar.source === 'formula') lines.push(`${savedVar.name} = ${savedVar.formula || 0}`);
+        else if (savedVar.source === 'collect') lines.push(`${savedVar.name} = ${savedVar.collectType || 'collect'}(${savedVar.eventField})`);
+      }
+    }
+    // Period
+    if (periodType === 'number') {
+      lines.push(`p = period(${periodCount || 12})`);
+    } else {
+      const startExpr = startDateSource === 'field' && startDateField ? startDateField
+        : startDateSource === 'formula' && startDateFormula ? startDateFormula
+        : `"${startDate || '2026-01-01'}"`;
+      const endExpr = endDateSource === 'field' && endDateField ? endDateField
+        : endDateSource === 'formula' && endDateFormula ? endDateFormula
+        : `"${endDate || '2026-12-31'}"`;
+      let periodCall = `p = period(${startExpr}, ${endExpr}, "${frequency}"`;
+      if (convention) periodCall += `, "${convention}"`;
+      periodCall += ')';
+      lines.push(periodCall);
+    }
+    // Schedule with subset of columns
+    lines.push('sched = schedule(p, {');
+    colsToTest.forEach((col, idx) => {
+      const comma = idx < colsToTest.length - 1 ? ',' : '';
+      lines.push(`    "${col.name}": "${col.formula}"${comma}`);
+    });
+    const contextPairs = autoDetectedVars.map(v => `"${v}": ${v}`);
+    if (contextPairs.length > 0) {
+      lines.push(`}, {${contextPairs.join(', ')}})`);
+    } else {
+      lines.push('})');
+    }
+    lines.push('print(sched)');
+    const dslCode = lines.join('\n');
+    const today = new Date().toISOString().split('T')[0];
+    const response = await fetch(`${API}/dsl/run`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ dsl_code: dslCode, posting_date: today }),
+    });
+    const data = await response.json();
+    if (response.ok && data.success) {
+      const out = (data.print_outputs || []).map(p => String(p)).join('\n') || 'Executed successfully (no output)';
+      return { success: true, output: out };
+    } else {
+      return { success: false, error: data.error || data.detail || 'Execution failed' };
+    }
+  }, [columns, autoDetectedVars, savedRulesVars, periodType, periodCount, startDateSource, startDateField, startDateFormula, startDate, endDateSource, endDateField, endDateFormula, endDate, frequency, convention]);
 
   // Built-in schedule identifiers that should NOT be treated as external variables
   const SCHEDULE_BUILTINS = useMemo(() => new Set([
@@ -335,12 +428,11 @@ const ScheduleBuilder = ({ events, dslFunctions, onClose, onSave }) => {
       lines.push(`print(${filterVarName})`);
     }
 
-    // Create transaction from schedule results
+    // Create transaction from output variable
     if (createTxn && txnType && txnAmountCol) {
       lines.push('');
       lines.push('## Create Transaction');
-      lines.push(`total_amount = schedule_sum(sched, "${txnAmountCol}")`);
-      lines.push(`createTransaction(postingdate, postingdate, "${txnType}", total_amount)`);
+      lines.push(`createTransaction(postingdate, postingdate, "${txnType}", ${txnAmountCol})`);
     }
 
     return lines.join('\n');
@@ -620,7 +712,8 @@ const ScheduleBuilder = ({ events, dslFunctions, onClose, onSave }) => {
             variables={[...new Set([...autoDetectedVars, ...savedRulesVarNames])]}
             onUpdate={updateColumn} onRemove={removeColumn}
             onMoveUp={() => moveColumn(idx, -1)} onMoveDown={() => moveColumn(idx, 1)}
-            isFirst={idx === 0} isLast={idx === columns.length - 1} />
+            isFirst={idx === 0} isLast={idx === columns.length - 1}
+            onTest={testColumn} />
         ))}
 
         {/* Table Preview */}
@@ -745,29 +838,54 @@ const ScheduleBuilder = ({ events, dslFunctions, onClose, onSave }) => {
           </CardContent>
         </Card>
 
-        {/* Create transaction */}
+        {/* Create transaction from output variables */}
         <Card sx={{ mb: 1 }}>
           <CardContent sx={{ p: 1.5, '&:last-child': { pb: 1.5 } }}>
             <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-              <Typography variant="body2">Create transaction from schedule total</Typography>
-              <Switch checked={createTxn} onChange={(e) => setCreateTxn(e.target.checked)} size="small" />
+              <Typography variant="body2">Create transaction from output</Typography>
+              <Switch checked={createTxn} onChange={(e) => {
+                const turning_on = e.target.checked;
+                if (turning_on) {
+                  // Check if any output variable is defined
+                  const hasOutputVars = (extractFirst && extractColumn) || (extractLast && extractColumn) || (enableSum && sumVarName && sumColumn) || (enableCol && colVarName && colColumn) || (enableFilter && filterVarName && filterCondition);
+                  if (!hasOutputVars) {
+                    setValidationMsg('Please define at least one output variable (Schedule First, Last, Sum, Column, or Filter) before creating a transaction.');
+                    return;
+                  }
+                }
+                setCreateTxn(turning_on);
+              }} size="small" />
             </Box>
-            {createTxn && (
-              <Box sx={{ mt: 1, display: 'flex', gap: 1 }}>
-                <TextField size="small" label="Transaction Type" value={txnType}
-                  onChange={(e) => setTxnType(e.target.value)} sx={{ flex: 1 }}
-                  placeholder="e.g., Interest Accrual" />
-                <FormControl size="small" sx={{ flex: 1 }}>
-                  <InputLabel>Amount Column</InputLabel>
-                  <Select value={txnAmountCol} label="Amount Column"
-                    onChange={(e) => setTxnAmountCol(e.target.value)}>
-                    {columns.filter(c => c.name && c.formula !== 'period_date' && c.formula !== 'period_number').map(c => (
-                      <MenuItem key={c.name} value={c.name}>{c.name}</MenuItem>
-                    ))}
-                  </Select>
-                </FormControl>
-              </Box>
-            )}
+            {createTxn && (() => {
+              // Collect all defined output variables
+              const outputVars = [];
+              if (extractFirst && extractColumn) outputVars.push({ name: `first_${extractColumn}`, label: `Schedule First (first_${extractColumn})` });
+              if (extractLast && extractColumn) outputVars.push({ name: `last_${extractColumn}`, label: `Schedule Last (last_${extractColumn})` });
+              if (enableSum && sumVarName && sumColumn) outputVars.push({ name: sumVarName, label: `Schedule Sum (${sumVarName})` });
+              if (enableCol && colVarName && colColumn) outputVars.push({ name: colVarName, label: `Schedule Column (${colVarName})` });
+              if (enableFilter && filterVarName && filterCondition) outputVars.push({ name: filterVarName, label: `Schedule Filter (${filterVarName})` });
+              if (outputVars.length === 0) return (
+                <Alert severity="warning" sx={{ mt: 1, fontSize: '0.8125rem' }}>
+                  No output variables defined. Enable and configure at least one output option above (Schedule First, Last, Sum, Column, or Filter).
+                </Alert>
+              );
+              return (
+                <Box sx={{ mt: 1, display: 'flex', gap: 1 }}>
+                  <TextField size="small" label="Transaction Type" value={txnType}
+                    onChange={(e) => setTxnType(e.target.value)} sx={{ flex: 1 }}
+                    placeholder="e.g., Interest Accrual" />
+                  <FormControl size="small" sx={{ flex: 1 }}>
+                    <InputLabel>Amount Variable</InputLabel>
+                    <Select value={txnAmountCol} label="Amount Variable"
+                      onChange={(e) => setTxnAmountCol(e.target.value)}>
+                      {outputVars.map(v => (
+                        <MenuItem key={v.name} value={v.name}>{v.label}</MenuItem>
+                      ))}
+                    </Select>
+                  </FormControl>
+                </Box>
+              );
+            })()}
           </CardContent>
         </Card>
 

@@ -1,9 +1,9 @@
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback, useRef } from "react";
 import {
   Box, Typography, Card, CardContent, Button, IconButton, Chip,
   CircularProgress, Alert, Tooltip, Divider,
 } from "@mui/material";
-import { Trash2, Edit3, Calculator, GitBranch, Repeat, Database, Clock } from "lucide-react";
+import { Trash2, Edit3, Calculator, GitBranch, Repeat, Database, Clock, Upload, Play, GripVertical } from "lucide-react";
 import { API } from "../../config";
 
 const RULE_TYPE_META = {
@@ -13,11 +13,12 @@ const RULE_TYPE_META = {
   collect: { label: 'Collect', color: '#8BC34A', icon: Database },
 };
 
-const SavedRules = ({ onEditRule, refreshKey }) => {
+const SavedRules = ({ onEditRule, refreshKey, onLoadToEditor, onPlayAll }) => {
   const [rules, setRules] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [deleting, setDeleting] = useState(null);
+  const [playing, setPlaying] = useState(false);
 
   const loadRules = useCallback(async () => {
     setLoading(true);
@@ -59,6 +60,110 @@ const SavedRules = ({ onEditRule, refreshKey }) => {
     } catch { return iso; }
   };
 
+  // Sort rules by priority (lower number = higher priority = first)
+  const sortedRules = [...rules].sort((a, b) => {
+    const pa = a.priority ?? Infinity;
+    const pb = b.priority ?? Infinity;
+    return pa - pb;
+  });
+
+  // ── Drag-and-drop reordering ──
+  const dragItem = useRef(null);
+  const dragOverItem = useRef(null);
+
+  const handleDragStart = useCallback((idx) => {
+    dragItem.current = idx;
+  }, []);
+
+  const handleDragOver = useCallback((e, idx) => {
+    e.preventDefault();
+    dragOverItem.current = idx;
+  }, []);
+
+  const handleDrop = useCallback(async (e) => {
+    e.preventDefault();
+    const from = dragItem.current;
+    const to = dragOverItem.current;
+    if (from === null || to === null || from === to) return;
+
+    // Reorder the sorted list
+    const reordered = [...sortedRules];
+    const [moved] = reordered.splice(from, 1);
+    reordered.splice(to, 0, moved);
+
+    // Assign new sequential priorities starting from 1
+    const order = reordered.map((r, idx) => ({ id: r.id, priority: idx + 1 }));
+
+    // Optimistically update local state
+    const updatedRules = rules.map(r => {
+      const match = order.find(o => o.id === r.id);
+      return match ? { ...r, priority: match.priority } : r;
+    });
+    setRules(updatedRules);
+
+    // Persist to backend
+    try {
+      await fetch(`${API}/saved-rules/reorder`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ order }),
+      });
+      if (onLoadToEditor) {
+        // Refresh combined code in editor to reflect new priority order
+      }
+    } catch (err) {
+      setError('Failed to save new order: ' + (err.message || ''));
+    }
+
+    dragItem.current = null;
+    dragOverItem.current = null;
+  }, [sortedRules, rules, onLoadToEditor]);
+
+  const handleLoadToEditor = useCallback(() => {
+    if (onLoadToEditor && sortedRules.length > 0) {
+      const combinedCode = sortedRules
+        .map(r => r.generatedCode || '')
+        .filter(Boolean)
+        .join('\n\n');
+      onLoadToEditor(combinedCode);
+    }
+  }, [onLoadToEditor, sortedRules]);
+
+  const handlePlayAll = useCallback(async () => {
+    if (!onPlayAll || sortedRules.length === 0) return;
+    setPlaying(true);
+    setError(null);
+    try {
+      const combinedCode = sortedRules
+        .map(r => r.generatedCode || '')
+        .filter(Boolean)
+        .join('\n\n');
+      const pdRes = await fetch(`${API}/event-data/posting-dates`);
+      const pdData = await pdRes.json();
+      const dates = pdData?.posting_dates || [];
+      const payload = { dsl_code: combinedCode };
+      if (dates.length >= 1) payload.posting_date = dates[0];
+      const res = await fetch(`${API}/dsl/run`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        onPlayAll({
+          transactions: data.transactions || [],
+          printOutputs: data.print_outputs || [],
+        });
+      } else {
+        setError(data.error || data.detail || 'Execution failed');
+      }
+    } catch (err) {
+      setError(err.message || 'Execution failed');
+    } finally {
+      setPlaying(false);
+    }
+  }, [onPlayAll, sortedRules]);
+
   if (loading) {
     return (
       <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', p: 6 }}>
@@ -71,7 +176,23 @@ const SavedRules = ({ onEditRule, refreshKey }) => {
     <Box sx={{ p: 2, height: '100%', overflow: 'auto' }}>
       <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 2 }}>
         <Typography variant="h6" fontWeight={600}>Saved Rules</Typography>
-        <Typography variant="caption" color="text.secondary">{rules.length} rule{rules.length !== 1 ? 's' : ''}</Typography>
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+          <Typography variant="caption" color="text.secondary">{rules.length} rule{rules.length !== 1 ? 's' : ''}</Typography>
+          {rules.length > 0 && (
+            <>
+              <Tooltip title="Load all rules to editor (sorted by priority)">
+                <IconButton size="small" onClick={handleLoadToEditor} sx={{ color: '#5B5FED' }}>
+                  <Upload size={16} />
+                </IconButton>
+              </Tooltip>
+              <Tooltip title="Play all rules (sorted by priority)">
+                <IconButton size="small" onClick={handlePlayAll} disabled={playing} sx={{ color: '#4CAF50' }}>
+                  {playing ? <CircularProgress size={16} /> : <Play size={16} />}
+                </IconButton>
+              </Tooltip>
+            </>
+          )}
+        </Box>
       </Box>
 
       {error && (
@@ -88,15 +209,20 @@ const SavedRules = ({ onEditRule, refreshKey }) => {
         </Box>
       )}
 
-      {rules.map((rule) => {
+      {sortedRules.map((rule, sortIdx) => {
         const meta = RULE_TYPE_META[rule.ruleType] || RULE_TYPE_META.simple_calc;
         const Icon = meta.icon;
         const varCount = (rule.variables || []).filter(v => v.name).length;
         const hasTxn = rule.outputs?.createTransaction;
+        const priority = rule.priority ?? '—';
 
         return (
           <Card
             key={rule.id}
+            draggable
+            onDragStart={() => handleDragStart(sortIdx)}
+            onDragOver={(e) => handleDragOver(e, sortIdx)}
+            onDrop={handleDrop}
             sx={{
               mb: 1.5, cursor: 'pointer', transition: 'all 0.15s',
               border: '1px solid #E9ECEF',
@@ -106,6 +232,10 @@ const SavedRules = ({ onEditRule, refreshKey }) => {
           >
             <CardContent sx={{ p: 2, '&:last-child': { pb: 2 } }}>
               <Box sx={{ display: 'flex', alignItems: 'flex-start', gap: 1.5 }}>
+                <Box sx={{ display: 'flex', alignItems: 'center', cursor: 'grab', pt: 1, flexShrink: 0 }}
+                  onMouseDown={(e) => e.stopPropagation()}>
+                  <GripVertical size={16} color="#ADB5BD" />
+                </Box>
                 <Box sx={{ width: 36, height: 36, borderRadius: 1, bgcolor: `${meta.color}14`, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, mt: 0.25 }}>
                   <Icon size={18} color={meta.color} />
                 </Box>
@@ -113,6 +243,7 @@ const SavedRules = ({ onEditRule, refreshKey }) => {
                   <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 0.5 }}>
                     <Typography variant="body1" fontWeight={600} noWrap>{rule.name}</Typography>
                     <Chip size="small" label={meta.label} sx={{ fontSize: '0.6875rem', height: 20, bgcolor: `${meta.color}18`, color: meta.color, fontWeight: 600 }} />
+                    <Chip size="small" label={`P${priority}`} sx={{ fontSize: '0.625rem', height: 18, bgcolor: '#E3F2FD', color: '#1565C0', fontWeight: 600 }} />
                     {hasTxn && <Chip size="small" label="Txn" sx={{ fontSize: '0.625rem', height: 18 }} variant="outlined" />}
                   </Box>
                   <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>

@@ -8,7 +8,7 @@ import {
 import {
   BookOpen, Search, ArrowRight, ArrowLeft, Play, Code, Eye, CheckCircle2,
   TrendingUp, TrendingDown, DollarSign, Percent, Receipt, Calculator, Building,
-  Sparkles, Copy, Settings2,
+  Sparkles, Copy, Settings2, X,
 } from "lucide-react";
 import ACCOUNTING_TEMPLATES from "./AccountingTemplates";
 
@@ -323,12 +323,15 @@ const TemplateLibrary = ({ events, onLoadTemplate, onClose }) => {
       <DialogTitle>
         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
           <BookOpen size={24} color="#5B5FED" />
-          <Box>
+          <Box sx={{ flex: 1 }}>
             <Typography variant="h4">Accounting Templates</Typography>
             <Typography variant="body2" color="text.secondary">
               Pre-built calculation templates — configure and generate without writing code
             </Typography>
           </Box>
+          <IconButton onClick={onClose} sx={{ alignSelf: 'flex-start' }}>
+            <X size={20} />
+          </IconButton>
         </Box>
       </DialogTitle>
 

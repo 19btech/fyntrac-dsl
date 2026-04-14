@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from "react";
 import axios from "axios";
 import { useToast } from "../components/ToastProvider";
-import { Upload, FileText, Code, Play, List, BookOpen, Download, Sparkles, Trash2, BarChart3, Search as SearchIcon, Lightbulb, Settings, ChevronDown, Database, Calculator, Table as TableIcon, Wand2, Eye, BookOpen as BookOpenIcon, Save } from "lucide-react";
+import { Upload, FileText, Code, Play, List, BookOpen, Download, Sparkles, Trash2, BarChart3, Search as SearchIcon, Lightbulb, Settings, ChevronDown, Database, Calculator, Table as TableIcon, Eye, BookOpen as BookOpenIcon, Save } from "lucide-react";
 import { Button, Tabs, Tab, Box, Menu, MenuItem, Divider, Alert, LinearProgress, Typography, ToggleButtonGroup, ToggleButton, Tooltip } from '@mui/material';
 import Editor from "@monaco-editor/react";
 import FileUploadPanel from "../components/FileUploadPanel";
@@ -18,7 +18,6 @@ import AIAgentSetupWizard from "../components/AIAgentSetupWizard";
 import LivePreview from "../components/rulebuilder/LivePreview";
 import AccountingRuleBuilder from "../components/rulebuilder/AccountingRuleBuilder";
 import ScheduleBuilder from "../components/rulebuilder/ScheduleBuilder";
-import AIRuleTranslator from "../components/rulebuilder/AIRuleTranslator";
 import TemplateLibrary from "../components/rulebuilder/TemplateWizard";
 import ACCOUNTING_TEMPLATES from "../components/rulebuilder/AccountingTemplates";
 import SavedRules from "../components/rulebuilder/SavedRules";
@@ -68,7 +67,7 @@ const Dashboard = () => {
   const [showEventDataViewer, setShowEventDataViewer] = useState(false);
   const [showAISetup, setShowAISetup] = useState(false);
   const [providerRefreshKey, setProviderRefreshKey] = useState(0);
-  // Editor mode: 'code' | 'ruleBuilder' | 'scheduleBuilder' | 'aiGenerator'
+  // Editor mode: 'code' | 'ruleBuilder' | 'scheduleBuilder' | 'preview' | 'savedRules'
   const [editorMode, setEditorMode] = useState('code');
   // Accounting template library dialog
   const [showTemplateLibrary, setShowTemplateLibrary] = useState(false);
@@ -692,7 +691,7 @@ const Dashboard = () => {
                 <Tab 
                   icon={<Code className="w-4 h-4" />} 
                   iconPosition="start" 
-                  label="Calculation Editor" 
+                  label="Logic Builder" 
                   data-testid="editor-tab"
                   sx={{ textTransform: 'none', fontSize: '0.875rem' }}
                 />
@@ -741,23 +740,20 @@ const Dashboard = () => {
                   size="small"
                   sx={{ '& .MuiToggleButton-root': { textTransform: 'none', fontSize: '0.75rem', px: 1.5, py: 0.5 } }}
                 >
-                  <ToggleButton value="code">
-                    <Tooltip title="Write DSL code directly"><Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}><Code size={14} /> Code Editor</Box></Tooltip>
-                  </ToggleButton>
                   <ToggleButton value="ruleBuilder">
                     <Tooltip title="Build calculations using forms"><Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}><Calculator size={14} /> Rule Builder</Box></Tooltip>
                   </ToggleButton>
                   <ToggleButton value="scheduleBuilder">
                     <Tooltip title="Build amortization schedules visually"><Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}><TableIcon size={14} /> Schedule Builder</Box></Tooltip>
                   </ToggleButton>
-                  <ToggleButton value="aiGenerator">
-                    <Tooltip title="Describe in plain English, AI generates the logic"><Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}><Wand2 size={14} /> AI Generator</Box></Tooltip>
+                  <ToggleButton value="savedRules">
+                    <Tooltip title="View and manage saved rules"><Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}><Save size={14} /> Saved Rules</Box></Tooltip>
                   </ToggleButton>
                   <ToggleButton value="preview">
                     <Tooltip title="View business preview of execution results"><Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}><Eye size={14} /> Business Preview</Box></Tooltip>
                   </ToggleButton>
-                  <ToggleButton value="savedRules">
-                    <Tooltip title="View and manage saved rules"><Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}><Save size={14} /> Saved Rules</Box></Tooltip>
+                  <ToggleButton value="code">
+                    <Tooltip title="Write DSL code directly"><Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}><Code size={14} /> Code Editor</Box></Tooltip>
                   </ToggleButton>
                 </ToggleButtonGroup>
                 <Tooltip title="Browse accounting templates (ASC 310, 360, 606, 842...)">
@@ -943,14 +939,6 @@ const Dashboard = () => {
                 />
               )}
 
-              {/* AI Generator Mode */}
-              {editorMode === 'aiGenerator' && (
-                <AIRuleTranslator
-                  events={events}
-                  dslFunctions={dslFunctions}
-                  onGenerate={handleGeneratedCode}
-                />
-              )}
 
               {/* Business Preview Mode */}
               {editorMode === 'preview' && (
@@ -968,6 +956,15 @@ const Dashboard = () => {
                   onEditRule={(rule) => {
                     setEditingRule(rule);
                     setEditorMode('ruleBuilder');
+                  }}
+                  onLoadToEditor={(code) => {
+                    setDslCode(code);
+                    setEditorMode('code');
+                    setTabValue(1);
+                  }}
+                  onPlayAll={(result) => {
+                    setLastExecutionResult(result);
+                    setEditorMode('preview');
                   }}
                 />
               )}
