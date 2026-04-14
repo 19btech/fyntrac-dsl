@@ -73,6 +73,7 @@ const Dashboard = () => {
   const [showTemplateLibrary, setShowTemplateLibrary] = useState(false);
   // Saved rules
   const [editingRule, setEditingRule] = useState(null);
+  const [editingSchedule, setEditingSchedule] = useState(null);
   const [savedRulesRefreshKey, setSavedRulesRefreshKey] = useState(0);
   // Execution results for LivePreview
   const [lastExecutionResult, setLastExecutionResult] = useState({ transactions: [], printOutputs: [] });
@@ -823,7 +824,7 @@ const Dashboard = () => {
                 <ToggleButtonGroup
                   value={editorMode}
                   exclusive
-                  onChange={(e, val) => { if (val) { if (val === 'ruleBuilder') { setEditingRule(null); } setEditorMode(val); } }}
+                  onChange={(e, val) => { if (val) { if (val === 'ruleBuilder') { setEditingRule(null); } if (val === 'scheduleBuilder') { setEditingSchedule(null); } setEditorMode(val); } }}
                   size="small"
                   sx={{ '& .MuiToggleButton-root': { textTransform: 'none', fontSize: '0.75rem', px: 1.5, py: 0.5 } }}
                 >
@@ -1028,11 +1029,13 @@ const Dashboard = () => {
               {/* Schedule Builder Mode */}
               {editorMode === 'scheduleBuilder' && (
                 <ScheduleBuilder
+                  key={editingSchedule ? `sched-${editingSchedule.id}` : 'new-sched'}
                   events={events}
                   dslFunctions={dslFunctions}
                   onGenerate={handleGeneratedCode}
-                  onClose={() => setEditorMode('code')}
+                  onClose={() => { setEditorMode('code'); setEditingSchedule(null); }}
                   onSave={() => { setSavedRulesRefreshKey(k => k + 1); loadCombinedCode(); }}
+                  initialData={editingSchedule}
                 />
               )}
 
@@ -1052,7 +1055,13 @@ const Dashboard = () => {
                   refreshKey={savedRulesRefreshKey}
                   onEditRule={(rule) => {
                     setEditingRule(rule);
+                    setEditingSchedule(null);
                     setEditorMode('ruleBuilder');
+                  }}
+                  onEditSchedule={(sched) => {
+                    setEditingSchedule(sched);
+                    setEditingRule(null);
+                    setEditorMode('scheduleBuilder');
                   }}
                   onLoadToEditor={(code) => {
                     setDslCode(code);

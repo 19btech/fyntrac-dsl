@@ -4,7 +4,7 @@ import {
   CircularProgress, Alert, Tooltip, Divider,
   Dialog, DialogTitle, DialogContent, DialogContentText, DialogActions,
 } from "@mui/material";
-import { Trash2, Edit3, Calculator, GitBranch, Repeat, Database, Clock, Upload, Play, GripVertical, BookmarkPlus, RotateCcw, Code } from "lucide-react";
+import { Trash2, Edit3, Calculator, GitBranch, Repeat, Database, Clock, Upload, Play, GripVertical, BookmarkPlus, RotateCcw, Code, Calendar } from "lucide-react";
 import { API } from "../../config";
 
 const RULE_TYPE_META = {
@@ -13,10 +13,12 @@ const RULE_TYPE_META = {
   iteration: { label: 'Iteration', color: '#00BCD4', icon: Repeat },
   collect: { label: 'Collect', color: '#8BC34A', icon: Database },
   custom_code: { label: 'Custom Code', color: '#9C27B0', icon: Code },
+  schedule: { label: 'Schedule', color: '#2196F3', icon: Calendar },
 };
 
-const SavedRules = ({ onEditRule, refreshKey, onLoadToEditor, onPlayAll, onClearAll }) => {
+const SavedRules = ({ onEditRule, onEditSchedule, refreshKey, onLoadToEditor, onPlayAll, onClearAll }) => {
   const [rules, setRules] = useState([]);
+  const [schedules, setSchedules] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [deleting, setDeleting] = useState(null);
@@ -35,9 +37,14 @@ const SavedRules = ({ onEditRule, refreshKey, onLoadToEditor, onPlayAll, onClear
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch(`${API}/saved-rules`);
-      const data = await res.json();
-      setRules(Array.isArray(data) ? data : []);
+      const [rulesRes, schedsRes] = await Promise.all([
+        fetch(`${API}/saved-rules`),
+        fetch(`${API}/saved-schedules`).catch(() => ({ ok: true, json: async () => [] })),
+      ]);
+      const rulesData = await rulesRes.json();
+      const schedsData = await schedsRes.json();
+      setRules(Array.isArray(rulesData) ? rulesData : []);
+      setSchedules(Array.isArray(schedsData) ? schedsData : []);
     } catch (err) {
       setError(err.message || 'Failed to load saved rules');
     } finally {
@@ -49,13 +56,18 @@ const SavedRules = ({ onEditRule, refreshKey, onLoadToEditor, onPlayAll, onClear
     loadRules();
   }, [loadRules, refreshKey]);
 
-  const handleDelete = useCallback(async (rule) => {
-    setDeleting(rule.id);
+  const handleDelete = useCallback(async (item) => {
+    setDeleting(item.id);
     setDeleteTarget(null);
     try {
-      const res = await fetch(`${API}/saved-rules/${rule.id}`, { method: 'DELETE' });
+      const endpoint = item._isSchedule ? 'saved-schedules' : 'saved-rules';
+      const res = await fetch(`${API}/${endpoint}/${item.id}`, { method: 'DELETE' });
       if (res.ok) {
-        setRules(prev => prev.filter(r => r.id !== rule.id));
+        if (item._isSchedule) {
+          setSchedules(prev => prev.filter(s => s.id !== item.id));
+        } else {
+          setRules(prev => prev.filter(r => r.id !== item.id));
+        }
       }
     } catch (err) {
       setError(err.message);
@@ -71,12 +83,17 @@ const SavedRules = ({ onEditRule, refreshKey, onLoadToEditor, onPlayAll, onClear
     } catch { return iso; }
   };
 
-  // Sort rules by priority (lower number = higher priority = first)
-  const sortedRules = [...rules].sort((a, b) => {
+  // Merge rules and schedules, sort by priority
+  const allItems = [
+    ...rules.map(r => ({ ...r, _isSchedule: false })),
+    ...schedules.map(s => ({ ...s, _isSchedule: true, ruleType: 'schedule' })),
+  ];
+  const sortedRules = [...allItems].sort((a, b) => {
     const pa = a.priority ?? Infinity;
     const pb = b.priority ?? Infinity;
     return pa - pb;
   });
+  const totalCount = rules.length + schedules.length;
 
   // ── Drag-and-drop reordering ──
   const dragItem = useRef(null);
@@ -199,8 +216,8 @@ const SavedRules = ({ onEditRule, refreshKey, onLoadToEditor, onPlayAll, onClear
       <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 2 }}>
         <Typography variant="h6" fontWeight={600}>Saved Rules</Typography>
         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-          <Typography variant="caption" color="text.secondary">{rules.length} rule{rules.length !== 1 ? 's' : ''}</Typography>
-          {rules.length > 0 && (
+          <Typography variant="caption" color="text.secondary">{totalCount} rule{totalCount !== 1 ? 's' : ''}</Typography>
+          {totalCount > 0 && (
             <>
               <Tooltip title="Load all rules to editor (sorted by priority)">
                 <IconButton size="small" onClick={handleLoadToEditor} sx={{ color: '#5B5FED' }}>
@@ -232,7 +249,7 @@ const SavedRules = ({ onEditRule, refreshKey, onLoadToEditor, onPlayAll, onClear
         <Alert severity="error" sx={{ mb: 2 }} onClose={() => setError(null)}>{error}</Alert>
       )}
 
-      {rules.length === 0 && !error && (
+      {totalCount === 0 && !error && (
         <Box sx={{ textAlign: 'center', py: 6, color: 'text.secondary' }}>
           <Calculator size={40} style={{ margin: '0 auto 12px', opacity: 0.3 }} />
           <Typography variant="body1" fontWeight={500}>No saved rules yet</Typography>
@@ -245,13 +262,14 @@ const SavedRules = ({ onEditRule, refreshKey, onLoadToEditor, onPlayAll, onClear
       {sortedRules.map((rule, sortIdx) => {
         const meta = RULE_TYPE_META[rule.ruleType] || RULE_TYPE_META.simple_calc;
         const Icon = meta.icon;
-        const varCount = (rule.variables || []).filter(v => v.name).length;
-        const hasTxn = rule.outputs?.createTransaction;
+        const varCount = rule._isSchedule ? (rule.config?.columns?.length || 0) : (rule.variables || []).filter(v => v.name).length;
+        const hasTxn = rule._isSchedule ? rule.config?.createTxn : rule.outputs?.createTransaction;
         const priority = rule.priority ?? '—';
+        const handleClick = () => rule._isSchedule ? onEditSchedule?.(rule) : onEditRule(rule);
 
         return (
           <Card
-            key={rule.id}
+            key={`${rule._isSchedule ? 's' : 'r'}-${rule.id}`}
             draggable
             onDragStart={() => handleDragStart(sortIdx)}
             onDragOver={(e) => handleDragOver(e, sortIdx)}
@@ -259,9 +277,9 @@ const SavedRules = ({ onEditRule, refreshKey, onLoadToEditor, onPlayAll, onClear
             sx={{
               mb: 1.5, cursor: 'pointer', transition: 'all 0.15s',
               border: '1px solid #E9ECEF',
-              '&:hover': { borderColor: '#5B5FED', boxShadow: '0 2px 8px rgba(91,95,237,0.12)' },
+              '&:hover': { borderColor: meta.color, boxShadow: `0 2px 8px ${meta.color}1F` },
             }}
-            onClick={() => onEditRule(rule)}
+            onClick={handleClick}
           >
             <CardContent sx={{ p: 2, '&:last-child': { pb: 2 } }}>
               <Box sx={{ display: 'flex', alignItems: 'flex-start', gap: 1.5 }}>
@@ -281,7 +299,9 @@ const SavedRules = ({ onEditRule, refreshKey, onLoadToEditor, onPlayAll, onClear
                   </Box>
                   <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
                     {varCount > 0 && (
-                      <Typography variant="caption" color="text.secondary">{varCount} step{varCount !== 1 ? 's' : ''}</Typography>
+                      <Typography variant="caption" color="text.secondary">
+                        {rule._isSchedule ? `${varCount} column${varCount !== 1 ? 's' : ''}` : `${varCount} step${varCount !== 1 ? 's' : ''}`}
+                      </Typography>
                     )}
                     {rule.updated_at && (
                       <Typography variant="caption" color="text.secondary" sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
@@ -296,12 +316,12 @@ const SavedRules = ({ onEditRule, refreshKey, onLoadToEditor, onPlayAll, onClear
                   )}
                 </Box>
                 <Box sx={{ display: 'flex', gap: 0.5, flexShrink: 0 }}>
-                  <Tooltip title="Edit rule">
-                    <IconButton size="small" onClick={(e) => { e.stopPropagation(); onEditRule(rule); }} sx={{ color: '#5B5FED' }}>
+                  <Tooltip title={rule._isSchedule ? 'Edit schedule' : 'Edit rule'}>
+                    <IconButton size="small" onClick={(e) => { e.stopPropagation(); handleClick(); }} sx={{ color: meta.color }}>
                       <Edit3 size={16} />
                     </IconButton>
                   </Tooltip>
-                  <Tooltip title="Delete rule">
+                  <Tooltip title={rule._isSchedule ? 'Delete schedule' : 'Delete rule'}>
                     <IconButton size="small" onClick={(e) => { e.stopPropagation(); setDeleteTarget(rule); }}
                       disabled={deleting === rule.id}
                       sx={{ color: '#F44336' }}>
@@ -326,7 +346,7 @@ const SavedRules = ({ onEditRule, refreshKey, onLoadToEditor, onPlayAll, onClear
             <Box component="li" sx={{ mb: 0.75 }}><Typography variant="body2"><strong>Code Editor</strong> — all code in the editor will be removed</Typography></Box>
             <Box component="li" sx={{ mb: 0.75 }}><Typography variant="body2"><strong>Console Output</strong> — all logs and results will be cleared</Typography></Box>
             <Box component="li" sx={{ mb: 0.75 }}><Typography variant="body2"><strong>Business Preview</strong> — execution results will be reset</Typography></Box>
-            <Box component="li"><Typography variant="body2"><strong>Rule Manager</strong> — all {rules.length} saved rule{rules.length !== 1 ? 's' : ''} will be deleted</Typography></Box>
+            <Box component="li"><Typography variant="body2"><strong>Rule Manager</strong> — all {totalCount} saved rule{totalCount !== 1 ? 's' : ''} and schedule{totalCount !== 1 ? 's' : ''} will be deleted</Typography></Box>
           </Box>
           <DialogContentText sx={{ mt: 2, fontWeight: 500 }}>
             This action cannot be undone.
@@ -338,7 +358,10 @@ const SavedRules = ({ onEditRule, refreshKey, onLoadToEditor, onPlayAll, onClear
             onClick={async () => {
               setClearing(true);
               try {
-                await fetch(`${API}/saved-rules`, { method: 'DELETE' });
+                await Promise.all([
+                  fetch(`${API}/saved-rules`, { method: 'DELETE' }),
+                  fetch(`${API}/saved-schedules`, { method: 'DELETE' }).catch(() => {}),
+                ]);
                 await loadRules();
                 if (onClearAll) onClearAll();
               } catch (err) {
@@ -359,10 +382,10 @@ const SavedRules = ({ onEditRule, refreshKey, onLoadToEditor, onPlayAll, onClear
 
       {/* Delete Confirmation Dialog */}
       <Dialog open={!!deleteTarget} onClose={() => setDeleteTarget(null)}>
-        <DialogTitle>Delete Rule</DialogTitle>
+        <DialogTitle>Delete {deleteTarget?._isSchedule ? 'Schedule' : 'Rule'}</DialogTitle>
         <DialogContent>
           <DialogContentText>
-            Delete rule "{deleteTarget?.name}"? This cannot be undone.
+            Delete {deleteTarget?._isSchedule ? 'schedule' : 'rule'} "{deleteTarget?.name}"? This cannot be undone.
           </DialogContentText>
         </DialogContent>
         <DialogActions>

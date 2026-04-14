@@ -102,10 +102,11 @@ const ColumnCard = ({ column, index, events, variables, onUpdate, onRemove, onMo
  * ScheduleBuilder — Visual drag-and-drop schedule column builder.
  * Builds schedule() DSL code using a column palette and formula bars.
  */
-const ScheduleBuilder = ({ events, dslFunctions, onClose, onSave }) => {
-  const [scheduleName, setScheduleName] = useState('');
-  const [schedulePriority, setSchedulePriority] = useState('');
-  const [scheduleId, setScheduleId] = useState(null);
+const ScheduleBuilder = ({ events, dslFunctions, onClose, onSave, initialData }) => {
+  const cfg = initialData?.config || {};
+  const [scheduleName, setScheduleName] = useState(initialData?.name || '');
+  const [schedulePriority, setSchedulePriority] = useState(initialData?.priority ?? '');
+  const [scheduleId, setScheduleId] = useState(initialData?.id || null);
   const [saving, setSaving] = useState(false);
   const [saveResult, setSaveResult] = useState(null);
   const [validationMsg, setValidationMsg] = useState('');
@@ -136,26 +137,26 @@ const ScheduleBuilder = ({ events, dslFunctions, onClose, onSave }) => {
     })();
   }, []);
   // Period type: 'date' (date-based) or 'number' (count-based)
-  const [periodType, setPeriodType] = useState('date');
+  const [periodType, setPeriodType] = useState(cfg.periodType || 'date');
   // Date-based: start/end source = 'value' | 'field' | 'formula'
-  const [startDate, setStartDate] = useState('');
-  const [startDateSource, setStartDateSource] = useState('value');
-  const [startDateField, setStartDateField] = useState('');
-  const [startDateFormula, setStartDateFormula] = useState('');
-  const [endDate, setEndDate] = useState('');
-  const [endDateSource, setEndDateSource] = useState('value');
-  const [endDateField, setEndDateField] = useState('');
-  const [endDateFormula, setEndDateFormula] = useState('');
+  const [startDate, setStartDate] = useState(cfg.startDate || '');
+  const [startDateSource, setStartDateSource] = useState(cfg.startDateSource || 'value');
+  const [startDateField, setStartDateField] = useState(cfg.startDateField || '');
+  const [startDateFormula, setStartDateFormula] = useState(cfg.startDateFormula || '');
+  const [endDate, setEndDate] = useState(cfg.endDate || '');
+  const [endDateSource, setEndDateSource] = useState(cfg.endDateSource || 'value');
+  const [endDateField, setEndDateField] = useState(cfg.endDateField || '');
+  const [endDateFormula, setEndDateFormula] = useState(cfg.endDateFormula || '');
   // Number-based: count of periods with source (value, field, formula)
-  const [periodCount, setPeriodCount] = useState('12');
-  const [periodCountSource, setPeriodCountSource] = useState('value');
-  const [periodCountField, setPeriodCountField] = useState('');
-  const [periodCountFormula, setPeriodCountFormula] = useState('');
-  const [frequency, setFrequency] = useState('M');
-  const [convention, setConvention] = useState('');
-  const [columns, setColumns] = useState([
-    { name: 'date', formula: 'period_date' },
-  ]);
+  const [periodCount, setPeriodCount] = useState(cfg.periodCount || '12');
+  const [periodCountSource, setPeriodCountSource] = useState(cfg.periodCountSource || 'value');
+  const [periodCountField, setPeriodCountField] = useState(cfg.periodCountField || '');
+  const [periodCountFormula, setPeriodCountFormula] = useState(cfg.periodCountFormula || '');
+  const [frequency, setFrequency] = useState(cfg.frequency || 'M');
+  const [convention, setConvention] = useState(cfg.convention || '');
+  const [columns, setColumns] = useState(
+    cfg.columns?.length ? cfg.columns : [{ name: 'date', formula: 'period_date' }]
+  );
   const allEventFields = useMemo(() => {
     if (!events?.length) return [];
     const r = [];
@@ -169,24 +170,24 @@ const ScheduleBuilder = ({ events, dslFunctions, onClose, onSave }) => {
   const [showCode, setShowCode] = useState(false);
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState(null);
-  const [createTxn, setCreateTxn] = useState(false);
-  const [txnType, setTxnType] = useState('');
-  const [txnAmountCol, setTxnAmountCol] = useState('');
-  const [extractFirst, setExtractFirst] = useState(false);
-  const [extractLast, setExtractLast] = useState(false);
-  const [extractColumn, setExtractColumn] = useState('');
+  const [createTxn, setCreateTxn] = useState(cfg.createTxn || false);
+  const [txnType, setTxnType] = useState(cfg.txnType || '');
+  const [txnAmountCol, setTxnAmountCol] = useState(cfg.txnAmountCol || '');
+  const [extractFirst, setExtractFirst] = useState(cfg.extractFirst || false);
+  const [extractLast, setExtractLast] = useState(cfg.extractLast || false);
+  const [extractColumn, setExtractColumn] = useState(cfg.extractColumn || '');
   // Schedule Sum toggle
-  const [enableSum, setEnableSum] = useState(false);
-  const [sumColumn, setSumColumn] = useState('');
-  const [sumVarName, setSumVarName] = useState('');
+  const [enableSum, setEnableSum] = useState(cfg.enableSum || false);
+  const [sumColumn, setSumColumn] = useState(cfg.sumColumn || '');
+  const [sumVarName, setSumVarName] = useState(cfg.sumVarName || '');
   // Schedule Column toggle
-  const [enableCol, setEnableCol] = useState(false);
-  const [colColumn, setColColumn] = useState('');
-  const [colVarName, setColVarName] = useState('');
+  const [enableCol, setEnableCol] = useState(cfg.enableCol || false);
+  const [colColumn, setColColumn] = useState(cfg.colColumn || '');
+  const [colVarName, setColVarName] = useState(cfg.colVarName || '');
   // Schedule Filter toggle
-  const [enableFilter, setEnableFilter] = useState(false);
-  const [filterCondition, setFilterCondition] = useState('');
-  const [filterVarName, setFilterVarName] = useState('');
+  const [enableFilter, setEnableFilter] = useState(cfg.enableFilter || false);
+  const [filterCondition, setFilterCondition] = useState(cfg.filterCondition || '');
+  const [filterVarName, setFilterVarName] = useState(cfg.filterVarName || '');
 
   const dateEventFields = useMemo(() => {
     if (!events?.length) return [];

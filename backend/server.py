@@ -4069,6 +4069,12 @@ async def delete_saved_schedule(schedule_id: str):
         raise HTTPException(status_code=404, detail="Schedule not found.")
     return {"success": True, "message": "Schedule deleted."}
 
+@api_router.delete("/saved-schedules")
+async def delete_all_saved_schedules():
+    """Delete ALL saved schedules."""
+    result = await db.saved_schedules.delete_many({})
+    return {"success": True, "deleted": result.deleted_count, "message": f"Deleted {result.deleted_count} schedule(s)."}
+
 
 # ── Combined code endpoint (rules + schedules ordered by priority) ──────
 
