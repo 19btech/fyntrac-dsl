@@ -186,10 +186,10 @@ const ACCOUNTING_TEMPLATES = [
       lines.push('## ═══════════════════════════════════════════════════════════════');
       lines.push('');
       lines.push('## Collect event data arrays');
-      lines.push(`product_names = collect_by_instrument(${config.product_names})`);
-      lines.push(`esp_values = collect_by_instrument(${config.selling_prices})`);
-      lines.push(`start_dates = collect_by_instrument(${config.start_dates})`);
-      lines.push(`end_dates = collect_by_instrument(${config.end_dates})`);
+      lines.push(`product_names = collect_by_instrument(${config.product_names_field})`);
+      lines.push(`esp_values = collect_by_instrument(${config.selling_prices_field})`);
+      lines.push(`start_dates = collect_by_instrument(${config.start_dates_field})`);
+      lines.push(`end_dates = collect_by_instrument(${config.end_dates_field})`);
       lines.push(`subinstrument_ids = collect_subinstrumentids()`);
       lines.push(`posting_date = ${postingDate}`);
       lines.push('ssp_values = esp_values');
@@ -217,8 +217,7 @@ const ACCOUNTING_TEMPLATES = [
         lines.push('}, {"amounts": allocated_revenues, "subinstrument_ids": subinstrument_ids})');
         lines.push('print(sched)');
         lines.push('');
-        lines.push('total_rev = schedule_sum(sched, "revenue")');
-        lines.push('print("Total Revenue:", total_rev)');
+        lines.push('print("Total Revenue:", schedule_sum(sched, "revenue"))');
       }
 
       if (config.outputs_create_txn) {

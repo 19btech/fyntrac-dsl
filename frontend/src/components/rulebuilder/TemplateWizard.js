@@ -128,6 +128,27 @@ function parseDSLToRules(code, templateTitle) {
     }
   }
 
+  // Phase 2b: Detect chained iterations (one map_array feeds another) → reclassify as variables
+  if (iterStmts.length > 1) {
+    const iterAssigns = iterStmts.filter(s => s.type === 'iteration');
+    const iterResultNames = new Set(iterAssigns.map(s => s.name));
+    const isChained = iterAssigns.some(s => {
+      const srcMatch = (s.rhs || '').match(/^(?:map_array|for_each)\s*\(\s*([a-zA-Z_]\w*)/);
+      return srcMatch && iterResultNames.has(srcMatch[1]);
+    });
+    if (isChained) {
+      // Move all iteration stmts (including their prints) into paramStmts as formula variables
+      for (const stmt of iterStmts) {
+        if (stmt.type === 'iteration') {
+          stmt.type = 'variable'; // reclassify so classifyToVariable treats RHS as formula
+          paramStmts.push(stmt);
+        }
+        // prints associated with iterations are skipped (standalone prints)
+      }
+      iterStmts.length = 0; // clear
+    }
+  }
+
   // Phase 3: Create rules in logical execution order
   const rules = [];
   const schedules = []; // Schedule builder entries (saved-schedules)
