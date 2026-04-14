@@ -314,7 +314,9 @@ const ScheduleBuilder = ({ events, dslFunctions, onClose, onSave, initialData })
       } else if (v.source === 'formula') lines.push(`${v.name} = ${v.formula || 0}`);
       else if (v.source === 'collect') {
         const ct = v.collectType || 'collect';
+        const isDate = /date/i.test(v.name) || /date/i.test(v.eventField || '');
         if (ct === 'collect_subinstrumentids') lines.push(`${v.name} = ["sub_1", "sub_2", "sub_3"]`);
+        else if (isDate) lines.push(`${v.name} = ["2026-01-01", "2026-06-30", "2026-12-31"]`);
         else lines.push(`${v.name} = [100, 200, 300]`);
       }
     }
@@ -511,7 +513,9 @@ const ScheduleBuilder = ({ events, dslFunctions, onClose, onSave, initialData })
       } else if (v.source === 'formula') lines.push(`${v.name} = ${v.formula || 0}`);
       else if (v.source === 'collect') {
         const ct = v.collectType || 'collect';
+        const isDate = /date/i.test(v.name) || /date/i.test(v.eventField || '');
         if (ct === 'collect_subinstrumentids') lines.push(`${v.name} = ["sub_1", "sub_2", "sub_3"]`);
+        else if (isDate) lines.push(`${v.name} = ["2026-01-01", "2026-06-30", "2026-12-31"]`);
         else lines.push(`${v.name} = [100, 200, 300]`);
       }
     }
