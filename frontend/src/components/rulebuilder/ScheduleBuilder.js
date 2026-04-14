@@ -4,6 +4,7 @@ import {
   Tooltip, Divider, Select, FormControl, InputLabel, Paper, Switch, FormControlLabel,
   Alert, Table, TableBody, TableCell, TableContainer, TableHead, TableRow,
   ToggleButtonGroup, ToggleButton, CircularProgress, Dialog, DialogTitle, DialogContent, DialogContentText, DialogActions,
+  Autocomplete,
 } from "@mui/material";
 import {
   Plus, Trash2, ArrowUp, ArrowDown, GripVertical, Play, Code, Eye, Calendar,
@@ -206,6 +207,25 @@ const ScheduleBuilder = ({ events, dslFunctions, onClose, onSave, initialData })
     });
     return r;
   }, [events]);
+
+  // Options for the Filter Match Value searchable field
+  const filterValueOptions = useMemo(() => {
+    const opts = [];
+    // Built-ins always available as match targets
+    opts.push({ label: 'postingdate', group: 'Built-in' });
+    opts.push({ label: 'effectivedate', group: 'Built-in' });
+    // Defined variables from saved rules
+    savedRulesVarNames.forEach(v => opts.push({ label: v, group: 'Defined Variable' }));
+    // Event fields (EventName.fieldName)
+    if (events?.length) {
+      events.forEach(ev => {
+        (ev.fields || []).forEach(f => {
+          opts.push({ label: `${ev.event_name}.${f.name}`, group: `Event: ${ev.event_name}` });
+        });
+      });
+    }
+    return opts;
+  }, [savedRulesVarNames, events]);
 
   const addColumn = useCallback(() => {
     setColumns(prev => [...prev, { name: '', formula: '' }]);
@@ -1137,12 +1157,31 @@ const ScheduleBuilder = ({ events, dslFunctions, onClose, onSave, initialData })
                       ))}
                     </Select>
                   </FormControl>
-                  <TextField size="small" label="Match Value" value={filterMatchValue}
-                    onChange={(e) => setFilterMatchValue(e.target.value)}
-                    placeholder='e.g., postingdate'
-                    helperText={'Variable or quoted string (e.g., postingdate or "2026-01")'}
+                  <Autocomplete
+                    freeSolo
+                    size="small"
+                    options={filterValueOptions}
+                    groupBy={(opt) => opt.group}
+                    getOptionLabel={(opt) => (typeof opt === 'string' ? opt : opt.label)}
+                    value={filterMatchValue || ''}
+                    onChange={(_, newVal) => {
+                      if (newVal === null) setFilterMatchValue('');
+                      else setFilterMatchValue(typeof newVal === 'string' ? newVal : newVal.label);
+                    }}
+                    onInputChange={(_, val, reason) => {
+                      if (reason === 'input') setFilterMatchValue(val);
+                    }}
                     sx={{ flex: 1 }}
-                    InputProps={{ sx: { fontFamily: 'monospace', fontSize: '0.8125rem' } }} />
+                    renderInput={(params) => (
+                      <TextField
+                        {...params}
+                        label="Match Value"
+                        placeholder="e.g., postingdate"
+                        helperText='Variable, event field, or quoted string'
+                        InputProps={{ ...params.InputProps, sx: { fontFamily: 'monospace', fontSize: '0.8125rem' } }}
+                      />
+                    )}
+                  />
                   <FormControl size="small" sx={{ flex: 1 }}>
                     <InputLabel>Return Column</InputLabel>
                     <Select value={filterReturnCol} label="Return Column"
