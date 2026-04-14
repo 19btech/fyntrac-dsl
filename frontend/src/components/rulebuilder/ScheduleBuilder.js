@@ -303,16 +303,8 @@ const ScheduleBuilder = ({ events, dslFunctions, onClose, onSave, initialData })
     if (colsToTest.length === 0) return { success: false, error: 'No valid columns to test' };
     const lines = [];
     // Emit ALL saved rule vars in order so transitive dependencies are available.
-    // (Emitting only the directly-referenced autoDetectedVars can fail when those vars
-    // themselves depend on other vars that haven't been emitted yet.)
-    const knownEvents = new Set((events || []).map(e => (e.event_name || '').toLowerCase()));
     for (const v of savedRulesVars) {
       if (!v.name) continue;
-      // Skip variables referencing events that don't exist in current tenant
-      if ((v.source === 'event_field' || v.source === 'collect') && v.eventField) {
-        const evtName = v.eventField.split('.')[0];
-        if (evtName && !knownEvents.has(evtName.toLowerCase())) continue;
-      }
       if (v.source === 'value') lines.push(`${v.name} = ${v.value || 0}`);
       else if (v.source === 'event_field') lines.push(`${v.name} = ${v.eventField}`);
       else if (v.source === 'formula') lines.push(`${v.name} = ${v.formula || 0}`);
@@ -501,13 +493,8 @@ const ScheduleBuilder = ({ events, dslFunctions, onClose, onSave, initialData })
   // Build schedule base lines (vars + period + schedule() call) — shared by test functions
   const buildScheduleBaseLines = useCallback(() => {
     const lines = [];
-    const knownEvents = new Set((events || []).map(e => (e.event_name || '').toLowerCase()));
     for (const v of savedRulesVars) {
       if (!v.name) continue;
-      if ((v.source === 'event_field' || v.source === 'collect') && v.eventField) {
-        const evtName = v.eventField.split('.')[0];
-        if (evtName && !knownEvents.has(evtName.toLowerCase())) continue;
-      }
       if (v.source === 'value') lines.push(`${v.name} = ${v.value || 0}`);
       else if (v.source === 'event_field') lines.push(`${v.name} = ${v.eventField}`);
       else if (v.source === 'formula') lines.push(`${v.name} = ${v.formula || 0}`);
