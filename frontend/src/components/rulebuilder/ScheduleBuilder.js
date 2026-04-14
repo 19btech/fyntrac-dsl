@@ -132,13 +132,16 @@ const ScheduleBuilder = ({ events, dslFunctions, onClose, onSave, initialData })
             }
           });
           // Expose iteration result variables so schedules can reference them
-          if (r.ruleType === 'iteration' && r.iterConfig?.resultVar) {
-            const rv = r.iterConfig.resultVar;
-            if (!names.has(rv)) {
-              names.add(rv);
-              const codeLine = (r.generatedCode || '').split('\n').find(l => l.trim().startsWith(rv + ' ='));
-              const formula = codeLine ? codeLine.trim().replace(new RegExp('^' + rv + '\\s*=\\s*'), '') : rv;
-              allVars.push({ name: rv, source: 'formula', formula, value: '', eventField: '', collectType: 'collect', _isIterResult: true });
+          if (r.ruleType === 'iteration') {
+            const iters = r.iterations?.length ? r.iterations : (r.iterConfig?.type ? [r.iterConfig] : []);
+            for (const iter of iters) {
+              const rv = iter.resultVar;
+              if (rv && !names.has(rv)) {
+                names.add(rv);
+                const codeLine = (r.generatedCode || '').split('\n').find(l => l.trim().startsWith(rv + ' ='));
+                const formula = codeLine ? codeLine.trim().replace(new RegExp('^' + rv + '\\s*=\\s*'), '') : rv;
+                allVars.push({ name: rv, source: 'formula', formula, value: '', eventField: '', collectType: 'collect', _isIterResult: true });
+              }
             }
           }
         });
@@ -305,7 +308,6 @@ const ScheduleBuilder = ({ events, dslFunctions, onClose, onSave, initialData })
     const knownEvents = new Set((events || []).map(e => (e.event_name || '').toLowerCase()));
     for (const v of savedRulesVars) {
       if (!v.name) continue;
-      if (v._isIterResult) continue; // iteration results are produced by their own rule
       // Skip variables referencing events that don't exist in current tenant
       if ((v.source === 'event_field' || v.source === 'collect') && v.eventField) {
         const evtName = v.eventField.split('.')[0];
@@ -502,7 +504,6 @@ const ScheduleBuilder = ({ events, dslFunctions, onClose, onSave, initialData })
     const knownEvents = new Set((events || []).map(e => (e.event_name || '').toLowerCase()));
     for (const v of savedRulesVars) {
       if (!v.name) continue;
-      if (v._isIterResult) continue; // iteration results are produced by their own rule
       if ((v.source === 'event_field' || v.source === 'collect') && v.eventField) {
         const evtName = v.eventField.split('.')[0];
         if (evtName && !knownEvents.has(evtName.toLowerCase())) continue;
