@@ -516,8 +516,8 @@ const Dashboard = () => {
     addConsoleLog("Logic loaded into editor from builder", "info");
     toast.success("Logic loaded into editor — click Run to execute");
 
-    // If template metadata includes rules, save them to Rule Manager
-    if (metadata?.rules?.length) {
+    // If template metadata includes rules or schedules, save them
+    if (metadata?.rules?.length || metadata?.schedules?.length) {
       try {
         const [rulesRes, schedulesRes] = await Promise.all([
           axios.get(`${API}/saved-rules`),
@@ -530,10 +530,15 @@ const Dashboard = () => {
           ...existingSchedules.map(s => s.priority || 0),
           0
         );
-        const existingNames = new Set(existingRules.map(r => (r.name || '').toLowerCase()));
+        const existingNames = new Set([
+          ...existingRules.map(r => (r.name || '').toLowerCase()),
+          ...existingSchedules.map(s => (s.name || '').toLowerCase()),
+        ]);
 
         let created = 0;
-        for (const rule of metadata.rules) {
+
+        // Create saved-rules
+        for (const rule of (metadata.rules || [])) {
           maxPriority += 1;
           let name = rule.name;
           let baseName = name;
@@ -563,10 +568,36 @@ const Dashboard = () => {
           }
         }
 
+        // Create saved-schedules
+        for (const sched of (metadata.schedules || [])) {
+          maxPriority += 1;
+          let name = sched.name;
+          let baseName = name;
+          let suffix = 1;
+          while (existingNames.has(name.toLowerCase())) {
+            name = `${baseName} (${suffix})`;
+            suffix++;
+          }
+          existingNames.add(name.toLowerCase());
+          try {
+            await axios.post(`${API}/saved-schedules`, {
+              name,
+              priority: maxPriority,
+              generatedCode: sched.generatedCode || '',
+              config: sched.config || {},
+            });
+            created++;
+          } catch (err) {
+            console.error(`Failed to save schedule "${name}":`, err.response?.data?.detail || err.message);
+          }
+        }
+
         if (created > 0) {
           setSavedRulesRefreshKey(k => k + 1);
           addConsoleLog(`Created ${created} rule(s) in Rule Manager from template`, "info");
         }
+        // Refresh events in case template sample data was loaded
+        await loadEvents();
       } catch (err) {
         console.error("Error importing template rules:", err);
       }

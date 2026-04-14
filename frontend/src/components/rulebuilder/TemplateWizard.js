@@ -130,6 +130,7 @@ function parseDSLToRules(code, templateTitle) {
 
   // Phase 3: Create rules in logical execution order
   const rules = [];
+  const schedules = []; // Schedule builder entries (saved-schedules)
 
   // 1. Parameters rule (simple_calc) — all simple variables
   if (paramStmts.length > 0) {
@@ -162,7 +163,7 @@ function parseDSLToRules(code, templateTitle) {
     });
   }
 
-  // 3. Iteration rule — single iteration gets proper type, multiple get custom_code
+  // 3. Iteration rule
   if (iterStmts.length > 0) {
     const iterAssigns = iterStmts.filter(s => s.type === 'iteration');
     const genCode = iterStmts.map(s => s.raw).join('\n');
@@ -179,38 +180,40 @@ function parseDSLToRules(code, templateTitle) {
         customCode: '',
       });
     } else {
-      rules.push({
-        ...defaultRule,
-        name: `${templateTitle} - Iteration`,
-        ruleType: 'custom_code',
-        variables: [],
-        generatedCode: genCode,
-        customCode: genCode,
-      });
+      // Multiple iterations → one iteration rule per map_array/for_each
+      for (const iter of iterAssigns) {
+        const iterCfg = parseIterConfig(iter.rhs, iter.name);
+        rules.push({
+          ...defaultRule,
+          name: `${templateTitle} - Iteration`,
+          ruleType: 'iteration',
+          variables: [],
+          iterConfig: iterCfg,
+          generatedCode: iter.raw,
+          customCode: '',
+        });
+      }
     }
   }
 
-  // 4. Schedule rule (custom_code) — all schedule-related lines
+  // 4. Schedule → saved-schedule entry (with createTransaction merged in if present)
   if (schedStmts.length > 0) {
-    const genCode = schedStmts.map(s => s.raw).join('\n');
-    rules.push({
-      ...defaultRule,
+    const allLines = [...schedStmts, ...journalStmts];
+    const genCode = allLines.map(s => s.raw).join('\n');
+    const schedCfg = parseScheduleConfig(schedStmts, journalStmts);
+    schedules.push({
       name: `${templateTitle} - Schedule`,
-      ruleType: 'custom_code',
-      variables: [],
       generatedCode: genCode,
-      customCode: genCode,
+      config: schedCfg,
     });
-  }
-
-  // 5. Transactions rule — all createTransaction lines
-  if (journalStmts.length > 0) {
+  } else if (journalStmts.length > 0) {
+    // No schedule but has createTransaction — standalone rule
     const txn = journalStmts[0];
     const genCode = journalStmts.map(s => s.raw).join('\n');
     rules.push({
       ...defaultRule,
       name: `${templateTitle} - Transactions`,
-      ruleType: 'custom_code',
+      ruleType: 'simple_calc',
       variables: [],
       outputs: {
         printResult: false,
@@ -218,12 +221,12 @@ function parseDSLToRules(code, templateTitle) {
         transactions: [{ type: txn.txnType, amount: txn.amount, postingDate: txn.postingDate, effectiveDate: txn.effectiveDate, subInstrumentId: txn.subInstrumentId }],
       },
       generatedCode: genCode,
-      customCode: genCode,
+      customCode: '',
     });
   }
 
-  // Fallback: if no rules created, one catch-all custom_code rule
-  if (rules.length === 0) {
+  // Fallback: if nothing created, one catch-all custom_code rule
+  if (rules.length === 0 && schedules.length === 0) {
     rules.push({
       ...defaultRule,
       name: templateTitle,
@@ -236,7 +239,7 @@ function parseDSLToRules(code, templateTitle) {
 
   // Deduplicate rule names
   const nameCounts = {};
-  for (const rule of rules) {
+  for (const rule of [...rules, ...schedules]) {
     if (nameCounts[rule.name]) {
       nameCounts[rule.name]++;
       rule.name = `${rule.name} ${nameCounts[rule.name]}`;
@@ -245,7 +248,7 @@ function parseDSLToRules(code, templateTitle) {
     }
   }
 
-  return rules;
+  return { rules, schedules };
 }
 
 /** Split comma-separated args respecting nesting */
@@ -264,12 +267,8 @@ function splitArgs(str) {
 
 /** Classify an assignment statement by its RHS */
 function classifyAssignment(name, rhs) {
-  // Schedule-related
+  // Schedule-related (only core schedule functions)
   if (/^(schedule|period|schedule_sum|schedule_filter|schedule_first|schedule_last)\s*\(/.test(rhs)) {
-    return { type: 'schedule' };
-  }
-  // Also treat add_months/add_years before a period as schedule-related if var name suggests it
-  if (/^(add_months|add_years)\s*\(/.test(rhs) && /end_date|start_date|maturity/i.test(name)) {
     return { type: 'schedule' };
   }
   // Conditional
@@ -357,6 +356,109 @@ function parseIterConfig(rhs, resultVar) {
     };
   }
   return { type: 'map_array', sourceArray: '', varName: 'item', expression: '', resultVar: resultVar || 'mapped_result', secondArray: '', secondVar: 'amount' };
+}
+
+/** Parse schedule statements into ScheduleBuilder-compatible config */
+function parseScheduleConfig(schedStmts, journalStmts) {
+  const cfg = {
+    periodType: 'date', startDate: '', startDateSource: 'value', startDateField: '', startDateFormula: '',
+    endDate: '', endDateSource: 'value', endDateField: '', endDateFormula: '',
+    periodCount: '12', periodCountSource: 'value', periodCountField: '', periodCountFormula: '',
+    frequency: 'M', convention: '', columns: [{ name: 'date', formula: 'period_date' }],
+    createTxn: false, txnType: '', txnAmountCol: '',
+    extractFirst: false, extractLast: false, extractColumn: '',
+    enableSum: false, sumColumn: '', sumVarName: '',
+    enableCol: false, colColumn: '', colVarName: '',
+    enableFilter: false, filterCondition: '', filterVarName: '',
+  };
+
+  for (const stmt of schedStmts) {
+    if (stmt.type !== 'schedule') continue;
+    const rhs = stmt.rhs || '';
+    const name = stmt.name || '';
+
+    // period(start, end, "M") or period(start, end, "M", "convention")
+    if (/^period\s*\(/.test(rhs)) {
+      const inner = rhs.match(/^period\s*\((.*)\)$/s);
+      if (inner) {
+        const args = splitArgs(inner[1]);
+        if (args.length >= 2) {
+          // Date-based period
+          cfg.periodType = 'date';
+          const startArg = args[0].trim();
+          if (/^".*"$/.test(startArg)) { cfg.startDateSource = 'value'; cfg.startDate = startArg.replace(/^"|"$/g, ''); }
+          else if (/^[A-Z]/.test(startArg) && startArg.includes('.')) { cfg.startDateSource = 'field'; cfg.startDateField = startArg; }
+          else { cfg.startDateSource = 'formula'; cfg.startDateFormula = startArg; }
+          const endArg = args[1].trim();
+          if (/^".*"$/.test(endArg)) { cfg.endDateSource = 'value'; cfg.endDate = endArg.replace(/^"|"$/g, ''); }
+          else if (/^[A-Z]/.test(endArg) && endArg.includes('.')) { cfg.endDateSource = 'field'; cfg.endDateField = endArg; }
+          else { cfg.endDateSource = 'formula'; cfg.endDateFormula = endArg; }
+          if (args[2]) cfg.frequency = args[2].replace(/^"|"$/g, '');
+          if (args[3]) cfg.convention = args[3].replace(/^"|"$/g, '');
+        } else if (args.length === 1) {
+          cfg.periodType = 'number';
+          const countArg = args[0].trim();
+          if (/^\d+$/.test(countArg)) { cfg.periodCountSource = 'value'; cfg.periodCount = countArg; }
+          else if (/^[A-Z]/.test(countArg) && countArg.includes('.')) { cfg.periodCountSource = 'field'; cfg.periodCountField = countArg; }
+          else { cfg.periodCountSource = 'formula'; cfg.periodCountFormula = countArg; }
+        }
+      }
+    }
+
+    // schedule(p, {columns}, {context})
+    if (/^schedule\s*\(/.test(rhs)) {
+      // Extract column definitions from the first {…} block
+      const colMatch = rhs.match(/\{([^}]*)\}/);
+      if (colMatch) {
+        const cols = [];
+        // Line-by-line parsing handles formulas with commas (e.g. lag('x', 1, y))
+        const colLines = colMatch[1].split('\n');
+        for (const cl of colLines) {
+          const trimmed = cl.trim().replace(/,\s*$/, '');
+          const kv = trimmed.match(/^"([^"]+)"\s*:\s*"(.*)"$/);
+          if (kv) cols.push({ name: kv[1], formula: kv[2] });
+        }
+        // Fallback for single-line dict: "key": "val", "key2": "val2"
+        if (cols.length === 0) {
+          const allKV = [...colMatch[1].matchAll(/"([^"]+)"\s*:\s*"([^"]*)"/g)];
+          for (const m of allKV) cols.push({ name: m[1], formula: m[2] });
+        }
+        if (cols.length > 0) cfg.columns = cols;
+      }
+    }
+
+    // schedule_sum(sched, "col") → enableSum
+    if (/^schedule_sum\s*\(/.test(rhs)) {
+      const match = rhs.match(/schedule_sum\s*\(\w+,\s*"([^"]+)"\)/);
+      if (match) { cfg.enableSum = true; cfg.sumColumn = match[1]; cfg.sumVarName = name; }
+    }
+
+    // schedule_filter(sched, ...) → enableFilter
+    if (/^schedule_filter\s*\(/.test(rhs)) {
+      const match = rhs.match(/schedule_filter\s*\(\w+,\s*(.*)\)/);
+      if (match) { cfg.enableFilter = true; cfg.filterCondition = match[1].replace(/^"|"$/g, ''); cfg.filterVarName = name; }
+    }
+
+    // schedule_first / schedule_last
+    if (/^schedule_first\s*\(/.test(rhs)) {
+      const match = rhs.match(/schedule_first\s*\(\w+,\s*"([^"]+)"\)/);
+      if (match) { cfg.extractFirst = true; cfg.extractColumn = match[1]; }
+    }
+    if (/^schedule_last\s*\(/.test(rhs)) {
+      const match = rhs.match(/schedule_last\s*\(\w+,\s*"([^"]+)"\)/);
+      if (match) { cfg.extractLast = true; if (!cfg.extractColumn) cfg.extractColumn = match[1]; }
+    }
+  }
+
+  // Merge createTransaction into schedule config
+  if (journalStmts.length > 0) {
+    const txn = journalStmts[0];
+    cfg.createTxn = true;
+    cfg.txnType = txn.txnType || '';
+    cfg.txnAmountCol = txn.amount || '';
+  }
+
+  return cfg;
 }
 
 const ICON_MAP = {
@@ -500,8 +602,8 @@ const TemplateWizard = ({ template, events, onGenerate, onClose }) => {
 
   const handleApply = useCallback(() => {
     const code = generatedCode || template.generateDSL(config);
-    const rules = parseDSLToRules(code, template.title);
-    onGenerate(code, { rules });
+    const { rules, schedules } = parseDSLToRules(code, template.title);
+    onGenerate(code, { rules, schedules });
   }, [generatedCode, template, config, onGenerate]);
 
   const isStep1Valid = useMemo(() => {

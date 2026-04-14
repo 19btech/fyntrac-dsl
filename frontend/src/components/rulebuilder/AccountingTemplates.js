@@ -186,16 +186,14 @@ const ACCOUNTING_TEMPLATES = [
       lines.push(`end_dates = collect_by_instrument(${config.end_dates})`);
       lines.push(`subinstrument_ids = collect_subinstrumentids()`);
       lines.push(`posting_date = ${postingDate}`);
-      lines.push('');
-      lines.push('## Step 1: Determine standalone selling prices and allocate');
       lines.push('ssp_values = esp_values');
       lines.push('total_ssp = sum(ssp_values)');
+      lines.push('total_esp = sum(esp_values)');
       lines.push('');
 
       if (config.allocation_method === 'SSP-Weighted (Relative)') {
         lines.push('## SSP-weighted allocation');
         lines.push('alloc_pcts = map_array(ssp_values, "ssp", "iif(gt(total_ssp, 0), divide(ssp, total_ssp), 0)", {"total_ssp": total_ssp})');
-        lines.push('total_esp = sum(esp_values)');
         lines.push('allocated_revenues = map_array(alloc_pcts, "pct", "multiply(pct, total_esp)", {"total_esp": total_esp})');
       } else {
         lines.push('## Standalone allocation');
@@ -205,32 +203,21 @@ const ACCOUNTING_TEMPLATES = [
       lines.push('');
 
       if (config.outputs_schedule) {
-        lines.push('## Step 2: Generate per-item recognition schedules');
+        lines.push('## Recognition schedule');
         lines.push('p = period(start_dates, end_dates, "M")');
+        lines.push('sched = schedule(p, {');
+        lines.push('    "date": "period_date",');
+        lines.push('    "revenue": "divide(amount, total_periods)"');
+        lines.push('}, {"amounts": allocated_revenues, "subinstrument_ids": subinstrument_ids})');
+        lines.push('print(sched)');
         lines.push('');
-        lines.push('COLUMNS = {');
-        lines.push('    "period_date": "period_date",');
-        lines.push('    "month_end": "end_of_month(period_date)",');
-        lines.push('    "days": "iif(eq(start_date, end_date), add(days_between(start_of_month(period_date), end_of_month(period_date)), 1), iif(eq(period_index, 0), days_between(start_date, end_of_month(start_date)), iif(eq(period_index, subtract(total_periods, 1)), add(days_between(start_of_month(end_date), end_date), 1), add(days_between(start_of_month(period_date), end_of_month(period_date)), 1))))",');
-        lines.push('    "daily_revenue": "divide(amount, 365)",');
-        lines.push('    "period_revenue": "multiply(daily_revenue, days)"');
-        lines.push('}');
-        lines.push('');
-        lines.push('SCHEDULES = schedule(p, COLUMNS, {');
-        lines.push('    "start_dates": start_dates, "end_dates": end_dates,');
-        lines.push('    "amounts": allocated_revenues, "subinstrument_ids": subinstrument_ids,');
-        lines.push('    "posting_date": posting_date');
-        lines.push('})');
-        lines.push('');
-        lines.push('print(SCHEDULES)');
-        lines.push('');
-        lines.push('recognition_results = schedule_filter(SCHEDULES, "month_end", "posting_date", "period_revenue")');
-        lines.push('print("Recognition Results:", recognition_results)');
+        lines.push('total_rev = schedule_sum(sched, "revenue")');
+        lines.push('print("Total Revenue:", total_rev)');
       }
 
       if (config.outputs_create_txn) {
         lines.push('');
-        lines.push(`createTransaction(posting_date, posting_date, "${config.txn_type || 'Revenue'}", recognition_results, subinstrument_ids)`);
+        lines.push(`createTransaction(posting_date, posting_date, "${config.txn_type || 'Revenue'}", total_rev, subinstrument_ids)`);
       }
 
       return lines.join('\n');
