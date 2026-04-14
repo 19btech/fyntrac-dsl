@@ -1,13 +1,13 @@
-import React, { useState, useMemo, useCallback } from "react";
+import React, { useState, useMemo, useCallback, useEffect } from "react";
 import {
   Box, Typography, Card, CardContent, Button, TextField, MenuItem, Chip, IconButton,
   Tooltip, Divider, Select, FormControl, InputLabel, Paper, Switch, FormControlLabel,
   Alert, Table, TableBody, TableCell, TableContainer, TableHead, TableRow,
-  ToggleButtonGroup, ToggleButton, CircularProgress,
+  ToggleButtonGroup, ToggleButton, CircularProgress, Dialog, DialogTitle, DialogContent, DialogContentText, DialogActions,
 } from "@mui/material";
 import {
   Plus, Trash2, ArrowUp, ArrowDown, GripVertical, Play, Code, Eye, Calendar,
-  Table as TableIcon, Hash, Columns, BarChart3, RefreshCw, FlaskConical, Save,
+  Table as TableIcon, Columns, BarChart3, RefreshCw, FlaskConical, Save,
 } from "lucide-react";
 import { API } from "../../config";
 import FormulaBar from "./FormulaBar";
@@ -89,6 +89,33 @@ const ScheduleBuilder = ({ events, dslFunctions, onClose, onSave }) => {
   const [scheduleId, setScheduleId] = useState(null);
   const [saving, setSaving] = useState(false);
   const [saveResult, setSaveResult] = useState(null);
+  const [validationMsg, setValidationMsg] = useState('');
+
+  // Fetch all saved-rules for auto-detecting context variables
+  const [savedRulesVarNames, setSavedRulesVarNames] = useState([]);
+  const [savedRulesVars, setSavedRulesVars] = useState([]);
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await fetch(`${API}/saved-rules`);
+        if (!res.ok) return;
+        const data = await res.json();
+        const rules = Array.isArray(data) ? data : (data.rules || []);
+        const names = new Set();
+        const allVars = [];
+        rules.forEach(r => {
+          (r.variables || []).forEach(v => {
+            if (v.name) {
+              names.add(v.name);
+              allVars.push(v);
+            }
+          });
+        });
+        setSavedRulesVarNames([...names]);
+        setSavedRulesVars(allVars);
+      } catch { /* ignore */ }
+    })();
+  }, []);
   // Period type: 'date' (date-based) or 'number' (count-based)
   const [periodType, setPeriodType] = useState('date');
   // Date-based: start/end source = 'value' | 'field' | 'formula'
@@ -106,9 +133,6 @@ const ScheduleBuilder = ({ events, dslFunctions, onClose, onSave }) => {
   const [convention, setConvention] = useState('');
   const [columns, setColumns] = useState([
     { name: 'date', formula: 'period_date' },
-  ]);
-  const [contextVars, setContextVars] = useState([
-    { name: '', value: '' },
   ]);
   const [showPresets, setShowPresets] = useState(true);
   const [showCode, setShowCode] = useState(false);
@@ -171,19 +195,31 @@ const ScheduleBuilder = ({ events, dslFunctions, onClose, onSave }) => {
     });
   }, []);
 
-  const addContextVar = useCallback(() => {
-    setContextVars(prev => [...prev, { name: '', value: '' }]);
-  }, []);
-
-  const updateContextVar = useCallback((index, field, value) => {
-    setContextVars(prev => prev.map((v, i) => i === index ? { ...v, [field]: value } : v));
-  }, []);
-
-  const removeContextVar = useCallback((index) => {
-    setContextVars(prev => prev.filter((_, i) => i !== index));
-  }, []);
-
   const usedPresets = useMemo(() => new Set(columns.map(c => c.name)), [columns]);
+
+  // Built-in schedule identifiers that should NOT be treated as external variables
+  const SCHEDULE_BUILTINS = useMemo(() => new Set([
+    'period_date', 'period_index', 'period_start', 'period_number', 'dcf', 'lag',
+    'days_in_current_period',
+    ...(dslFunctions || []).map(f => f.name),
+  ]), [dslFunctions]);
+
+  // Auto-detect external variable references from column formulas
+  const autoDetectedVars = useMemo(() => {
+    const colNames = new Set(columns.filter(c => c.name).map(c => c.name));
+    const externalRefs = new Set();
+    for (const col of columns) {
+      if (!col.formula) continue;
+      // Extract all identifiers from the formula
+      const identifiers = col.formula.match(/[a-zA-Z_][a-zA-Z0-9_]*/g) || [];
+      for (const id of identifiers) {
+        if (colNames.has(id)) continue;           // another column
+        if (SCHEDULE_BUILTINS.has(id)) continue;  // built-in function or variable
+        externalRefs.add(id);
+      }
+    }
+    return [...externalRefs];
+  }, [columns, SCHEDULE_BUILTINS]);
 
   const generatedCode = useMemo(() => {
     const lines = [];
@@ -192,12 +228,24 @@ const ScheduleBuilder = ({ events, dslFunctions, onClose, onSave }) => {
     lines.push('## ═══════════════════════════════════════════════════════════════');
     lines.push('');
 
-    // Context variables
-    const validVars = contextVars.filter(v => v.name && v.value);
-    validVars.forEach(v => {
-      lines.push(`${v.name} = ${v.value}`);
-    });
-    if (validVars.length > 0) lines.push('');
+    // Auto-detected dependency variables from saved rules
+    const emittedVars = [];
+    for (const varName of autoDetectedVars) {
+      const savedVar = savedRulesVars.find(v => v.name === varName);
+      if (savedVar) {
+        if (savedVar.source === 'value') {
+          lines.push(`${savedVar.name} = ${savedVar.value || 0}`);
+        } else if (savedVar.source === 'event_field') {
+          lines.push(`${savedVar.name} = ${savedVar.eventField}`);
+        } else if (savedVar.source === 'formula') {
+          lines.push(`${savedVar.name} = ${savedVar.formula || 0}`);
+        } else if (savedVar.source === 'collect') {
+          lines.push(`${savedVar.name} = ${savedVar.collectType || 'collect'}(${savedVar.eventField})`);
+        }
+        emittedVars.push(varName);
+      }
+    }
+    if (emittedVars.length > 0) lines.push('');
 
     // Period definition
     if (periodType === 'number') {
@@ -231,8 +279,8 @@ const ScheduleBuilder = ({ events, dslFunctions, onClose, onSave }) => {
       lines.push(`    "${col.name}": "${col.formula}"${comma}`);
     });
 
-    // Context object
-    const contextPairs = validVars.map(v => `"${v.name}": ${v.name}`);
+    // Context object — auto-wired from detected variable references
+    const contextPairs = autoDetectedVars.map(v => `"${v}": ${v}`);
     if (contextPairs.length > 0) {
       lines.push(`}, {${contextPairs.join(', ')}})`);
     } else {
@@ -296,7 +344,7 @@ const ScheduleBuilder = ({ events, dslFunctions, onClose, onSave }) => {
     }
 
     return lines.join('\n');
-  }, [scheduleName, periodType, startDate, startDateSource, startDateField, startDateFormula, endDate, endDateSource, endDateField, endDateFormula, periodCount, frequency, convention, columns, contextVars, createTxn, txnType, txnAmountCol, extractFirst, extractLast, extractColumn, enableSum, sumColumn, sumVarName, enableCol, colColumn, colVarName, enableFilter, filterCondition, filterVarName]);
+  }, [scheduleName, periodType, startDate, startDateSource, startDateField, startDateFormula, endDate, endDateSource, endDateField, endDateFormula, periodCount, frequency, convention, columns, autoDetectedVars, savedRulesVars, createTxn, txnType, txnAmountCol, extractFirst, extractLast, extractColumn, enableSum, sumColumn, sumVarName, enableCol, colColumn, colVarName, enableFilter, filterCondition, filterVarName]);
 
   const handleTest = useCallback(async () => {
     setTesting(true);
@@ -327,11 +375,11 @@ const ScheduleBuilder = ({ events, dslFunctions, onClose, onSave }) => {
 
   const handleSave = useCallback(async () => {
     if (!scheduleName.trim()) {
-      setSaveResult({ success: false, error: 'Please enter a schedule name before saving.' });
+      setValidationMsg('Schedule Name is required and not populated.');
       return;
     }
     if (schedulePriority === '' || schedulePriority === null || schedulePriority === undefined) {
-      setSaveResult({ success: false, error: 'Please enter a schedule priority before saving.' });
+      setValidationMsg('Priority is required and not populated.');
       return;
     }
     setSaving(true);
@@ -345,7 +393,7 @@ const ScheduleBuilder = ({ events, dslFunctions, onClose, onSave }) => {
         config: {
           periodType, startDate, startDateSource, startDateField, startDateFormula,
           endDate, endDateSource, endDateField, endDateFormula,
-          periodCount, frequency, convention, columns, contextVars,
+          periodCount, frequency, convention, columns,
           createTxn, txnType, txnAmountCol, extractFirst, extractLast, extractColumn,
           enableSum, sumColumn, sumVarName, enableCol, colColumn, colVarName, enableFilter, filterCondition, filterVarName,
         },
@@ -369,7 +417,7 @@ const ScheduleBuilder = ({ events, dslFunctions, onClose, onSave }) => {
     } finally {
       setSaving(false);
     }
-  }, [scheduleName, schedulePriority, scheduleId, generatedCode, periodType, startDate, startDateSource, startDateField, startDateFormula, endDate, endDateSource, endDateField, endDateFormula, periodCount, frequency, convention, columns, contextVars, createTxn, txnType, txnAmountCol, extractFirst, extractLast, extractColumn, enableSum, sumColumn, sumVarName, enableCol, colColumn, colVarName, enableFilter, filterCondition, filterVarName, onSave]);
+  }, [scheduleName, schedulePriority, scheduleId, generatedCode, periodType, startDate, startDateSource, startDateField, startDateFormula, endDate, endDateSource, endDateField, endDateFormula, periodCount, frequency, convention, columns, createTxn, txnType, txnAmountCol, extractFirst, extractLast, extractColumn, enableSum, sumColumn, sumVarName, enableCol, colColumn, colVarName, enableFilter, filterCondition, filterVarName, onSave]);
 
   // Compute a simple mock preview of what the schedule table would look like
   const previewHeaders = useMemo(() => columns.filter(c => c.name).map(c => c.name), [columns]);
@@ -393,17 +441,11 @@ const ScheduleBuilder = ({ events, dslFunctions, onClose, onSave }) => {
           <TextField size="small" label="Schedule Name *" value={scheduleName}
             onChange={(e) => setScheduleName(e.target.value)}
             placeholder="e.g., Loan Amortization Schedule"
-            required
-            error={!scheduleName.trim()}
-            helperText={!scheduleName.trim() ? 'Required' : ''}
             sx={{ flex: 1 }} />
-          <TextField size="small" label="Schedule Priority *" value={schedulePriority}
+          <TextField size="small" label="Priority *" value={schedulePriority}
             onChange={(e) => { const v = e.target.value; if (v === '' || /^\d+$/.test(v)) setSchedulePriority(v === '' ? '' : Number(v)); }}
             placeholder="e.g., 2"
             type="number"
-            required
-            error={schedulePriority === '' || schedulePriority === null || schedulePriority === undefined}
-            helperText={schedulePriority === '' || schedulePriority === null || schedulePriority === undefined ? 'Required' : ''}
             inputProps={{ min: 0, step: 1 }}
             sx={{ width: 140 }} />
         </Box>
@@ -535,32 +577,6 @@ const ScheduleBuilder = ({ events, dslFunctions, onClose, onSave }) => {
 
         <Divider sx={{ mb: 2 }} />
 
-        {/* Context Variables */}
-        <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 1 }}>
-          <Typography variant="body2" fontWeight={600}>
-            <Hash size={14} style={{ display: 'inline', marginRight: 6, verticalAlign: 'middle' }} />
-            Input Parameters
-          </Typography>
-          <Button size="small" startIcon={<Plus size={14} />} onClick={addContextVar}>Add</Button>
-        </Box>
-        <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1, mb: 2 }}>
-          {contextVars.map((v, idx) => (
-            <Box key={idx} sx={{ display: 'flex', gap: 1, alignItems: 'center' }}>
-              <TextField size="small" label="Name" value={v.name}
-                onChange={(e) => updateContextVar(idx, 'name', e.target.value.replace(/[^a-zA-Z0-9_]/g, ''))}
-                sx={{ flex: '0 0 160px' }} placeholder="e.g., principal" />
-              <TextField size="small" label="Value" value={v.value} fullWidth
-                onChange={(e) => updateContextVar(idx, 'value', e.target.value)}
-                placeholder="e.g., 100000" />
-              <IconButton size="small" onClick={() => removeContextVar(idx)} sx={{ color: '#F44336' }}>
-                <Trash2 size={14} />
-              </IconButton>
-            </Box>
-          ))}
-        </Box>
-
-        <Divider sx={{ mb: 2 }} />
-
         {/* Column Presets */}
         <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 1 }}>
           <Typography variant="body2" fontWeight={600}>
@@ -601,7 +617,7 @@ const ScheduleBuilder = ({ events, dslFunctions, onClose, onSave }) => {
 
         {columns.map((col, idx) => (
           <ColumnCard key={idx} column={col} index={idx} events={events}
-            variables={contextVars.filter(v => v.name).map(v => v.name)}
+            variables={[...new Set([...autoDetectedVars, ...savedRulesVarNames])]}
             onUpdate={updateColumn} onRemove={removeColumn}
             onMoveUp={() => moveColumn(idx, -1)} onMoveDown={() => moveColumn(idx, 1)}
             isFirst={idx === 0} isLast={idx === columns.length - 1} />
@@ -791,6 +807,17 @@ const ScheduleBuilder = ({ events, dslFunctions, onClose, onSave }) => {
           </Alert>
         )}
       </Box>
+
+      {/* Validation Dialog */}
+      <Dialog open={!!validationMsg} onClose={() => setValidationMsg('')}>
+        <DialogTitle>Missing Required Field</DialogTitle>
+        <DialogContent>
+          <DialogContentText>{validationMsg}</DialogContentText>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setValidationMsg('')} autoFocus>OK</Button>
+        </DialogActions>
+      </Dialog>
 
       {/* Action Bar */}
       <Box sx={{ p: 2, borderTop: '1px solid #E9ECEF', bgcolor: 'white', display: 'flex', gap: 1, justifyContent: 'flex-end', flexShrink: 0 }}>

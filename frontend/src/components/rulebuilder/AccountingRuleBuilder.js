@@ -2,7 +2,7 @@ import React, { useState, useMemo, useCallback, useEffect } from "react";
 import {
   Box, Typography, Card, CardContent, Button, TextField, MenuItem, Chip, IconButton,
   Tooltip, Divider, Select, FormControl, InputLabel, Paper, Switch, FormControlLabel,
-  Alert, CircularProgress,
+  Alert, CircularProgress, Dialog, DialogTitle, DialogContent, DialogContentText, DialogActions,
 } from "@mui/material";
 import {
   Plus, Trash2, ArrowUp, ArrowDown, Play, Code, Eye, Save, Sparkles,
@@ -40,13 +40,10 @@ const VariableRow = ({ variable, index, events, definedVarNames, onUpdate, onRem
           <Box sx={{ flex: 1, minWidth: 0 }}>
             <Box sx={{ display: 'flex', gap: 1, mb: 1 }}>
               <TextField
-                size="small" label="Variable Name" value={variable.name}
+                size="small" label="Variable Name *" value={variable.name}
                 onChange={(e) => onUpdate(index, { ...variable, name: e.target.value.replace(/[^a-zA-Z0-9_]/g, '') })}
                 sx={{ flex: 1 }}
                 placeholder="e.g., monthly_payment"
-                required
-                error={!variable.name}
-                helperText={!variable.name ? 'Required' : ''}
               />
               <FormControl size="small" sx={{ minWidth: 150 }}>
                 <InputLabel>Source</InputLabel>
@@ -257,6 +254,7 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
   const [saving, setSaving] = useState(false);
   const [showCode, setShowCode] = useState(false);
   const [saveResult, setSaveResult] = useState(null); // { success, output, error }
+  const [validationMsg, setValidationMsg] = useState('');
 
   // Variable CRUD
   const addVariable = useCallback(() => {
@@ -466,11 +464,16 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
 
   const handleSave = useCallback(async () => {
     if (!ruleName.trim()) {
-      setSaveResult({ success: false, error: 'Please enter a rule name before saving.' });
+      setValidationMsg('Rule Name is required and not populated.');
       return;
     }
     if (rulePriority === '' || rulePriority === null || rulePriority === undefined) {
-      setSaveResult({ success: false, error: 'Please enter a rule priority before saving.' });
+      setValidationMsg('Priority is required and not populated.');
+      return;
+    }
+    const emptyVars = variables.filter(v => !v.name);
+    if (emptyVars.length > 0) {
+      setValidationMsg('Variable Name is required and not populated for one or more calculation steps.');
       return;
     }
     setSaving(true);
@@ -530,17 +533,11 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
           <TextField size="small" label="Rule Name *" value={ruleName}
             onChange={(e) => setRuleName(e.target.value)}
             placeholder="e.g., Monthly Interest Accrual"
-            required
-            error={!ruleName.trim()}
-            helperText={!ruleName.trim() ? 'Required' : ''}
             sx={{ flex: 1 }} />
-          <TextField size="small" label="Rule Priority *" value={rulePriority}
+          <TextField size="small" label="Priority *" value={rulePriority}
             onChange={(e) => { const v = e.target.value; if (v === '' || /^\d+$/.test(v)) setRulePriority(v === '' ? '' : Number(v)); }}
             placeholder="e.g., 1"
             type="number"
-            required
-            error={rulePriority === '' || rulePriority === null || rulePriority === undefined}
-            helperText={rulePriority === '' || rulePriority === null || rulePriority === undefined ? 'Required' : ''}
             inputProps={{ min: 0, step: 1 }}
             sx={{ width: 140 }} />
         </Box>
@@ -840,6 +837,17 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
           </Alert>
         )}
       </Box>
+
+      {/* Validation Dialog */}
+      <Dialog open={!!validationMsg} onClose={() => setValidationMsg('')}>
+        <DialogTitle>Missing Required Field</DialogTitle>
+        <DialogContent>
+          <DialogContentText>{validationMsg}</DialogContentText>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setValidationMsg('')} autoFocus>OK</Button>
+        </DialogActions>
+      </Dialog>
 
       {/* Action Bar */}
       <Box sx={{ p: 2, borderTop: '1px solid #E9ECEF', bgcolor: 'white', display: 'flex', gap: 1, justifyContent: 'flex-end', flexShrink: 0 }}>
