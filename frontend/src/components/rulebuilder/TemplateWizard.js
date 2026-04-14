@@ -15,56 +15,47 @@ import ACCOUNTING_TEMPLATES from "./AccountingTemplates";
 import { API } from "../../config";
 
 /**
- * Parse generated DSL code into Rule Builder-compatible variables and outputs.
- * Converts assignment lines → variables, print → outputs, createTransaction → outputs.transactions.
+ * Parse generated DSL code into multiple Rule Builder-compatible rules.
+ * Splits code into: simple_calc (parameters), schedule (custom_code),
+ * conditional, iteration blocks — each as a separate rule.
  */
-function parseDSLToRuleVariables(code) {
+function parseDSLToRules(code, templateTitle) {
   const lines = code.split('\n');
-  const variables = [];
-  const transactions = [];
-  let hasCreateTxn = false;
+  const statements = []; // { type, name, rhs, rawLines, ... }
   let i = 0;
 
+  // Phase 1: Parse lines into statements
   while (i < lines.length) {
     const line = lines[i].trim();
+    const rawLine = lines[i];
 
-    // Skip empty lines, comments, print statements
-    if (!line || line.startsWith('##') || line.startsWith('print(') || line.startsWith('print (')) {
-      i++;
-      continue;
+    if (!line || line.startsWith('##')) {
+      statements.push({ type: 'skip', raw: rawLine });
+      i++; continue;
     }
 
-    // Handle createTransaction — parse for outputs
+    if (line.startsWith('print(') || line.startsWith('print (')) {
+      statements.push({ type: 'print', raw: rawLine });
+      i++; continue;
+    }
+
     if (line.startsWith('createTransaction(')) {
-      hasCreateTxn = true;
       const inner = line.slice('createTransaction('.length, -1);
-      const args = [];
-      let depth = 0, current = '';
-      for (const ch of inner) {
-        if (ch === '(' || ch === '[' || ch === '{') depth++;
-        if (ch === ')' || ch === ']' || ch === '}') depth--;
-        if (ch === ',' && depth === 0) { args.push(current.trim()); current = ''; }
-        else { current += ch; }
-      }
-      if (current.trim()) args.push(current.trim());
-      transactions.push({
-        type: (args[2] || '').replace(/^"|"$/g, ''),
-        amount: args[3] || '',
-        postingDate: args[0] || '',
-        effectiveDate: args[1] || '',
-        subInstrumentId: args[4] || '',
+      const args = splitArgs(inner);
+      statements.push({
+        type: 'createTransaction', raw: rawLine,
+        txnType: (args[2] || '').replace(/^"|"$/g, ''),
+        amount: args[3] || '', postingDate: args[0] || '',
+        effectiveDate: args[1] || '', subInstrumentId: args[4] || '',
       });
-      i++;
-      continue;
+      i++; continue;
     }
 
-    // Handle assignments (possibly multi-line)
     const assignMatch = line.match(/^([a-zA-Z_]\w*)\s*=\s*(.*)/);
     if (assignMatch) {
       const name = assignMatch[1];
       let rhs = assignMatch[2];
-
-      // Track bracket/paren depth for multi-line
+      const startLine = i;
       let depth = 0;
       for (const ch of rhs) { if ('({['.includes(ch)) depth++; if (')}]'.includes(ch)) depth--; }
       while (depth > 0 && i + 1 < lines.length) {
@@ -73,48 +64,299 @@ function parseDSLToRuleVariables(code) {
         for (const ch of lines[i]) { if ('({['.includes(ch)) depth++; if (')}]'.includes(ch)) depth--; }
       }
       rhs = rhs.trim();
+      const rawLines = lines.slice(startLine, i + 1).join('\n');
 
-      // Detect collect functions
-      const collectMatch = rhs.match(/^(collect_by_instrument|collect_all|collect_by_subinstrument|collect_subinstrumentids|collect)\(([^)]*)\)$/);
-      if (collectMatch) {
-        variables.push({ name, source: 'collect', collectType: collectMatch[1], eventField: collectMatch[2] || '', value: '', formula: '' });
-        i++; continue;
-      }
-
-      // Detect plain number
-      if (/^-?\d+(\.\d+)?$/.test(rhs)) {
-        variables.push({ name, source: 'value', value: rhs, formula: '', eventField: '', collectType: 'collect' });
-        i++; continue;
-      }
-
-      // Detect quoted string
-      if (/^"[^"]*"$/.test(rhs)) {
-        variables.push({ name, source: 'value', value: rhs, formula: '', eventField: '', collectType: 'collect' });
-        i++; continue;
-      }
-
-      // Detect event field reference (EventName.field_name)
-      if (/^[A-Z][a-zA-Z0-9]*\.[a-zA-Z_]\w*$/.test(rhs)) {
-        variables.push({ name, source: 'event_field', eventField: rhs, value: '', formula: '', collectType: 'collect' });
-        i++; continue;
-      }
-
-      // Everything else is a formula
-      variables.push({ name, source: 'formula', formula: rhs, value: '', eventField: '', collectType: 'collect' });
+      // Classify by RHS content
+      const stype = classifyAssignment(name, rhs);
+      statements.push({ ...stype, name, rhs, raw: rawLines });
       i++; continue;
     }
 
+    statements.push({ type: 'other', raw: rawLine });
     i++;
   }
 
-  const outputs = {
-    printResult: true,
-    createTransaction: hasCreateTxn,
-    transactions: transactions.length > 0 ? transactions
-      : [{ type: 'Calculation Result', amount: '', postingDate: '', effectiveDate: '', subInstrumentId: '' }],
-  };
+  // Phase 2: Bucket statements by type (collect ALL variables into one group)
+  const defaultOutputs = { printResult: true, createTransaction: false, transactions: [{ type: '', amount: '', postingDate: '', effectiveDate: '', subInstrumentId: '' }] };
+  const defaultRule = { conditions: [], elseFormula: '', conditionResultVar: 'result', iterConfig: {}, outputs: { ...defaultOutputs } };
 
-  return { variables, outputs };
+  const paramStmts = [];     // all simple variable assignments
+  const iterStmts = [];      // iteration statements + their prints
+  const schedStmts = [];     // schedule statements + their prints
+  const condStmts = [];      // conditional statements
+  const journalStmts = [];   // createTransaction statements
+  let lastComplexType = null; // for assigning prints to the right bucket
+
+  for (const stmt of statements) {
+    if (stmt.type === 'skip') continue;
+
+    if (stmt.type === 'variable') {
+      paramStmts.push(stmt);
+      continue;
+    }
+
+    if (stmt.type === 'schedule') {
+      schedStmts.push(stmt);
+      lastComplexType = 'schedule';
+      continue;
+    }
+
+    if (stmt.type === 'iteration') {
+      iterStmts.push(stmt);
+      lastComplexType = 'iteration';
+      continue;
+    }
+
+    if (stmt.type === 'conditional') {
+      condStmts.push(stmt);
+      lastComplexType = 'conditional';
+      continue;
+    }
+
+    if (stmt.type === 'createTransaction') {
+      journalStmts.push(stmt);
+      lastComplexType = 'journal';
+      continue;
+    }
+
+    if (stmt.type === 'print') {
+      if (lastComplexType === 'schedule') schedStmts.push(stmt);
+      else if (lastComplexType === 'iteration') iterStmts.push(stmt);
+      else if (lastComplexType === 'conditional') condStmts.push(stmt);
+      // prints before any complex block are standalone; skip them from rules
+      continue;
+    }
+  }
+
+  // Phase 3: Create rules in logical execution order
+  const rules = [];
+
+  // 1. Parameters rule (simple_calc) — all simple variables
+  if (paramStmts.length > 0) {
+    const vars = paramStmts.map(s => classifyToVariable(s));
+    const genCode = paramStmts.map(s => s.raw).join('\n');
+    rules.push({
+      ...defaultRule,
+      name: `${templateTitle} - Parameters`,
+      ruleType: 'simple_calc',
+      variables: vars,
+      generatedCode: genCode,
+      customCode: '',
+    });
+  }
+
+  // 2. Conditional rules — one per iif() assignment
+  for (const stmt of condStmts) {
+    if (stmt.type !== 'conditional') continue;
+    const parsed = parseIif(stmt.rhs);
+    rules.push({
+      ...defaultRule,
+      name: `${templateTitle} - Conditional`,
+      ruleType: 'conditional',
+      variables: [],
+      conditions: parsed.conditions,
+      elseFormula: parsed.elseFormula,
+      conditionResultVar: stmt.name,
+      generatedCode: stmt.raw,
+      customCode: '',
+    });
+  }
+
+  // 3. Iteration rule — single iteration gets proper type, multiple get custom_code
+  if (iterStmts.length > 0) {
+    const iterAssigns = iterStmts.filter(s => s.type === 'iteration');
+    const genCode = iterStmts.map(s => s.raw).join('\n');
+
+    if (iterAssigns.length === 1) {
+      const iterCfg = parseIterConfig(iterAssigns[0].rhs, iterAssigns[0].name);
+      rules.push({
+        ...defaultRule,
+        name: `${templateTitle} - Iteration`,
+        ruleType: 'iteration',
+        variables: [],
+        iterConfig: iterCfg,
+        generatedCode: genCode,
+        customCode: '',
+      });
+    } else {
+      rules.push({
+        ...defaultRule,
+        name: `${templateTitle} - Iteration`,
+        ruleType: 'custom_code',
+        variables: [],
+        generatedCode: genCode,
+        customCode: genCode,
+      });
+    }
+  }
+
+  // 4. Schedule rule (custom_code) — all schedule-related lines
+  if (schedStmts.length > 0) {
+    const genCode = schedStmts.map(s => s.raw).join('\n');
+    rules.push({
+      ...defaultRule,
+      name: `${templateTitle} - Schedule`,
+      ruleType: 'custom_code',
+      variables: [],
+      generatedCode: genCode,
+      customCode: genCode,
+    });
+  }
+
+  // 5. Journal Entry rule — all createTransaction lines
+  if (journalStmts.length > 0) {
+    const txn = journalStmts[0];
+    const genCode = journalStmts.map(s => s.raw).join('\n');
+    rules.push({
+      ...defaultRule,
+      name: `${templateTitle} - Journal Entry`,
+      ruleType: 'custom_code',
+      variables: [],
+      outputs: {
+        printResult: false,
+        createTransaction: true,
+        transactions: [{ type: txn.txnType, amount: txn.amount, postingDate: txn.postingDate, effectiveDate: txn.effectiveDate, subInstrumentId: txn.subInstrumentId }],
+      },
+      generatedCode: genCode,
+      customCode: genCode,
+    });
+  }
+
+  // Fallback: if no rules created, one catch-all custom_code rule
+  if (rules.length === 0) {
+    rules.push({
+      ...defaultRule,
+      name: templateTitle,
+      ruleType: 'custom_code',
+      variables: [],
+      generatedCode: code,
+      customCode: code,
+    });
+  }
+
+  // Deduplicate rule names
+  const nameCounts = {};
+  for (const rule of rules) {
+    if (nameCounts[rule.name]) {
+      nameCounts[rule.name]++;
+      rule.name = `${rule.name} ${nameCounts[rule.name]}`;
+    } else {
+      nameCounts[rule.name] = 1;
+    }
+  }
+
+  return rules;
+}
+
+/** Split comma-separated args respecting nesting */
+function splitArgs(str) {
+  const args = [];
+  let depth = 0, current = '';
+  for (const ch of str) {
+    if (ch === '(' || ch === '[' || ch === '{') depth++;
+    if (ch === ')' || ch === ']' || ch === '}') depth--;
+    if (ch === ',' && depth === 0) { args.push(current.trim()); current = ''; }
+    else { current += ch; }
+  }
+  if (current.trim()) args.push(current.trim());
+  return args;
+}
+
+/** Classify an assignment statement by its RHS */
+function classifyAssignment(name, rhs) {
+  // Schedule-related
+  if (/^(schedule|period|schedule_sum|schedule_filter|schedule_first|schedule_last)\s*\(/.test(rhs)) {
+    return { type: 'schedule' };
+  }
+  // Also treat add_months/add_years before a period as schedule-related if var name suggests it
+  if (/^(add_months|add_years)\s*\(/.test(rhs) && /end_date|start_date|maturity/i.test(name)) {
+    return { type: 'schedule' };
+  }
+  // Conditional
+  if (/^iif\s*\(/.test(rhs)) {
+    return { type: 'conditional' };
+  }
+  // Iteration
+  if (/^(map_array|for_each)\s*\(/.test(rhs)) {
+    return { type: 'iteration' };
+  }
+  return { type: 'variable' };
+}
+
+/** Convert a parsed statement into a Rule Builder variable object */
+function classifyToVariable(stmt) {
+  const rhs = stmt.rhs;
+  const base = { name: stmt.name, value: '', formula: '', eventField: '', collectType: 'collect' };
+
+  // Collect functions
+  const collectMatch = rhs.match(/^(collect_by_instrument|collect_all|collect_by_subinstrument|collect_subinstrumentids|collect)\(([^)]*)\)$/);
+  if (collectMatch) return { ...base, source: 'collect', collectType: collectMatch[1], eventField: collectMatch[2] || '' };
+
+  // Plain number
+  if (/^-?\d+(\.\d+)?$/.test(rhs)) return { ...base, source: 'value', value: rhs };
+
+  // Quoted string
+  if (/^"[^"]*"$/.test(rhs)) return { ...base, source: 'value', value: rhs };
+
+  // Event field reference (EventName.field_name)
+  if (/^[A-Z][a-zA-Z0-9]*\.[a-zA-Z_]\w*$/.test(rhs)) return { ...base, source: 'event_field', eventField: rhs };
+
+  // Array literal — treat as value
+  if (/^\[.*\]$/.test(rhs)) return { ...base, source: 'value', value: rhs };
+
+  // Formula
+  return { ...base, source: 'formula', formula: rhs };
+}
+
+/** Parse a (possibly nested) iif() call into conditions array + elseFormula */
+function parseIif(rhs) {
+  const conditions = [];
+  let current = rhs;
+  while (true) {
+    const m = current.match(/^iif\s*\((.*)\)$/s);
+    if (!m) break;
+    const inner = m[1];
+    const args = splitArgs(inner);
+    if (args.length < 3) break;
+    conditions.push({ condition: args[0], thenFormula: args[1] });
+    const rest = args.slice(2).join(', ');
+    if (/^iif\s*\(/.test(rest)) {
+      current = rest;
+    } else {
+      return { conditions, elseFormula: rest };
+    }
+  }
+  return { conditions: conditions.length ? conditions : [{ condition: '', thenFormula: '' }], elseFormula: current };
+}
+
+/** Parse map_array/for_each into iterConfig */
+function parseIterConfig(rhs, resultVar) {
+  const mapMatch = rhs.match(/^map_array\s*\((.*)\)$/s);
+  if (mapMatch) {
+    const args = splitArgs(mapMatch[1]);
+    return {
+      type: 'map_array',
+      sourceArray: args[0] || '',
+      varName: (args[1] || '').replace(/^"|"$/g, ''),
+      expression: (args[2] || '').replace(/^"|"$/g, ''),
+      resultVar: resultVar || 'mapped_result',
+      secondArray: '', secondVar: 'amount',
+    };
+  }
+  const feMatch = rhs.match(/^for_each\s*\((.*)\)$/s);
+  if (feMatch) {
+    const args = splitArgs(feMatch[1]);
+    return {
+      type: 'for_each',
+      sourceArray: args[0] || '',
+      secondArray: args[1] || '',
+      varName: (args[2] || '').replace(/^"|"$/g, ''),
+      secondVar: (args[3] || '').replace(/^"|"$/g, ''),
+      expression: (args[4] || '').replace(/^"|"$/g, ''),
+      resultVar: resultVar || 'mapped_result',
+    };
+  }
+  return { type: 'map_array', sourceArray: '', varName: 'item', expression: '', resultVar: resultVar || 'mapped_result', secondArray: '', secondVar: 'amount' };
 }
 
 const ICON_MAP = {
@@ -258,14 +500,8 @@ const TemplateWizard = ({ template, events, onGenerate, onClose }) => {
 
   const handleApply = useCallback(() => {
     const code = generatedCode || template.generateDSL(config);
-    const parsed = parseDSLToRuleVariables(code);
-    onGenerate(code, { rules: [{
-      name: template.title,
-      ruleType: 'simple_calc',
-      variables: parsed.variables,
-      outputs: parsed.outputs,
-      generatedCode: code,
-    }] });
+    const rules = parseDSLToRules(code, template.title);
+    onGenerate(code, { rules });
   }, [generatedCode, template, config, onGenerate]);
 
   const isStep1Valid = useMemo(() => {

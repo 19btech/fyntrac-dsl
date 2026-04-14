@@ -3839,6 +3839,7 @@ async def save_rule(request: dict):
         "outputs": request.get("outputs", {}),
         "inlineComment": request.get("inlineComment", False),
         "commentText": request.get("commentText", ""),
+        "customCode": request.get("customCode", ""),
         "generatedCode": request.get("generatedCode", ""),
         "updated_at": now,
     }

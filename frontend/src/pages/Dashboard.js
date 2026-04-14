@@ -552,7 +552,9 @@ const Dashboard = () => {
               conditions: rule.conditions || [],
               elseFormula: rule.elseFormula || '',
               conditionResultVar: rule.conditionResultVar || 'result',
+              iterConfig: rule.iterConfig || {},
               outputs: rule.outputs || {},
+              customCode: rule.customCode || '',
               generatedCode: rule.generatedCode || '',
             });
             created++;
