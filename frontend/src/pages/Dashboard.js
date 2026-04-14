@@ -768,7 +768,7 @@ const Dashboard = () => {
           {/* Center - Editor and Console */}
           <Box sx={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0, overflow: 'hidden' }}>
             <Box sx={{ borderBottom: 1, borderColor: 'divider', bgcolor: 'white', px: 3 }}>
-              <Tabs value={tabValue} onChange={(e, newValue) => setTabValue(newValue)}>
+              <Tabs value={tabValue} onChange={(e, newValue) => { setTabValue(newValue); if (newValue === 1) { setEditorMode('savedRules'); } }}>
                 <Tab 
                   icon={<Upload className="w-4 h-4" />} 
                   iconPosition="start" 
@@ -828,14 +828,14 @@ const Dashboard = () => {
                   size="small"
                   sx={{ '& .MuiToggleButton-root': { textTransform: 'none', fontSize: '0.75rem', px: 1.5, py: 0.5 } }}
                 >
+                  <ToggleButton value="savedRules">
+                    <Tooltip title="View and manage saved rules"><Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}><Save size={14} /> Rule Manager</Box></Tooltip>
+                  </ToggleButton>
                   <ToggleButton value="ruleBuilder">
                     <Tooltip title="Build calculations using forms"><Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}><Calculator size={14} /> Rule Builder</Box></Tooltip>
                   </ToggleButton>
                   <ToggleButton value="scheduleBuilder">
                     <Tooltip title="Build amortization schedules visually"><Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}><TableIcon size={14} /> Schedule Builder</Box></Tooltip>
-                  </ToggleButton>
-                  <ToggleButton value="savedRules">
-                    <Tooltip title="View and manage saved rules"><Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}><Save size={14} /> Rule Manager</Box></Tooltip>
                   </ToggleButton>
                   <ToggleButton value="preview">
                     <Tooltip title="View business preview of execution results"><Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}><Eye size={14} /> Business Preview</Box></Tooltip>
