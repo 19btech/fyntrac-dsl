@@ -76,7 +76,7 @@ const Dashboard = () => {
   const [editingSchedule, setEditingSchedule] = useState(null);
   const [savedRulesRefreshKey, setSavedRulesRefreshKey] = useState(0);
   // Execution results for LivePreview
-  const [lastExecutionResult, setLastExecutionResult] = useState({ transactions: [], printOutputs: [] });
+  const [lastExecutionResult, setLastExecutionResult] = useState({ transactions: [], printOutputs: [], templateName: '' });
   // Template batch execution state
   const [batchRunning, setBatchRunning] = useState(false);
   const [batchStatus, setBatchStatus] = useState(null); // { total, current, currentDate, results, errors }
@@ -1045,6 +1045,7 @@ const Dashboard = () => {
                 <LivePreview
                   consoleOutput={consoleOutput}
                   transactions={lastExecutionResult.transactions}
+                  templateName={lastExecutionResult.templateName}
                   visible={true}
                 />
               )}
@@ -1108,7 +1109,7 @@ const Dashboard = () => {
                         // ignore
                       }
 
-                      setLastExecutionResult({ transactions: [], printOutputs: [] });
+                      setLastExecutionResult({ transactions: [], printOutputs: [], templateName: '' });
                       setSavedRulesRefreshKey(k => k + 1);
 
                       await loadEvents();

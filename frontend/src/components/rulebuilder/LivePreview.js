@@ -1,9 +1,11 @@
-import React, { useMemo } from "react";
+import React, { useMemo, useRef, useCallback, useState } from "react";
 import {
   Box, Typography, Card, CardContent, Chip, Alert, Table, TableBody,
   TableCell, TableContainer, TableHead, TableRow, Paper, Divider, Tooltip, IconButton,
+  CircularProgress,
 } from "@mui/material";
-import { Eye, AlertTriangle, CheckCircle2, FileText, DollarSign, Calendar, TrendingUp } from "lucide-react";
+import { Eye, AlertTriangle, CheckCircle2, FileText, DollarSign, Calendar, TrendingUp, Download } from "lucide-react";
+import html2pdf from "html2pdf.js";
 
 const formatNumber = (val) => {
   if (val === null || val === undefined || val === '') return '—';
@@ -185,7 +187,9 @@ const SummaryMetrics = ({ transactions, schedules }) => {
  *   warnings: array of { message, severity } validation warnings
  *   visible: boolean
  */
-const LivePreview = ({ consoleOutput = [], transactions = [], schedules = [], warnings = [], visible = true }) => {
+const LivePreview = ({ consoleOutput = [], transactions = [], schedules = [], warnings = [], visible = true, templateName = '' }) => {
+  const contentRef = useRef(null);
+  const [exporting, setExporting] = useState(false);
   // Extract schedule data from console print outputs
   const extractedSchedules = useMemo(() => {
     if (schedules && schedules.length > 0) return schedules;
@@ -245,14 +249,54 @@ const LivePreview = ({ consoleOutput = [], transactions = [], schedules = [], wa
 
   const hasContent = extractedSchedules.length > 0 || transactions.length > 0;
 
+  const handleExportPDF = useCallback(async () => {
+    if (!contentRef.current) return;
+    setExporting(true);
+    try {
+      const slug = (templateName || 'business-preview').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/-+$/, '');
+      const filename = `${slug}-preview.pdf`;
+      const element = contentRef.current;
+      await html2pdf().set({
+        margin: [12, 10, 12, 10],
+        filename,
+        image: { type: 'jpeg', quality: 0.98 },
+        html2canvas: { scale: 2, useCORS: true, logging: false },
+        jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' },
+        pagebreak: { mode: ['avoid-all', 'css', 'legacy'] },
+      }).from(element).save();
+    } catch (err) {
+      console.error('PDF export failed:', err);
+    } finally {
+      setExporting(false);
+    }
+  }, [templateName]);
+
   if (!visible) return null;
 
   return (
     <Box sx={{ p: 2, bgcolor: '#F8F9FA', height: '100%', overflowY: 'auto' }} data-testid="live-preview">
       <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 2 }}>
         <Eye size={18} color="#5B5FED" />
-        <Typography variant="h6" sx={{ fontSize: '0.9375rem' }}>Business Preview</Typography>
+        <Typography variant="h6" sx={{ fontSize: '0.9375rem', flex: 1 }}>Business Preview</Typography>
+        {hasContent && (
+          <Tooltip title="Download as PDF">
+            <IconButton size="small" onClick={handleExportPDF} disabled={exporting}
+              sx={{ color: '#5B5FED', '&:hover': { bgcolor: '#EEF0FE' } }}>
+              {exporting ? <CircularProgress size={16} /> : <Download size={16} />}
+            </IconButton>
+          </Tooltip>
+        )}
       </Box>
+
+      <Box ref={contentRef}>
+      {templateName && hasContent && (
+        <Box sx={{ mb: 2, pb: 1, borderBottom: '1px solid #E9ECEF' }} className="pdf-header">
+          <Typography variant="subtitle1" fontWeight={700} color="text.primary">{templateName}</Typography>
+          <Typography variant="caption" color="text.secondary">
+            Generated {new Date().toLocaleDateString()}
+          </Typography>
+        </Box>
+      )}
 
       {!hasContent && computedWarnings.length === 0 && (
         <Card sx={{ textAlign: 'center', py: 4 }}>
@@ -273,11 +317,12 @@ const LivePreview = ({ consoleOutput = [], transactions = [], schedules = [], wa
           <SummaryMetrics transactions={transactions} schedules={extractedSchedules} />
           <ValidationWarnings warnings={computedWarnings} />
           {extractedSchedules.map((sched, idx) => (
-            <SchedulePreview key={idx} data={sched} title={extractedSchedules.length > 1 ? `Schedule ${idx + 1}` : 'Schedule'} />
+            <SchedulePreview key={idx} data={sched} title={extractedSchedules.length > 1 ? `Schedule ${idx + 1}` : 'Schedule'} maxRows={999} />
           ))}
           <TransactionPreview transactions={transactions} />
         </>
       )}
+      </Box>
     </Box>
   );
 };

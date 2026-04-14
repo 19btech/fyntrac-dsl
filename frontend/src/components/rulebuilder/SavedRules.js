@@ -179,9 +179,12 @@ const SavedRules = ({ onEditRule, onEditSchedule, refreshKey, onPlayAll, onClear
         }
       }
       if (allTransactions.length > 0 || allPrintOutputs.length > 0) {
+        const ruleNames = sortedRules.map(r => r.name).filter(Boolean);
+        const baseName = ruleNames.length > 0 ? ruleNames[0].replace(/\s*-\s*(Parameters|Schedule|Iteration|Transactions|Conditional)$/i, '') : '';
         onPlayAll({
           transactions: allTransactions,
           printOutputs: allPrintOutputs,
+          templateName: baseName,
         });
       } else if (lastError) {
         setError(lastError);

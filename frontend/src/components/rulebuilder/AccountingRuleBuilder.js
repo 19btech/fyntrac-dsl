@@ -291,10 +291,18 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
     const allCurrentVarNames = new Set(variables.filter(v => v.name).map(v => v.name));
     const lines = [];
 
+    // Build set of known event names so we can skip stale references
+    const knownEvents = new Set((events || []).map(e => (e.event_name || '').toLowerCase()));
+
     // First, emit definitions from OTHER saved rules only (skip anything the current rule owns)
     const emittedSaved = new Set();
     for (const v of savedRulesVars) {
       if (!v.name || allCurrentVarNames.has(v.name) || emittedSaved.has(v.name)) continue;
+      // Skip variables referencing events that don't exist in current tenant
+      if ((v.source === 'event_field' || v.source === 'collect') && v.eventField) {
+        const evtName = v.eventField.split('.')[0];
+        if (evtName && !knownEvents.has(evtName.toLowerCase())) continue;
+      }
       emittedSaved.add(v.name);
       if (v.source === 'value') {
         lines.push(`${v.name} = ${v.value || 0}`);
@@ -339,7 +347,7 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
       const errMsg = data.error || (typeof data.detail === 'string' ? data.detail : JSON.stringify(data.detail)) || 'Execution failed';
       return { success: false, error: errMsg };
     }
-  }, [variables, savedRulesVars]);
+  }, [variables, savedRulesVars, events]);
 
   // Condition CRUD
   const addCondition = useCallback(() => setConditions(prev => [...prev, { condition: '', thenFormula: '' }]), []);
@@ -354,10 +362,15 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
     setCondTestResult(null);
     const lines = [];
     // Saved rule dependencies
+    const knownEvents = new Set((events || []).map(e => (e.event_name || '').toLowerCase()));
     const currentVarNames = new Set(variables.filter(v => v.name).map(v => v.name));
     const emittedSaved = new Set();
     for (const v of savedRulesVars) {
       if (!v.name || currentVarNames.has(v.name) || emittedSaved.has(v.name)) continue;
+      if ((v.source === 'event_field' || v.source === 'collect') && v.eventField) {
+        const evtName = v.eventField.split('.')[0];
+        if (evtName && !knownEvents.has(evtName.toLowerCase())) continue;
+      }
       emittedSaved.add(v.name);
       if (v.source === 'value') lines.push(`${v.name} = ${v.value || 0}`);
       else if (v.source === 'event_field') lines.push(`${v.name} = ${v.eventField}`);
@@ -402,7 +415,7 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
     } finally {
       setCondTesting(false);
     }
-  }, [variables, savedRulesVars, conditions, conditionResultVar, elseFormula]);
+  }, [variables, savedRulesVars, conditions, conditionResultVar, elseFormula, events]);
 
   // Test Iteration — run all variables + iteration to see result
   const [iterTesting, setIterTesting] = useState(false);
@@ -412,10 +425,15 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
     setIterTestResult(null);
     const lines = [];
     // Saved rule dependencies
+    const knownEvents = new Set((events || []).map(e => (e.event_name || '').toLowerCase()));
     const currentVarNames = new Set(variables.filter(v => v.name).map(v => v.name));
     const emittedSaved = new Set();
     for (const v of savedRulesVars) {
       if (!v.name || currentVarNames.has(v.name) || emittedSaved.has(v.name)) continue;
+      if ((v.source === 'event_field' || v.source === 'collect') && v.eventField) {
+        const evtName = v.eventField.split('.')[0];
+        if (evtName && !knownEvents.has(evtName.toLowerCase())) continue;
+      }
       emittedSaved.add(v.name);
       if (v.source === 'value') lines.push(`${v.name} = ${v.value || 0}`);
       else if (v.source === 'event_field') lines.push(`${v.name} = ${v.eventField}`);
@@ -493,10 +511,15 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
     const currentVarNames = new Set(variables.filter(v => v.name).map(v => v.name));
 
     // Prepend dependency variables from saved rules (skip any redefined in current rule)
+    const knownEvts = new Set((events || []).map(e => (e.event_name || '').toLowerCase()));
     const emittedSaved = new Set();
     const depLines = [];
     for (const v of savedRulesVars) {
       if (!v.name || currentVarNames.has(v.name) || emittedSaved.has(v.name)) continue;
+      if ((v.source === 'event_field' || v.source === 'collect') && v.eventField) {
+        const evtName = v.eventField.split('.')[0];
+        if (evtName && !knownEvts.has(evtName.toLowerCase())) continue;
+      }
       emittedSaved.add(v.name);
       if (v.source === 'value') {
         depLines.push(`${v.name} = ${v.value || 0}`);

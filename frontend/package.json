@@ -9,6 +9,7 @@
     "@mui/icons-material": "^5.16.0",
     "@mui/material": "^5.16.0",
     "axios": "^1.8.4",
+    "html2pdf.js": "^0.14.0",
     "http-proxy-middleware": "^3.0.5",
     "lucide-react": "^0.507.0",
     "react": "^19.0.0",
