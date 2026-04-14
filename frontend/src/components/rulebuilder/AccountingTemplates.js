@@ -199,7 +199,7 @@ const ACCOUNTING_TEMPLATES = [
 
       if (config.allocation_method === 'SSP-Weighted (Relative)') {
         lines.push('## SSP-weighted allocation');
-        lines.push('alloc_pcts = apply_each(ssp_values, "iif(gt(total_ssp, 0), divide(each, total_ssp), 0)", {"total_ssp": total_ssp})');
+        lines.push('alloc_pcts = apply_each(ssp_values, "if(gt(total_ssp, 0), divide(each, total_ssp), 0)", {"total_ssp": total_ssp})');
         lines.push('allocated_revenues = apply_each(alloc_pcts, "multiply(each, total_esp)", {"total_esp": total_esp})');
       } else {
         lines.push('## Standalone allocation');
@@ -393,7 +393,7 @@ const ACCOUNTING_TEMPLATES = [
       lines.push('sched = schedule(p, {');
       lines.push('    "year": "period_date",');
       lines.push('    "opening_nbv": "lag(\'closing_nbv\', 1, asset_cost)",');
-      lines.push('    "depreciation": "iif(gt(subtract(opening_nbv, multiply(opening_nbv, ddb_rate)), salvage_value), multiply(opening_nbv, ddb_rate), subtract(opening_nbv, salvage_value))",');
+      lines.push('    "depreciation": "if(gt(subtract(opening_nbv, multiply(opening_nbv, ddb_rate)), salvage_value), multiply(opening_nbv, ddb_rate), subtract(opening_nbv, salvage_value))",');
       lines.push('    "closing_nbv": "subtract(opening_nbv, depreciation)"');
       lines.push('}, {"asset_cost": asset_cost, "salvage_value": salvage_value, "ddb_rate": ddb_rate})');
       lines.push('');

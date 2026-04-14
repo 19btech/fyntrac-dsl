@@ -98,7 +98,7 @@ KEY DSL PATTERNS — Use these as references:
    generate_schedules(EVENT, period_def, columns, context)
 
 8. CONDITIONAL:
-   result = iif(condition, true_value, false_value)
+   result = if(condition, true_value, false_value)
 
 IMPORTANT RULES:
 - Use ONLY the DSL functions listed above — do NOT use Python standard library

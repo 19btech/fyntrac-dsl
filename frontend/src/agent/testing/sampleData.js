@@ -84,7 +84,7 @@ const SAMPLE_DATA = [
   { name: 'xor', category: 'Logical', dsl: 'print(xor(True, False))', description: 'Exclusive OR of True and False', expectedType: 'boolean' },
   { name: 'all', category: 'Logical', dsl: 'print(all([True, True, True]))', description: 'Check if all values in list are true', expectedType: 'boolean' },
   { name: 'any', category: 'Logical', dsl: 'print(any([False, False, True]))', description: 'Check if any value in list is true', expectedType: 'boolean' },
-  { name: 'iif', category: 'Logical', dsl: 'print(iif(True, "yes", "no"))', description: 'Inline IF: if True return "yes" else "no"', expectedType: 'string' },
+  { name: 'if', category: 'Logical', dsl: 'print(if(True, "yes", "no"))', description: 'Inline IF: if True return "yes" else "no"', expectedType: 'string' },
   { name: 'coalesce', category: 'Logical', dsl: 'print(coalesce(None, None, 42, 99))', description: 'Return first non-null value from list', expectedType: 'number' },
   { name: 'clamp', category: 'Logical', dsl: 'print(clamp(150, 0, 100))', description: 'Clamp 150 to range [0, 100]', expectedType: 'number' },
   { name: 'switch', category: 'Logical', dsl: 'print(switch("B", {"A": 1, "B": 2, "C": 3}, 0))', description: 'Switch on "B" returning 2 from cases dict', expectedType: 'number' },

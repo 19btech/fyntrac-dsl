@@ -31,10 +31,11 @@ def safe_eval_expression(expression: str, context: Dict[str, Any]):
     dsl_funcs = globals().get('DSL_FUNCTIONS', {})
     safe_globals.update(dsl_funcs)
 
-    # Lazy-evaluate top-level iif(...) to avoid evaluating both branches
+    # Lazy-evaluate top-level if(...) / iif(...) to avoid evaluating both branches
     expr_str = str(expression).strip()
-    if expr_str.startswith('iif(') and expr_str.endswith(')'):
-        inside = expr_str[len('iif('):-1]
+    _if_prefix = 'iif(' if expr_str.startswith('iif(') else ('if(' if expr_str.startswith('if(') else None)
+    if _if_prefix and expr_str.endswith(')'):
+        inside = expr_str[len(_if_prefix):-1]
         parts = []
         buf = ''
         depth = 0
@@ -1560,10 +1561,11 @@ def schedule(period_def: Dict[str, Any], columns: Dict[str, str], context: Dict[
                     try:
                         # Evaluate expression with full DSL context using safe evaluator
                         expr_str = str(expression)
-                        # Lazy-evaluate top-level iif(...) to avoid evaluating both branches
+                        # Lazy-evaluate top-level if(...) / iif(...) to avoid evaluating both branches
                         def _eval_iif_top(expr):
-                            # expects expr starting with iif(
-                            inside = expr[len('iif('):-1]
+                            # expects expr starting with if( or iif(
+                            _pfx = 'iif(' if expr.startswith('iif(') else 'if('
+                            inside = expr[len(_pfx):-1]
                             # split top-level commas into three parts
                             parts = []
                             buf = ''
@@ -1588,8 +1590,10 @@ def schedule(period_def: Dict[str, Any], columns: Dict[str, str], context: Dict[
                             chosen = true_expr if cond_val else false_expr
                             return safe_eval_expression(chosen, eval_context)
 
-                        if expr_str.strip().startswith('iif(') and expr_str.strip().endswith(')'):
-                            value = _eval_iif_top(expr_str.strip())
+                        _if_stripped = expr_str.strip()
+                        _if_pfx = 'iif(' if _if_stripped.startswith('iif(') else ('if(' if _if_stripped.startswith('if(') else None)
+                        if _if_pfx and _if_stripped.endswith(')'):
+                            value = _eval_iif_top(_if_stripped)
                         else:
                             value = safe_eval_expression(expr_str, eval_context)
                         # Guard: DSL functions must not return None inside schedule - replace None with 0 or []
@@ -2839,7 +2843,7 @@ def for_each_with_index(array: List[Any], var_name: str, expression: str, contex
         
         # With context for accessing other arrays:
         for_each_with_index(product_names, "name", 
-            "iif(eq(name.lower(), 'discount'), 0, array_get(esp_values, index, 0))",
+            "if(eq(name.lower(), 'discount'), 0, array_get(esp_values, index, 0))",
             {"esp_values": [1200, 800, -200]})
     """
     results = []
@@ -2891,7 +2895,7 @@ def map_array(array: List[Any], var_name: str, expression: str, context: Dict[st
         map_array(dates_arr, "d", "add_days(d, 30)")  # Shift all dates
         
         # With context:
-        map_array(names, "n", "iif(eq(n, 'Discount'), 0, array_get(values, index, 0))", {"values": [100, 200]})
+        map_array(names, "n", "if(eq(n, 'Discount'), 0, array_get(values, index, 0))", {"values": [100, 200]})
     """
     import logging
     logger = logging.getLogger(__name__)
@@ -3362,7 +3366,7 @@ DSL_FUNCTION_METADATA = [
     {"name": "xor", "params": "a, b", "description": "Return true if exactly one of the two conditions is true, but not both.", "category": "Logical"},
     {"name": "all", "params": "list", "description": "Return true only if every item in a list evaluates to true.", "category": "Logical"},
     {"name": "any", "params": "list", "description": "Return true if at least one item in a list evaluates to true.", "category": "Logical"},
-    {"name": "iif", "params": "cond, true_val, false_val", "description": "Return one of two values based on a condition — works like an IF statement in a spreadsheet.", "category": "Logical"},
+    {"name": "if", "params": "cond, true_val, false_val", "description": "Return one of two values based on a condition — works like an IF statement in a spreadsheet.", "category": "Logical"},
     {"name": "coalesce", "params": "*args", "description": "Return the first non-empty value from a list — useful for providing a fallback default when a value may be missing.", "category": "Logical"},
     {"name": "clamp", "params": "x, min, max", "description": "Restrict a value so it falls within a specified minimum and maximum range.", "category": "Logical"},
     {"name": "switch", "params": "value, cases, default", "description": "Look up a value against a set of named cases and return the matching result, or a default value if no match is found.", "category": "Logical"},

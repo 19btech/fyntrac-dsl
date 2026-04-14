@@ -15,7 +15,7 @@ import FormulaBar from "./FormulaBar";
 const RULE_TYPES = [
   { value: 'simple_calc', label: 'Simple Calculation', description: 'Compute values using formulas', icon: Calculator },
   { value: 'conditional', label: 'Conditional Logic', description: 'Apply different formulas based on conditions', icon: GitBranch },
-  { value: 'iteration', label: 'Iteration / Loop', description: 'Process arrays or collections with for_each / map', icon: Repeat },
+  { value: 'iteration', label: 'Iteration / Loop', description: 'Apply a formula to each item in an array', icon: Repeat },
   { value: 'custom_code', label: 'Custom Code', description: 'Write raw DSL code directly in the rule', icon: Code },
 ];
 
@@ -213,14 +213,16 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
             }
           });
           // Expose iteration result variables so chained iterations can reference them
-          if (r.ruleType === 'iteration' && r.iterConfig?.resultVar) {
-            const rv = r.iterConfig.resultVar;
-            if (!names.has(rv)) {
-              names.add(rv);
-              // Extract just the assignment line from generatedCode (skip comments)
-              const codeLine = (r.generatedCode || '').split('\n').find(l => l.trim().startsWith(rv + ' ='));
-              const formula = codeLine ? codeLine.trim().replace(new RegExp('^' + rv + '\\s*=\\s*'), '') : rv;
-              allVars.push({ name: rv, source: 'formula', formula, value: '', eventField: '', collectType: 'collect', _isIterResult: true });
+          if (r.ruleType === 'iteration') {
+            const iters = r.iterations?.length ? r.iterations : (r.iterConfig?.type ? [r.iterConfig] : []);
+            for (const iter of iters) {
+              const rv = iter.resultVar;
+              if (rv && !names.has(rv)) {
+                names.add(rv);
+                const codeLine = (r.generatedCode || '').split('\n').find(l => l.trim().startsWith(rv + ' ='));
+                const formula = codeLine ? codeLine.trim().replace(new RegExp('^' + rv + '\\s*=\\s*'), '') : rv;
+                allVars.push({ name: rv, source: 'formula', formula, value: '', eventField: '', collectType: 'collect', _isIterResult: true });
+              }
             }
           }
         });
@@ -242,15 +244,12 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
   const [elseFormula, setElseFormula] = useState(initialData?.elseFormula || '');
   const [conditionResultVar, setConditionResultVar] = useState(initialData?.conditionResultVar || 'result');
 
-  // Iteration config
-  const [iterConfig, setIterConfig] = useState(
-    initialData?.iterConfig?.type ? initialData.iterConfig :
-    {
-      type: 'apply_each',
-      sourceArray: '', varName: 'each', expression: '',
-      resultVar: 'mapped_result',
-      secondArray: '', secondVar: 'second',
-    }
+  // Iteration config (array of iteration blocks)
+  const DEFAULT_ITER = { type: 'apply_each', sourceArray: '', varName: 'each', expression: '', resultVar: 'mapped_result', secondArray: '', secondVar: 'second' };
+  const [iterations, setIterations] = useState(
+    initialData?.iterations?.length ? initialData.iterations :
+    initialData?.iterConfig?.type ? [initialData.iterConfig] :
+    [{ ...DEFAULT_ITER }]
   );
 
   // Outputs
@@ -401,11 +400,11 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
     // Conditional
     const validConds = conditions.filter(c => c.condition && c.thenFormula);
     if (validConds.length === 1) {
-      lines.push(`${conditionResultVar} = iif(${validConds[0].condition}, ${validConds[0].thenFormula}, ${elseFormula || 0})`);
+      lines.push(`${conditionResultVar} = if(${validConds[0].condition}, ${validConds[0].thenFormula}, ${elseFormula || 0})`);
     } else if (validConds.length > 1) {
       let nested = elseFormula || '0';
       for (let i = validConds.length - 1; i >= 0; i--) {
-        nested = `iif(${validConds[i].condition}, ${validConds[i].thenFormula}, ${nested})`;
+        nested = `if(${validConds[i].condition}, ${validConds[i].thenFormula}, ${nested})`;
       }
       lines.push(`${conditionResultVar} = ${nested}`);
     }
@@ -440,12 +439,17 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
     // Saved rule dependencies
     const knownEvents = new Set((events || []).map(e => (e.event_name || '').toLowerCase()));
     const currentVarNames = new Set(variables.filter(v => v.name).map(v => v.name));
-    // Skip the current iteration's own resultVar to avoid circular self-reference
-    if (iterConfig.resultVar) currentVarNames.add(iterConfig.resultVar);
-    // Determine which _isIterResult vars are actually needed by this iteration
-    const iterNeededIds = new Set((iterConfig.expression || '').match(/[a-zA-Z_][a-zA-Z0-9_]*/g) || []);
-    if (iterConfig.sourceArray && /^[a-zA-Z_]\w*$/.test(iterConfig.sourceArray)) iterNeededIds.add(iterConfig.sourceArray);
-    if (iterConfig.secondArray && /^[a-zA-Z_]\w*$/.test(iterConfig.secondArray)) iterNeededIds.add(iterConfig.secondArray);
+    // Skip all iteration resultVars to avoid circular self-reference
+    for (const iter of iterations) {
+      if (iter.resultVar) currentVarNames.add(iter.resultVar);
+    }
+    // Determine which _isIterResult vars are actually needed by all iterations
+    const iterNeededIds = new Set();
+    for (const iter of iterations) {
+      (iter.expression || '').match(/[a-zA-Z_][a-zA-Z0-9_]*/g)?.forEach(id => iterNeededIds.add(id));
+      if (iter.sourceArray && /^[a-zA-Z_]\w*$/.test(iter.sourceArray)) iterNeededIds.add(iter.sourceArray);
+      if (iter.secondArray && /^[a-zA-Z_]\w*$/.test(iter.secondArray)) iterNeededIds.add(iter.secondArray);
+    }
     const emittedSaved = new Set();
     const deferredIterResults = []; // _isIterResult vars emitted AFTER regular vars
     const emitSavedVar = (v) => {
@@ -484,25 +488,28 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
       else if (v.source === 'formula') lines.push(`${v.name} = ${v.formula || 0}`);
       else if (v.source === 'collect') lines.push(`${v.name} = ${v.collectType || 'collect'}(${v.eventField})`);
     }
-    // Iteration
-    // Collect all variable names available for context (current rule + saved rules)
+    // All iterations
     const allAvailableVars = [...new Set([...definedVars, ...emittedSaved])];
-    // Extract identifiers referenced in the expression to pass only what's needed
-    const exprIds = new Set((iterConfig.expression || '').match(/[a-zA-Z_][a-zA-Z0-9_]*/g) || []);
-    // Also include the source array if it's a known variable (needed for chained iterations)
-    if (iterConfig.sourceArray && /^[a-zA-Z_]\w*$/.test(iterConfig.sourceArray)) exprIds.add(iterConfig.sourceArray);
-    if (iterConfig.secondArray && /^[a-zA-Z_]\w*$/.test(iterConfig.secondArray)) exprIds.add(iterConfig.secondArray);
-    const contextVars = allAvailableVars.filter(v => exprIds.has(v));
-    if (iterConfig.type === 'apply_each') {
-      lines.push(`${iterConfig.resultVar} = apply_each(${iterConfig.sourceArray}, "${iterConfig.expression}"${contextVars.length ? `, {${contextVars.map(v => `"${v}": ${v}`).join(', ')}}` : ''})`);
-    } else if (iterConfig.type === 'apply_each_paired') {
-      lines.push(`${iterConfig.resultVar} = apply_each(${iterConfig.sourceArray}, ${iterConfig.secondArray || '[]'}, "${iterConfig.expression}"${contextVars.length ? `, {${contextVars.map(v => `"${v}": ${v}`).join(', ')}}` : ''})`);
-    } else if (iterConfig.type === 'map_array') {
-      lines.push(`${iterConfig.resultVar} = map_array(${iterConfig.sourceArray}, "${iterConfig.varName}", "${iterConfig.expression}"${contextVars.length ? `, {${contextVars.map(v => `"${v}": ${v}`).join(', ')}}` : ''})`);
-    } else {
-      lines.push(`${iterConfig.resultVar} = for_each(${iterConfig.sourceArray}, ${iterConfig.secondArray || '[]'}, "${iterConfig.varName}", "${iterConfig.secondVar}", "${iterConfig.expression}")`);
+    const iterResultVars = [];
+    for (const iter of iterations) {
+      const availableVars = [...allAvailableVars, ...iterResultVars];
+      const exprIds = new Set((iter.expression || '').match(/[a-zA-Z_][a-zA-Z0-9_]*/g) || []);
+      if (iter.sourceArray && /^[a-zA-Z_]\w*$/.test(iter.sourceArray)) exprIds.add(iter.sourceArray);
+      if (iter.secondArray && /^[a-zA-Z_]\w*$/.test(iter.secondArray)) exprIds.add(iter.secondArray);
+      const contextVars = availableVars.filter(v => exprIds.has(v));
+      if (iter.type === 'apply_each') {
+        lines.push(`${iter.resultVar} = apply_each(${iter.sourceArray}, "${iter.expression}"${contextVars.length ? `, {${contextVars.map(v => `"${v}": ${v}`).join(', ')}}` : ''})`);
+      } else if (iter.type === 'apply_each_paired') {
+        lines.push(`${iter.resultVar} = apply_each(${iter.sourceArray}, ${iter.secondArray || '[]'}, "${iter.expression}"${contextVars.length ? `, {${contextVars.map(v => `"${v}": ${v}`).join(', ')}}` : ''})`);
+      } else if (iter.type === 'map_array') {
+        lines.push(`${iter.resultVar} = map_array(${iter.sourceArray}, "${iter.varName}", "${iter.expression}"${contextVars.length ? `, {${contextVars.map(v => `"${v}": ${v}`).join(', ')}}` : ''})`);
+      } else {
+        lines.push(`${iter.resultVar} = for_each(${iter.sourceArray}, ${iter.secondArray || '[]'}, "${iter.varName}", "${iter.secondVar}", "${iter.expression}")`);
+      }
+      iterResultVars.push(iter.resultVar);
     }
-    lines.push(`print("${iterConfig.resultVar} =", ${iterConfig.resultVar})`);
+    const lastIter = iterations[iterations.length - 1];
+    if (lastIter) lines.push(`print("${lastIter.resultVar} =", ${lastIter.resultVar})`);
     try {
       const today = new Date().toISOString().split('T')[0];
       const response = await fetch(`${API}/dsl/run`, {
@@ -521,7 +528,7 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
     } finally {
       setIterTesting(false);
     }
-  }, [variables, savedRulesVars, iterConfig]);
+  }, [variables, savedRulesVars, iterations]);
 
   // Transaction CRUD
   const addTransaction = useCallback(() => {
@@ -555,15 +562,21 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
 
     // Collect current rule's variable names to avoid duplicating from saved rules
     const currentVarNames = new Set(variables.filter(v => v.name).map(v => v.name));
-    // Skip the current iteration's own resultVar to avoid circular self-reference
-    if (ruleType === 'iteration' && iterConfig.resultVar) currentVarNames.add(iterConfig.resultVar);
+    // Skip all iteration resultVars to avoid circular self-reference
+    if (ruleType === 'iteration') {
+      for (const iter of iterations) {
+        if (iter.resultVar) currentVarNames.add(iter.resultVar);
+      }
+    }
 
     // For iteration rules, determine which _isIterResult deps are actually needed
     const iterNeeded = new Set();
     if (ruleType === 'iteration') {
-      (iterConfig.expression || '').match(/[a-zA-Z_][a-zA-Z0-9_]*/g)?.forEach(id => iterNeeded.add(id));
-      if (iterConfig.sourceArray && /^[a-zA-Z_]\w*$/.test(iterConfig.sourceArray)) iterNeeded.add(iterConfig.sourceArray);
-      if (iterConfig.secondArray && /^[a-zA-Z_]\w*$/.test(iterConfig.secondArray)) iterNeeded.add(iterConfig.secondArray);
+      for (const iter of iterations) {
+        (iter.expression || '').match(/[a-zA-Z_][a-zA-Z0-9_]*/g)?.forEach(id => iterNeeded.add(id));
+        if (iter.sourceArray && /^[a-zA-Z_]\w*$/.test(iter.sourceArray)) iterNeeded.add(iter.sourceArray);
+        if (iter.secondArray && /^[a-zA-Z_]\w*$/.test(iter.secondArray)) iterNeeded.add(iter.secondArray);
+      }
     }
 
     // Prepend dependency variables from saved rules (skip any redefined in current rule)
@@ -626,12 +639,12 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
       lines.push('## Conditional Logic');
       const validConds = conditions.filter(c => c.condition && c.thenFormula);
       if (validConds.length === 1) {
-        lines.push(`${conditionResultVar} = iif(${validConds[0].condition}, ${validConds[0].thenFormula}, ${elseFormula || 0})`);
+        lines.push(`${conditionResultVar} = if(${validConds[0].condition}, ${validConds[0].thenFormula}, ${elseFormula || 0})`);
       } else if (validConds.length > 1) {
-        // Nested iif for multiple conditions
+        // Nested if for multiple conditions
         let nested = elseFormula || '0';
         for (let i = validConds.length - 1; i >= 0; i--) {
-          nested = `iif(${validConds[i].condition}, ${validConds[i].thenFormula}, ${nested})`;
+          nested = `if(${validConds[i].condition}, ${validConds[i].thenFormula}, ${nested})`;
         }
         lines.push(`${conditionResultVar} = ${nested}`);
       }
@@ -643,20 +656,23 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
       lines.push('## Iteration');
       // Collect all variable names available for context (current rule + saved rules deps)
       const allCtxVars = [...new Set([...definedVars, ...depLines.map(l => l.split(' = ')[0]).filter(Boolean)])];
-      // Extract identifiers referenced in the expression
-      const iterExprIds = new Set((iterConfig.expression || '').match(/[a-zA-Z_][a-zA-Z0-9_]*/g) || []);
-      if (iterConfig.sourceArray && /^[a-zA-Z_]\w*$/.test(iterConfig.sourceArray)) iterExprIds.add(iterConfig.sourceArray);
-      if (iterConfig.secondArray && /^[a-zA-Z_]\w*$/.test(iterConfig.secondArray)) iterExprIds.add(iterConfig.secondArray);
-      const iterCtxVars = allCtxVars.filter(v => iterExprIds.has(v));
-      if (iterConfig.type === 'apply_each') {
-        lines.push(`${iterConfig.resultVar} = apply_each(${iterConfig.sourceArray}, "${iterConfig.expression}"${iterCtxVars.length ? `, {${iterCtxVars.map(v => `"${v}": ${v}`).join(', ')}}` : ''})`);
-      } else if (iterConfig.type === 'apply_each_paired') {
-        lines.push(`${iterConfig.resultVar} = apply_each(${iterConfig.sourceArray}, ${iterConfig.secondArray || '[]'}, "${iterConfig.expression}"${iterCtxVars.length ? `, {${iterCtxVars.map(v => `"${v}": ${v}`).join(', ')}}` : ''})`);
-      } else if (iterConfig.type === 'map_array') {
-        lines.push(`${iterConfig.resultVar} = map_array(${iterConfig.sourceArray}, "${iterConfig.varName}", "${iterConfig.expression}"${iterCtxVars.length ? `, {${iterCtxVars.map(v => `"${v}": ${v}`).join(', ')}}` : ''})`);
-      } else {
-        // for_each with paired arrays
-        lines.push(`${iterConfig.resultVar} = for_each(${iterConfig.sourceArray}, ${iterConfig.secondArray || '[]'}, "${iterConfig.varName}", "${iterConfig.secondVar}", "${iterConfig.expression}")`);
+      const iterResultVars = [];
+      for (const iter of iterations) {
+        const availableCtx = [...allCtxVars, ...iterResultVars];
+        const iterExprIds = new Set((iter.expression || '').match(/[a-zA-Z_][a-zA-Z0-9_]*/g) || []);
+        if (iter.sourceArray && /^[a-zA-Z_]\w*$/.test(iter.sourceArray)) iterExprIds.add(iter.sourceArray);
+        if (iter.secondArray && /^[a-zA-Z_]\w*$/.test(iter.secondArray)) iterExprIds.add(iter.secondArray);
+        const iterCtxVars = availableCtx.filter(v => iterExprIds.has(v));
+        if (iter.type === 'apply_each') {
+          lines.push(`${iter.resultVar} = apply_each(${iter.sourceArray}, "${iter.expression}"${iterCtxVars.length ? `, {${iterCtxVars.map(v => `"${v}": ${v}`).join(', ')}}` : ''})`);
+        } else if (iter.type === 'apply_each_paired') {
+          lines.push(`${iter.resultVar} = apply_each(${iter.sourceArray}, ${iter.secondArray || '[]'}, "${iter.expression}"${iterCtxVars.length ? `, {${iterCtxVars.map(v => `"${v}": ${v}`).join(', ')}}` : ''})`);
+        } else if (iter.type === 'map_array') {
+          lines.push(`${iter.resultVar} = map_array(${iter.sourceArray}, "${iter.varName}", "${iter.expression}"${iterCtxVars.length ? `, {${iterCtxVars.map(v => `"${v}": ${v}`).join(', ')}}` : ''})`);
+        } else {
+          lines.push(`${iter.resultVar} = for_each(${iter.sourceArray}, ${iter.secondArray || '[]'}, "${iter.varName}", "${iter.secondVar}", "${iter.expression}")`);
+        }
+        iterResultVars.push(iter.resultVar);
       }
       lines.push('');
     }
@@ -670,7 +686,8 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
       lines.push(`print("Result:", ${conditionResultVar})`);
     }
     if (outputs.printResult && ruleType === 'iteration') {
-      lines.push(`print("Result:", ${iterConfig.resultVar})`);
+      const lastIter = iterations[iterations.length - 1];
+      if (lastIter) lines.push(`print("Result:", ${lastIter.resultVar})`);
     }
 
     // ── Transactions ──
@@ -692,7 +709,7 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
     }
 
     return lines.join('\n');
-  }, [ruleName, ruleType, variables, outputs, conditions, elseFormula, conditionResultVar, iterConfig, inlineComment, commentText, savedRulesVars, customCode]);
+  }, [ruleName, ruleType, variables, outputs, conditions, elseFormula, conditionResultVar, iterations, inlineComment, commentText, savedRulesVars, customCode]);
 
   const handleSave = useCallback(async () => {
     if (!ruleName.trim()) {
@@ -724,7 +741,8 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
         conditions,
         elseFormula,
         conditionResultVar,
-        iterConfig,
+        iterations,
+        iterConfig: iterations[0] || {},
         outputs,
         inlineComment,
         commentText,
@@ -754,7 +772,7 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
     } finally {
       setSaving(false);
     }
-  }, [ruleName, rulePriority, ruleId, ruleType, variables, conditions, elseFormula, conditionResultVar, iterConfig, outputs, inlineComment, commentText, generatedCode, onSave]);
+  }, [ruleName, rulePriority, ruleId, ruleType, variables, conditions, elseFormula, conditionResultVar, iterations, outputs, inlineComment, commentText, generatedCode, onSave]);
 
   const resetForm = useCallback(() => {
     setRuleName('');
@@ -765,7 +783,7 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
     setConditions([{ condition: '', thenFormula: '' }]);
     setElseFormula('');
     setConditionResultVar('result');
-    setIterConfig({ type: 'map_array', sourceArray: '', varName: 'item', expression: '', resultVar: 'mapped_result', secondArray: '', secondVar: 'amount' });
+    setIterations([{ type: 'apply_each', sourceArray: '', varName: 'each', expression: '', resultVar: 'mapped_result', secondArray: '', secondVar: 'second' }]);
     setOutputs({ printResult: true, createTransaction: false, transactions: [{ type: 'Calculation Result', amount: '', postingDate: '', effectiveDate: '', subInstrumentId: '' }] });
     setInlineComment(false);
     setCommentText('');
@@ -1107,74 +1125,101 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
                 </IconButton>
               </Tooltip>
             </Box>
-            <Box sx={{ display: 'flex', gap: 1, mb: 1.5 }}>
-              <FormControl size="small" sx={{ minWidth: 240 }}>
-                <InputLabel>Mode</InputLabel>
-                <Select value={iterConfig.type} label="Mode"
-                  onChange={(e) => setIterConfig(prev => ({ ...prev, type: e.target.value }))}>
-                  <MenuItem value="apply_each">Each Item &mdash; apply formula to every item</MenuItem>
-                  <MenuItem value="apply_each_paired">Paired Items &mdash; process two arrays together</MenuItem>
-                  <MenuItem value="map_array">map_array (advanced)</MenuItem>
-                  <MenuItem value="for_each">for_each (advanced)</MenuItem>
-                </Select>
-              </FormControl>
-              <TextField size="small" label="Result Variable" value={iterConfig.resultVar}
-                onChange={(e) => setIterConfig(prev => ({ ...prev, resultVar: e.target.value.replace(/[^a-zA-Z0-9_]/g, '') }))}
-                sx={{ flex: '0 0 150px' }} />
-            </Box>
-            <Box sx={{ display: 'flex', gap: 1, mb: 1 }}>
-              <FormControl size="small" fullWidth>
-                <InputLabel>Source Array</InputLabel>
-                <Select value={iterConfig.sourceArray} label="Source Array"
-                  onChange={(e) => setIterConfig(prev => ({ ...prev, sourceArray: e.target.value }))}
-                  sx={{ fontFamily: 'monospace' }}>
-                  {[...new Set([...variables.filter(v => v.name).map(v => v.name), ...savedRulesVarNames])].map(name => (
-                    <MenuItem key={name} value={name} sx={{ fontFamily: 'monospace' }}>{name}</MenuItem>
-                  ))}
-                </Select>
-              </FormControl>
-              {(iterConfig.type === 'map_array' || iterConfig.type === 'for_each') && (
-                <TextField size="small" label="Element Variable" value={iterConfig.varName}
-                  onChange={(e) => setIterConfig(prev => ({ ...prev, varName: e.target.value.replace(/[^a-zA-Z0-9_]/g, '') }))}
-                  sx={{ flex: '0 0 150px' }} />
-              )}
-            </Box>
-            {(iterConfig.type === 'for_each' || iterConfig.type === 'apply_each_paired') && (
-              <Box sx={{ display: 'flex', gap: 1, mb: 1 }}>
-                <FormControl size="small" fullWidth>
-                  <InputLabel>Second Array</InputLabel>
-                  <Select value={iterConfig.secondArray} label="Second Array"
-                    onChange={(e) => setIterConfig(prev => ({ ...prev, secondArray: e.target.value }))}
-                    sx={{ fontFamily: 'monospace' }}>
-                    {[...new Set([...variables.filter(v => v.name).map(v => v.name), ...savedRulesVarNames])].map(name => (
-                      <MenuItem key={name} value={name} sx={{ fontFamily: 'monospace' }}>{name}</MenuItem>
-                    ))}
-                  </Select>
-                </FormControl>
-                {iterConfig.type === 'for_each' && (
-                  <TextField size="small" label="Second Variable" value={iterConfig.secondVar}
-                    onChange={(e) => setIterConfig(prev => ({ ...prev, secondVar: e.target.value.replace(/[^a-zA-Z0-9_]/g, '') }))}
-                    sx={{ flex: '0 0 150px' }} />
-                )}
-              </Box>
-            )}
-            {(iterConfig.type === 'apply_each' || iterConfig.type === 'apply_each_paired') && (
-              <Alert severity="info" sx={{ mb: 1, py: 0.25 }}>
-                <Typography variant="caption">
-                  {iterConfig.type === 'apply_each'
-                    ? "Use \u2018each\u2019 for the current item, \u2018index\u2019 for position, \u2018count\u2019 for total"
-                    : "Use \u2018first\u2019 and \u2018second\u2019 for items from each array, \u2018index\u2019 for position"}
-                </Typography>
-              </Alert>
-            )}
-            <FormulaBar
-              value={iterConfig.expression}
-              onChange={(val) => setIterConfig(prev => ({ ...prev, expression: val }))}
-              events={events}
-              variables={[...new Set([...variables.filter(v => v.name).map(v => v.name), ...savedRulesVarNames])]}
-              label={iterConfig.type === 'apply_each' ? "Formula (use 'each' for current item)" : iterConfig.type === 'apply_each_paired' ? "Formula (use 'first' and 'second')" : "Expression (applied to each element)"}
-              placeholder={iterConfig.type === 'apply_each' ? 'e.g., multiply(each, 1.1)' : iterConfig.type === 'apply_each_paired' ? 'e.g., multiply(first, second)' : 'e.g., multiply(item, 1.1)'}
-            />
+            {iterations.map((iter, idx) => {
+              const updateIter = (field, value) => setIterations(prev => prev.map((it, i) => i === idx ? { ...it, [field]: value } : it));
+              const iterVarOptions = [...new Set([
+                ...variables.filter(v => v.name).map(v => v.name),
+                ...savedRulesVarNames,
+                ...iterations.slice(0, idx).filter(it => it.resultVar).map(it => it.resultVar),
+              ])];
+              return (
+              <Card key={idx} variant="outlined" sx={{ mb: 1.5, bgcolor: '#FAFAFA' }}>
+                <CardContent sx={{ p: 1.5, '&:last-child': { pb: 1.5 } }}>
+                  <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 1 }}>
+                    <Typography variant="caption" fontWeight={600} color="text.secondary">
+                      {iterations.length > 1 ? `Step ${idx + 1}` : 'Iteration'}
+                    </Typography>
+                    {iterations.length > 1 && (
+                      <IconButton size="small" onClick={() => setIterations(prev => prev.filter((_, i) => i !== idx))} sx={{ color: '#999' }}>
+                        <Trash2 size={14} />
+                      </IconButton>
+                    )}
+                  </Box>
+                  <Box sx={{ display: 'flex', gap: 1, mb: 1.5 }}>
+                    <FormControl size="small" sx={{ minWidth: 240 }}>
+                      <InputLabel>Mode</InputLabel>
+                      <Select value={iter.type} label="Mode" onChange={(e) => updateIter('type', e.target.value)}>
+                        <MenuItem value="apply_each">Each Item &mdash; apply formula to every item</MenuItem>
+                        <MenuItem value="apply_each_paired">Paired Items &mdash; process two arrays together</MenuItem>
+                        <MenuItem value="map_array">map_array (advanced)</MenuItem>
+                        <MenuItem value="for_each">for_each (advanced)</MenuItem>
+                      </Select>
+                    </FormControl>
+                    <TextField size="small" label="Result Variable" value={iter.resultVar}
+                      onChange={(e) => updateIter('resultVar', e.target.value.replace(/[^a-zA-Z0-9_]/g, ''))}
+                      sx={{ flex: '0 0 150px' }} />
+                  </Box>
+                  <Box sx={{ display: 'flex', gap: 1, mb: 1 }}>
+                    <FormControl size="small" fullWidth>
+                      <InputLabel>Source Array</InputLabel>
+                      <Select value={iter.sourceArray} label="Source Array"
+                        onChange={(e) => updateIter('sourceArray', e.target.value)}
+                        sx={{ fontFamily: 'monospace' }}>
+                        {iterVarOptions.map(name => (
+                          <MenuItem key={name} value={name} sx={{ fontFamily: 'monospace' }}>{name}</MenuItem>
+                        ))}
+                      </Select>
+                    </FormControl>
+                    {(iter.type === 'map_array' || iter.type === 'for_each') && (
+                      <TextField size="small" label="Element Variable" value={iter.varName}
+                        onChange={(e) => updateIter('varName', e.target.value.replace(/[^a-zA-Z0-9_]/g, ''))}
+                        sx={{ flex: '0 0 150px' }} />
+                    )}
+                  </Box>
+                  {(iter.type === 'for_each' || iter.type === 'apply_each_paired') && (
+                    <Box sx={{ display: 'flex', gap: 1, mb: 1 }}>
+                      <FormControl size="small" fullWidth>
+                        <InputLabel>Second Array</InputLabel>
+                        <Select value={iter.secondArray} label="Second Array"
+                          onChange={(e) => updateIter('secondArray', e.target.value)}
+                          sx={{ fontFamily: 'monospace' }}>
+                          {iterVarOptions.map(name => (
+                            <MenuItem key={name} value={name} sx={{ fontFamily: 'monospace' }}>{name}</MenuItem>
+                          ))}
+                        </Select>
+                      </FormControl>
+                      {iter.type === 'for_each' && (
+                        <TextField size="small" label="Second Variable" value={iter.secondVar}
+                          onChange={(e) => updateIter('secondVar', e.target.value.replace(/[^a-zA-Z0-9_]/g, ''))}
+                          sx={{ flex: '0 0 150px' }} />
+                      )}
+                    </Box>
+                  )}
+                  {(iter.type === 'apply_each' || iter.type === 'apply_each_paired') && (
+                    <Alert severity="info" sx={{ mb: 1, py: 0.25 }}>
+                      <Typography variant="caption">
+                        {iter.type === 'apply_each'
+                          ? "Use \u2018each\u2019 for the current item, \u2018index\u2019 for position, \u2018count\u2019 for total"
+                          : "Use \u2018first\u2019 and \u2018second\u2019 for items from each array, \u2018index\u2019 for position"}
+                      </Typography>
+                    </Alert>
+                  )}
+                  <FormulaBar
+                    value={iter.expression}
+                    onChange={(val) => updateIter('expression', val)}
+                    events={events}
+                    variables={iterVarOptions}
+                    label={iter.type === 'apply_each' ? "Formula (use 'each' for current item)" : iter.type === 'apply_each_paired' ? "Formula (use 'first' and 'second')" : "Expression (applied to each element)"}
+                    placeholder={iter.type === 'apply_each' ? 'e.g., multiply(each, 1.1)' : iter.type === 'apply_each_paired' ? 'e.g., multiply(first, second)' : 'e.g., multiply(item, 1.1)'}
+                  />
+                </CardContent>
+              </Card>
+              );
+            })}
+            <Button size="small" startIcon={<Plus size={14} />}
+              onClick={() => setIterations(prev => [...prev, { type: 'apply_each', sourceArray: '', varName: 'each', expression: '', resultVar: 'result_' + (prev.length + 1), secondArray: '', secondVar: 'second' }])}>
+              Add Iteration
+            </Button>
             {iterTestResult && (
               <Alert severity={iterTestResult.success ? 'success' : 'error'} sx={{ mt: 1, '& .MuiAlert-message': { width: '100%' } }}
                 onClose={() => setIterTestResult(null)}>
@@ -1218,6 +1263,7 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
             <Switch checked={outputs.printResult} onChange={(e) => setOutputs(p => ({ ...p, printResult: e.target.checked }))} size="small" />
           </CardContent>
         </Card>
+        {ruleType === 'simple_calc' && (
         <Card sx={{ mb: 1 }}>
           <CardContent sx={{ p: 1.5, '&:last-child': { pb: 1.5 } }}>
             <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: outputs.createTransaction ? 1 : 0 }}>
@@ -1364,9 +1410,11 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
             )}
           </CardContent>
         </Card>
+        )}
         </>)}
 
         {/* Code Preview */}
+        {ruleType !== 'custom_code' && (<>
         <Divider sx={{ my: 2 }} />
         <FormControlLabel
           control={<Switch checked={showCode} onChange={(e) => setShowCode(e.target.checked)} size="small" />}
@@ -1379,6 +1427,7 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
             </pre>
           </Paper>
         )}
+        </>)}
         {/* Save Result */}
         {saveResult && (
           <Alert severity={saveResult.success ? 'success' : 'error'} sx={{ mt: 2, '& .MuiAlert-message': { width: '100%' } }}

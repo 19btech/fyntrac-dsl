@@ -75,7 +75,7 @@ createTransaction("2026-12-31", "2026-12-31", "Compound Interest", interest)`,
     category: "Logic",
     dslCode: `## Calculate payment with condition
   payment_due = pmt(0.05, 12, 1000)
-  actual_payment = iif(gt(500, 0), abs(payment_due), 0)
+  actual_payment = if(gt(500, 0), abs(payment_due), 0)
 
   ## Create the transaction (only if payment > 0)
   createTransaction("2026-01-31", "2026-01-31", "Conditional Payment", actual_payment)`,

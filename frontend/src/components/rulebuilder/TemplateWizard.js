@@ -185,37 +185,22 @@ function parseDSLToRules(code, templateTitle) {
     });
   }
 
-  // 3. Iteration rule
+  // 3. Iteration rule — all iterations merge into a single rule with an iterations array
   if (iterStmts.length > 0) {
     const iterAssigns = iterStmts.filter(s => s.type === 'iteration');
     const genCode = iterStmts.map(s => s.raw).join('\n');
+    const allIterCfgs = iterAssigns.map(ia => parseIterConfig(ia.rhs, ia.name));
 
-    if (iterAssigns.length === 1) {
-      const iterCfg = parseIterConfig(iterAssigns[0].rhs, iterAssigns[0].name);
-      rules.push({
-        ...defaultRule,
-        name: `${templateTitle} - Iteration`,
-        ruleType: 'iteration',
-        variables: [],
-        iterConfig: iterCfg,
-        generatedCode: genCode,
-        customCode: '',
-      });
-    } else {
-      // Multiple iterations → one iteration rule per map_array/for_each
-      for (const iter of iterAssigns) {
-        const iterCfg = parseIterConfig(iter.rhs, iter.name);
-        rules.push({
-          ...defaultRule,
-          name: `${templateTitle} - Iteration`,
-          ruleType: 'iteration',
-          variables: [],
-          iterConfig: iterCfg,
-          generatedCode: iter.raw,
-          customCode: '',
-        });
-      }
-    }
+    rules.push({
+      ...defaultRule,
+      name: `${templateTitle} - Iteration`,
+      ruleType: 'iteration',
+      variables: [],
+      iterations: allIterCfgs,
+      iterConfig: allIterCfgs[0] || {},
+      generatedCode: genCode,
+      customCode: '',
+    });
   }
 
   // 4. Schedule → saved-schedule entry (with createTransaction merged in if present)
@@ -294,7 +279,7 @@ function classifyAssignment(name, rhs) {
     return { type: 'schedule' };
   }
   // Conditional
-  if (/^iif\s*\(/.test(rhs)) {
+  if (/^(iif|if)\s*\(/.test(rhs)) {
     return { type: 'conditional' };
   }
   // Iteration
@@ -329,19 +314,19 @@ function classifyToVariable(stmt) {
   return { ...base, source: 'formula', formula: rhs };
 }
 
-/** Parse a (possibly nested) iif() call into conditions array + elseFormula */
+/** Parse a (possibly nested) if() / iif() call into conditions array + elseFormula */
 function parseIif(rhs) {
   const conditions = [];
   let current = rhs;
   while (true) {
-    const m = current.match(/^iif\s*\((.*)\)$/s);
+    const m = current.match(/^(iif|if)\s*\((.*)\)$/s);
     if (!m) break;
-    const inner = m[1];
+    const inner = m[2];
     const args = splitArgs(inner);
     if (args.length < 3) break;
     conditions.push({ condition: args[0], thenFormula: args[1] });
     const rest = args.slice(2).join(', ');
-    if (/^iif\s*\(/.test(rest)) {
+    if (/^(iif|if)\s*\(/.test(rest)) {
       current = rest;
     } else {
       return { conditions, elseFormula: rest };

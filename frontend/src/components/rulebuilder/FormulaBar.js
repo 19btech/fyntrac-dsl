@@ -102,7 +102,7 @@ const FORMULA_CATALOG = [
   { name: 'IS_NEG', dsl: 'is_negative', args: ['value'], desc: 'Check if negative', category: 'Comparison', example: 'IS_NEG(pnl)' },
 
   // ── Logic (10) ───────────────────────────────────────────────────────
-  { name: 'IF', dsl: 'iif', args: ['condition', 'true_val', 'false_val'], desc: 'If/then/else', category: 'Logic', example: 'IF(gt(bal, 0), interest, 0)' },
+  { name: 'IF', dsl: 'if', args: ['condition', 'true_val', 'false_val'], desc: 'If/then/else', category: 'Logic', example: 'IF(gt(bal, 0), interest, 0)' },
   { name: 'AND', dsl: 'and', args: ['a', 'b'], desc: 'Logical AND', category: 'Logic', example: 'AND(is_positive(bal), lt(rate, 1))' },
   { name: 'OR', dsl: 'or', args: ['a', 'b'], desc: 'Logical OR', category: 'Logic', example: 'OR(eq(type, "A"), eq(type, "B"))' },
   { name: 'NOT', dsl: 'not', args: ['value'], desc: 'Logical NOT', category: 'Logic', example: 'NOT(is_null(amount))' },

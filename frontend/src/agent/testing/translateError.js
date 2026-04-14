@@ -70,7 +70,7 @@ const ACCOUNTING_ERROR_PATTERNS = [
     build: () => ({
       whatWentWrong: 'A calculation tried to divide by zero.',
       whyItHappened: 'A denominator in your formula evaluated to zero. In financial calculations, this commonly happens when: total SSP is zero (no standalone prices), term or period count is zero, or a balance has been fully paid down.',
-      howToFix: 'Wrap the division with a zero check: iif(gt(denominator, 0), divide(numerator, denominator), 0). For allocation calculations, ensure at least one item has a positive standalone value.',
+      howToFix: 'Wrap the division with a zero check: if(gt(denominator, 0), divide(numerator, denominator), 0). For allocation calculations, ensure at least one item has a positive standalone value.',
     }),
   },
   // collect/collect_by_instrument errors
@@ -140,7 +140,7 @@ const ERROR_PATTERNS = [
     category: 'range_error',
     whatWentWrong: 'A calculation tried to divide by zero.',
     whyItHappened: 'One of the values used as a divisor is zero.',
-    howToFix: 'Add a check before dividing: use iif(denominator != 0, divide(a, b), 0).',
+    howToFix: 'Add a check before dividing: use if(denominator != 0, divide(a, b), 0).',
   },
   // ── Value / Range ───────────────────────────────────────────
   {
@@ -198,7 +198,7 @@ const ERROR_PATTERNS = [
     category: 'type_error',
     whatWentWrong: 'A value expected to hold data is empty (None/null).',
     whyItHappened: 'A function returned nothing, or a variable was never assigned a value.',
-    howToFix: 'Check that the variable is assigned a value before using it. Use iif() to provide a fallback.',
+    howToFix: 'Check that the variable is assigned a value before using it. Use if() to provide a fallback.',
   },
 
   // ── Import ──────────────────────────────────────────────────
