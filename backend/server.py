@@ -3841,6 +3841,7 @@ async def save_rule(request: dict):
         "conditions": request.get("conditions", []),
         "elseFormula": request.get("elseFormula", ""),
         "conditionResultVar": request.get("conditionResultVar", "result"),
+        "iterations": request.get("iterations", []),
         "iterConfig": request.get("iterConfig", {}),
         "outputs": request.get("outputs", {}),
         "inlineComment": request.get("inlineComment", False),
