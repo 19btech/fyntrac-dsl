@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useCallback, useEffect } from "react";
+import React, { useState, useMemo, useCallback, useEffect, useRef } from "react";
 import {
   Box, Typography, Card, CardContent, Button, TextField, MenuItem, Chip, IconButton,
   Tooltip, Divider, Select, FormControl, InputLabel, Paper, Switch, FormControlLabel,
@@ -8,6 +8,7 @@ import {
   Plus, Trash2, ArrowUp, ArrowDown, Play, Code, Eye, Save, Sparkles,
   Calculator, Hash, Type, List, ToggleLeft, GitBranch, Repeat, FlaskConical,
 } from "lucide-react";
+import Editor from "@monaco-editor/react";
 import { API } from "../../config";
 import FormulaBar from "./FormulaBar";
 
@@ -255,6 +256,8 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
   const [customCode, setCustomCode] = useState(initialData?.customCode || '');
   const [customCodeTesting, setCustomCodeTesting] = useState(false);
   const [customCodeOutput, setCustomCodeOutput] = useState('');
+  const completionDisposerRef = useRef(null);
+  const EDITOR_HEIGHT = 320;
   const [saving, setSaving] = useState(false);
   const [showCode, setShowCode] = useState(false);
   const [saveResult, setSaveResult] = useState(null); // { success, output, error }
@@ -734,22 +737,129 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
               Write raw DSL code. This will be saved as a rule and combined with other rules in priority order.
             </Typography>
             <Paper variant="outlined" sx={{ bgcolor: '#0D1117', borderRadius: 1.5, overflow: 'hidden' }}>
-              <textarea
+              <Editor
+                height={EDITOR_HEIGHT}
+                language="python"
+                theme="vs-dark"
                 value={customCode}
-                onChange={(e) => setCustomCode(e.target.value)}
-                placeholder="## Write DSL code here&#10;loan_amount = LoanEvent.principal&#10;rate = divide(LoanEvent.rate, 12)&#10;payment = pmt(rate, 12, loan_amount)&#10;print(payment)"
-                style={{
-                  width: '100%', minHeight: 220, padding: 16,
-                  fontFamily: 'monospace', fontSize: '0.8125rem', lineHeight: 1.6,
-                  color: '#E6EDF3', backgroundColor: 'transparent',
-                  border: 'none', outline: 'none', resize: 'vertical',
+                onChange={(val) => setCustomCode(val || '')}
+                options={{
+                  minimap: { enabled: false },
+                  fontSize: 13,
+                  lineNumbers: 'on',
+                  scrollBeyondLastLine: false,
+                  wordWrap: 'on',
                   tabSize: 4,
+                  automaticLayout: true,
+                  suggestOnTriggerCharacters: true,
+                  quickSuggestions: true,
+                  padding: { top: 8 },
+                  renderLineHighlight: 'line',
+                  cursorBlinking: 'blink',
+                  fixedOverflowWidgets: true,
                 }}
-                spellCheck={false}
+                beforeMount={(monaco) => {
+                  // Dispose previous completion provider if any
+                  if (completionDisposerRef.current) {
+                    completionDisposerRef.current.dispose();
+                    completionDisposerRef.current = null;
+                  }
+                  completionDisposerRef.current = monaco.languages.registerCompletionItemProvider('python', {
+                    provideCompletionItems: (model, position) => {
+                      const suggestions = [];
+                      const seen = new Set();
+
+                      // DSL functions from backend
+                      (dslFunctions || []).forEach(func => {
+                        if (seen.has(func.name)) return;
+                        seen.add(func.name);
+                        suggestions.push({
+                          label: func.name,
+                          kind: monaco.languages.CompletionItemKind.Function,
+                          insertText: `${func.name}()`,
+                          detail: func.params || '',
+                          documentation: func.description || '',
+                        });
+                      });
+
+                      // Helper functions not in dslFunctions
+                      const helpers = [
+                        { name: 'lag', params: "col, offset, default", desc: 'Get previous row value in schedule' },
+                        { name: 'schedule', params: 'period_def, columns, context?', desc: 'Generate a schedule' },
+                        { name: 'schedule_sum', params: 'sched, col', desc: 'Sum a schedule column' },
+                        { name: 'schedule_first', params: 'sched, col', desc: 'First value of schedule column' },
+                        { name: 'schedule_last', params: 'sched, col', desc: 'Last value of schedule column' },
+                        { name: 'schedule_filter', params: 'sched, date_col, target_date, value_col', desc: 'Filter schedule rows' },
+                        { name: 'period', params: 'start, end, freq, convention?', desc: 'Create a period definition' },
+                        { name: 'print', params: 'value', desc: 'Print value to console' },
+                        { name: 'collect', params: 'EVENT.field', desc: 'Collect values for current instrument/postingdate' },
+                        { name: 'collect_by_instrument', params: 'EVENT.field', desc: 'Collect values grouped by instrument' },
+                        { name: 'collect_all', params: 'EVENT.field', desc: 'Collect all values' },
+                        { name: 'collect_subinstrumentids', params: '', desc: 'Collect sub-instrument IDs' },
+                        { name: 'for_each', params: 'dates_arr, amounts_arr, date_var, amount_var, expression', desc: 'Iterate paired arrays' },
+                        { name: 'map_array', params: 'array, var_name, expression, context?', desc: 'Transform array elements' },
+                        { name: 'sum_vals', params: 'array', desc: 'Sum numeric values in array' },
+                        { name: 'createTransaction', params: 'posting_date, effective_date, type, amount, subinstrumentid?', desc: 'Create journal entry' },
+                      ];
+                      helpers.forEach(h => {
+                        if (seen.has(h.name)) return;
+                        seen.add(h.name);
+                        suggestions.push({
+                          label: h.name,
+                          kind: monaco.languages.CompletionItemKind.Function,
+                          insertText: `${h.name}()`,
+                          detail: h.params,
+                          documentation: h.desc,
+                        });
+                      });
+
+                      // Event fields
+                      (events || []).forEach(event => {
+                        ['postingdate', 'effectivedate', 'subinstrumentid'].forEach(sf => {
+                          const full = `${event.event_name}.${sf}`;
+                          if (!seen.has(full)) {
+                            seen.add(full);
+                            suggestions.push({ label: full, kind: monaco.languages.CompletionItemKind.Field, insertText: full, detail: '(date)', documentation: `Field from ${event.event_name}` });
+                          }
+                        });
+                        (event.fields || []).forEach(field => {
+                          const full = `${event.event_name}.${field.name}`;
+                          if (!seen.has(full)) {
+                            seen.add(full);
+                            suggestions.push({ label: full, kind: monaco.languages.CompletionItemKind.Field, insertText: full, detail: `(${field.datatype})`, documentation: `Event field from ${event.event_name}` });
+                          }
+                        });
+                      });
+
+                      // Variables from other saved rules
+                      (savedRulesVarNames || []).forEach(name => {
+                        if (!seen.has(name)) {
+                          seen.add(name);
+                          suggestions.push({ label: name, kind: monaco.languages.CompletionItemKind.Variable, insertText: name, detail: 'Saved rule variable', documentation: 'Variable defined in another saved rule' });
+                        }
+                      });
+
+                      // Variables defined in current editor
+                      try {
+                        const code = model.getValue();
+                        const assignRegex = /^\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*=.*$/gm;
+                        let m;
+                        while ((m = assignRegex.exec(code)) !== null) {
+                          if (!seen.has(m[1])) {
+                            seen.add(m[1]);
+                            suggestions.push({ label: m[1], kind: monaco.languages.CompletionItemKind.Variable, insertText: m[1], detail: 'Local variable', documentation: 'Variable defined in this code' });
+                          }
+                        }
+                      } catch (_) { /* ignore */ }
+
+                      return { suggestions };
+                    },
+                  });
+                }}
               />
             </Paper>
 
-            {/* Mini Console for testing custom code */}
+            {/* Console for testing custom code */}
             <Box sx={{ mt: 1.5 }}>
               <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 0.5 }}>
                 <Typography variant="caption" fontWeight={600} color="text.secondary">Console</Typography>
@@ -791,7 +901,7 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
                   </Button>
                 </Box>
               </Box>
-              <Paper variant="outlined" sx={{ bgcolor: '#161B22', borderRadius: 1, minHeight: 60, maxHeight: 180, overflow: 'auto', p: 1.5 }}>
+              <Paper variant="outlined" sx={{ bgcolor: '#161B22', borderRadius: 1, height: EDITOR_HEIGHT, overflow: 'auto', p: 1.5 }}>
                 <Typography component="pre" variant="body2" sx={{
                   fontFamily: 'monospace', fontSize: '0.75rem', lineHeight: 1.5, whiteSpace: 'pre-wrap',
                   color: customCodeOutput.startsWith('ERROR:') ? '#F85149' : '#7EE787', m: 0,
