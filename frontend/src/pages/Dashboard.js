@@ -558,6 +558,7 @@ const Dashboard = () => {
               conditions: rule.conditions || [],
               elseFormula: rule.elseFormula || '',
               conditionResultVar: rule.conditionResultVar || 'result',
+              iterations: rule.iterations || [],
               iterConfig: rule.iterConfig || {},
               outputs: rule.outputs || {},
               customCode: rule.customCode || '',

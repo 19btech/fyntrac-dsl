@@ -152,7 +152,10 @@ const VariableRow = ({ variable, index, events, definedVarNames, onUpdate, onRem
   );
 };
 
-const ConditionRow = ({ condition, index, events, definedVarNames, onUpdate, onRemove }) => (
+const ConditionRow = ({ condition, index, events, definedVarNames, onUpdate, onRemove, onTest }) => {
+  const [testing, setTesting] = useState(false);
+  const [testResult, setTestResult] = useState(null);
+  return (
   <Card sx={{ mb: 1, borderLeft: '3px solid #FF9800' }}>
     <CardContent sx={{ p: 1.5, '&:last-child': { pb: 1.5 } }}>
       <Typography variant="caption" fontWeight={600} color="text.secondary" sx={{ mb: 0.5, display: 'block' }}>
@@ -169,6 +172,16 @@ const ConditionRow = ({ condition, index, events, definedVarNames, onUpdate, onR
             placeholder='e.g., gt(balance, 0)'
           />
         </Box>
+        <Tooltip title="Test this condition">
+          <IconButton size="small" onClick={async () => {
+            if (!onTest) return;
+            setTesting(true); setTestResult(null);
+            try { setTestResult(await onTest(index)); } catch (e) { setTestResult({ success: false, error: e.message }); }
+            finally { setTesting(false); }
+          }} disabled={testing || !condition.condition} sx={{ color: '#4CAF50' }}>
+            {testing ? <CircularProgress size={14} /> : <Play size={14} />}
+          </IconButton>
+        </Tooltip>
         <IconButton size="small" onClick={() => onRemove(index)} sx={{ color: '#F44336' }}><Trash2 size={14} /></IconButton>
       </Box>
       <FormulaBar
@@ -179,9 +192,22 @@ const ConditionRow = ({ condition, index, events, definedVarNames, onUpdate, onR
         label="Then (result)"
         placeholder="e.g., multiply(balance, rate)"
       />
+      {testResult && (
+        <Alert severity={testResult.success ? 'success' : 'error'} sx={{ mt: 1, '& .MuiAlert-message': { width: '100%' } }}
+          onClose={() => setTestResult(null)}>
+          {testResult.success ? (
+            <Typography variant="body2" fontFamily="monospace" fontSize="0.8125rem" sx={{ whiteSpace: 'pre-wrap' }}>
+              {testResult.output}
+            </Typography>
+          ) : (
+            <Typography variant="body2">{testResult.error}</Typography>
+          )}
+        </Alert>
+      )}
     </CardContent>
   </Card>
-);
+  );
+};
 
 /**
  * AccountingRuleBuilder — Form-based rule builder for accounting calculations.
@@ -429,6 +455,10 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
     }
   }, [variables, savedRulesVars, conditions, conditionResultVar, elseFormula, events]);
 
+  // Per-iteration step test state
+  const [iterStepTesting, setIterStepTesting] = useState({});
+  const [iterStepResult, setIterStepResult] = useState({});
+
   // Test Iteration — run all variables + iteration to see result
   const [iterTesting, setIterTesting] = useState(false);
   const [iterTestResult, setIterTestResult] = useState(null);
@@ -529,6 +559,142 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
       setIterTesting(false);
     }
   }, [variables, savedRulesVars, iterations]);
+
+  // Test a single condition — builds variables + just one if() for the target condition
+  const testCondition = useCallback(async (condIdx) => {
+    const cond = conditions[condIdx];
+    if (!cond?.condition) return { success: false, error: 'No condition defined' };
+    const lines = [];
+    const knownEvents = new Set((events || []).map(e => (e.event_name || '').toLowerCase()));
+    const currentVarNames = new Set(variables.filter(v => v.name).map(v => v.name));
+    const emittedSaved = new Set();
+    for (const v of savedRulesVars) {
+      if (!v.name || currentVarNames.has(v.name) || emittedSaved.has(v.name)) continue;
+      if (v._isIterResult) continue;
+      if ((v.source === 'event_field' || v.source === 'collect') && v.eventField) {
+        const evtName = v.eventField.split('.')[0];
+        if (evtName && !knownEvents.has(evtName.toLowerCase())) continue;
+      }
+      emittedSaved.add(v.name);
+      if (v.source === 'value') lines.push(`${v.name} = ${v.value || 0}`);
+      else if (v.source === 'event_field') lines.push(`${v.name} = ${v.eventField}`);
+      else if (v.source === 'formula') lines.push(`${v.name} = ${v.formula || 0}`);
+      else if (v.source === 'collect') lines.push(`${v.name} = ${v.collectType || 'collect'}(${v.eventField})`);
+    }
+    for (const v of variables) {
+      if (!v.name) continue;
+      if (v.source === 'value') lines.push(`${v.name} = ${v.value || 0}`);
+      else if (v.source === 'event_field') lines.push(`${v.name} = ${v.eventField}`);
+      else if (v.source === 'formula') lines.push(`${v.name} = ${v.formula || 0}`);
+      else if (v.source === 'collect') lines.push(`${v.name} = ${v.collectType || 'collect'}(${v.eventField})`);
+    }
+    lines.push(`test_result = if(${cond.condition}, ${cond.thenFormula || '1'}, ${elseFormula || '0'})`);
+    lines.push(`print("condition =", ${cond.condition})`);
+    lines.push(`print("result =", test_result)`);
+    try {
+      const today = new Date().toISOString().split('T')[0];
+      const response = await fetch(`${API}/dsl/run`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ dsl_code: lines.join('\n'), posting_date: today }),
+      });
+      const data = await response.json();
+      if (response.ok && data.success) {
+        return { success: true, output: (data.print_outputs || []).join('\n') || 'OK' };
+      } else {
+        return { success: false, error: data.error || data.detail || 'Failed' };
+      }
+    } catch (e) {
+      return { success: false, error: e.message };
+    }
+  }, [variables, savedRulesVars, conditions, elseFormula, events]);
+
+  // Test a single iteration step — builds variables + all iterations up to and including idx
+  const testSingleIteration = useCallback(async (iterIdx) => {
+    const lines = [];
+    const knownEvents = new Set((events || []).map(e => (e.event_name || '').toLowerCase()));
+    const currentVarNames = new Set(variables.filter(v => v.name).map(v => v.name));
+    for (const iter of iterations) {
+      if (iter.resultVar) currentVarNames.add(iter.resultVar);
+    }
+    const iterNeededIds = new Set();
+    for (let i = 0; i <= iterIdx; i++) {
+      const iter = iterations[i];
+      (iter.expression || '').match(/[a-zA-Z_][a-zA-Z0-9_]*/g)?.forEach(id => iterNeededIds.add(id));
+      if (iter.sourceArray && /^[a-zA-Z_]\w*$/.test(iter.sourceArray)) iterNeededIds.add(iter.sourceArray);
+      if (iter.secondArray && /^[a-zA-Z_]\w*$/.test(iter.secondArray)) iterNeededIds.add(iter.secondArray);
+    }
+    const emittedSaved = new Set();
+    const deferredIterResults = [];
+    const emitSavedVar = (v) => {
+      if (v.source === 'value') lines.push(`${v.name} = ${v.value || 0}`);
+      else if (v.source === 'event_field') lines.push(`${v.name} = ${v.eventField}`);
+      else if (v.source === 'formula') lines.push(`${v.name} = ${v.formula || 0}`);
+      else if (v.source === 'collect') lines.push(`${v.name} = ${v.collectType || 'collect'}(${v.eventField})`);
+    };
+    for (const v of savedRulesVars) {
+      if (!v.name || currentVarNames.has(v.name) || emittedSaved.has(v.name)) continue;
+      if (v._isIterResult) { if (iterNeededIds.has(v.name)) deferredIterResults.push(v); continue; }
+      if ((v.source === 'event_field' || v.source === 'collect') && v.eventField) {
+        const evtName = v.eventField.split('.')[0];
+        if (evtName && !knownEvents.has(evtName.toLowerCase())) continue;
+      }
+      emittedSaved.add(v.name);
+      emitSavedVar(v);
+    }
+    for (const v of deferredIterResults) {
+      if (emittedSaved.has(v.name)) continue;
+      emittedSaved.add(v.name);
+      emitSavedVar(v);
+    }
+    const definedVars = [];
+    for (const v of variables) {
+      if (!v.name) continue;
+      definedVars.push(v.name);
+      if (v.source === 'value') lines.push(`${v.name} = ${v.value || 0}`);
+      else if (v.source === 'event_field') lines.push(`${v.name} = ${v.eventField}`);
+      else if (v.source === 'formula') lines.push(`${v.name} = ${v.formula || 0}`);
+      else if (v.source === 'collect') lines.push(`${v.name} = ${v.collectType || 'collect'}(${v.eventField})`);
+    }
+    const allAvailableVars = [...new Set([...definedVars, ...emittedSaved])];
+    const iterResultVars = [];
+    for (let i = 0; i <= iterIdx; i++) {
+      const iter = iterations[i];
+      const availableVars = [...allAvailableVars, ...iterResultVars];
+      const exprIds = new Set((iter.expression || '').match(/[a-zA-Z_][a-zA-Z0-9_]*/g) || []);
+      if (iter.sourceArray && /^[a-zA-Z_]\w*$/.test(iter.sourceArray)) exprIds.add(iter.sourceArray);
+      if (iter.secondArray && /^[a-zA-Z_]\w*$/.test(iter.secondArray)) exprIds.add(iter.secondArray);
+      const contextVars = availableVars.filter(v => exprIds.has(v));
+      if (iter.type === 'apply_each') {
+        lines.push(`${iter.resultVar} = apply_each(${iter.sourceArray}, "${iter.expression}"${contextVars.length ? `, {${contextVars.map(v => `"${v}": ${v}`).join(', ')}}` : ''})`);
+      } else if (iter.type === 'apply_each_paired') {
+        lines.push(`${iter.resultVar} = apply_each(${iter.sourceArray}, ${iter.secondArray || '[]'}, "${iter.expression}"${contextVars.length ? `, {${contextVars.map(v => `"${v}": ${v}`).join(', ')}}` : ''})`);
+      } else if (iter.type === 'map_array') {
+        lines.push(`${iter.resultVar} = map_array(${iter.sourceArray}, "${iter.varName}", "${iter.expression}"${contextVars.length ? `, {${contextVars.map(v => `"${v}": ${v}`).join(', ')}}` : ''})`);
+      } else {
+        lines.push(`${iter.resultVar} = for_each(${iter.sourceArray}, ${iter.secondArray || '[]'}, "${iter.varName}", "${iter.secondVar}", "${iter.expression}")`);
+      }
+      iterResultVars.push(iter.resultVar);
+    }
+    const target = iterations[iterIdx];
+    lines.push(`print("${target.resultVar} =", ${target.resultVar})`);
+    try {
+      const today = new Date().toISOString().split('T')[0];
+      const response = await fetch(`${API}/dsl/run`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ dsl_code: lines.join('\n'), posting_date: today }),
+      });
+      const data = await response.json();
+      if (response.ok && data.success) {
+        return { success: true, output: (data.print_outputs || []).join('\n') || 'OK' };
+      } else {
+        return { success: false, error: data.error || data.detail || 'Failed' };
+      }
+    } catch (e) {
+      return { success: false, error: e.message };
+    }
+  }, [variables, savedRulesVars, iterations, events]);
 
   // Transaction CRUD
   const addTransaction = useCallback(() => {
@@ -1079,7 +1245,7 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
             {conditions.map((cond, idx) => (
               <ConditionRow key={idx} condition={cond} index={idx} events={events}
                 definedVarNames={[...new Set([...variables.filter(v => v.name).map(v => v.name), ...savedRulesVarNames])]}
-                onUpdate={updateCondition} onRemove={removeCondition} />
+                onUpdate={updateCondition} onRemove={removeCondition} onTest={testCondition} />
             ))}
 
             <Card sx={{ mb: 1, borderLeft: '3px solid #9E9E9E' }}>
@@ -1139,11 +1305,29 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
                     <Typography variant="caption" fontWeight={600} color="text.secondary">
                       {iterations.length > 1 ? `Step ${idx + 1}` : 'Iteration'}
                     </Typography>
-                    {iterations.length > 1 && (
-                      <IconButton size="small" onClick={() => setIterations(prev => prev.filter((_, i) => i !== idx))} sx={{ color: '#999' }}>
-                        <Trash2 size={14} />
-                      </IconButton>
-                    )}
+                    <Box sx={{ display: 'flex', gap: 0.25 }}>
+                      <Tooltip title="Test this iteration step">
+                        <IconButton size="small" onClick={async () => {
+                          setIterStepTesting(prev => ({ ...prev, [idx]: true }));
+                          setIterStepResult(prev => ({ ...prev, [idx]: null }));
+                          try {
+                            const result = await testSingleIteration(idx);
+                            setIterStepResult(prev => ({ ...prev, [idx]: result }));
+                          } catch (e) {
+                            setIterStepResult(prev => ({ ...prev, [idx]: { success: false, error: e.message } }));
+                          } finally {
+                            setIterStepTesting(prev => ({ ...prev, [idx]: false }));
+                          }
+                        }} disabled={!!iterStepTesting[idx] || !iter.expression} sx={{ color: '#4CAF50' }}>
+                          {iterStepTesting[idx] ? <CircularProgress size={14} /> : <Play size={14} />}
+                        </IconButton>
+                      </Tooltip>
+                      {iterations.length > 1 && (
+                        <IconButton size="small" onClick={() => setIterations(prev => prev.filter((_, i) => i !== idx))} sx={{ color: '#999' }}>
+                          <Trash2 size={14} />
+                        </IconButton>
+                      )}
+                    </Box>
                   </Box>
                   <Box sx={{ display: 'flex', gap: 1, mb: 1.5 }}>
                     <FormControl size="small" sx={{ minWidth: 240 }}>
@@ -1212,6 +1396,18 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
                     label={iter.type === 'apply_each' ? "Formula (use 'each' for current item)" : iter.type === 'apply_each_paired' ? "Formula (use 'first' and 'second')" : "Expression (applied to each element)"}
                     placeholder={iter.type === 'apply_each' ? 'e.g., multiply(each, 1.1)' : iter.type === 'apply_each_paired' ? 'e.g., multiply(first, second)' : 'e.g., multiply(item, 1.1)'}
                   />
+                  {iterStepResult[idx] && (
+                    <Alert severity={iterStepResult[idx].success ? 'success' : 'error'} sx={{ mt: 1, '& .MuiAlert-message': { width: '100%' } }}
+                      onClose={() => setIterStepResult(prev => ({ ...prev, [idx]: null }))}>
+                      {iterStepResult[idx].success ? (
+                        <Typography variant="body2" fontFamily="monospace" fontSize="0.8125rem" sx={{ whiteSpace: 'pre-wrap' }}>
+                          {iterStepResult[idx].output}
+                        </Typography>
+                      ) : (
+                        <Typography variant="body2">{iterStepResult[idx].error}</Typography>
+                      )}
+                    </Alert>
+                  )}
                 </CardContent>
               </Card>
               );
