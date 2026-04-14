@@ -194,6 +194,8 @@ const ScheduleBuilder = ({ events, dslFunctions, onClose, onSave, initialData })
   const [schedulePreviewTesting, setSchedulePreviewTesting] = useState(false);
   const [schedulePreviewData, setSchedulePreviewData] = useState(null);
   const [schedulePreviewError, setSchedulePreviewError] = useState(null);
+  // Per-output-option test states keyed by option type
+  const [outputTests, setOutputTests] = useState({});
 
   const dateEventFields = useMemo(() => {
     if (!events?.length) return [];
@@ -234,21 +236,28 @@ const ScheduleBuilder = ({ events, dslFunctions, onClose, onSave, initialData })
     ...(dslFunctions || []).map(f => f.name),
   ]), [dslFunctions]);
 
-  // Auto-detect external variable references from column formulas
+  // Auto-detect external variable references from column formulas.
+  // KEY FIX: identifiers that appear in savedRulesVarNames are ALWAYS added to context,
+  // even when a column shares the same name (e.g. column "payment" with formula "payment"
+  // references the saved-rule var "payment" — without this fix the context omits it
+  // and all subsequent columns that depend on it show NoneType errors).
   const autoDetectedVars = useMemo(() => {
     const colNames = new Set(columns.filter(c => c.name).map(c => c.name));
+    const savedVarNameSet = new Set(savedRulesVarNames);
     const externalRefs = new Set();
     for (const col of columns) {
       if (!col.formula) continue;
       const identifiers = col.formula.match(/[a-zA-Z_][a-zA-Z0-9_]*/g) || [];
       for (const id of identifiers) {
-        if (colNames.has(id)) continue;
         if (SCHEDULE_BUILTINS.has(id)) continue;
+        // Always include if it's a known saved-rules variable, even if same name as column
+        if (savedVarNameSet.has(id)) { externalRefs.add(id); continue; }
+        if (colNames.has(id)) continue;
         externalRefs.add(id);
       }
     }
     return [...externalRefs];
-  }, [columns, SCHEDULE_BUILTINS]);
+  }, [columns, SCHEDULE_BUILTINS, savedRulesVarNames]);
 
   // Test a single column — generates schedule code for columns up to this index and executes
   const testColumn = useCallback(async (colIndex) => {
@@ -439,56 +448,57 @@ const ScheduleBuilder = ({ events, dslFunctions, onClose, onSave, initialData })
     return lines.join('\n');
   }, [scheduleName, periodType, startDate, startDateSource, startDateField, startDateFormula, endDate, endDateSource, endDateField, endDateFormula, periodCount, periodCountSource, periodCountField, periodCountFormula, frequency, convention, columns, autoDetectedVars, savedRulesVars, createTxn, txnType, txnAmountCol, extractFirst, extractLast, extractColumn, enableSum, sumColumn, sumVarName, enableCol, colColumn, colVarName, enableFilter, filterVarName, filterMatchCol, filterMatchValue, filterReturnCol]);
 
+  // Build schedule base lines (vars + period + schedule() call) — shared by test functions
+  const buildScheduleBaseLines = useCallback(() => {
+    const lines = [];
+    for (const v of savedRulesVars) {
+      if (!v.name) continue;
+      if (v.source === 'value') lines.push(`${v.name} = ${v.value || 0}`);
+      else if (v.source === 'event_field') lines.push(`${v.name} = ${v.eventField}`);
+      else if (v.source === 'formula') lines.push(`${v.name} = ${v.formula || 0}`);
+      else if (v.source === 'collect') lines.push(`${v.name} = ${v.collectType || 'collect'}(${v.eventField})`);
+    }
+    if (periodType === 'number') {
+      const countExpr = periodCountSource === 'field' && periodCountField ? periodCountField
+        : periodCountSource === 'formula' && periodCountFormula ? periodCountFormula
+        : (periodCount || 12);
+      lines.push(`p = period(${countExpr})`);
+    } else {
+      const startExpr = startDateSource === 'field' && startDateField ? startDateField
+        : startDateSource === 'formula' && startDateFormula ? startDateFormula
+        : `"${startDate || '2026-01-01'}"`;
+      const endExpr = endDateSource === 'field' && endDateField ? endDateField
+        : endDateSource === 'formula' && endDateFormula ? endDateFormula
+        : `"${endDate || '2026-12-31'}"`;
+      let periodCall = `p = period(${startExpr}, ${endExpr}, "${frequency}"`;
+      if (convention) periodCall += `, "${convention}"`;
+      periodCall += ')';
+      lines.push(periodCall);
+    }
+    const validCols = columns.filter(c => c.name && c.formula);
+    lines.push('sched = schedule(p, {');
+    validCols.forEach((col, idx) => {
+      const comma = idx < validCols.length - 1 ? ',' : '';
+      lines.push(`    "${col.name}": "${col.formula}"${comma}`);
+    });
+    const ctxPairs = autoDetectedVars.map(v => `"${v}": ${v}`);
+    if (ctxPairs.length > 0) lines.push(`}, {${ctxPairs.join(', ')}})`);
+    else lines.push('})' );
+    return lines;
+  }, [savedRulesVars, periodType, periodCount, periodCountSource, periodCountField, periodCountFormula,
+      startDateSource, startDateField, startDateFormula, startDate,
+      endDateSource, endDateField, endDateFormula, endDate,
+      frequency, convention, columns, autoDetectedVars]);
+
   // Run only the schedule-definition code and return parsed rows for the preview table
   const testSchedulePreview = useCallback(async () => {
     setSchedulePreviewTesting(true);
     setSchedulePreviewData(null);
     setSchedulePreviewError(null);
     try {
-      const lines = [];
-      // Emit all saved rule vars (full dependency chain)
-      for (const v of savedRulesVars) {
-        if (!v.name) continue;
-        if (v.source === 'value') lines.push(`${v.name} = ${v.value || 0}`);
-        else if (v.source === 'event_field') lines.push(`${v.name} = ${v.eventField}`);
-        else if (v.source === 'formula') lines.push(`${v.name} = ${v.formula || 0}`);
-        else if (v.source === 'collect') lines.push(`${v.name} = ${v.collectType || 'collect'}(${v.eventField})`);
-      }
-      // Period
-      if (periodType === 'number') {
-        const countExpr = periodCountSource === 'field' && periodCountField ? periodCountField
-          : periodCountSource === 'formula' && periodCountFormula ? periodCountFormula
-          : (periodCount || 12);
-        lines.push(`p = period(${countExpr})`);
-      } else {
-        const startExpr = startDateSource === 'field' && startDateField ? startDateField
-          : startDateSource === 'formula' && startDateFormula ? startDateFormula
-          : `"${startDate || '2026-01-01'}"`;
-        const endExpr = endDateSource === 'field' && endDateField ? endDateField
-          : endDateSource === 'formula' && endDateFormula ? endDateFormula
-          : `"${endDate || '2026-12-31'}"`;
-        let periodCall = `p = period(${startExpr}, ${endExpr}, "${frequency}"`;
-        if (convention) periodCall += `, "${convention}"`;
-        periodCall += ')';
-        lines.push(periodCall);
-      }
-      // Full schedule with all valid columns
       const validCols = columns.filter(c => c.name && c.formula);
-      if (validCols.length === 0) {
-        setSchedulePreviewError('No valid columns defined yet.');
-        return;
-      }
-      lines.push('sched = schedule(p, {');
-      validCols.forEach((col, idx) => {
-        const comma = idx < validCols.length - 1 ? ',' : '';
-        lines.push(`    "${col.name}": "${col.formula}"${comma}`);
-      });
-      const contextPairs = autoDetectedVars.map(v => `"${v}": ${v}`);
-      if (contextPairs.length > 0) {
-        lines.push(`}, {${contextPairs.join(', ')}})`);
-      } else {
-        lines.push('})'); 
-      }
+      if (validCols.length === 0) { setSchedulePreviewError('No valid columns defined yet.'); return; }
+      const lines = buildScheduleBaseLines();
       lines.push('print(sched)');
       const today = new Date().toISOString().split('T')[0];
       const response = await fetch(`${API}/dsl/run`, {
@@ -499,8 +509,12 @@ const ScheduleBuilder = ({ events, dslFunctions, onClose, onSave, initialData })
       const data = await response.json();
       if (response.ok && data.success && data.print_outputs?.length > 0) {
         try {
-          const parsed = JSON.parse(data.print_outputs[0]);
-          if (Array.isArray(parsed) && parsed.length > 0) {
+          // Each instrument emits its own print output — take the first instrument's schedule
+          let parsed = JSON.parse(data.print_outputs[0]);
+          // Normalise nested array-of-arrays (multi-instrument packed into one JSON)
+          if (Array.isArray(parsed) && Array.isArray(parsed[0])) parsed = parsed[0];
+          else if (Array.isArray(parsed) && parsed[0]?.schedule) parsed = parsed[0].schedule;
+          if (Array.isArray(parsed) && parsed.length > 0 && typeof parsed[0] === 'object' && !Array.isArray(parsed[0])) {
             setSchedulePreviewData(parsed);
           } else {
             setSchedulePreviewError('Schedule ran but returned no rows.');
@@ -516,10 +530,63 @@ const ScheduleBuilder = ({ events, dslFunctions, onClose, onSave, initialData })
     } finally {
       setSchedulePreviewTesting(false);
     }
-  }, [savedRulesVars, periodType, periodCount, periodCountSource, periodCountField, periodCountFormula,
-      startDateSource, startDateField, startDateFormula, startDate,
-      endDateSource, endDateField, endDateFormula, endDate,
-      frequency, convention, columns, autoDetectedVars]);
+  }, [buildScheduleBaseLines, columns]);
+
+  // Test a specific output option in isolation
+  const testOutputOption = useCallback(async (optType) => {
+    setOutputTests(prev => ({ ...prev, [optType]: { testing: true, result: null, error: null } }));
+    const setResult = (result, error) =>
+      setOutputTests(prev => ({ ...prev, [optType]: { testing: false, result, error } }));
+    try {
+      const lines = buildScheduleBaseLines();
+      switch (optType) {
+        case 'first':
+          if (!extractColumn) { setResult(null, 'Select a column first.'); return; }
+          lines.push(`first_${extractColumn} = schedule_first(sched, "${extractColumn}")`);
+          lines.push(`print("first_${extractColumn}:", first_${extractColumn})`);
+          break;
+        case 'last':
+          if (!extractColumn) { setResult(null, 'Select a column first.'); return; }
+          lines.push(`last_${extractColumn} = schedule_last(sched, "${extractColumn}")`);
+          lines.push(`print("last_${extractColumn}:", last_${extractColumn})`);
+          break;
+        case 'sum':
+          if (!sumVarName || !sumColumn) { setResult(null, 'Fill in variable name and column.'); return; }
+          lines.push(`${sumVarName} = schedule_sum(sched, "${sumColumn}")`);
+          lines.push(`print("${sumVarName}:", ${sumVarName})`);
+          break;
+        case 'col':
+          if (!colVarName || !colColumn) { setResult(null, 'Fill in variable name and column.'); return; }
+          lines.push(`${colVarName} = schedule_column(sched, "${colColumn}")`);
+          lines.push(`print("${colVarName}:", ${colVarName})`);
+          break;
+        case 'filter':
+          if (!filterVarName || !filterMatchCol || !filterMatchValue || !filterReturnCol) {
+            setResult(null, 'Fill in all filter fields.'); return;
+          }
+          lines.push(`${filterVarName} = schedule_filter(sched, "${filterMatchCol}", ${filterMatchValue}, "${filterReturnCol}")`);
+          lines.push(`print("${filterVarName}:", ${filterVarName})`);
+          break;
+        default: return;
+      }
+      const today = new Date().toISOString().split('T')[0];
+      const response = await fetch(`${API}/dsl/run`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ dsl_code: lines.join('\n'), posting_date: today }),
+      });
+      const data = await response.json();
+      if (response.ok && data.success) {
+        const out = (data.print_outputs || []).map(p => String(p)).join('\n') || 'Ran (no output)';
+        setResult(out, null);
+      } else {
+        setResult(null, data.error || data.detail || 'Execution failed');
+      }
+    } catch (err) {
+      setResult(null, err.message);
+    }
+  }, [buildScheduleBaseLines, extractColumn, sumVarName, sumColumn, colVarName, colColumn,
+      filterVarName, filterMatchCol, filterMatchValue, filterReturnCol]);
 
   const handleTest = useCallback(async () => {
     setTesting(true);
@@ -919,7 +986,7 @@ const ScheduleBuilder = ({ events, dslFunctions, onClose, onSave, initialData })
               />
             </Box>
             {(extractFirst || extractLast) && (
-              <FormControl size="small" fullWidth sx={{ mb: 1 }}>
+              <FormControl size="small" fullWidth sx={{ mb: 0.75 }}>
                 <InputLabel>Column to extract (first/last)</InputLabel>
                 <Select value={extractColumn} label="Column to extract (first/last)"
                   onChange={(e) => setExtractColumn(e.target.value)}>
@@ -929,36 +996,130 @@ const ScheduleBuilder = ({ events, dslFunctions, onClose, onSave, initialData })
                 </Select>
               </FormControl>
             )}
+            {extractColumn && (extractFirst || extractLast) && (
+              <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap', mb: 1 }}>
+                {extractFirst && (
+                  <Box sx={{ flex: 1, minWidth: 160 }}>
+                    <Button size="small" variant="outlined"
+                      startIcon={outputTests.first?.testing ? <CircularProgress size={12} /> : <Play size={12} />}
+                      onClick={() => testOutputOption('first')} disabled={outputTests.first?.testing}
+                      sx={{ fontSize: '0.7rem', py: 0.25, borderColor: '#4CAF50', color: '#4CAF50', '&:hover': { borderColor: '#388E3C', bgcolor: '#E8F5E9' } }}>
+                      Test First
+                    </Button>
+                    {outputTests.first?.result && (
+                      <Alert severity="success" sx={{ mt: 0.5, py: 0, '& .MuiAlert-message': { py: 0.5 } }}
+                        onClose={() => setOutputTests(p => ({ ...p, first: { ...p.first, result: null } }))}>
+                        <Typography variant="body2" fontFamily="monospace" fontSize="0.8125rem" sx={{ whiteSpace: 'pre-wrap', maxHeight: 60, overflow: 'auto' }}>{outputTests.first.result}</Typography>
+                      </Alert>
+                    )}
+                    {outputTests.first?.error && (
+                      <Alert severity="error" sx={{ mt: 0.5, py: 0, '& .MuiAlert-message': { py: 0.5 } }}
+                        onClose={() => setOutputTests(p => ({ ...p, first: { ...p.first, error: null } }))}>
+                        <Typography variant="body2">{outputTests.first.error}</Typography>
+                      </Alert>
+                    )}
+                  </Box>
+                )}
+                {extractLast && (
+                  <Box sx={{ flex: 1, minWidth: 160 }}>
+                    <Button size="small" variant="outlined"
+                      startIcon={outputTests.last?.testing ? <CircularProgress size={12} /> : <Play size={12} />}
+                      onClick={() => testOutputOption('last')} disabled={outputTests.last?.testing}
+                      sx={{ fontSize: '0.7rem', py: 0.25, borderColor: '#4CAF50', color: '#4CAF50', '&:hover': { borderColor: '#388E3C', bgcolor: '#E8F5E9' } }}>
+                      Test Last
+                    </Button>
+                    {outputTests.last?.result && (
+                      <Alert severity="success" sx={{ mt: 0.5, py: 0, '& .MuiAlert-message': { py: 0.5 } }}
+                        onClose={() => setOutputTests(p => ({ ...p, last: { ...p.last, result: null } }))}>
+                        <Typography variant="body2" fontFamily="monospace" fontSize="0.8125rem" sx={{ whiteSpace: 'pre-wrap', maxHeight: 60, overflow: 'auto' }}>{outputTests.last.result}</Typography>
+                      </Alert>
+                    )}
+                    {outputTests.last?.error && (
+                      <Alert severity="error" sx={{ mt: 0.5, py: 0, '& .MuiAlert-message': { py: 0.5 } }}
+                        onClose={() => setOutputTests(p => ({ ...p, last: { ...p.last, error: null } }))}>
+                        <Typography variant="body2">{outputTests.last.error}</Typography>
+                      </Alert>
+                    )}
+                  </Box>
+                )}
+              </Box>
+            )}
             {enableSum && (
-              <Box sx={{ display: 'flex', gap: 1, mb: 1 }}>
-                <TextField size="small" label="Variable Name" value={sumVarName}
-                  onChange={(e) => setSumVarName(e.target.value.replace(/[^a-zA-Z0-9_]/g, ''))}
-                  placeholder="e.g., total_interest" sx={{ flex: 1 }} />
-                <FormControl size="small" sx={{ flex: 1 }}>
-                  <InputLabel>Sum Column</InputLabel>
-                  <Select value={sumColumn} label="Sum Column"
-                    onChange={(e) => setSumColumn(e.target.value)}>
-                    {columns.filter(c => c.name && c.formula !== 'period_date' && c.formula !== 'period_number').map(c => (
-                      <MenuItem key={c.name} value={c.name}>{c.name}</MenuItem>
-                    ))}
-                  </Select>
-                </FormControl>
+              <Box sx={{ mb: 1 }}>
+                <Box sx={{ display: 'flex', gap: 1, mb: 0.5 }}>
+                  <TextField size="small" label="Variable Name" value={sumVarName}
+                    onChange={(e) => setSumVarName(e.target.value.replace(/[^a-zA-Z0-9_]/g, ''))}
+                    placeholder="e.g., total_interest" sx={{ flex: 1 }} />
+                  <FormControl size="small" sx={{ flex: 1 }}>
+                    <InputLabel>Sum Column</InputLabel>
+                    <Select value={sumColumn} label="Sum Column"
+                      onChange={(e) => setSumColumn(e.target.value)}>
+                      {columns.filter(c => c.name && c.formula !== 'period_date' && c.formula !== 'period_number').map(c => (
+                        <MenuItem key={c.name} value={c.name}>{c.name}</MenuItem>
+                      ))}
+                    </Select>
+                  </FormControl>
+                  <Tooltip title="Run schedule and compute sum">
+                    <span>
+                      <IconButton size="small" onClick={() => testOutputOption('sum')}
+                        disabled={!sumVarName || !sumColumn || outputTests.sum?.testing}
+                        sx={{ color: '#4CAF50', mt: 0.5 }}>
+                        {outputTests.sum?.testing ? <CircularProgress size={14} /> : <Play size={14} />}
+                      </IconButton>
+                    </span>
+                  </Tooltip>
+                </Box>
+                {outputTests.sum?.result && (
+                  <Alert severity="success" sx={{ py: 0, '& .MuiAlert-message': { py: 0.5 } }}
+                    onClose={() => setOutputTests(p => ({ ...p, sum: { ...p.sum, result: null } }))}>
+                    <Typography variant="body2" fontFamily="monospace" fontSize="0.8125rem" sx={{ whiteSpace: 'pre-wrap' }}>{outputTests.sum.result}</Typography>
+                  </Alert>
+                )}
+                {outputTests.sum?.error && (
+                  <Alert severity="error" sx={{ py: 0, '& .MuiAlert-message': { py: 0.5 } }}
+                    onClose={() => setOutputTests(p => ({ ...p, sum: { ...p.sum, error: null } }))}>
+                    <Typography variant="body2">{outputTests.sum.error}</Typography>
+                  </Alert>
+                )}
               </Box>
             )}
             {enableCol && (
-              <Box sx={{ display: 'flex', gap: 1, mb: 1 }}>
-                <TextField size="small" label="Variable Name" value={colVarName}
-                  onChange={(e) => setColVarName(e.target.value.replace(/[^a-zA-Z0-9_]/g, ''))}
-                  placeholder="e.g., interest_arr" sx={{ flex: 1 }} />
-                <FormControl size="small" sx={{ flex: 1 }}>
-                  <InputLabel>Column</InputLabel>
-                  <Select value={colColumn} label="Column"
-                    onChange={(e) => setColColumn(e.target.value)}>
-                    {columns.filter(c => c.name).map(c => (
-                      <MenuItem key={c.name} value={c.name}>{c.name}</MenuItem>
-                    ))}
-                  </Select>
-                </FormControl>
+              <Box sx={{ mb: 1 }}>
+                <Box sx={{ display: 'flex', gap: 1, mb: 0.5 }}>
+                  <TextField size="small" label="Variable Name" value={colVarName}
+                    onChange={(e) => setColVarName(e.target.value.replace(/[^a-zA-Z0-9_]/g, ''))}
+                    placeholder="e.g., interest_arr" sx={{ flex: 1 }} />
+                  <FormControl size="small" sx={{ flex: 1 }}>
+                    <InputLabel>Column</InputLabel>
+                    <Select value={colColumn} label="Column"
+                      onChange={(e) => setColColumn(e.target.value)}>
+                      {columns.filter(c => c.name).map(c => (
+                        <MenuItem key={c.name} value={c.name}>{c.name}</MenuItem>
+                      ))}
+                    </Select>
+                  </FormControl>
+                  <Tooltip title="Run schedule and extract column array">
+                    <span>
+                      <IconButton size="small" onClick={() => testOutputOption('col')}
+                        disabled={!colVarName || !colColumn || outputTests.col?.testing}
+                        sx={{ color: '#4CAF50', mt: 0.5 }}>
+                        {outputTests.col?.testing ? <CircularProgress size={14} /> : <Play size={14} />}
+                      </IconButton>
+                    </span>
+                  </Tooltip>
+                </Box>
+                {outputTests.col?.result && (
+                  <Alert severity="success" sx={{ py: 0, '& .MuiAlert-message': { py: 0.5 } }}
+                    onClose={() => setOutputTests(p => ({ ...p, col: { ...p.col, result: null } }))}>
+                    <Typography variant="body2" fontFamily="monospace" fontSize="0.8125rem" sx={{ whiteSpace: 'pre-wrap', maxHeight: 80, overflow: 'auto' }}>{outputTests.col.result}</Typography>
+                  </Alert>
+                )}
+                {outputTests.col?.error && (
+                  <Alert severity="error" sx={{ py: 0, '& .MuiAlert-message': { py: 0.5 } }}
+                    onClose={() => setOutputTests(p => ({ ...p, col: { ...p.col, error: null } }))}>
+                    <Typography variant="body2">{outputTests.col.error}</Typography>
+                  </Alert>
+                )}
               </Box>
             )}
             {enableFilter && (
@@ -991,10 +1152,31 @@ const ScheduleBuilder = ({ events, dslFunctions, onClose, onSave, initialData })
                       ))}
                     </Select>
                   </FormControl>
+                  <Tooltip title="Run schedule and apply filter">
+                    <span>
+                      <IconButton size="small" onClick={() => testOutputOption('filter')}
+                        disabled={!filterVarName || !filterMatchCol || !filterMatchValue || !filterReturnCol || outputTests.filter?.testing}
+                        sx={{ color: '#4CAF50', mt: 0.5 }}>
+                        {outputTests.filter?.testing ? <CircularProgress size={14} /> : <Play size={14} />}
+                      </IconButton>
+                    </span>
+                  </Tooltip>
                 </Box>
                 <Typography variant="caption" color="text.secondary" sx={{ pl: 0.5 }}>
                   Generates: <code style={{fontFamily:'monospace'}}>{`${filterVarName || 'result'} = schedule_filter(sched, "${filterMatchCol || 'col'}", ${filterMatchValue || 'value'}, "${filterReturnCol || 'col'}")`}</code>
                 </Typography>
+                {outputTests.filter?.result && (
+                  <Alert severity="success" sx={{ mt: 0.5, py: 0, '& .MuiAlert-message': { py: 0.5 } }}
+                    onClose={() => setOutputTests(p => ({ ...p, filter: { ...p.filter, result: null } }))}>
+                    <Typography variant="body2" fontFamily="monospace" fontSize="0.8125rem" sx={{ whiteSpace: 'pre-wrap' }}>{outputTests.filter.result}</Typography>
+                  </Alert>
+                )}
+                {outputTests.filter?.error && (
+                  <Alert severity="error" sx={{ mt: 0.5, py: 0, '& .MuiAlert-message': { py: 0.5 } }}
+                    onClose={() => setOutputTests(p => ({ ...p, filter: { ...p.filter, error: null } }))}>
+                    <Typography variant="body2">{outputTests.filter.error}</Typography>
+                  </Alert>
+                )}
               </Box>
             )}
           </CardContent>
