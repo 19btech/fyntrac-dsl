@@ -108,16 +108,15 @@ const SavedRules = ({ onEditRule, refreshKey, onLoadToEditor, onPlayAll }) => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ order }),
       });
-      if (onLoadToEditor) {
-        // Refresh combined code in editor to reflect new priority order
-      }
+      // Reload from backend to ensure consistency
+      await loadRules();
     } catch (err) {
       setError('Failed to save new order: ' + (err.message || ''));
     }
 
     dragItem.current = null;
     dragOverItem.current = null;
-  }, [sortedRules, rules, onLoadToEditor]);
+  }, [sortedRules, rules, loadRules]);
 
   const handleLoadToEditor = useCallback(() => {
     if (onLoadToEditor && sortedRules.length > 0) {

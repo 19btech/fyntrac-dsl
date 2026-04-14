@@ -7,7 +7,7 @@ import {
 } from "@mui/material";
 import {
   Plus, Trash2, ArrowUp, ArrowDown, GripVertical, Play, Code, Eye, Calendar,
-  Table as TableIcon, Columns, BarChart3, RefreshCw, FlaskConical, Save,
+  Table as TableIcon, BarChart3, RefreshCw, FlaskConical, Save,
 } from "lucide-react";
 import { API } from "../../config";
 import FormulaBar from "./FormulaBar";
@@ -17,21 +17,6 @@ const FREQUENCY_OPTIONS = [
   { value: 'Q', label: 'Quarterly', description: '4 periods per year' },
   { value: 'S', label: 'Semi-Annual', description: '2 periods per year' },
   { value: 'A', label: 'Annual', description: '1 period per year' },
-];
-
-const COLUMN_PRESETS = [
-  { name: 'date', formula: 'period_date', category: 'Date', description: 'Period date' },
-  { name: 'period_num', formula: 'period_number', category: 'Date', description: 'Period index (1, 2, 3...)' },
-  { name: 'opening_bal', formula: "lag('closing_bal', 1, principal)", category: 'Balance', description: 'Opening balance from prior closing' },
-  { name: 'interest', formula: "divide(multiply(opening_bal, annual_rate), 12)", category: 'Interest', description: 'Monthly interest amount' },
-  { name: 'principal_pmt', formula: "subtract(payment, interest)", category: 'Payment', description: 'Principal portion of payment' },
-  { name: 'closing_bal', formula: "subtract(opening_bal, principal_pmt)", category: 'Balance', description: 'Ending balance' },
-  { name: 'depreciation', formula: "divide(subtract(cost, salvage), life)", category: 'Depreciation', description: 'Periodic depreciation' },
-  { name: 'accumulated_dep', formula: "add(lag('accumulated_dep', 1, 0), depreciation)", category: 'Depreciation', description: 'Cumulative depreciation' },
-  { name: 'book_value', formula: "subtract(cost, accumulated_dep)", category: 'Depreciation', description: 'Net book value' },
-  { name: 'revenue', formula: "divide(total_revenue, num_periods)", category: 'Revenue', description: 'Recognized revenue for period' },
-  { name: 'deferred_rev', formula: "subtract(lag('deferred_rev', 1, total_revenue), revenue)", category: 'Revenue', description: 'Remaining deferred revenue' },
-  { name: 'days_in_period', formula: "days_in_current_period", category: 'Date', description: 'Days in the current period' },
 ];
 
 const ColumnCard = ({ column, index, events, variables, onUpdate, onRemove, onMoveUp, onMoveDown, isFirst, isLast, onTest }) => {
@@ -161,14 +146,26 @@ const ScheduleBuilder = ({ events, dslFunctions, onClose, onSave }) => {
   const [endDateSource, setEndDateSource] = useState('value');
   const [endDateField, setEndDateField] = useState('');
   const [endDateFormula, setEndDateFormula] = useState('');
-  // Number-based: just a count of periods
+  // Number-based: count of periods with source (value, field, formula)
   const [periodCount, setPeriodCount] = useState('12');
+  const [periodCountSource, setPeriodCountSource] = useState('value');
+  const [periodCountField, setPeriodCountField] = useState('');
+  const [periodCountFormula, setPeriodCountFormula] = useState('');
   const [frequency, setFrequency] = useState('M');
   const [convention, setConvention] = useState('');
   const [columns, setColumns] = useState([
     { name: 'date', formula: 'period_date' },
   ]);
-  const [showPresets, setShowPresets] = useState(true);
+  const allEventFields = useMemo(() => {
+    if (!events?.length) return [];
+    const r = [];
+    events.forEach(ev => {
+      ['postingdate', 'effectivedate'].forEach(sf => r.push(`${ev.event_name}.${sf}`));
+      ev.fields.forEach(f => r.push(`${ev.event_name}.${f.name}`));
+    });
+    return r;
+  }, [events]);
+
   const [showCode, setShowCode] = useState(false);
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState(null);
@@ -201,15 +198,9 @@ const ScheduleBuilder = ({ events, dslFunctions, onClose, onSave }) => {
     return r;
   }, [events]);
 
-  const addColumn = useCallback((preset) => {
-    if (preset) {
-      // Check if already added
-      if (columns.some(c => c.name === preset.name)) return;
-      setColumns(prev => [...prev, { name: preset.name, formula: preset.formula }]);
-    } else {
-      setColumns(prev => [...prev, { name: '', formula: '' }]);
-    }
-  }, [columns]);
+  const addColumn = useCallback(() => {
+    setColumns(prev => [...prev, { name: '', formula: '' }]);
+  }, []);
 
   const updateColumn = useCallback((index, updated) => {
     setColumns(prev => prev.map((c, i) => i === index ? updated : c));
@@ -229,7 +220,28 @@ const ScheduleBuilder = ({ events, dslFunctions, onClose, onSave }) => {
     });
   }, []);
 
-  const usedPresets = useMemo(() => new Set(columns.map(c => c.name)), [columns]);
+  // Built-in schedule identifiers that should NOT be treated as external variables
+  const SCHEDULE_BUILTINS = useMemo(() => new Set([
+    'period_date', 'period_index', 'period_start', 'period_number', 'dcf', 'lag',
+    'days_in_current_period',
+    ...(dslFunctions || []).map(f => f.name),
+  ]), [dslFunctions]);
+
+  // Auto-detect external variable references from column formulas
+  const autoDetectedVars = useMemo(() => {
+    const colNames = new Set(columns.filter(c => c.name).map(c => c.name));
+    const externalRefs = new Set();
+    for (const col of columns) {
+      if (!col.formula) continue;
+      const identifiers = col.formula.match(/[a-zA-Z_][a-zA-Z0-9_]*/g) || [];
+      for (const id of identifiers) {
+        if (colNames.has(id)) continue;
+        if (SCHEDULE_BUILTINS.has(id)) continue;
+        externalRefs.add(id);
+      }
+    }
+    return [...externalRefs];
+  }, [columns, SCHEDULE_BUILTINS]);
 
   // Test a single column — generates schedule code for columns up to this index and executes
   const testColumn = useCallback(async (colIndex) => {
@@ -248,7 +260,10 @@ const ScheduleBuilder = ({ events, dslFunctions, onClose, onSave }) => {
     }
     // Period
     if (periodType === 'number') {
-      lines.push(`p = period(${periodCount || 12})`);
+      const countExpr = periodCountSource === 'field' && periodCountField ? periodCountField
+        : periodCountSource === 'formula' && periodCountFormula ? periodCountFormula
+        : (periodCount || 12);
+      lines.push(`p = period(${countExpr})`);
     } else {
       const startExpr = startDateSource === 'field' && startDateField ? startDateField
         : startDateSource === 'formula' && startDateFormula ? startDateFormula
@@ -288,31 +303,7 @@ const ScheduleBuilder = ({ events, dslFunctions, onClose, onSave }) => {
     } else {
       return { success: false, error: data.error || data.detail || 'Execution failed' };
     }
-  }, [columns, autoDetectedVars, savedRulesVars, periodType, periodCount, startDateSource, startDateField, startDateFormula, startDate, endDateSource, endDateField, endDateFormula, endDate, frequency, convention]);
-
-  // Built-in schedule identifiers that should NOT be treated as external variables
-  const SCHEDULE_BUILTINS = useMemo(() => new Set([
-    'period_date', 'period_index', 'period_start', 'period_number', 'dcf', 'lag',
-    'days_in_current_period',
-    ...(dslFunctions || []).map(f => f.name),
-  ]), [dslFunctions]);
-
-  // Auto-detect external variable references from column formulas
-  const autoDetectedVars = useMemo(() => {
-    const colNames = new Set(columns.filter(c => c.name).map(c => c.name));
-    const externalRefs = new Set();
-    for (const col of columns) {
-      if (!col.formula) continue;
-      // Extract all identifiers from the formula
-      const identifiers = col.formula.match(/[a-zA-Z_][a-zA-Z0-9_]*/g) || [];
-      for (const id of identifiers) {
-        if (colNames.has(id)) continue;           // another column
-        if (SCHEDULE_BUILTINS.has(id)) continue;  // built-in function or variable
-        externalRefs.add(id);
-      }
-    }
-    return [...externalRefs];
-  }, [columns, SCHEDULE_BUILTINS]);
+  }, [columns, autoDetectedVars, savedRulesVars, periodType, periodCount, periodCountSource, periodCountField, periodCountFormula, startDateSource, startDateField, startDateFormula, startDate, endDateSource, endDateField, endDateFormula, endDate, frequency, convention]);
 
   const generatedCode = useMemo(() => {
     const lines = [];
@@ -343,8 +334,11 @@ const ScheduleBuilder = ({ events, dslFunctions, onClose, onSave }) => {
     // Period definition
     if (periodType === 'number') {
       // Number-based period: period(count)
+      const countExpr = periodCountSource === 'field' && periodCountField ? periodCountField
+        : periodCountSource === 'formula' && periodCountFormula ? periodCountFormula
+        : (periodCount || 12);
       lines.push('## Schedule Period');
-      lines.push(`p = period(${periodCount || 12})`);
+      lines.push(`p = period(${countExpr})`);
     } else {
       // Date-based period
       const startExpr = startDateSource === 'field' && startDateField ? startDateField
@@ -436,7 +430,7 @@ const ScheduleBuilder = ({ events, dslFunctions, onClose, onSave }) => {
     }
 
     return lines.join('\n');
-  }, [scheduleName, periodType, startDate, startDateSource, startDateField, startDateFormula, endDate, endDateSource, endDateField, endDateFormula, periodCount, frequency, convention, columns, autoDetectedVars, savedRulesVars, createTxn, txnType, txnAmountCol, extractFirst, extractLast, extractColumn, enableSum, sumColumn, sumVarName, enableCol, colColumn, colVarName, enableFilter, filterCondition, filterVarName]);
+  }, [scheduleName, periodType, startDate, startDateSource, startDateField, startDateFormula, endDate, endDateSource, endDateField, endDateFormula, periodCount, periodCountSource, periodCountField, periodCountFormula, frequency, convention, columns, autoDetectedVars, savedRulesVars, createTxn, txnType, txnAmountCol, extractFirst, extractLast, extractColumn, enableSum, sumColumn, sumVarName, enableCol, colColumn, colVarName, enableFilter, filterCondition, filterVarName]);
 
   const handleTest = useCallback(async () => {
     setTesting(true);
@@ -485,7 +479,7 @@ const ScheduleBuilder = ({ events, dslFunctions, onClose, onSave }) => {
         config: {
           periodType, startDate, startDateSource, startDateField, startDateFormula,
           endDate, endDateSource, endDateField, endDateFormula,
-          periodCount, frequency, convention, columns,
+          periodCount, periodCountSource, periodCountField, periodCountFormula, frequency, convention, columns,
           createTxn, txnType, txnAmountCol, extractFirst, extractLast, extractColumn,
           enableSum, sumColumn, sumVarName, enableCol, colColumn, colVarName, enableFilter, filterCondition, filterVarName,
         },
@@ -509,7 +503,7 @@ const ScheduleBuilder = ({ events, dslFunctions, onClose, onSave }) => {
     } finally {
       setSaving(false);
     }
-  }, [scheduleName, schedulePriority, scheduleId, generatedCode, periodType, startDate, startDateSource, startDateField, startDateFormula, endDate, endDateSource, endDateField, endDateFormula, periodCount, frequency, convention, columns, createTxn, txnType, txnAmountCol, extractFirst, extractLast, extractColumn, enableSum, sumColumn, sumVarName, enableCol, colColumn, colVarName, enableFilter, filterCondition, filterVarName, onSave]);
+  }, [scheduleName, schedulePriority, scheduleId, generatedCode, periodType, startDate, startDateSource, startDateField, startDateFormula, endDate, endDateSource, endDateField, endDateFormula, periodCount, periodCountSource, periodCountField, periodCountFormula, frequency, convention, columns, createTxn, txnType, txnAmountCol, extractFirst, extractLast, extractColumn, enableSum, sumColumn, sumVarName, enableCol, colColumn, colVarName, enableFilter, filterCondition, filterVarName, onSave]);
 
   // Compute a simple mock preview of what the schedule table would look like
   const previewHeaders = useMemo(() => columns.filter(c => c.name).map(c => c.name), [columns]);
@@ -559,16 +553,52 @@ const ScheduleBuilder = ({ events, dslFunctions, onClose, onSave }) => {
         </Box>
 
         {periodType === 'number' ? (
-          <Box sx={{ display: 'flex', gap: 1.5, mb: 2.5 }}>
-            <TextField size="small" label="Number of Periods" type="number" value={periodCount}
-              onChange={(e) => setPeriodCount(e.target.value)} sx={{ flex: '0 0 180px' }}
-              placeholder="e.g., 12" helperText="e.g., 12 for monthly, 60 for 5 years" />
+          <Box sx={{ mb: 2.5 }}>
+            <Typography variant="caption" fontWeight={600} color="text.secondary" sx={{ mb: 0.5, display: 'block' }}>Number of Periods</Typography>
+            <Box sx={{ display: 'flex', gap: 0.5, mb: 0.5 }}>
+              <ToggleButtonGroup size="small" exclusive value={periodCountSource}
+                onChange={(e, v) => { if (v) setPeriodCountSource(v); }}
+                sx={{ '& .MuiToggleButton-root': { textTransform: 'none', fontSize: '0.6875rem', px: 1, py: 0.25 } }}>
+                <ToggleButton value="value">Fixed Value</ToggleButton>
+                <ToggleButton value="field">Event Field</ToggleButton>
+                <ToggleButton value="formula">Formula</ToggleButton>
+              </ToggleButtonGroup>
+            </Box>
+            {periodCountSource === 'value' && (
+              <TextField size="small" label="Number of Periods" type="number" value={periodCount}
+                onChange={(e) => setPeriodCount(e.target.value)} sx={{ width: 220 }}
+                InputLabelProps={{ shrink: true }}
+                placeholder="e.g., 12" helperText="e.g., 12 for monthly, 60 for 5 years" />
+            )}
+            {periodCountSource === 'field' && (
+              <FormControl size="small" sx={{ width: 280 }}>
+                <InputLabel shrink>Event Field</InputLabel>
+                <Select value={periodCountField} label="Event Field"
+                  onChange={(e) => setPeriodCountField(e.target.value)} notched
+                  displayEmpty
+                  renderValue={(val) => val || <em style={{ color: '#999' }}>Select field...</em>}>
+                  {allEventFields.map(f => <MenuItem key={f} value={f}>{f}</MenuItem>)}
+                </Select>
+              </FormControl>
+            )}
+            {periodCountSource === 'formula' && (
+              <Box sx={{ maxWidth: 400 }}>
+                <FormulaBar
+                  value={periodCountFormula}
+                  onChange={setPeriodCountFormula}
+                  events={events}
+                  label="Period Count Formula"
+                  placeholder='e.g., multiply(years, 12)'
+                />
+              </Box>
+            )}
           </Box>
         ) : (
           <>
             <Box sx={{ display: 'flex', gap: 1.5, mb: 1.5 }}>
               {/* Start Date */}
               <Box sx={{ flex: 1 }}>
+                <Typography variant="caption" fontWeight={600} color="text.secondary" sx={{ mb: 0.5, display: 'block' }}>Start Date</Typography>
                 <Box sx={{ display: 'flex', gap: 0.5, mb: 0.5 }}>
                   <ToggleButtonGroup size="small" exclusive value={startDateSource}
                     onChange={(e, v) => { if (v) setStartDateSource(v); }}
@@ -604,6 +634,7 @@ const ScheduleBuilder = ({ events, dslFunctions, onClose, onSave }) => {
 
               {/* End Date */}
               <Box sx={{ flex: 1 }}>
+                <Typography variant="caption" fontWeight={600} color="text.secondary" sx={{ mb: 0.5, display: 'block' }}>End Date</Typography>
                 <Box sx={{ display: 'flex', gap: 0.5, mb: 0.5 }}>
                   <ToggleButtonGroup size="small" exclusive value={endDateSource}
                     onChange={(e, v) => { if (v) setEndDateSource(v); }}
@@ -669,40 +700,12 @@ const ScheduleBuilder = ({ events, dslFunctions, onClose, onSave }) => {
 
         <Divider sx={{ mb: 2 }} />
 
-        {/* Column Presets */}
-        <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 1 }}>
-          <Typography variant="body2" fontWeight={600}>
-            <Columns size={14} style={{ display: 'inline', marginRight: 6, verticalAlign: 'middle' }} />
-            Quick Add Columns
-          </Typography>
-          <Button size="small" onClick={() => setShowPresets(!showPresets)} color="inherit">
-            {showPresets ? 'Hide' : 'Show'}
-          </Button>
-        </Box>
-        {showPresets && (
-          <Box sx={{ display: 'flex', gap: 0.5, flexWrap: 'wrap', mb: 2 }}>
-            {COLUMN_PRESETS.map((preset) => (
-              <Tooltip key={preset.name} title={`${preset.description} — ${preset.formula}`} arrow>
-                <Chip
-                  label={preset.name}
-                  size="small"
-                  variant={usedPresets.has(preset.name) ? 'filled' : 'outlined'}
-                  color={usedPresets.has(preset.name) ? 'primary' : 'default'}
-                  disabled={usedPresets.has(preset.name)}
-                  onClick={() => addColumn(preset)}
-                  sx={{ cursor: 'pointer', fontSize: '0.75rem' }}
-                />
-              </Tooltip>
-            ))}
-          </Box>
-        )}
-
         {/* Column Definitions */}
         <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 1 }}>
           <Typography variant="body2" fontWeight={600}>
             Schedule Columns ({columns.length})
           </Typography>
-          <Button size="small" startIcon={<Plus size={14} />} onClick={() => addColumn(null)}>
+          <Button size="small" startIcon={<Plus size={14} />} onClick={addColumn}>
             Custom Column
           </Button>
         </Box>

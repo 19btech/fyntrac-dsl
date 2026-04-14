@@ -903,6 +903,7 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
                   <Card key={idx} variant="outlined" sx={{ p: 1, mb: 1, bgcolor: '#FAFAFA' }}>
                     <Box sx={{ display: 'flex', gap: 1, mb: 0.5, alignItems: 'center' }}>
                       <TextField size="small" label="Transaction Type" value={txn.type} sx={{ flex: 1 }}
+                        InputLabelProps={{ shrink: true }}
                         onChange={(e) => updateTransaction(idx, 'type', e.target.value)} />
                       <FormControl size="small" sx={{ flex: 1 }}>
                         <InputLabel shrink>Amount</InputLabel>

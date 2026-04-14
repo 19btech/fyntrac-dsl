@@ -747,7 +747,7 @@ const Dashboard = () => {
                     <Tooltip title="Build amortization schedules visually"><Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}><TableIcon size={14} /> Schedule Builder</Box></Tooltip>
                   </ToggleButton>
                   <ToggleButton value="savedRules">
-                    <Tooltip title="View and manage saved rules"><Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}><Save size={14} /> Saved Rules</Box></Tooltip>
+                    <Tooltip title="View and manage saved rules"><Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}><Save size={14} /> Rule Manager</Box></Tooltip>
                   </ToggleButton>
                   <ToggleButton value="preview">
                     <Tooltip title="View business preview of execution results"><Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}><Eye size={14} /> Business Preview</Box></Tooltip>
@@ -918,7 +918,7 @@ const Dashboard = () => {
               {/* Rule Builder Mode — always mounted to preserve form state across tab switches */}
               <Box sx={{ display: editorMode === 'ruleBuilder' ? 'flex' : 'none', flexDirection: 'column', flex: 1, overflow: 'auto' }}>
                 <AccountingRuleBuilder
-                  key={editingRule?.id || 'new'}
+                  key={editingRule ? `${editingRule.id}-p${editingRule.priority ?? 0}` : 'new'}
                   events={events}
                   dslFunctions={dslFunctions}
                   onGenerate={handleGeneratedCode}
