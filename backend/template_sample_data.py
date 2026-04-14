@@ -15,6 +15,7 @@ TEMPLATE_SAMPLE_DATA = {
                     {"name": "principal", "datatype": "decimal"},
                     {"name": "annual_rate", "datatype": "decimal"},
                     {"name": "term_months", "datatype": "decimal"},
+                    {"name": "start_date", "datatype": "date"},
                 ],
                 "eventType": "activity",
                 "eventTable": "standard",
@@ -31,6 +32,7 @@ TEMPLATE_SAMPLE_DATA = {
                         "principal": "100000",
                         "annual_rate": "6",
                         "term_months": "12",
+                        "start_date": "2026-01-01",
                     },
                     {
                         "postingdate": "2026-02-01",
@@ -39,6 +41,7 @@ TEMPLATE_SAMPLE_DATA = {
                         "principal": "250000",
                         "annual_rate": "4.5",
                         "term_months": "24",
+                        "start_date": "2026-02-01",
                     },
                 ],
             }
@@ -54,6 +57,7 @@ TEMPLATE_SAMPLE_DATA = {
                     {"name": "asset_cost", "datatype": "decimal"},
                     {"name": "salvage_value", "datatype": "decimal"},
                     {"name": "useful_life", "datatype": "decimal"},
+                    {"name": "start_date", "datatype": "date"},
                 ],
                 "eventType": "activity",
                 "eventTable": "standard",
@@ -70,6 +74,7 @@ TEMPLATE_SAMPLE_DATA = {
                         "asset_cost": "50000",
                         "salvage_value": "5000",
                         "useful_life": "5",
+                        "start_date": "2026-01-01",
                     },
                     {
                         "postingdate": "2026-03-15",
@@ -78,6 +83,7 @@ TEMPLATE_SAMPLE_DATA = {
                         "asset_cost": "120000",
                         "salvage_value": "10000",
                         "useful_life": "10",
+                        "start_date": "2026-03-15",
                     },
                 ],
             }
@@ -189,6 +195,7 @@ TEMPLATE_SAMPLE_DATA = {
                     {"name": "fee_amount", "datatype": "decimal"},
                     {"name": "loan_amount", "datatype": "decimal"},
                     {"name": "term_months", "datatype": "decimal"},
+                    {"name": "start_date", "datatype": "date"},
                 ],
                 "eventType": "activity",
                 "eventTable": "standard",
@@ -205,6 +212,7 @@ TEMPLATE_SAMPLE_DATA = {
                         "fee_amount": "5000",
                         "loan_amount": "100000",
                         "term_months": "36",
+                        "start_date": "2026-01-01",
                     },
                     {
                         "postingdate": "2026-02-15",
@@ -213,6 +221,7 @@ TEMPLATE_SAMPLE_DATA = {
                         "fee_amount": "3000",
                         "loan_amount": "75000",
                         "term_months": "24",
+                        "start_date": "2026-02-15",
                     },
                 ],
             }
@@ -228,6 +237,7 @@ TEMPLATE_SAMPLE_DATA = {
                     {"name": "asset_cost", "datatype": "decimal"},
                     {"name": "salvage_value", "datatype": "decimal"},
                     {"name": "useful_life", "datatype": "decimal"},
+                    {"name": "start_date", "datatype": "date"},
                 ],
                 "eventType": "activity",
                 "eventTable": "standard",
@@ -244,6 +254,7 @@ TEMPLATE_SAMPLE_DATA = {
                         "asset_cost": "50000",
                         "salvage_value": "5000",
                         "useful_life": "5",
+                        "start_date": "2026-01-01",
                     },
                     {
                         "postingdate": "2026-06-01",
@@ -252,6 +263,7 @@ TEMPLATE_SAMPLE_DATA = {
                         "asset_cost": "80000",
                         "salvage_value": "8000",
                         "useful_life": "7",
+                        "start_date": "2026-06-01",
                     },
                 ],
             }
@@ -318,6 +330,7 @@ TEMPLATE_SAMPLE_DATA = {
                     {"name": "lease_payment", "datatype": "decimal"},
                     {"name": "lease_term", "datatype": "decimal"},
                     {"name": "discount_rate", "datatype": "decimal"},
+                    {"name": "start_date", "datatype": "date"},
                 ],
                 "eventType": "activity",
                 "eventTable": "standard",
@@ -334,6 +347,7 @@ TEMPLATE_SAMPLE_DATA = {
                         "lease_payment": "5000",
                         "lease_term": "36",
                         "discount_rate": "5",
+                        "start_date": "2026-01-01",
                     },
                     {
                         "postingdate": "2026-04-01",
@@ -342,6 +356,7 @@ TEMPLATE_SAMPLE_DATA = {
                         "lease_payment": "8000",
                         "lease_term": "60",
                         "discount_rate": "4.5",
+                        "start_date": "2026-04-01",
                     },
                 ],
             }

@@ -790,7 +790,7 @@ const Dashboard = () => {
                 <ToggleButtonGroup
                   value={editorMode}
                   exclusive
-                  onChange={(e, val) => { if (val) { if (val === 'ruleBuilder') setEditingRule(null); setEditorMode(val); } }}
+                  onChange={(e, val) => { if (val) { if (val === 'ruleBuilder') { setEditingRule(null); setEditorMode('savedRules'); return; } setEditorMode(val); } }}
                   size="small"
                   sx={{ '& .MuiToggleButton-root': { textTransform: 'none', fontSize: '0.75rem', px: 1.5, py: 0.5 } }}
                 >
@@ -807,7 +807,7 @@ const Dashboard = () => {
                     <Tooltip title="View business preview of execution results"><Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}><Eye size={14} /> Business Preview</Box></Tooltip>
                   </ToggleButton>
                   <ToggleButton value="code">
-                    <Tooltip title="Write DSL code directly"><Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}><Code size={14} /> Code Editor</Box></Tooltip>
+                    <Tooltip title="View combined DSL code from all rules"><Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}><Code size={14} /> Code Viewer</Box></Tooltip>
                   </ToggleButton>
                 </ToggleButtonGroup>
                 <Tooltip title="Browse accounting templates (ASC 310, 360, 606, 842...)">

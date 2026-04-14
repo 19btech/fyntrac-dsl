@@ -428,7 +428,8 @@ const ACCOUNTING_TEMPLATES = [
     generateDSL: (config) => {
       const investment = config.initial_investment_source === 'field' ? config.initial_investment_field : config.initial_investment;
       const rate = config.discount_rate_source === 'field' ? config.discount_rate_field : config.discount_rate;
-      const cfs = [config.cashflow_1, config.cashflow_2, config.cashflow_3, config.cashflow_4, config.cashflow_5].filter(Boolean);
+      const cfKeys = ['cashflow_1', 'cashflow_2', 'cashflow_3', 'cashflow_4', 'cashflow_5'];
+      const cfValues = cfKeys.map(k => config[`${k}_source`] === 'field' ? config[`${k}_field`] : config[k]).filter(Boolean);
 
       let lines = [];
       lines.push('## ═══════════════════════════════════════════════════════════════');
@@ -437,7 +438,15 @@ const ACCOUNTING_TEMPLATES = [
       lines.push('');
       lines.push(`initial_investment = ${investment}`);
       lines.push(`discount_rate = divide(${rate}, 100)`);
-      lines.push(`cashflows = [multiply(-1, initial_investment), ${cfs.join(', ')}]`);
+
+      // Create intermediate variables for cashflows so event field references resolve
+      const cfVarNames = [];
+      cfValues.forEach((val, idx) => {
+        const varName = `cf_year_${idx + 1}`;
+        lines.push(`${varName} = ${val}`);
+        cfVarNames.push(varName);
+      });
+      lines.push(`cashflows = [multiply(-1, initial_investment), ${cfVarNames.join(', ')}]`);
       lines.push('');
       lines.push('net_pv = npv(discount_rate, cashflows)');
       lines.push('print("Net Present Value:", net_pv)');

@@ -151,21 +151,33 @@ const SavedRules = ({ onEditRule, refreshKey, onLoadToEditor, onPlayAll, onClear
       const pdRes = await fetch(`${API}/event-data/posting-dates`);
       const pdData = await pdRes.json();
       const dates = pdData?.posting_dates || [];
-      const payload = { dsl_code: combinedCode };
-      if (dates.length >= 1) payload.posting_date = dates[0];
-      const res = await fetch(`${API}/dsl/run`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-      });
-      const data = await res.json();
-      if (res.ok && data.success) {
-        onPlayAll({
-          transactions: data.transactions || [],
-          printOutputs: data.print_outputs || [],
+      if (dates.length === 0) dates.push(null);
+      let allTransactions = [];
+      let allPrintOutputs = [];
+      let lastError = null;
+      for (const date of dates) {
+        const payload = { dsl_code: combinedCode };
+        if (date) payload.posting_date = date;
+        const res = await fetch(`${API}/dsl/run`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
         });
-      } else {
-        setError(data.error || data.detail || 'Execution failed');
+        const data = await res.json();
+        if (res.ok && data.success) {
+          allTransactions = allTransactions.concat(data.transactions || []);
+          allPrintOutputs = allPrintOutputs.concat(data.print_outputs || []);
+        } else {
+          lastError = data.error || data.detail || 'Execution failed';
+        }
+      }
+      if (allTransactions.length > 0 || allPrintOutputs.length > 0) {
+        onPlayAll({
+          transactions: allTransactions,
+          printOutputs: allPrintOutputs,
+        });
+      } else if (lastError) {
+        setError(lastError);
       }
     } catch (err) {
       setError(err.message || 'Execution failed');

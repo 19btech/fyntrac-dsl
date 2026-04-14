@@ -14,6 +14,109 @@ import {
 import ACCOUNTING_TEMPLATES from "./AccountingTemplates";
 import { API } from "../../config";
 
+/**
+ * Parse generated DSL code into Rule Builder-compatible variables and outputs.
+ * Converts assignment lines → variables, print → outputs, createTransaction → outputs.transactions.
+ */
+function parseDSLToRuleVariables(code) {
+  const lines = code.split('\n');
+  const variables = [];
+  const transactions = [];
+  let hasCreateTxn = false;
+  let i = 0;
+
+  while (i < lines.length) {
+    const line = lines[i].trim();
+
+    // Skip empty lines, comments, print statements
+    if (!line || line.startsWith('##') || line.startsWith('print(') || line.startsWith('print (')) {
+      i++;
+      continue;
+    }
+
+    // Handle createTransaction — parse for outputs
+    if (line.startsWith('createTransaction(')) {
+      hasCreateTxn = true;
+      const inner = line.slice('createTransaction('.length, -1);
+      const args = [];
+      let depth = 0, current = '';
+      for (const ch of inner) {
+        if (ch === '(' || ch === '[' || ch === '{') depth++;
+        if (ch === ')' || ch === ']' || ch === '}') depth--;
+        if (ch === ',' && depth === 0) { args.push(current.trim()); current = ''; }
+        else { current += ch; }
+      }
+      if (current.trim()) args.push(current.trim());
+      transactions.push({
+        type: (args[2] || '').replace(/^"|"$/g, ''),
+        amount: args[3] || '',
+        postingDate: args[0] || '',
+        effectiveDate: args[1] || '',
+        subInstrumentId: args[4] || '',
+      });
+      i++;
+      continue;
+    }
+
+    // Handle assignments (possibly multi-line)
+    const assignMatch = line.match(/^([a-zA-Z_]\w*)\s*=\s*(.*)/);
+    if (assignMatch) {
+      const name = assignMatch[1];
+      let rhs = assignMatch[2];
+
+      // Track bracket/paren depth for multi-line
+      let depth = 0;
+      for (const ch of rhs) { if ('({['.includes(ch)) depth++; if (')}]'.includes(ch)) depth--; }
+      while (depth > 0 && i + 1 < lines.length) {
+        i++;
+        rhs += '\n' + lines[i];
+        for (const ch of lines[i]) { if ('({['.includes(ch)) depth++; if (')}]'.includes(ch)) depth--; }
+      }
+      rhs = rhs.trim();
+
+      // Detect collect functions
+      const collectMatch = rhs.match(/^(collect_by_instrument|collect_all|collect_by_subinstrument|collect_subinstrumentids|collect)\(([^)]*)\)$/);
+      if (collectMatch) {
+        variables.push({ name, source: 'collect', collectType: collectMatch[1], eventField: collectMatch[2] || '', value: '', formula: '' });
+        i++; continue;
+      }
+
+      // Detect plain number
+      if (/^-?\d+(\.\d+)?$/.test(rhs)) {
+        variables.push({ name, source: 'value', value: rhs, formula: '', eventField: '', collectType: 'collect' });
+        i++; continue;
+      }
+
+      // Detect quoted string
+      if (/^"[^"]*"$/.test(rhs)) {
+        variables.push({ name, source: 'value', value: rhs, formula: '', eventField: '', collectType: 'collect' });
+        i++; continue;
+      }
+
+      // Detect event field reference (EventName.field_name)
+      if (/^[A-Z][a-zA-Z0-9]*\.[a-zA-Z_]\w*$/.test(rhs)) {
+        variables.push({ name, source: 'event_field', eventField: rhs, value: '', formula: '', collectType: 'collect' });
+        i++; continue;
+      }
+
+      // Everything else is a formula
+      variables.push({ name, source: 'formula', formula: rhs, value: '', eventField: '', collectType: 'collect' });
+      i++; continue;
+    }
+
+    i++;
+  }
+
+  const outputs = {
+    printResult: true,
+    createTransaction: hasCreateTxn,
+    transactions: transactions.length > 0 ? transactions
+      : [{ type: 'Calculation Result', amount: '', postingDate: '', effectiveDate: '', subInstrumentId: '' }],
+  };
+
+  return { variables, outputs };
+}
+
 const ICON_MAP = {
   TrendingUp, TrendingDown, DollarSign, Percent, Receipt, Calculator, Building,
 };
@@ -155,7 +258,14 @@ const TemplateWizard = ({ template, events, onGenerate, onClose }) => {
 
   const handleApply = useCallback(() => {
     const code = generatedCode || template.generateDSL(config);
-    onGenerate(code, { rules: [{ name: template.title, ruleType: 'simple_calc', generatedCode: code }] });
+    const parsed = parseDSLToRuleVariables(code);
+    onGenerate(code, { rules: [{
+      name: template.title,
+      ruleType: 'simple_calc',
+      variables: parsed.variables,
+      outputs: parsed.outputs,
+      generatedCode: code,
+    }] });
   }, [generatedCode, template, config, onGenerate]);
 
   const isStep1Valid = useMemo(() => {

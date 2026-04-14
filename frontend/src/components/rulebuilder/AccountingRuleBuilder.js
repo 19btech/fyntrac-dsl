@@ -253,6 +253,8 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
   const [inlineComment, setInlineComment] = useState(initialData?.inlineComment || false);
   const [commentText, setCommentText] = useState(initialData?.commentText || '');
   const [customCode, setCustomCode] = useState(initialData?.customCode || '');
+  const [customCodeTesting, setCustomCodeTesting] = useState(false);
+  const [customCodeOutput, setCustomCodeOutput] = useState('');
   const [saving, setSaving] = useState(false);
   const [showCode, setShowCode] = useState(false);
   const [saveResult, setSaveResult] = useState(null); // { success, output, error }
@@ -746,6 +748,58 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
                 spellCheck={false}
               />
             </Paper>
+
+            {/* Mini Console for testing custom code */}
+            <Box sx={{ mt: 1.5 }}>
+              <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 0.5 }}>
+                <Typography variant="caption" fontWeight={600} color="text.secondary">Console</Typography>
+                <Box sx={{ display: 'flex', gap: 0.5 }}>
+                  <Button size="small" variant="outlined"
+                    onClick={() => setCustomCodeOutput('')}
+                    disabled={!customCodeOutput}
+                    sx={{ fontSize: '0.7rem', minHeight: 24, px: 1, py: 0, color: '#8B949E', borderColor: '#30363D', '&:hover': { borderColor: '#8B949E' } }}>
+                    Clear
+                  </Button>
+                  <Button size="small" variant="contained"
+                    startIcon={customCodeTesting ? <CircularProgress size={12} color="inherit" /> : <Play size={12} />}
+                    disabled={customCodeTesting || !customCode.trim()}
+                    onClick={async () => {
+                      setCustomCodeTesting(true);
+                      setCustomCodeOutput('');
+                      try {
+                        const today = new Date().toISOString().split('T')[0];
+                        const response = await fetch(`${API}/dsl/run`, {
+                          method: 'POST',
+                          headers: { 'Content-Type': 'application/json' },
+                          body: JSON.stringify({ dsl_code: customCode, posting_date: today }),
+                        });
+                        const data = await response.json();
+                        if (response.ok && data.success) {
+                          const out = (data.print_outputs || []).map(String).join('\n') || 'Executed successfully (no output)';
+                          setCustomCodeOutput(out);
+                        } else {
+                          setCustomCodeOutput('ERROR: ' + (data.error || data.detail || 'Execution failed'));
+                        }
+                      } catch (e) {
+                        setCustomCodeOutput('ERROR: ' + (e.message || 'Network error'));
+                      } finally {
+                        setCustomCodeTesting(false);
+                      }
+                    }}
+                    sx={{ fontSize: '0.7rem', minHeight: 24, px: 1.5, py: 0, bgcolor: '#4CAF50', '&:hover': { bgcolor: '#388E3C' } }}>
+                    Run
+                  </Button>
+                </Box>
+              </Box>
+              <Paper variant="outlined" sx={{ bgcolor: '#161B22', borderRadius: 1, minHeight: 60, maxHeight: 180, overflow: 'auto', p: 1.5 }}>
+                <Typography component="pre" variant="body2" sx={{
+                  fontFamily: 'monospace', fontSize: '0.75rem', lineHeight: 1.5, whiteSpace: 'pre-wrap',
+                  color: customCodeOutput.startsWith('ERROR:') ? '#F85149' : '#7EE787', m: 0,
+                }}>
+                  {customCodeOutput || <span style={{ color: '#484F58' }}>Click Run to test your code...</span>}
+                </Typography>
+              </Paper>
+            </Box>
           </Box>
         )}
 
