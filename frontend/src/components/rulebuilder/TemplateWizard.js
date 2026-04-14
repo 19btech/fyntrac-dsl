@@ -203,13 +203,13 @@ function parseDSLToRules(code, templateTitle) {
     });
   }
 
-  // 5. Journal Entry rule — all createTransaction lines
+  // 5. Transactions rule — all createTransaction lines
   if (journalStmts.length > 0) {
     const txn = journalStmts[0];
     const genCode = journalStmts.map(s => s.raw).join('\n');
     rules.push({
       ...defaultRule,
-      name: `${templateTitle} - Journal Entry`,
+      name: `${templateTitle} - Transactions`,
       ruleType: 'custom_code',
       variables: [],
       outputs: {

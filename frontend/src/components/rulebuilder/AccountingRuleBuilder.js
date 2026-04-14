@@ -799,7 +799,7 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
                         { name: 'for_each', params: 'dates_arr, amounts_arr, date_var, amount_var, expression', desc: 'Iterate paired arrays' },
                         { name: 'map_array', params: 'array, var_name, expression, context?', desc: 'Transform array elements' },
                         { name: 'sum_vals', params: 'array', desc: 'Sum numeric values in array' },
-                        { name: 'createTransaction', params: 'posting_date, effective_date, type, amount, subinstrumentid?', desc: 'Create journal entry' },
+                        { name: 'createTransaction', params: 'posting_date, effective_date, type, amount, subinstrumentid?', desc: 'Create transaction' },
                       ];
                       helpers.forEach(h => {
                         if (seen.has(h.name)) return;

@@ -186,7 +186,7 @@ const FORMULA_CATALOG = [
   { name: 'COLLECT_DATES', dsl: 'collect_effectivedates_for_subinstrument', args: ['EVENT', 'sub_id'], desc: 'Effective dates for sub-instrument', category: 'Collect', example: 'COLLECT_DATES(LoanEvent, "T001")' },
 
   // ── Transaction & Output (2) ─────────────────────────────────────────
-  { name: 'TXN', dsl: 'createTransaction', args: ['posting_date', 'effective_date', 'type', 'amount'], desc: 'Create journal entry', category: 'Transaction', example: 'TXN("2025-01-31", "2025-01-31", "Interest", 500)' },
+  { name: 'TXN', dsl: 'createTransaction', args: ['posting_date', 'effective_date', 'type', 'amount'], desc: 'Create transaction', category: 'Transaction', example: 'TXN("2025-01-31", "2025-01-31", "Interest", 500)' },
   { name: 'PRINT', dsl: 'print', args: ['value'], desc: 'Print to console', category: 'Transaction', example: 'PRINT("Total:", total)' },
 
   // ── Lookup (1) ───────────────────────────────────────────────────────

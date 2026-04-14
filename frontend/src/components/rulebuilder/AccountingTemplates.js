@@ -23,7 +23,7 @@ const ACCOUNTING_TEMPLATES = [
       { key: 'interest', label: 'Interest Accrued', default: true },
       { key: 'principal_payment', label: 'Principal Payment', default: true },
       { key: 'closing_balance', label: 'Closing Balance', default: true },
-      { key: 'create_txn', label: 'Create Journal Entry', default: false, txnType: 'Interest Accrual' },
+      { key: 'create_txn', label: 'Create Transaction', default: false, txnType: 'Interest Accrual' },
     ],
     generateDSL: (config) => {
       const freqMap = { 'Monthly': 'M', 'Quarterly': 'Q', 'Semi-Annual': 'S', 'Annual': 'A' };
@@ -76,7 +76,7 @@ const ACCOUNTING_TEMPLATES = [
 
       if (config.outputs_create_txn) {
         lines.push('');
-        lines.push(`## Create journal entry`);
+        lines.push(`## Create transaction`);
         lines.push(`createTransaction(${startDate}, ${startDate}, "${config.txn_type || 'Interest Accrual'}", total_interest)`);
       }
 
@@ -101,7 +101,7 @@ const ACCOUNTING_TEMPLATES = [
     outputs: [
       { key: 'annual_depreciation', label: 'Annual Depreciation', default: true },
       { key: 'schedule', label: 'Depreciation Schedule', default: true },
-      { key: 'create_txn', label: 'Create Journal Entry', default: false, txnType: 'Depreciation Expense' },
+      { key: 'create_txn', label: 'Create Transaction', default: false, txnType: 'Depreciation Expense' },
     ],
     generateDSL: (config) => {
       const cost = config.asset_cost_source === 'field' ? config.asset_cost_field : config.asset_cost;
@@ -169,7 +169,7 @@ const ACCOUNTING_TEMPLATES = [
     outputs: [
       { key: 'allocation', label: 'Revenue Allocation', default: true },
       { key: 'schedule', label: 'Recognition Schedule', default: true },
-      { key: 'create_txn', label: 'Create Journal Entry', default: true, txnType: 'Revenue' },
+      { key: 'create_txn', label: 'Create Transaction', default: true, txnType: 'Revenue' },
     ],
     generateDSL: (config) => {
       const postingDate = config.posting_date_source === 'field' ? config.posting_date_field : `"${config.posting_date}"`;
@@ -255,7 +255,7 @@ const ACCOUNTING_TEMPLATES = [
     outputs: [
       { key: 'schedule', label: 'Accrual Schedule', default: true },
       { key: 'total_interest', label: 'Total Interest', default: true },
-      { key: 'create_txn', label: 'Create Journal Entry', default: false, txnType: 'Interest Accrual' },
+      { key: 'create_txn', label: 'Create Transaction', default: false, txnType: 'Interest Accrual' },
     ],
     generateDSL: (config) => {
       const balance = config.balance_source === 'field' ? config.balance_field : config.balance;
@@ -310,7 +310,7 @@ const ACCOUNTING_TEMPLATES = [
     ],
     outputs: [
       { key: 'schedule', label: 'Amortization Schedule', default: true },
-      { key: 'create_txn', label: 'Create Journal Entry', default: false, txnType: 'Fee Amortization' },
+      { key: 'create_txn', label: 'Create Transaction', default: false, txnType: 'Fee Amortization' },
     ],
     generateDSL: (config) => {
       const fee = config.fee_amount_source === 'field' ? config.fee_amount_field : config.fee_amount;
@@ -364,7 +364,7 @@ const ACCOUNTING_TEMPLATES = [
     ],
     outputs: [
       { key: 'schedule', label: 'Depreciation Schedule', default: true },
-      { key: 'create_txn', label: 'Create Journal Entry', default: false, txnType: 'Depreciation Expense' },
+      { key: 'create_txn', label: 'Create Transaction', default: false, txnType: 'Depreciation Expense' },
     ],
     generateDSL: (config) => {
       const cost = config.asset_cost_source === 'field' ? config.asset_cost_field : config.asset_cost;
@@ -477,7 +477,7 @@ const ACCOUNTING_TEMPLATES = [
     outputs: [
       { key: 'schedule', label: 'Lease Amortization Schedule', default: true },
       { key: 'rou_asset', label: 'ROU Asset Value', default: true },
-      { key: 'create_txn', label: 'Create Journal Entry', default: false, txnType: 'Lease Expense' },
+      { key: 'create_txn', label: 'Create Transaction', default: false, txnType: 'Lease Expense' },
     ],
     generateDSL: (config) => {
       const payment = config.lease_payment_source === 'field' ? config.lease_payment_field : config.lease_payment;

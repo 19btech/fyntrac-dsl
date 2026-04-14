@@ -416,7 +416,9 @@ const SavedRules = ({ onEditRule, refreshKey, onLoadToEditor, onPlayAll, onClear
                   conditions: r.conditions || [],
                   elseFormula: r.elseFormula || '',
                   conditionResultVar: r.conditionResultVar || 'result',
+                  iterConfig: r.iterConfig || {},
                   outputs: r.outputs || {},
+                  customCode: r.customCode || '',
                 }));
                 const res = await fetch(`${API}/user-templates`, {
                   method: 'POST',
