@@ -1,16 +1,17 @@
-import React, { useState, useMemo, useCallback } from "react";
+import React, { useState, useEffect, useMemo, useCallback } from "react";
 import {
   Box, Typography, Card, CardContent, Button, TextField, MenuItem, Chip, Stepper, Step,
   StepLabel, FormControlLabel, Checkbox, Switch, Alert, IconButton, Tooltip, Divider,
   Dialog, DialogTitle, DialogContent, DialogActions, Paper, InputAdornment, Select, FormControl,
-  InputLabel,
+  InputLabel, CircularProgress,
 } from "@mui/material";
 import {
   BookOpen, Search, ArrowRight, ArrowLeft, Play, Code, Eye, CheckCircle2,
   TrendingUp, TrendingDown, DollarSign, Percent, Receipt, Calculator, Building,
-  Sparkles, Copy, Settings2, X,
+  Sparkles, Copy, Settings2, X, Trash2, FileText, Users, GitBranch, Repeat, Database,
 } from "lucide-react";
 import ACCOUNTING_TEMPLATES from "./AccountingTemplates";
+import { API } from "../../config";
 
 const ICON_MAP = {
   TrendingUp, TrendingDown, DollarSign, Percent, Receipt, Calculator, Building,
@@ -133,7 +134,8 @@ const TemplateWizard = ({ template, events, onGenerate, onClose }) => {
   }, [template, config]);
 
   const handleApply = useCallback(() => {
-    onGenerate(generatedCode || template.generateDSL(config));
+    const code = generatedCode || template.generateDSL(config);
+    onGenerate(code, { rules: [{ name: template.title, ruleType: 'simple_calc', generatedCode: code }] });
   }, [generatedCode, template, config, onGenerate]);
 
   const isStep1Valid = useMemo(() => {
@@ -278,17 +280,187 @@ const TemplateWizard = ({ template, events, onGenerate, onClose }) => {
   );
 };
 
+/* ── Rule-type display metadata (for UserTemplateWizard) ── */
+const RULE_TYPE_META_WIZ = {
+  simple_calc: { label: 'Calculation', color: '#5B5FED', icon: Calculator },
+  conditional: { label: 'Conditional', color: '#FF9800', icon: GitBranch },
+  iteration: { label: 'Iteration', color: '#00BCD4', icon: Repeat },
+  collect: { label: 'Collect', color: '#8BC34A', icon: Database },
+};
+
 /**
- * TemplateLibrary — Browse and configure accounting template wizards.
+ * UserTemplateWizard — Wizard-based experience for loading user-created templates.
+ * Step 1: Review rules (toggle on/off), Step 2: Preview & Apply.
+ */
+const UserTemplateWizard = ({ template, onApply, onClose }) => {
+  const [activeStep, setActiveStep] = useState(0);
+  const [selectedRules, setSelectedRules] = useState(() =>
+    (template.rules || []).map(() => true)
+  );
+  const [showCode, setShowCode] = useState(false);
+
+  const steps = ['Review Rules', 'Preview & Apply'];
+  const rules = template.rules || [];
+  const selectedCount = selectedRules.filter(Boolean).length;
+
+  const combinedCode = rules
+    .filter((_, i) => selectedRules[i])
+    .map(r => r.generatedCode || '')
+    .filter(Boolean)
+    .join('\n\n');
+
+  const handleApplyClick = () => {
+    const filteredRules = rules.filter((_, i) => selectedRules[i]);
+    onApply(combinedCode, { rules: filteredRules });
+  };
+
+  return (
+    <Dialog open maxWidth="md" fullWidth PaperProps={{ sx: { height: '85vh' } }}>
+      <DialogTitle>
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
+          <Users size={22} color="#FF9800" />
+          <Box>
+            <Typography variant="h5">{template.name}</Typography>
+            <Typography variant="caption" color="text.secondary">
+              {template.description || 'User created template'}
+            </Typography>
+          </Box>
+          <Chip label={template.category || 'User Created'} size="small"
+            sx={{ ml: 'auto', bgcolor: '#FFF3E0', color: '#FF9800' }} />
+        </Box>
+      </DialogTitle>
+
+      <DialogContent sx={{ display: 'flex', flexDirection: 'column', p: 3 }}>
+        <Stepper activeStep={activeStep} sx={{ mb: 3 }}>
+          {steps.map(label => (
+            <Step key={label}><StepLabel>{label}</StepLabel></Step>
+          ))}
+        </Stepper>
+
+        <Box sx={{ flex: 1, overflowY: 'auto' }}>
+          {activeStep === 0 && (
+            <Box>
+              <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+                Review the rules in this template. Toggle off any rules you don't need.
+              </Typography>
+              {rules.map((rule, idx) => {
+                const meta = RULE_TYPE_META_WIZ[rule.ruleType] || RULE_TYPE_META_WIZ.simple_calc;
+                const RuleIcon = meta.icon;
+                return (
+                  <Card key={idx} sx={{ mb: 1.5, opacity: selectedRules[idx] ? 1 : 0.5, transition: 'opacity 0.2s' }}>
+                    <CardContent sx={{ p: 2, '&:last-child': { pb: 2 } }}>
+                      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
+                        <Switch checked={selectedRules[idx]}
+                          onChange={() => setSelectedRules(prev => prev.map((v, i) => i === idx ? !v : v))}
+                          size="small" />
+                        <RuleIcon size={18} color={meta.color} />
+                        <Box sx={{ flex: 1 }}>
+                          <Typography variant="body2" fontWeight={600}>{rule.name}</Typography>
+                          <Chip label={meta.label} size="small"
+                            sx={{ fontSize: '0.625rem', height: 18, mt: 0.5, bgcolor: `${meta.color}15`, color: meta.color }} />
+                        </Box>
+                      </Box>
+                      {selectedRules[idx] && rule.generatedCode && (
+                        <Paper variant="outlined" sx={{ mt: 1.5, p: 1.5, bgcolor: '#F8F9FA', maxHeight: 120, overflow: 'auto' }}>
+                          <pre style={{ margin: 0, fontSize: '0.75rem', fontFamily: 'monospace', whiteSpace: 'pre-wrap' }}>
+                            {rule.generatedCode}
+                          </pre>
+                        </Paper>
+                      )}
+                    </CardContent>
+                  </Card>
+                );
+              })}
+            </Box>
+          )}
+
+          {activeStep === 1 && (
+            <Box>
+              <Alert severity="success" sx={{ mb: 2 }}>
+                {selectedCount} rule{selectedCount !== 1 ? 's' : ''} will be created in Rule Manager and loaded into the editor.
+              </Alert>
+              <FormControlLabel
+                control={<Switch checked={showCode} onChange={(e) => setShowCode(e.target.checked)} size="small" />}
+                label={<Typography variant="body2">Show generated logic</Typography>}
+              />
+              {showCode && (
+                <Paper variant="outlined" sx={{ mt: 1, p: 2, bgcolor: '#0D1117', borderRadius: 2, maxHeight: 300, overflow: 'auto' }}>
+                  <pre style={{ margin: 0, fontFamily: 'monospace', fontSize: '0.8125rem', color: '#E6EDF3', whiteSpace: 'pre-wrap' }}>
+                    {combinedCode}
+                  </pre>
+                </Paper>
+              )}
+              <Box sx={{ mt: 2 }}>
+                <Typography variant="body2" fontWeight={600} sx={{ mb: 1 }}>Rules to create:</Typography>
+                <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1 }}>
+                  {rules.filter((_, i) => selectedRules[i]).map((rule, idx) => (
+                    <Chip key={idx} size="small" label={rule.name} icon={<CheckCircle2 size={12} />}
+                      sx={{ bgcolor: '#D4EDDA', color: '#155724' }} />
+                  ))}
+                </Box>
+              </Box>
+            </Box>
+          )}
+        </Box>
+      </DialogContent>
+
+      <DialogActions sx={{ px: 3, py: 2, borderTop: '1px solid #E9ECEF' }}>
+        <Button onClick={onClose} color="inherit">Cancel</Button>
+        <Box sx={{ flex: 1 }} />
+        {activeStep > 0 && (
+          <Button onClick={() => setActiveStep(0)} startIcon={<ArrowLeft size={16} />}>Back</Button>
+        )}
+        {activeStep === 0 && (
+          <Button variant="contained" onClick={() => setActiveStep(1)}
+            disabled={selectedCount === 0} endIcon={<ArrowRight size={16} />}>
+            Next
+          </Button>
+        )}
+        {activeStep === 1 && (
+          <Button variant="contained" onClick={handleApplyClick} startIcon={<Play size={16} />}
+            disabled={selectedCount === 0}>
+            Apply Template
+          </Button>
+        )}
+      </DialogActions>
+    </Dialog>
+  );
+};
+
+/**
+/**
+ * TemplateLibrary — Browse standard and user-created accounting templates.
  */
 const TemplateLibrary = ({ events, onLoadTemplate, onClose }) => {
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedCategory, setSelectedCategory] = useState('All');
   const [activeTemplate, setActiveTemplate] = useState(null);
+  const [activeUserTemplate, setActiveUserTemplate] = useState(null);
+  const [userTemplates, setUserTemplates] = useState([]);
+  const [loadingUser, setLoadingUser] = useState(true);
+  const [deletingId, setDeletingId] = useState(null);
+  const [section, setSection] = useState('standard'); // 'standard' | 'user'
+
+  // Fetch user templates
+  useEffect(() => {
+    (async () => {
+      setLoadingUser(true);
+      try {
+        const res = await fetch(`${API}/user-templates`);
+        const data = await res.json();
+        setUserTemplates(Array.isArray(data) ? data : []);
+      } catch { /* ignore */ }
+      finally { setLoadingUser(false); }
+    })();
+  }, []);
 
   const categories = useMemo(() => {
     return ['All', ...new Set(ACCOUNTING_TEMPLATES.map(t => t.category))];
   }, []);
+
+  const userCategories = useMemo(() => {
+    return ['All', ...new Set(userTemplates.map(t => t.category || 'User Created'))];
+  }, [userTemplates]);
 
   const filteredTemplates = useMemo(() => {
     return ACCOUNTING_TEMPLATES.filter((t) => {
@@ -301,11 +473,44 @@ const TemplateLibrary = ({ events, onLoadTemplate, onClose }) => {
     });
   }, [searchQuery, selectedCategory]);
 
-  const handleGenerate = useCallback((code) => {
-    onLoadTemplate(code);
+  const filteredUserTemplates = useMemo(() => {
+    return userTemplates.filter((t) => {
+      const matchesSearch = !searchQuery ||
+        t.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        (t.description || '').toLowerCase().includes(searchQuery.toLowerCase()) ||
+        (t.category || '').toLowerCase().includes(searchQuery.toLowerCase());
+      const matchesCat = selectedCategory === 'All' || (t.category || 'User Created') === selectedCategory;
+      return matchesSearch && matchesCat;
+    });
+  }, [searchQuery, selectedCategory, userTemplates]);
+
+  const handleGenerate = useCallback((code, metadata) => {
+    onLoadTemplate(code, metadata);
     setActiveTemplate(null);
     onClose();
   }, [onLoadTemplate, onClose]);
+
+  const handleDeleteUserTemplate = useCallback(async (id) => {
+    setDeletingId(id);
+    try {
+      await fetch(`${API}/user-templates/${id}`, { method: 'DELETE' });
+      setUserTemplates(prev => prev.filter(t => t.id !== id));
+    } catch { /* ignore */ }
+    finally { setDeletingId(null); }
+  }, []);
+
+  if (activeUserTemplate) {
+    return (
+      <UserTemplateWizard
+        template={activeUserTemplate}
+        onApply={(code, metadata) => {
+          onLoadTemplate(code, metadata);
+          onClose();
+        }}
+        onClose={() => setActiveUserTemplate(null)}
+      />
+    );
+  }
 
   if (activeTemplate) {
     return (
@@ -326,7 +531,7 @@ const TemplateLibrary = ({ events, onLoadTemplate, onClose }) => {
           <Box sx={{ flex: 1 }}>
             <Typography variant="h4">Accounting Templates</Typography>
             <Typography variant="body2" color="text.secondary">
-              Pre-built calculation templates — configure and generate without writing code
+              Pre-built and user-created calculation templates
             </Typography>
           </Box>
           <IconButton onClick={onClose} sx={{ alignSelf: 'flex-start' }}>
@@ -336,16 +541,38 @@ const TemplateLibrary = ({ events, onLoadTemplate, onClose }) => {
       </DialogTitle>
 
       <DialogContent sx={{ display: 'flex', flexDirection: 'column', p: 3 }}>
+        {/* Section Toggle */}
+        <Box sx={{ display: 'flex', gap: 1, mb: 2 }}>
+          <Button
+            variant={section === 'standard' ? 'contained' : 'outlined'}
+            size="small"
+            startIcon={<FileText size={14} />}
+            onClick={() => { setSection('standard'); setSelectedCategory('All'); }}
+            sx={{ textTransform: 'none', ...(section === 'standard' ? {} : { borderColor: '#CED4DA', color: '#495057' }) }}
+          >
+            Standard Templates ({ACCOUNTING_TEMPLATES.length})
+          </Button>
+          <Button
+            variant={section === 'user' ? 'contained' : 'outlined'}
+            size="small"
+            startIcon={<Users size={14} />}
+            onClick={() => { setSection('user'); setSelectedCategory('All'); }}
+            sx={{ textTransform: 'none', ...(section === 'user' ? {} : { borderColor: '#CED4DA', color: '#495057' }) }}
+          >
+            User Created Templates ({userTemplates.length})
+          </Button>
+        </Box>
+
         <Box sx={{ mb: 2 }}>
           <TextField
-            placeholder="Search templates by name, description, or standard..."
+            placeholder={section === 'standard' ? "Search templates by name, description, or standard..." : "Search user templates by name or description..."}
             value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)}
             fullWidth size="small"
             InputProps={{ startAdornment: <InputAdornment position="start"><Search size={16} color="#6C757D" /></InputAdornment> }}
             sx={{ mb: 1.5 }}
           />
           <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.75 }}>
-            {categories.map((cat) => (
+            {(section === 'standard' ? categories : userCategories).map((cat) => (
               <Chip key={cat} label={cat} onClick={() => setSelectedCategory(cat)} size="small"
                 sx={{
                   cursor: 'pointer',
@@ -358,36 +585,97 @@ const TemplateLibrary = ({ events, onLoadTemplate, onClose }) => {
         </Box>
 
         <Box sx={{ flex: 1, overflowY: 'auto' }}>
-          <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', md: 'repeat(2, 1fr)' }, gap: 2 }}>
-            {filteredTemplates.map((template) => {
-              const Icon = ICON_MAP[template.icon] || Settings2;
-              return (
-                <Card key={template.id} sx={{ cursor: 'pointer', '&:hover': { borderColor: '#5B5FED' } }}
-                  onClick={() => setActiveTemplate(template)}>
-                  <CardContent sx={{ p: 2.5 }}>
-                    <Box sx={{ display: 'flex', alignItems: 'flex-start', gap: 1.5, mb: 1.5 }}>
-                      <Box sx={{ p: 1, bgcolor: '#EEF0FE', borderRadius: 1.5, display: 'flex' }}>
-                        <Icon size={20} color="#5B5FED" />
+          {/* Standard Templates */}
+          {section === 'standard' && (
+            <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', md: 'repeat(2, 1fr)' }, gap: 2 }}>
+              {filteredTemplates.map((template) => {
+                const Icon = ICON_MAP[template.icon] || Settings2;
+                return (
+                  <Card key={template.id} sx={{ cursor: 'pointer', '&:hover': { borderColor: '#5B5FED' } }}
+                    onClick={() => setActiveTemplate(template)}>
+                    <CardContent sx={{ p: 2.5 }}>
+                      <Box sx={{ display: 'flex', alignItems: 'flex-start', gap: 1.5, mb: 1.5 }}>
+                        <Box sx={{ p: 1, bgcolor: '#EEF0FE', borderRadius: 1.5, display: 'flex' }}>
+                          <Icon size={20} color="#5B5FED" />
+                        </Box>
+                        <Box sx={{ flex: 1 }}>
+                          <Typography variant="h6" sx={{ mb: 0.25 }}>{template.title}</Typography>
+                          <Typography variant="body2" color="text.secondary" sx={{ lineHeight: 1.4 }}>
+                            {template.description}
+                          </Typography>
+                        </Box>
                       </Box>
-                      <Box sx={{ flex: 1 }}>
-                        <Typography variant="h6" sx={{ mb: 0.25 }}>{template.title}</Typography>
-                        <Typography variant="body2" color="text.secondary" sx={{ lineHeight: 1.4 }}>
-                          {template.description}
-                        </Typography>
+                      <Box sx={{ display: 'flex', gap: 0.75, flexWrap: 'wrap' }}>
+                        <Chip label={template.category} size="small" sx={{ fontSize: '0.6875rem', height: 20, bgcolor: '#F8F9FA' }} />
+                        {template.standard && (
+                          <Chip label={template.standard} size="small" sx={{ fontSize: '0.6875rem', height: 20, bgcolor: '#EEF0FE', color: '#5B5FED' }} />
+                        )}
+                        <Chip label={`${template.fields.length} parameters`} size="small" sx={{ fontSize: '0.6875rem', height: 20, bgcolor: '#F8F9FA' }} />
                       </Box>
-                    </Box>
-                    <Box sx={{ display: 'flex', gap: 0.75, flexWrap: 'wrap' }}>
-                      <Chip label={template.category} size="small" sx={{ fontSize: '0.6875rem', height: 20, bgcolor: '#F8F9FA' }} />
-                      {template.standard && (
-                        <Chip label={template.standard} size="small" sx={{ fontSize: '0.6875rem', height: 20, bgcolor: '#EEF0FE', color: '#5B5FED' }} />
-                      )}
-                      <Chip label={`${template.fields.length} parameters`} size="small" sx={{ fontSize: '0.6875rem', height: 20, bgcolor: '#F8F9FA' }} />
-                    </Box>
-                  </CardContent>
-                </Card>
-              );
-            })}
-          </Box>
+                    </CardContent>
+                  </Card>
+                );
+              })}
+              {filteredTemplates.length === 0 && (
+                <Typography variant="body2" color="text.secondary" sx={{ py: 4, textAlign: 'center', gridColumn: '1 / -1' }}>
+                  No matching standard templates found.
+                </Typography>
+              )}
+            </Box>
+          )}
+
+          {/* User Created Templates */}
+          {section === 'user' && (
+            <>
+              {loadingUser ? (
+                <Box sx={{ display: 'flex', justifyContent: 'center', py: 6 }}><CircularProgress size={32} /></Box>
+              ) : filteredUserTemplates.length === 0 ? (
+                <Box sx={{ textAlign: 'center', py: 6, color: 'text.secondary' }}>
+                  <Users size={40} style={{ margin: '0 auto 12px', opacity: 0.3 }} />
+                  <Typography variant="body1" fontWeight={500}>No user templates yet</Typography>
+                  <Typography variant="body2" sx={{ mt: 0.5 }}>
+                    Go to Rule Manager and use the bookmark icon to save your rules as a template.
+                  </Typography>
+                </Box>
+              ) : (
+                <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', md: 'repeat(2, 1fr)' }, gap: 2 }}>
+                  {filteredUserTemplates.map((template) => (
+                    <Card key={template.id} sx={{ cursor: 'pointer', '&:hover': { borderColor: '#FF9800' } }}
+                      onClick={() => setActiveUserTemplate(template)}>
+                      <CardContent sx={{ p: 2.5 }}>
+                        <Box sx={{ display: 'flex', alignItems: 'flex-start', gap: 1.5, mb: 1.5 }}>
+                          <Box sx={{ p: 1, bgcolor: '#FFF3E0', borderRadius: 1.5, display: 'flex' }}>
+                            <Users size={20} color="#FF9800" />
+                          </Box>
+                          <Box sx={{ flex: 1, minWidth: 0 }}>
+                            <Typography variant="h6" sx={{ mb: 0.25 }} noWrap>{template.name}</Typography>
+                            <Typography variant="body2" color="text.secondary" sx={{ lineHeight: 1.4 }}>
+                              {template.description || 'No description'}
+                            </Typography>
+                          </Box>
+                          <Tooltip title="Delete template">
+                            <IconButton size="small"
+                              onClick={(e) => { e.stopPropagation(); handleDeleteUserTemplate(template.id); }}
+                              disabled={deletingId === template.id}
+                              sx={{ color: '#F44336', flexShrink: 0 }}>
+                              {deletingId === template.id ? <CircularProgress size={14} /> : <Trash2 size={16} />}
+                            </IconButton>
+                          </Tooltip>
+                        </Box>
+                        <Box sx={{ display: 'flex', gap: 0.75, flexWrap: 'wrap' }}>
+                          <Chip label={template.category || 'User Created'} size="small" sx={{ fontSize: '0.6875rem', height: 20, bgcolor: '#FFF3E0', color: '#FF9800' }} />
+                          <Chip label={`${(template.rules || []).length} rules`} size="small" sx={{ fontSize: '0.6875rem', height: 20, bgcolor: '#F8F9FA' }} />
+                          {template.created_at && (
+                            <Chip label={new Date(template.created_at).toLocaleDateString()} size="small" sx={{ fontSize: '0.6875rem', height: 20, bgcolor: '#F8F9FA' }} />
+                          )}
+                        </Box>
+                      </CardContent>
+                    </Card>
+                  ))}
+                </Box>
+              )}
+            </>
+          )}
         </Box>
       </DialogContent>
     </Dialog>

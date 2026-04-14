@@ -3884,6 +3884,59 @@ async def reorder_saved_rules(request: dict):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# ── User Templates CRUD ─────────────────────────────────────────────────
+
+@api_router.get("/user-templates")
+async def list_user_templates():
+    """List all user-created templates."""
+    try:
+        templates = await db.user_templates.find({}, {"_id": 0}).sort("created_at", -1).to_list(500)
+        return templates
+    except Exception as e:
+        logger.error(f"Error listing user templates: {e}")
+        return []
+
+@api_router.post("/user-templates")
+async def save_user_template(request: dict):
+    """Create a user template from saved rules."""
+    name = (request.get("name") or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Template name is required.")
+    description = (request.get("description") or "").strip()
+    category = (request.get("category") or "User Created").strip()
+    rules = request.get("rules", [])
+    combined_code = request.get("combinedCode", "")
+
+    # Check name uniqueness
+    existing = await db.user_templates.find_one(
+        {"name": {"$regex": f"^{re.escape(name)}$", "$options": "i"}},
+        {"_id": 0, "id": 1},
+    )
+    if existing:
+        raise HTTPException(status_code=409, detail=f"A template named \"{name}\" already exists.")
+
+    now = datetime.now(timezone.utc).isoformat()
+    doc = {
+        "id": str(uuid.uuid4()),
+        "name": name,
+        "description": description,
+        "category": category,
+        "rules": rules,
+        "combinedCode": combined_code,
+        "created_at": now,
+        "updated_at": now,
+    }
+    await db.user_templates.insert_one(doc)
+    return {"success": True, "id": doc["id"], "message": f"Template \"{name}\" created."}
+
+@api_router.delete("/user-templates/{template_id}")
+async def delete_user_template(template_id: str):
+    """Delete a user template by id."""
+    result = await db.user_templates.delete_one({"id": template_id})
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Template not found.")
+    return {"success": True, "message": "Template deleted."}
+
 # ── Saved Schedules CRUD ────────────────────────────────────────────────
 
 @api_router.get("/saved-schedules")

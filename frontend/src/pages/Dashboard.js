@@ -509,12 +509,66 @@ const Dashboard = () => {
     setDslCode(prev => prev + "\n" + functionCall);
   };
 
-  const handleGeneratedCode = (code) => {
+  const handleGeneratedCode = async (code, metadata) => {
     setDslCode(code);
     setEditorMode('code');
     setTabValue(1);
     addConsoleLog("Logic loaded into editor from builder", "info");
     toast.success("Logic loaded into editor — click Run to execute");
+
+    // If template metadata includes rules, save them to Rule Manager
+    if (metadata?.rules?.length) {
+      try {
+        const [rulesRes, schedulesRes] = await Promise.all([
+          axios.get(`${API}/saved-rules`),
+          axios.get(`${API}/saved-schedules`).catch(() => ({ data: [] })),
+        ]);
+        const existingRules = Array.isArray(rulesRes.data) ? rulesRes.data : [];
+        const existingSchedules = Array.isArray(schedulesRes.data) ? schedulesRes.data : [];
+        let maxPriority = Math.max(
+          ...existingRules.map(r => r.priority || 0),
+          ...existingSchedules.map(s => s.priority || 0),
+          0
+        );
+        const existingNames = new Set(existingRules.map(r => (r.name || '').toLowerCase()));
+
+        let created = 0;
+        for (const rule of metadata.rules) {
+          maxPriority += 1;
+          let name = rule.name;
+          let baseName = name;
+          let suffix = 1;
+          while (existingNames.has(name.toLowerCase())) {
+            name = `${baseName} (${suffix})`;
+            suffix++;
+          }
+          existingNames.add(name.toLowerCase());
+          try {
+            await axios.post(`${API}/saved-rules`, {
+              name,
+              priority: maxPriority,
+              ruleType: rule.ruleType || 'simple_calc',
+              variables: rule.variables || [],
+              conditions: rule.conditions || [],
+              elseFormula: rule.elseFormula || '',
+              conditionResultVar: rule.conditionResultVar || 'result',
+              outputs: rule.outputs || {},
+              generatedCode: rule.generatedCode || '',
+            });
+            created++;
+          } catch (err) {
+            console.error(`Failed to save rule "${name}":`, err.response?.data?.detail || err.message);
+          }
+        }
+
+        if (created > 0) {
+          setSavedRulesRefreshKey(k => k + 1);
+          addConsoleLog(`Created ${created} rule(s) in Rule Manager from template`, "info");
+        }
+      } catch (err) {
+        console.error("Error importing template rules:", err);
+      }
+    }
   };
 
   const loadCombinedCode = async () => {

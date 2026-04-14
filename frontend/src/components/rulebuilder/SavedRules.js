@@ -1,10 +1,10 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import {
-  Box, Typography, Card, CardContent, Button, IconButton, Chip,
+  Box, Typography, Card, CardContent, Button, IconButton, Chip, TextField,
   CircularProgress, Alert, Tooltip, Divider,
   Dialog, DialogTitle, DialogContent, DialogContentText, DialogActions,
 } from "@mui/material";
-import { Trash2, Edit3, Calculator, GitBranch, Repeat, Database, Clock, Upload, Play, GripVertical } from "lucide-react";
+import { Trash2, Edit3, Calculator, GitBranch, Repeat, Database, Clock, Upload, Play, GripVertical, BookmarkPlus } from "lucide-react";
 import { API } from "../../config";
 
 const RULE_TYPE_META = {
@@ -21,6 +21,12 @@ const SavedRules = ({ onEditRule, refreshKey, onLoadToEditor, onPlayAll }) => {
   const [deleting, setDeleting] = useState(null);
   const [deleteTarget, setDeleteTarget] = useState(null);
   const [playing, setPlaying] = useState(false);
+  const [showSaveTemplate, setShowSaveTemplate] = useState(false);
+  const [templateName, setTemplateName] = useState('');
+  const [templateDesc, setTemplateDesc] = useState('');
+  const [templateCategory, setTemplateCategory] = useState('');
+  const [savingTemplate, setSavingTemplate] = useState(false);
+  const [templateResult, setTemplateResult] = useState(null);
 
   const loadRules = useCallback(async () => {
     setLoading(true);
@@ -191,6 +197,11 @@ const SavedRules = ({ onEditRule, refreshKey, onLoadToEditor, onPlayAll }) => {
                   {playing ? <CircularProgress size={16} /> : <Play size={16} />}
                 </IconButton>
               </Tooltip>
+              <Tooltip title="Save all rules as a reusable template">
+                <IconButton size="small" onClick={() => { setShowSaveTemplate(true); setTemplateResult(null); }} sx={{ color: '#FF9800' }}>
+                  <BookmarkPlus size={16} />
+                </IconButton>
+              </Tooltip>
             </>
           )}
         </Box>
@@ -294,6 +305,87 @@ const SavedRules = ({ onEditRule, refreshKey, onLoadToEditor, onPlayAll }) => {
         <DialogActions>
           <Button onClick={() => setDeleteTarget(null)} color="inherit">Cancel</Button>
           <Button onClick={() => handleDelete(deleteTarget)} color="error" variant="contained">Delete</Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* Save as Template Dialog */}
+      <Dialog open={showSaveTemplate} onClose={() => setShowSaveTemplate(false)} maxWidth="sm" fullWidth>
+        <DialogTitle>Save as Template</DialogTitle>
+        <DialogContent>
+          <DialogContentText sx={{ mb: 2 }}>
+            Create a reusable template from all {sortedRules.length} saved rule{sortedRules.length !== 1 ? 's' : ''}. This template will appear in the Accounting Templates library.
+          </DialogContentText>
+          <TextField
+            autoFocus fullWidth size="small" label="Template Name" placeholder="e.g., Monthly Interest Accrual"
+            value={templateName} onChange={(e) => setTemplateName(e.target.value)}
+            sx={{ mb: 2 }}
+          />
+          <TextField
+            fullWidth size="small" label="Description" placeholder="Describe what this template calculates..."
+            value={templateDesc} onChange={(e) => setTemplateDesc(e.target.value)}
+            multiline rows={2}
+            sx={{ mb: 2 }}
+          />
+          <TextField
+            fullWidth size="small" label="Category (optional)" placeholder="e.g., Loans & Lending"
+            value={templateCategory} onChange={(e) => setTemplateCategory(e.target.value)}
+          />
+          {templateResult && (
+            <Alert severity={templateResult.success ? 'success' : 'error'} sx={{ mt: 2 }}>
+              {templateResult.message}
+            </Alert>
+          )}
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setShowSaveTemplate(false)} color="inherit">Cancel</Button>
+          <Button
+            disabled={!templateName.trim() || savingTemplate}
+            variant="contained"
+            onClick={async () => {
+              setSavingTemplate(true);
+              setTemplateResult(null);
+              try {
+                const combinedCode = sortedRules.map(r => r.generatedCode || '').filter(Boolean).join('\n\n');
+                const ruleSummaries = sortedRules.map(r => ({
+                  name: r.name, priority: r.priority, ruleType: r.ruleType,
+                  generatedCode: r.generatedCode,
+                  variables: r.variables || [],
+                  conditions: r.conditions || [],
+                  elseFormula: r.elseFormula || '',
+                  conditionResultVar: r.conditionResultVar || 'result',
+                  outputs: r.outputs || {},
+                }));
+                const res = await fetch(`${API}/user-templates`, {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({
+                    name: templateName.trim(),
+                    description: templateDesc.trim(),
+                    category: templateCategory.trim() || 'User Created',
+                    rules: ruleSummaries,
+                    combinedCode,
+                  }),
+                });
+                const data = await res.json();
+                if (res.ok && data.success) {
+                  setTemplateResult({ success: true, message: data.message || 'Template saved!' });
+                  setTimeout(() => {
+                    setShowSaveTemplate(false);
+                    setTemplateName(''); setTemplateDesc(''); setTemplateCategory('');
+                    setTemplateResult(null);
+                  }, 1200);
+                } else {
+                  setTemplateResult({ success: false, message: data.detail || data.error || 'Save failed' });
+                }
+              } catch (err) {
+                setTemplateResult({ success: false, message: err.message || 'Network error' });
+              } finally {
+                setSavingTemplate(false);
+              }
+            }}
+          >
+            {savingTemplate ? <CircularProgress size={18} /> : 'Save Template'}
+          </Button>
         </DialogActions>
       </Dialog>
     </Box>
