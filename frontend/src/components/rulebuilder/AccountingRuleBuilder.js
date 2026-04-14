@@ -15,6 +15,7 @@ const RULE_TYPES = [
   { value: 'simple_calc', label: 'Simple Calculation', description: 'Compute values using formulas', icon: Calculator },
   { value: 'conditional', label: 'Conditional Logic', description: 'Apply different formulas based on conditions', icon: GitBranch },
   { value: 'iteration', label: 'Iteration / Loop', description: 'Process arrays or collections with for_each / map', icon: Repeat },
+  { value: 'custom_code', label: 'Custom Code', description: 'Write raw DSL code directly in the rule', icon: Code },
 ];
 
 const VariableRow = ({ variable, index, events, definedVarNames, onUpdate, onRemove, onMoveUp, onMoveDown, isFirst, isLast, onTest }) => {
@@ -251,6 +252,7 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
   );
   const [inlineComment, setInlineComment] = useState(initialData?.inlineComment || false);
   const [commentText, setCommentText] = useState(initialData?.commentText || '');
+  const [customCode, setCustomCode] = useState(initialData?.customCode || '');
   const [saving, setSaving] = useState(false);
   const [showCode, setShowCode] = useState(false);
   const [saveResult, setSaveResult] = useState(null); // { success, output, error }
@@ -465,6 +467,11 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
   }, []);
 
   const generatedCode = useMemo(() => {
+    // Custom code rule — just return the raw code as-is
+    if (ruleType === 'custom_code') {
+      return customCode;
+    }
+
     const lines = [];
     if (inlineComment && commentText.trim()) {
       commentText.trim().split('\n').forEach(l => lines.push(`## ${l}`));
@@ -578,7 +585,7 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
     }
 
     return lines.join('\n');
-  }, [ruleName, ruleType, variables, outputs, conditions, elseFormula, conditionResultVar, iterConfig, inlineComment, commentText, savedRulesVars]);
+  }, [ruleName, ruleType, variables, outputs, conditions, elseFormula, conditionResultVar, iterConfig, inlineComment, commentText, savedRulesVars, customCode]);
 
   const handleSave = useCallback(async () => {
     if (!ruleName.trim()) {
@@ -590,8 +597,12 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
       return;
     }
     const emptyVars = variables.filter(v => !v.name);
-    if (emptyVars.length > 0) {
+    if (ruleType !== 'custom_code' && emptyVars.length > 0) {
       setValidationMsg('Variable Name is required and not populated for one or more calculation steps.');
+      return;
+    }
+    if (ruleType === 'custom_code' && !customCode.trim()) {
+      setValidationMsg('Custom code is required. Please write some DSL code.');
       return;
     }
     setSaving(true);
@@ -602,7 +613,7 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
         name: ruleName.trim(),
         priority: rulePriority === '' ? null : Number(rulePriority),
         ruleType,
-        variables,
+        variables: ruleType === 'custom_code' ? [] : variables,
         conditions,
         elseFormula,
         conditionResultVar,
@@ -610,6 +621,7 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
         outputs,
         inlineComment,
         commentText,
+        customCode: ruleType === 'custom_code' ? customCode : '',
         generatedCode,
       };
       const response = await fetch(`${API}/saved-rules`, {
@@ -650,6 +662,7 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
     setOutputs({ printResult: true, createTransaction: false, transactions: [{ type: 'Calculation Result', amount: '', postingDate: '', effectiveDate: '', subInstrumentId: '' }] });
     setInlineComment(false);
     setCommentText('');
+    setCustomCode('');
     setShowCode(false);
     setSaveResult(null);
   }, []);
@@ -708,7 +721,37 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
 
         <Divider sx={{ mb: 2 }} />
 
-        {/* Variables / Parameters */}
+        {/* ── Custom Code Editor ── */}
+        {ruleType === 'custom_code' && (
+          <Box sx={{ mb: 2 }}>
+            <Typography variant="body2" fontWeight={600} sx={{ mb: 1 }}>
+              <Code size={14} style={{ display: 'inline', marginRight: 6, verticalAlign: 'middle' }} />
+              DSL Code
+            </Typography>
+            <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 1 }}>
+              Write raw DSL code. This will be saved as a rule and combined with other rules in priority order.
+            </Typography>
+            <Paper variant="outlined" sx={{ bgcolor: '#0D1117', borderRadius: 1.5, overflow: 'hidden' }}>
+              <textarea
+                value={customCode}
+                onChange={(e) => setCustomCode(e.target.value)}
+                placeholder="## Write DSL code here&#10;loan_amount = LoanEvent.principal&#10;rate = divide(LoanEvent.rate, 12)&#10;payment = pmt(rate, 12, loan_amount)&#10;print(payment)"
+                style={{
+                  width: '100%', minHeight: 220, padding: 16,
+                  fontFamily: 'monospace', fontSize: '0.8125rem', lineHeight: 1.6,
+                  color: '#E6EDF3', backgroundColor: 'transparent',
+                  border: 'none', outline: 'none', resize: 'vertical',
+                  tabSize: 4,
+                }}
+                spellCheck={false}
+              />
+            </Paper>
+          </Box>
+        )}
+
+        {/* ── Variables / Parameters (not for custom_code) ── */}
+        {ruleType !== 'custom_code' && (
+          <>
         <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 1.5 }}>
           <Typography variant="body2" fontWeight={600}>
             Calculation Steps
@@ -724,6 +767,8 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
             isFirst={idx === 0} isLast={idx === variables.length - 1}
             onTest={testVariable} />
         ))}
+          </>
+        )}
 
         {/* ── Conditional Logic Section ── */}
         {ruleType === 'conditional' && (
@@ -852,6 +897,7 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
           </>
         )}
 
+        {ruleType !== 'custom_code' && (<>
         <Divider sx={{ my: 2 }} />
 
         {/* ── Output Options ── */}
@@ -1025,6 +1071,7 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
             )}
           </CardContent>
         </Card>
+        </>)}
 
         {/* Code Preview */}
         <Divider sx={{ my: 2 }} />

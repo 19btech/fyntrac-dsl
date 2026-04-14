@@ -337,6 +337,7 @@ const RULE_TYPE_META_WIZ = {
   conditional: { label: 'Conditional', color: '#FF9800', icon: GitBranch },
   iteration: { label: 'Iteration', color: '#00BCD4', icon: Repeat },
   collect: { label: 'Collect', color: '#8BC34A', icon: Database },
+  custom_code: { label: 'Custom Code', color: '#9C27B0', icon: Code },
 };
 
 /**

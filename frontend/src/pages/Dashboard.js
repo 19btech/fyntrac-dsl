@@ -823,12 +823,21 @@ const Dashboard = () => {
               {/* Code Editor Mode */}
               {editorMode === 'code' && (
                 <>
+                  <Box sx={{ px: 2, py: 1, bgcolor: '#F0F1FF', borderBottom: '1px solid #D6D8FE', display: 'flex', alignItems: 'center', gap: 1.5 }}>
+                    <Code size={16} color="#5B5FED" />
+                    <Typography variant="body2" color="text.secondary" sx={{ flex: 1 }}>
+                      This editor shows the combined output of all rules (sorted by priority). To edit, use the <strong>Rule Builder</strong> or create a <strong>Custom Code</strong> rule.
+                    </Typography>
+                    <Button size="small" variant="outlined" onClick={() => { loadCombinedCode(); }}
+                      sx={{ textTransform: 'none', fontSize: '0.75rem', borderColor: '#5B5FED', color: '#5B5FED' }}>
+                      Refresh
+                    </Button>
+                  </Box>
                   <div className="flex-1 bg-[#0A0A0A] min-w-0" data-testid="dsl-editor">
                     <Editor
                       height="100%"
                       defaultLanguage="python"
                       value={dslCode}
-                      onChange={(value) => setDslCode(value || "")}
                       theme="vs-dark"
                       options={{
                         fontSize: 14,
@@ -841,6 +850,7 @@ const Dashboard = () => {
                         tabSize: 2,
                         insertSpaces: true,
                         renderWhitespace: "none",
+                        readOnly: true,
                         cursorStyle: "line",
                         cursorBlinking: "blink",
                         fixedOverflowWidgets: true,

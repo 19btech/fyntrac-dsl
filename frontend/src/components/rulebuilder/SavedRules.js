@@ -4,7 +4,7 @@ import {
   CircularProgress, Alert, Tooltip, Divider,
   Dialog, DialogTitle, DialogContent, DialogContentText, DialogActions,
 } from "@mui/material";
-import { Trash2, Edit3, Calculator, GitBranch, Repeat, Database, Clock, Upload, Play, GripVertical, BookmarkPlus, RotateCcw } from "lucide-react";
+import { Trash2, Edit3, Calculator, GitBranch, Repeat, Database, Clock, Upload, Play, GripVertical, BookmarkPlus, RotateCcw, Code } from "lucide-react";
 import { API } from "../../config";
 
 const RULE_TYPE_META = {
@@ -12,6 +12,7 @@ const RULE_TYPE_META = {
   conditional: { label: 'Conditional', color: '#FF9800', icon: GitBranch },
   iteration: { label: 'Iteration', color: '#00BCD4', icon: Repeat },
   collect: { label: 'Collect', color: '#8BC34A', icon: Database },
+  custom_code: { label: 'Custom Code', color: '#9C27B0', icon: Code },
 };
 
 const SavedRules = ({ onEditRule, refreshKey, onLoadToEditor, onPlayAll, onClearAll }) => {
