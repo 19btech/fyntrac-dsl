@@ -1229,14 +1229,7 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
                 <GitBranch size={14} style={{ display: 'inline', marginRight: 6, verticalAlign: 'middle' }} />
                 Conditions (IF / ELSE IF / ELSE)
               </Typography>
-              <Box sx={{ display: 'flex', gap: 0.5 }}>
-                <Tooltip title="Test conditional logic">
-                  <IconButton size="small" onClick={testConditional} disabled={condTesting} sx={{ color: '#4CAF50' }}>
-                    {condTesting ? <CircularProgress size={14} /> : <Play size={14} />}
-                  </IconButton>
-                </Tooltip>
-                <Button size="small" startIcon={<Plus size={14} />} onClick={addCondition}>Add Condition</Button>
-              </Box>
+              <Button size="small" startIcon={<Plus size={14} />} onClick={addCondition}>Add Condition</Button>
             </Box>
             <TextField size="small" label="Result Variable Name" value={conditionResultVar}
               onChange={(e) => setConditionResultVar(e.target.value.replace(/[^a-zA-Z0-9_]/g, ''))}
@@ -1261,18 +1254,7 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
                 />
               </CardContent>
             </Card>
-            {condTestResult && (
-              <Alert severity={condTestResult.success ? 'success' : 'error'} sx={{ mt: 1, '& .MuiAlert-message': { width: '100%' } }}
-                onClose={() => setCondTestResult(null)}>
-                {condTestResult.success ? (
-                  <Typography variant="body2" fontFamily="monospace" fontSize="0.8125rem" sx={{ whiteSpace: 'pre-wrap' }}>
-                    {condTestResult.output}
-                  </Typography>
-                ) : (
-                  <Typography variant="body2">{condTestResult.error}</Typography>
-                )}
-              </Alert>
-            )}
+
           </>
         )}
 
@@ -1285,11 +1267,6 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
                 <Repeat size={14} style={{ display: 'inline', marginRight: 6, verticalAlign: 'middle' }} />
                 Iteration Configuration
               </Typography>
-              <Tooltip title="Test iteration logic">
-                <IconButton size="small" onClick={testIteration} disabled={iterTesting} sx={{ color: '#4CAF50' }}>
-                  {iterTesting ? <CircularProgress size={14} /> : <Play size={14} />}
-                </IconButton>
-              </Tooltip>
             </Box>
             {iterations.map((iter, idx) => {
               const updateIter = (field, value) => setIterations(prev => prev.map((it, i) => i === idx ? { ...it, [field]: value } : it));
@@ -1416,18 +1393,7 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
               onClick={() => setIterations(prev => [...prev, { type: 'apply_each', sourceArray: '', varName: 'each', expression: '', resultVar: 'result_' + (prev.length + 1), secondArray: '', secondVar: 'second' }])}>
               Add Iteration
             </Button>
-            {iterTestResult && (
-              <Alert severity={iterTestResult.success ? 'success' : 'error'} sx={{ mt: 1, '& .MuiAlert-message': { width: '100%' } }}
-                onClose={() => setIterTestResult(null)}>
-                {iterTestResult.success ? (
-                  <Typography variant="body2" fontFamily="monospace" fontSize="0.8125rem" sx={{ whiteSpace: 'pre-wrap' }}>
-                    {iterTestResult.output}
-                  </Typography>
-                ) : (
-                  <Typography variant="body2">{iterTestResult.error}</Typography>
-                )}
-              </Alert>
-            )}
+
           </>
         )}
 
