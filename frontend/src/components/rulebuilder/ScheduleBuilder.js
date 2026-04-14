@@ -121,7 +121,8 @@ const ScheduleBuilder = ({ events, dslFunctions, onClose, onSave, initialData })
         const res = await fetch(`${API}/saved-rules`);
         if (!res.ok) return;
         const data = await res.json();
-        const rules = Array.isArray(data) ? data : (data.rules || []);
+        const rules = (Array.isArray(data) ? data : (data.rules || []))
+          .sort((a, b) => (a.priority ?? Infinity) - (b.priority ?? Infinity));
         const names = new Set();
         const allVars = [];
         rules.forEach(r => {
