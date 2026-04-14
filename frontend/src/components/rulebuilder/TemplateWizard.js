@@ -128,26 +128,7 @@ function parseDSLToRules(code, templateTitle) {
     }
   }
 
-  // Phase 2b: Detect chained iterations (one map_array feeds another) → reclassify as variables
-  if (iterStmts.length > 1) {
-    const iterAssigns = iterStmts.filter(s => s.type === 'iteration');
-    const iterResultNames = new Set(iterAssigns.map(s => s.name));
-    const isChained = iterAssigns.some(s => {
-      const srcMatch = (s.rhs || '').match(/^(?:map_array|for_each)\s*\(\s*([a-zA-Z_]\w*)/);
-      return srcMatch && iterResultNames.has(srcMatch[1]);
-    });
-    if (isChained) {
-      // Move all iteration stmts (including their prints) into paramStmts as formula variables
-      for (const stmt of iterStmts) {
-        if (stmt.type === 'iteration') {
-          stmt.type = 'variable'; // reclassify so classifyToVariable treats RHS as formula
-          paramStmts.push(stmt);
-        }
-        // prints associated with iterations are skipped (standalone prints)
-      }
-      iterStmts.length = 0; // clear
-    }
-  }
+  // Phase 2b: (reserved — chained iterations are now kept as separate iteration rules)
 
   // Phase 3: Create rules in logical execution order
   const rules = [];
@@ -317,7 +298,7 @@ function classifyAssignment(name, rhs) {
     return { type: 'conditional' };
   }
   // Iteration
-  if (/^(map_array|for_each)\s*\(/.test(rhs)) {
+  if (/^(map_array|for_each|apply_each)\s*\(/.test(rhs)) {
     return { type: 'iteration' };
   }
   return { type: 'variable' };
@@ -369,8 +350,36 @@ function parseIif(rhs) {
   return { conditions: conditions.length ? conditions : [{ condition: '', thenFormula: '' }], elseFormula: current };
 }
 
-/** Parse map_array/for_each into iterConfig */
+/** Parse map_array/for_each/apply_each into iterConfig */
 function parseIterConfig(rhs, resultVar) {
+  // apply_each: single or paired mode
+  const aeMatch = rhs.match(/^apply_each\s*\((.*)\)$/s);
+  if (aeMatch) {
+    const args = splitArgs(aeMatch[1]);
+    // Detect mode: if the second arg is a quoted string, it's single-array mode
+    const secondArg = (args[1] || '').trim();
+    if (secondArg.startsWith('"') || secondArg.startsWith("'")) {
+      // Single-array mode: apply_each(array, "expr", {ctx})
+      return {
+        type: 'apply_each',
+        sourceArray: args[0] || '',
+        varName: 'each',
+        expression: secondArg.replace(/^"|"$/g, ''),
+        resultVar: resultVar || 'mapped_result',
+        secondArray: '', secondVar: 'second',
+      };
+    } else {
+      // Paired mode: apply_each(array1, array2, "expr", {ctx})
+      return {
+        type: 'apply_each_paired',
+        sourceArray: args[0] || '',
+        varName: 'each',
+        expression: (args[2] || '').replace(/^"|"$/g, ''),
+        resultVar: resultVar || 'mapped_result',
+        secondArray: secondArg, secondVar: 'second',
+      };
+    }
+  }
   const mapMatch = rhs.match(/^map_array\s*\((.*)\)$/s);
   if (mapMatch) {
     const args = splitArgs(mapMatch[1]);
@@ -396,7 +405,7 @@ function parseIterConfig(rhs, resultVar) {
       resultVar: resultVar || 'mapped_result',
     };
   }
-  return { type: 'map_array', sourceArray: '', varName: 'item', expression: '', resultVar: resultVar || 'mapped_result', secondArray: '', secondVar: 'amount' };
+  return { type: 'apply_each', sourceArray: '', varName: 'each', expression: '', resultVar: resultVar || 'mapped_result', secondArray: '', secondVar: 'second' };
 }
 
 /** Parse schedule statements into ScheduleBuilder-compatible config */
@@ -465,6 +474,22 @@ function parseScheduleConfig(schedStmts, journalStmts) {
           for (const m of allKV) cols.push({ name: m[1], formula: m[2] });
         }
         if (cols.length > 0) cfg.columns = cols;
+      }
+      // Extract context variable references from the second {…} block
+      const allBlocks = [...rhs.matchAll(/\{([^}]*)\}/g)];
+      if (allBlocks.length >= 2) {
+        const ctxBlock = allBlocks[allBlocks.length - 1][1]; // last {} is context
+        const ctxVars = [];
+        const ctxMapping = {}; // key→varName mapping (e.g., "amounts" → "allocated_revenues")
+        const ctxPairs = [...ctxBlock.matchAll(/"([^"]+)"\s*:\s*([a-zA-Z_]\w*)/g)];
+        for (const m of ctxPairs) {
+          ctxVars.push(m[2]); // the variable name (value side)
+          ctxMapping[m[2]] = m[1]; // varName → original key name
+        }
+        if (ctxVars.length > 0) {
+          cfg.contextVars = ctxVars;
+          cfg.contextMapping = ctxMapping;
+        }
       }
     }
 

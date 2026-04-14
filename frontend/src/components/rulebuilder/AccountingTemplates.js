@@ -199,8 +199,8 @@ const ACCOUNTING_TEMPLATES = [
 
       if (config.allocation_method === 'SSP-Weighted (Relative)') {
         lines.push('## SSP-weighted allocation');
-        lines.push('alloc_pcts = map_array(ssp_values, "ssp", "iif(gt(total_ssp, 0), divide(ssp, total_ssp), 0)", {"total_ssp": total_ssp})');
-        lines.push('allocated_revenues = map_array(alloc_pcts, "pct", "multiply(pct, total_esp)", {"total_esp": total_esp})');
+        lines.push('alloc_pcts = apply_each(ssp_values, "iif(gt(total_ssp, 0), divide(each, total_ssp), 0)", {"total_ssp": total_ssp})');
+        lines.push('allocated_revenues = apply_each(alloc_pcts, "multiply(each, total_esp)", {"total_esp": total_esp})');
       } else {
         lines.push('## Standalone allocation');
         lines.push('allocated_revenues = esp_values');
@@ -280,9 +280,8 @@ const ACCOUNTING_TEMPLATES = [
       lines.push('    "accrued_interest": "multiply(multiply(balance, daily_rate), days_in_period)"');
       lines.push('}, {"balance": balance, "daily_rate": daily_rate})');
       lines.push('');
-      lines.push('total_interest = schedule_sum(sched, "accrued_interest")');
       lines.push('print(sched)');
-      lines.push('print("Total Interest Accrued:", total_interest)');
+      lines.push('print("Total Interest Accrued:", schedule_sum(sched, "accrued_interest"))');
 
       if (config.outputs_create_txn) {
         lines.push('');

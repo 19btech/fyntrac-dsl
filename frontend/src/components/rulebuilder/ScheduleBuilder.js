@@ -131,6 +131,16 @@ const ScheduleBuilder = ({ events, dslFunctions, onClose, onSave, initialData })
               allVars.push(v);
             }
           });
+          // Expose iteration result variables so schedules can reference them
+          if (r.ruleType === 'iteration' && r.iterConfig?.resultVar) {
+            const rv = r.iterConfig.resultVar;
+            if (!names.has(rv)) {
+              names.add(rv);
+              const codeLine = (r.generatedCode || '').split('\n').find(l => l.trim().startsWith(rv + ' ='));
+              const formula = codeLine ? codeLine.trim().replace(new RegExp('^' + rv + '\\s*=\\s*'), '') : rv;
+              allVars.push({ name: rv, source: 'formula', formula, value: '', eventField: '', collectType: 'collect', _isIterResult: true });
+            }
+          }
         });
         setSavedRulesVarNames([...names]);
         setSavedRulesVars(allVars);
@@ -251,6 +261,9 @@ const ScheduleBuilder = ({ events, dslFunctions, onClose, onSave, initialData })
   const SCHEDULE_BUILTINS = useMemo(() => new Set([
     'period_date', 'period_index', 'period_start', 'period_number', 'dcf', 'lag',
     'days_in_current_period',
+    // Schedule-internal variables provided automatically by generate_schedules()
+    'amount', 'total_periods', 'daily_basis', 'item_name', 'subinstrument_id',
+    's_no', 'index', 'start_date', 'end_date',
     ...(dslFunctions || []).map(f => f.name),
   ]), [dslFunctions]);
 
@@ -263,6 +276,10 @@ const ScheduleBuilder = ({ events, dslFunctions, onClose, onSave, initialData })
     const colNames = new Set(columns.filter(c => c.name).map(c => c.name));
     const savedVarNameSet = new Set(savedRulesVarNames);
     const externalRefs = new Set();
+    // Include context variables from parsed schedule config (e.g., amounts, subinstrument_ids)
+    if (cfg.contextVars) {
+      cfg.contextVars.forEach(v => externalRefs.add(v));
+    }
     for (const col of columns) {
       if (!col.formula) continue;
       const identifiers = col.formula.match(/[a-zA-Z_][a-zA-Z0-9_]*/g) || [];
@@ -275,7 +292,7 @@ const ScheduleBuilder = ({ events, dslFunctions, onClose, onSave, initialData })
       }
     }
     return [...externalRefs];
-  }, [columns, SCHEDULE_BUILTINS, savedRulesVarNames]);
+  }, [columns, SCHEDULE_BUILTINS, savedRulesVarNames, cfg.contextVars]);
 
   // Test a single column — generates schedule code for columns up to this index and executes
   const testColumn = useCallback(async (colIndex) => {
@@ -288,6 +305,7 @@ const ScheduleBuilder = ({ events, dslFunctions, onClose, onSave, initialData })
     const knownEvents = new Set((events || []).map(e => (e.event_name || '').toLowerCase()));
     for (const v of savedRulesVars) {
       if (!v.name) continue;
+      if (v._isIterResult) continue; // iteration results are produced by their own rule
       // Skip variables referencing events that don't exist in current tenant
       if ((v.source === 'event_field' || v.source === 'collect') && v.eventField) {
         const evtName = v.eventField.split('.')[0];
@@ -322,7 +340,10 @@ const ScheduleBuilder = ({ events, dslFunctions, onClose, onSave, initialData })
       const comma = idx < colsToTest.length - 1 ? ',' : '';
       lines.push(`    "${col.name}": "${col.formula}"${comma}`);
     });
-    const contextPairs = autoDetectedVars.map(v => `"${v}": ${v}`);
+    const contextPairs = autoDetectedVars.map(v => {
+      const key = (cfg.contextMapping && cfg.contextMapping[v]) || v;
+      return `"${key}": ${v}`;
+    });
     if (contextPairs.length > 0) {
       lines.push(`}, {${contextPairs.join(', ')}})`);
     } else {
@@ -407,7 +428,10 @@ const ScheduleBuilder = ({ events, dslFunctions, onClose, onSave, initialData })
     });
 
     // Context object — auto-wired from detected variable references
-    const contextPairs = autoDetectedVars.map(v => `"${v}": ${v}`);
+    const contextPairs = autoDetectedVars.map(v => {
+      const key = (cfg.contextMapping && cfg.contextMapping[v]) || v;
+      return `"${key}": ${v}`;
+    });
     if (contextPairs.length > 0) {
       lines.push(`}, {${contextPairs.join(', ')}})`);
     } else {
@@ -478,6 +502,7 @@ const ScheduleBuilder = ({ events, dslFunctions, onClose, onSave, initialData })
     const knownEvents = new Set((events || []).map(e => (e.event_name || '').toLowerCase()));
     for (const v of savedRulesVars) {
       if (!v.name) continue;
+      if (v._isIterResult) continue; // iteration results are produced by their own rule
       if ((v.source === 'event_field' || v.source === 'collect') && v.eventField) {
         const evtName = v.eventField.split('.')[0];
         if (evtName && !knownEvents.has(evtName.toLowerCase())) continue;
@@ -510,7 +535,10 @@ const ScheduleBuilder = ({ events, dslFunctions, onClose, onSave, initialData })
       const comma = idx < validCols.length - 1 ? ',' : '';
       lines.push(`    "${col.name}": "${col.formula}"${comma}`);
     });
-    const ctxPairs = autoDetectedVars.map(v => `"${v}": ${v}`);
+    const ctxPairs = autoDetectedVars.map(v => {
+      const key = (cfg.contextMapping && cfg.contextMapping[v]) || v;
+      return `"${key}": ${v}`;
+    });
     if (ctxPairs.length > 0) lines.push(`}, {${ctxPairs.join(', ')}})`);
     else lines.push('})' );
     return lines;

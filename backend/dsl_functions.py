@@ -2908,6 +2908,82 @@ def map_array(array: List[Any], var_name: str, expression: str, context: Dict[st
     return cleaned
 
 
+def apply_each(source, expr_or_second, expr_if_paired=None, context: Dict[str, Any] = None) -> List[Any]:
+    """
+    Apply a formula to each item in a list, or to each pair of items from two lists.
+    Uses intuitive keywords: 'each' for the current item, 'first'/'second' for paired items.
+
+    Single-array mode:
+        apply_each(array, "formula using each")
+        e.g. apply_each(prices, "multiply(each, 1.1)")
+
+    Paired-array mode:
+        apply_each(array1, array2, "formula using first and second")
+        e.g. apply_each(quantities, prices, "multiply(first, second)")
+
+    Magic variables available inside the formula:
+        each  — current element (single mode) or alias for first (paired mode)
+        first — element from the first array (paired mode)
+        second— element from the second array (paired mode)
+        index — 0-based position in the array
+        count — total number of elements
+
+    Args:
+        source: The array to iterate over
+        expr_or_second: Expression string (single mode) or second array (paired mode)
+        expr_if_paired: Expression string when using paired mode (None for single mode)
+        context: Optional dict of external variables referenced in the formula
+
+    Returns:
+        List of results from applying the formula to each element/pair
+    """
+    import logging
+    logger = logging.getLogger(__name__)
+
+    # Detect mode: if expr_or_second is a string, it's single-array mode
+    if isinstance(expr_or_second, str):
+        # Single-array mode — delegate to map_array with var_name="each"
+        # 3rd arg could be context dict (passed as expr_if_paired positionally)
+        ctx = expr_if_paired if isinstance(expr_if_paired, dict) else context
+        enriched_context = dict(ctx) if ctx else {}
+        return map_array(source, "each", expr_or_second, enriched_context)
+    else:
+        # Paired-array mode
+        second_array = expr_or_second
+        expression = expr_if_paired or ""
+
+        if not source or not second_array:
+            return []
+
+        min_len = min(len(source), len(second_array))
+        dsl_funcs = globals().get('DSL_FUNCTIONS', {})
+        results = []
+
+        for i in range(min_len):
+            local_context = {
+                'first': source[i],
+                'second': second_array[i],
+                'each': source[i],      # alias for first
+                'index': i,
+                'count': min_len,
+            }
+            local_context.update(dsl_funcs)
+            if context:
+                local_context.update(context)
+
+            try:
+                result = safe_eval_expression(expression, local_context)
+                if result is None:
+                    logger.debug(f"apply_each paired: expression returned None at index {i}")
+                    results.append(0)
+                else:
+                    results.append(result)
+            except Exception:
+                results.append(0)
+
+        return results
+
+
 def zip_arrays(*arrays) -> List[List[Any]]:
     """
     Combine multiple arrays into array of tuples/lists.
@@ -3198,7 +3274,7 @@ DSL_FUNCTIONS = {
     
     # Iteration & Array Operations
     'for_each': for_each, 'for_each_with_index': for_each_with_index,
-    'map_array': map_array, 'zip_arrays': zip_arrays,
+    'map_array': map_array, 'apply_each': apply_each, 'zip_arrays': zip_arrays,
     'array_length': array_length, 'array_get': array_get,
     'array_first': array_first, 'array_last': array_last,
     'array_slice': array_slice, 'array_reverse': array_reverse,
@@ -3368,7 +3444,8 @@ DSL_FUNCTION_METADATA = [
     {"name": "collect_subinstrumentids", "params": "", "description": "Return a list of all unique sub-instrument IDs associated with the current instrument.", "category": "Array"},
     {"name": "collect_effectivedates_for_subinstrument", "params": "subinstrument_id?", "description": "Return a list of all effective dates associated with a specified sub-instrument.", "category": "Array"},
 
-    # Iteration (4)
+    # Iteration (5)
+    {"name": "apply_each", "params": "array, expression", "description": "Apply a formula to every item in a list using 'each' as the current item, and return the results. For paired lists, pass two arrays and use 'first' and 'second' in the formula.", "category": "Iteration"},
     {"name": "for_each", "params": "dates_arr, amounts_arr, date_var, amt_var, expr", "description": "Loop through two paired lists of dates and amounts, running a specified action for each pair — commonly used to create multiple transactions.", "category": "Iteration"},
     {"name": "for_each_with_index", "params": "array, var_name, expression, context?", "description": "Loop through a list, making each item and its position number available inside the loop body.", "category": "Iteration"},
     {"name": "map_array", "params": "array, var_name, expression, context?", "description": "Apply a calculation to every item in a list and return the transformed results as a new list.", "category": "Iteration"},

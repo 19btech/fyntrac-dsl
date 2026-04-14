@@ -89,6 +89,7 @@ const TransactionPreview = ({ transactions }) => {
               <TableCell sx={{ fontWeight: 600, fontSize: '0.75rem', py: 0.75, bgcolor: '#F8F9FA' }}>Effective Date</TableCell>
               <TableCell sx={{ fontWeight: 600, fontSize: '0.75rem', py: 0.75, bgcolor: '#F8F9FA' }}>Type</TableCell>
               <TableCell sx={{ fontWeight: 600, fontSize: '0.75rem', py: 0.75, bgcolor: '#F8F9FA' }}>Instrument</TableCell>
+              <TableCell sx={{ fontWeight: 600, fontSize: '0.75rem', py: 0.75, bgcolor: '#F8F9FA' }}>Sub-Instrument</TableCell>
               <TableCell sx={{ fontWeight: 600, fontSize: '0.75rem', py: 0.75, bgcolor: '#F8F9FA' }} align="right">Amount</TableCell>
             </TableRow>
           </TableHead>
@@ -104,7 +105,10 @@ const TransactionPreview = ({ transactions }) => {
                       sx={{ fontSize: '0.6875rem', height: 18, bgcolor: '#EEF0FE', color: '#5B5FED' }} />
                   </TableCell>
                   <TableCell sx={{ fontSize: '0.75rem', py: 0.5, color: '#6C757D' }}>
-                    {txn.instrumentid || '—'}{txn.subinstrumentid && txn.subinstrumentid !== '1' ? ` / ${txn.subinstrumentid}` : ''}
+                    {txn.instrumentid || '—'}
+                  </TableCell>
+                  <TableCell sx={{ fontSize: '0.75rem', py: 0.5, color: '#6C757D' }}>
+                    {txn.subinstrumentid || '1'}
                   </TableCell>
                   <TableCell align="right" sx={{ fontSize: '0.75rem', py: 0.5, fontFamily: 'monospace', fontWeight: 500, color: '#14213D' }}>
                     {formatNumber(amount)}
