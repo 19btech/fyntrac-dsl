@@ -303,12 +303,19 @@ const ScheduleBuilder = ({ events, dslFunctions, onClose, onSave, initialData })
     if (colsToTest.length === 0) return { success: false, error: 'No valid columns to test' };
     const lines = [];
     // Emit ALL saved rule vars in order so transitive dependencies are available.
+    // collect/event_field vars use sample placeholders since test mode has no event data.
     for (const v of savedRulesVars) {
       if (!v.name) continue;
       if (v.source === 'value') lines.push(`${v.name} = ${v.value || 0}`);
-      else if (v.source === 'event_field') lines.push(`${v.name} = ${v.eventField}`);
-      else if (v.source === 'formula') lines.push(`${v.name} = ${v.formula || 0}`);
-      else if (v.source === 'collect') lines.push(`${v.name} = ${v.collectType || 'collect'}(${v.eventField})`);
+      else if (v.source === 'event_field') {
+        const isDate = /date/i.test(v.name) || /date/i.test(v.eventField || '');
+        lines.push(`${v.name} = ${isDate ? '"2026-01-31"' : '100'}`);
+      } else if (v.source === 'formula') lines.push(`${v.name} = ${v.formula || 0}`);
+      else if (v.source === 'collect') {
+        const ct = v.collectType || 'collect';
+        if (ct === 'collect_subinstrumentids') lines.push(`${v.name} = ["sub_1", "sub_2", "sub_3"]`);
+        else lines.push(`${v.name} = [100, 200, 300]`);
+      }
     }
     // Period
     if (periodType === 'number') {
@@ -493,12 +500,19 @@ const ScheduleBuilder = ({ events, dslFunctions, onClose, onSave, initialData })
   // Build schedule base lines (vars + period + schedule() call) — shared by test functions
   const buildScheduleBaseLines = useCallback(() => {
     const lines = [];
+    // collect/event_field vars use sample placeholders since test mode has no event data.
     for (const v of savedRulesVars) {
       if (!v.name) continue;
       if (v.source === 'value') lines.push(`${v.name} = ${v.value || 0}`);
-      else if (v.source === 'event_field') lines.push(`${v.name} = ${v.eventField}`);
-      else if (v.source === 'formula') lines.push(`${v.name} = ${v.formula || 0}`);
-      else if (v.source === 'collect') lines.push(`${v.name} = ${v.collectType || 'collect'}(${v.eventField})`);
+      else if (v.source === 'event_field') {
+        const isDate = /date/i.test(v.name) || /date/i.test(v.eventField || '');
+        lines.push(`${v.name} = ${isDate ? '"2026-01-31"' : '100'}`);
+      } else if (v.source === 'formula') lines.push(`${v.name} = ${v.formula || 0}`);
+      else if (v.source === 'collect') {
+        const ct = v.collectType || 'collect';
+        if (ct === 'collect_subinstrumentids') lines.push(`${v.name} = ["sub_1", "sub_2", "sub_3"]`);
+        else lines.push(`${v.name} = [100, 200, 300]`);
+      }
     }
     if (periodType === 'number') {
       const countExpr = periodCountSource === 'field' && periodCountField ? periodCountField
