@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback, useRef } from "react";
 import {
   Box, Typography, Card, CardContent, Button, IconButton, Chip,
   CircularProgress, Alert, Tooltip, Divider,
+  Dialog, DialogTitle, DialogContent, DialogContentText, DialogActions,
 } from "@mui/material";
 import { Trash2, Edit3, Calculator, GitBranch, Repeat, Database, Clock, Upload, Play, GripVertical } from "lucide-react";
 import { API } from "../../config";
@@ -18,6 +19,7 @@ const SavedRules = ({ onEditRule, refreshKey, onLoadToEditor, onPlayAll }) => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [deleting, setDeleting] = useState(null);
+  const [deleteTarget, setDeleteTarget] = useState(null);
   const [playing, setPlaying] = useState(false);
 
   const loadRules = useCallback(async () => {
@@ -39,8 +41,8 @@ const SavedRules = ({ onEditRule, refreshKey, onLoadToEditor, onPlayAll }) => {
   }, [loadRules, refreshKey]);
 
   const handleDelete = useCallback(async (rule) => {
-    if (!window.confirm(`Delete rule "${rule.name}"? This cannot be undone.`)) return;
     setDeleting(rule.id);
+    setDeleteTarget(null);
     try {
       const res = await fetch(`${API}/saved-rules/${rule.id}`, { method: 'DELETE' });
       if (res.ok) {
@@ -268,7 +270,7 @@ const SavedRules = ({ onEditRule, refreshKey, onLoadToEditor, onPlayAll }) => {
                     </IconButton>
                   </Tooltip>
                   <Tooltip title="Delete rule">
-                    <IconButton size="small" onClick={(e) => { e.stopPropagation(); handleDelete(rule); }}
+                    <IconButton size="small" onClick={(e) => { e.stopPropagation(); setDeleteTarget(rule); }}
                       disabled={deleting === rule.id}
                       sx={{ color: '#F44336' }}>
                       {deleting === rule.id ? <CircularProgress size={14} /> : <Trash2 size={16} />}
@@ -280,6 +282,20 @@ const SavedRules = ({ onEditRule, refreshKey, onLoadToEditor, onPlayAll }) => {
           </Card>
         );
       })}
+
+      {/* Delete Confirmation Dialog */}
+      <Dialog open={!!deleteTarget} onClose={() => setDeleteTarget(null)}>
+        <DialogTitle>Delete Rule</DialogTitle>
+        <DialogContent>
+          <DialogContentText>
+            Delete rule "{deleteTarget?.name}"? This cannot be undone.
+          </DialogContentText>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setDeleteTarget(null)} color="inherit">Cancel</Button>
+          <Button onClick={() => handleDelete(deleteTarget)} color="error" variant="contained">Delete</Button>
+        </DialogActions>
+      </Dialog>
     </Box>
   );
 };

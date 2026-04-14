@@ -565,9 +565,8 @@ const ScheduleBuilder = ({ events, dslFunctions, onClose, onSave }) => {
               </ToggleButtonGroup>
             </Box>
             {periodCountSource === 'value' && (
-              <TextField size="small" label="Number of Periods" type="number" value={periodCount}
+              <TextField size="small" type="number" value={periodCount}
                 onChange={(e) => setPeriodCount(e.target.value)} sx={{ width: 220 }}
-                InputLabelProps={{ shrink: true }}
                 placeholder="e.g., 12" helperText="e.g., 12 for monthly, 60 for 5 years" />
             )}
             {periodCountSource === 'field' && (
@@ -609,14 +608,15 @@ const ScheduleBuilder = ({ events, dslFunctions, onClose, onSave }) => {
                   </ToggleButtonGroup>
                 </Box>
                 {startDateSource === 'value' && (
-                  <TextField size="small" fullWidth label="Start Date" type="date" value={startDate}
-                    onChange={(e) => setStartDate(e.target.value)} InputLabelProps={{ shrink: true }} />
+                  <TextField size="small" fullWidth type="date" value={startDate}
+                    onChange={(e) => setStartDate(e.target.value)} />
                 )}
                 {startDateSource === 'field' && (
                   <FormControl size="small" fullWidth>
-                    <InputLabel>Start Date Field</InputLabel>
-                    <Select value={startDateField} label="Start Date Field"
-                      onChange={(e) => setStartDateField(e.target.value)}>
+                    <Select value={startDateField}
+                      onChange={(e) => setStartDateField(e.target.value)}
+                      displayEmpty
+                      renderValue={(val) => val || <em style={{ color: '#999' }}>Select field...</em>}>
                       {dateEventFields.map(f => <MenuItem key={f} value={f}>{f}</MenuItem>)}
                     </Select>
                   </FormControl>
@@ -626,7 +626,6 @@ const ScheduleBuilder = ({ events, dslFunctions, onClose, onSave }) => {
                     value={startDateFormula}
                     onChange={setStartDateFormula}
                     events={events}
-                    label="Start Date Formula"
                     placeholder='e.g., add_months(effectivedate, 12)'
                   />
                 )}
@@ -645,14 +644,15 @@ const ScheduleBuilder = ({ events, dslFunctions, onClose, onSave }) => {
                   </ToggleButtonGroup>
                 </Box>
                 {endDateSource === 'value' && (
-                  <TextField size="small" fullWidth label="End Date" type="date" value={endDate}
-                    onChange={(e) => setEndDate(e.target.value)} InputLabelProps={{ shrink: true }} />
+                  <TextField size="small" fullWidth type="date" value={endDate}
+                    onChange={(e) => setEndDate(e.target.value)} />
                 )}
                 {endDateSource === 'field' && (
                   <FormControl size="small" fullWidth>
-                    <InputLabel>End Date Field</InputLabel>
-                    <Select value={endDateField} label="End Date Field"
-                      onChange={(e) => setEndDateField(e.target.value)}>
+                    <Select value={endDateField}
+                      onChange={(e) => setEndDateField(e.target.value)}
+                      displayEmpty
+                      renderValue={(val) => val || <em style={{ color: '#999' }}>Select field...</em>}>
                       {dateEventFields.map(f => <MenuItem key={f} value={f}>{f}</MenuItem>)}
                     </Select>
                   </FormControl>
@@ -662,7 +662,6 @@ const ScheduleBuilder = ({ events, dslFunctions, onClose, onSave }) => {
                     value={endDateFormula}
                     onChange={setEndDateFormula}
                     events={events}
-                    label="End Date Formula"
                     placeholder='e.g., add_months(effectivedate, 60)'
                   />
                 )}

@@ -901,20 +901,22 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
 
                   return (
                   <Card key={idx} variant="outlined" sx={{ p: 1, mb: 1, bgcolor: '#FAFAFA' }}>
-                    <Box sx={{ display: 'flex', gap: 1, mb: 0.5, alignItems: 'center' }}>
-                      <TextField size="small" label="Transaction Type" value={txn.type} sx={{ flex: 1 }}
-                        InputLabelProps={{ shrink: true }}
-                        onChange={(e) => updateTransaction(idx, 'type', e.target.value)} />
-                      <FormControl size="small" sx={{ flex: 1 }}>
-                        <InputLabel shrink>Amount</InputLabel>
-                        <Select
-                          value={txn.amount || ''}
-                          label="Amount"
-                          onChange={(e) => updateTransaction(idx, 'amount', e.target.value)}
-                          displayEmpty
-                          notched
-                          renderValue={(val) => val || <em style={{ color: '#999' }}>Select amount...</em>}
-                        >
+                    <Box sx={{ display: 'flex', gap: 1, mb: 0.5, alignItems: 'flex-end' }}>
+                      <Box sx={{ flex: 1 }}>
+                        <Typography variant="caption" fontWeight={600} color="text.secondary" sx={{ mb: 0.25, display: 'block' }}>Transaction Type</Typography>
+                        <TextField size="small" fullWidth value={txn.type}
+                          placeholder="e.g., Calculation Result"
+                          onChange={(e) => updateTransaction(idx, 'type', e.target.value)} />
+                      </Box>
+                      <Box sx={{ flex: 1 }}>
+                        <Typography variant="caption" fontWeight={600} color="text.secondary" sx={{ mb: 0.25, display: 'block' }}>Amount</Typography>
+                        <FormControl size="small" fullWidth>
+                          <Select
+                            value={txn.amount || ''}
+                            onChange={(e) => updateTransaction(idx, 'amount', e.target.value)}
+                            displayEmpty
+                            renderValue={(val) => val || <em style={{ color: '#999' }}>Select amount...</em>}
+                          >
                           {allVarNames.length > 0 && (
                             <MenuItem disabled sx={{ fontSize: '0.75rem', fontWeight: 600, color: '#5B5FED' }}>— Calculated Variables —</MenuItem>
                           )}
@@ -929,21 +931,21 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
                           ))}
                         </Select>
                       </FormControl>
+                      </Box>
                       {outputs.transactions.length > 1 && (
-                        <IconButton size="small" onClick={() => removeTransaction(idx)} sx={{ color: '#F44336' }}><Trash2 size={12} /></IconButton>
+                        <IconButton size="small" onClick={() => removeTransaction(idx)} sx={{ color: '#F44336', alignSelf: 'center' }}><Trash2 size={12} /></IconButton>
                       )}
                     </Box>
                     <Box sx={{ display: 'flex', gap: 1 }}>
-                      <FormControl size="small" sx={{ flex: 1 }}>
-                        <InputLabel shrink>Posting Date</InputLabel>
-                        <Select
-                          value={txn.postingDate || ''}
-                          label="Posting Date"
-                          onChange={(e) => updateTransaction(idx, 'postingDate', e.target.value)}
-                          displayEmpty
-                          notched
-                          renderValue={(val) => val || <em style={{ color: '#999' }}>postingdate</em>}
-                        >
+                      <Box sx={{ flex: 1 }}>
+                        <Typography variant="caption" fontWeight={600} color="text.secondary" sx={{ mb: 0.25, display: 'block' }}>Posting Date</Typography>
+                        <FormControl size="small" fullWidth>
+                          <Select
+                            value={txn.postingDate || ''}
+                            onChange={(e) => updateTransaction(idx, 'postingDate', e.target.value)}
+                            displayEmpty
+                            renderValue={(val) => val || <em style={{ color: '#999' }}>postingdate</em>}
+                          >
                           <MenuItem value="postingdate" sx={{ fontFamily: 'monospace', fontSize: '0.8125rem' }}>postingdate</MenuItem>
                           <MenuItem value="effectivedate" sx={{ fontFamily: 'monospace', fontSize: '0.8125rem' }}>effectivedate</MenuItem>
                           {allVarNames.length > 0 && (
@@ -958,18 +960,18 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
                           {dateEventFields.map(ef => (
                             <MenuItem key={`def-${ef}`} value={ef} sx={{ fontFamily: 'monospace', fontSize: '0.8125rem' }}>{ef}</MenuItem>
                           ))}
-                        </Select>
-                      </FormControl>
-                      <FormControl size="small" sx={{ flex: 1 }}>
-                        <InputLabel shrink>Effective Date</InputLabel>
-                        <Select
-                          value={txn.effectiveDate || ''}
-                          label="Effective Date"
-                          onChange={(e) => updateTransaction(idx, 'effectiveDate', e.target.value)}
-                          displayEmpty
-                          notched
-                          renderValue={(val) => val || <em style={{ color: '#999' }}>same as posting</em>}
-                        >
+                          </Select>
+                        </FormControl>
+                      </Box>
+                      <Box sx={{ flex: 1 }}>
+                        <Typography variant="caption" fontWeight={600} color="text.secondary" sx={{ mb: 0.25, display: 'block' }}>Effective Date</Typography>
+                        <FormControl size="small" fullWidth>
+                          <Select
+                            value={txn.effectiveDate || ''}
+                            onChange={(e) => updateTransaction(idx, 'effectiveDate', e.target.value)}
+                            displayEmpty
+                            renderValue={(val) => val || <em style={{ color: '#999' }}>same as posting</em>}
+                          >
                           <MenuItem value="postingdate" sx={{ fontFamily: 'monospace', fontSize: '0.8125rem' }}>postingdate</MenuItem>
                           <MenuItem value="effectivedate" sx={{ fontFamily: 'monospace', fontSize: '0.8125rem' }}>effectivedate</MenuItem>
                           {allVarNames.length > 0 && (
@@ -984,20 +986,20 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
                           {dateEventFields.map(ef => (
                             <MenuItem key={`edef-${ef}`} value={ef} sx={{ fontFamily: 'monospace', fontSize: '0.8125rem' }}>{ef}</MenuItem>
                           ))}
-                        </Select>
-                      </FormControl>
+                          </Select>
+                        </FormControl>
+                      </Box>
                     </Box>
                     <Box sx={{ display: 'flex', gap: 1, mt: 0.5 }}>
-                      <FormControl size="small" sx={{ flex: 1 }}>
-                        <InputLabel shrink>Sub Instrument ID</InputLabel>
-                        <Select
-                          value={txn.subInstrumentId || ''}
-                          label="Sub Instrument ID"
-                          onChange={(e) => updateTransaction(idx, 'subInstrumentId', e.target.value)}
-                          displayEmpty
-                          notched
-                          renderValue={(val) => val || <em style={{ color: '#999' }}>default (1)</em>}
-                        >
+                      <Box sx={{ flex: 1 }}>
+                        <Typography variant="caption" fontWeight={600} color="text.secondary" sx={{ mb: 0.25, display: 'block' }}>Sub Instrument ID</Typography>
+                        <FormControl size="small" fullWidth>
+                          <Select
+                            value={txn.subInstrumentId || ''}
+                            onChange={(e) => updateTransaction(idx, 'subInstrumentId', e.target.value)}
+                            displayEmpty
+                            renderValue={(val) => val || <em style={{ color: '#999' }}>default (1)</em>}
+                          >
                           <MenuItem value="" sx={{ fontFamily: 'monospace', fontSize: '0.8125rem' }}><em>default (1)</em></MenuItem>
                           {allVarNames.length > 0 && (
                             <MenuItem disabled sx={{ fontSize: '0.75rem', fontWeight: 600, color: '#5B5FED' }}>— Variables —</MenuItem>
@@ -1013,6 +1015,7 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
                           ))}
                         </Select>
                       </FormControl>
+                      </Box>
                     </Box>
                   </Card>
                   );
