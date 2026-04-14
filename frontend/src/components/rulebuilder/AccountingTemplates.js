@@ -400,8 +400,7 @@ const ACCOUNTING_TEMPLATES = [
       lines.push('}, {"asset_cost": asset_cost, "salvage_value": salvage_value, "ddb_rate": ddb_rate})');
       lines.push('');
       lines.push('print(sched)');
-      lines.push('total_depr = schedule_sum(sched, "depreciation")');
-      lines.push('print("Total Depreciation:", total_depr)');
+      lines.push('print("Total Depreciation:", schedule_sum(sched, "depreciation"))');
 
       if (config.outputs_create_txn) {
         lines.push('');
@@ -410,7 +409,7 @@ const ACCOUNTING_TEMPLATES = [
           lines.push('print("Depreciation for posting date:", depr_for_postingdate)');
           lines.push(`createTransaction(postingdate, postingdate, "${config.txn_type || 'Depreciation Expense'}", depr_for_postingdate)`);
         } else {
-          lines.push(`createTransaction(${startDate}, ${startDate}, "${config.txn_type || 'Depreciation Expense'}", total_depr)`);
+          lines.push(`createTransaction(${startDate}, ${startDate}, "${config.txn_type || 'Depreciation Expense'}", schedule_sum(sched, "depreciation"))`);
         }
       }
 
@@ -437,6 +436,7 @@ const ACCOUNTING_TEMPLATES = [
     outputs: [
       { key: 'npv', label: 'Net Present Value', default: true },
       { key: 'irr', label: 'Internal Rate of Return', default: true },
+      { key: 'create_txn', label: 'Create Transaction', default: true, txnType: 'NPV Analysis' },
     ],
     generateDSL: (config) => {
       const investment = config.initial_investment_source === 'field' ? config.initial_investment_field : config.initial_investment;
@@ -461,8 +461,13 @@ const ACCOUNTING_TEMPLATES = [
       });
       lines.push(`cashflows = [multiply(-1, initial_investment), ${cfVarNames.join(', ')}]`);
       lines.push('');
-      lines.push('net_pv = npv(discount_rate, cashflows)');
-      lines.push('print("Net Present Value:", net_pv)');
+      if (config.outputs_npv) {
+        lines.push('net_pv = npv(discount_rate, cashflows)');
+        lines.push('print("Net Present Value:", net_pv)');
+        if (config.outputs_create_txn) {
+          lines.push(`createTransaction(postingdate, postingdate, "${config.txn_type || 'NPV Analysis'}", net_pv)`);
+        }
+      }
 
       if (config.outputs_irr) {
         lines.push('');

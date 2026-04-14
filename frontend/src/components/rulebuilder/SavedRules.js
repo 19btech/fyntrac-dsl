@@ -4,7 +4,7 @@ import {
   CircularProgress, Alert, Tooltip, Divider,
   Dialog, DialogTitle, DialogContent, DialogContentText, DialogActions,
 } from "@mui/material";
-import { Trash2, Edit3, Calculator, GitBranch, Repeat, Database, Clock, Upload, Play, GripVertical, BookmarkPlus, RotateCcw, Code, Calendar } from "lucide-react";
+import { Trash2, Edit3, Calculator, GitBranch, Repeat, Database, Clock, Play, GripVertical, BookmarkPlus, RotateCcw, Code, Calendar } from "lucide-react";
 import { API } from "../../config";
 
 const RULE_TYPE_META = {
@@ -16,7 +16,7 @@ const RULE_TYPE_META = {
   schedule: { label: 'Schedule', color: '#2196F3', icon: Calendar },
 };
 
-const SavedRules = ({ onEditRule, onEditSchedule, refreshKey, onLoadToEditor, onPlayAll, onClearAll }) => {
+const SavedRules = ({ onEditRule, onEditSchedule, refreshKey, onPlayAll, onClearAll }) => {
   const [rules, setRules] = useState([]);
   const [schedules, setSchedules] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -146,16 +146,6 @@ const SavedRules = ({ onEditRule, onEditSchedule, refreshKey, onLoadToEditor, on
     dragOverItem.current = null;
   }, [sortedRules, rules, loadRules]);
 
-  const handleLoadToEditor = useCallback(() => {
-    if (onLoadToEditor && sortedRules.length > 0) {
-      const combinedCode = sortedRules
-        .map(r => r.generatedCode || '')
-        .filter(Boolean)
-        .join('\n\n');
-      onLoadToEditor(combinedCode);
-    }
-  }, [onLoadToEditor, sortedRules]);
-
   const handlePlayAll = useCallback(async () => {
     if (!onPlayAll || sortedRules.length === 0) return;
     setPlaying(true);
@@ -219,11 +209,6 @@ const SavedRules = ({ onEditRule, onEditSchedule, refreshKey, onLoadToEditor, on
           <Typography variant="caption" color="text.secondary">{totalCount} rule{totalCount !== 1 ? 's' : ''}</Typography>
           {totalCount > 0 && (
             <>
-              <Tooltip title="Load all rules to editor (sorted by priority)">
-                <IconButton size="small" onClick={handleLoadToEditor} sx={{ color: '#5B5FED' }}>
-                  <Upload size={16} />
-                </IconButton>
-              </Tooltip>
               <Tooltip title="Play all rules (sorted by priority)">
                 <IconButton size="small" onClick={handlePlayAll} disabled={playing} sx={{ color: '#4CAF50' }}>
                   {playing ? <CircularProgress size={16} /> : <Play size={16} />}
@@ -346,6 +331,8 @@ const SavedRules = ({ onEditRule, onEditSchedule, refreshKey, onLoadToEditor, on
             <Box component="li" sx={{ mb: 0.75 }}><Typography variant="body2"><strong>Code Editor</strong> — all code in the editor will be removed</Typography></Box>
             <Box component="li" sx={{ mb: 0.75 }}><Typography variant="body2"><strong>Console Output</strong> — all logs and results will be cleared</Typography></Box>
             <Box component="li" sx={{ mb: 0.75 }}><Typography variant="body2"><strong>Business Preview</strong> — execution results will be reset</Typography></Box>
+            <Box component="li" sx={{ mb: 0.75 }}><Typography variant="body2"><strong>Event Definitions</strong> — uploaded event schemas will be deleted</Typography></Box>
+            <Box component="li" sx={{ mb: 0.75 }}><Typography variant="body2"><strong>Event Data</strong> — uploaded event rows will be deleted</Typography></Box>
             <Box component="li"><Typography variant="body2"><strong>Rule Manager</strong> — all {totalCount} saved rule{totalCount !== 1 ? 's' : ''} and schedule{totalCount !== 1 ? 's' : ''} will be deleted</Typography></Box>
           </Box>
           <DialogContentText sx={{ mt: 2, fontWeight: 500 }}>
@@ -358,12 +345,15 @@ const SavedRules = ({ onEditRule, onEditSchedule, refreshKey, onLoadToEditor, on
             onClick={async () => {
               setClearing(true);
               try {
-                await Promise.all([
-                  fetch(`${API}/saved-rules`, { method: 'DELETE' }),
-                  fetch(`${API}/saved-schedules`, { method: 'DELETE' }).catch(() => {}),
-                ]);
+                if (onClearAll) {
+                  await onClearAll();
+                } else {
+                  await Promise.all([
+                    fetch(`${API}/saved-rules`, { method: 'DELETE' }),
+                    fetch(`${API}/saved-schedules`, { method: 'DELETE' }).catch(() => {}),
+                  ]);
+                }
                 await loadRules();
-                if (onClearAll) onClearAll();
               } catch (err) {
                 console.error('Clear all failed:', err);
               } finally {

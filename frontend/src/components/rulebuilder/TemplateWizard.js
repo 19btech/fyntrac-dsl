@@ -131,16 +131,36 @@ function parseDSLToRules(code, templateTitle) {
   // Phase 3: Create rules in logical execution order
   const rules = [];
   const schedules = []; // Schedule builder entries (saved-schedules)
+  const canMergeJournalIntoParams =
+    paramStmts.length > 0 && condStmts.length === 0 && iterStmts.length === 0 && schedStmts.length === 0;
 
   // 1. Parameters rule (simple_calc) — all simple variables
   if (paramStmts.length > 0) {
     const vars = paramStmts.map(s => classifyToVariable(s));
-    const genCode = paramStmts.map(s => s.raw).join('\n');
+    const txnRows = canMergeJournalIntoParams
+      ? journalStmts.map(txn => ({
+          type: txn.txnType || '',
+          amount: txn.amount || '',
+          postingDate: txn.postingDate || '',
+          effectiveDate: txn.effectiveDate || '',
+          subInstrumentId: txn.subInstrumentId || '',
+        }))
+      : [];
+    const genCode = canMergeJournalIntoParams
+      ? [...paramStmts.map(s => s.raw), ...journalStmts.map(s => s.raw)].join('\n')
+      : paramStmts.map(s => s.raw).join('\n');
     rules.push({
       ...defaultRule,
       name: `${templateTitle} - Parameters`,
       ruleType: 'simple_calc',
       variables: vars,
+      outputs: canMergeJournalIntoParams
+        ? {
+            printResult: true,
+            createTransaction: txnRows.length > 0,
+            transactions: txnRows.length > 0 ? txnRows : [{ type: '', amount: '', postingDate: '', effectiveDate: '', subInstrumentId: '' }],
+          }
+        : { ...defaultOutputs },
       generatedCode: genCode,
       customCode: '',
     });
@@ -206,7 +226,7 @@ function parseDSLToRules(code, templateTitle) {
       generatedCode: genCode,
       config: schedCfg,
     });
-  } else if (journalStmts.length > 0) {
+  } else if (journalStmts.length > 0 && !canMergeJournalIntoParams) {
     // No schedule but has createTransaction — standalone rule
     const txn = journalStmts[0];
     const genCode = journalStmts.map(s => s.raw).join('\n');

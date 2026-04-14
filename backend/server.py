@@ -1444,10 +1444,12 @@ async def clear_all_data():
         await db.event_data.delete_many({})
         await db.transaction_reports.delete_many({})
         await db.custom_functions.delete_many({})
+        await db.saved_rules.delete_many({})
+        await db.saved_schedules.delete_many({})
         
         return {
             "message": "All data cleared successfully (templates preserved).",
-            "cleared": ["event_definitions", "event_data", "transaction_reports", "custom_functions"],
+            "cleared": ["event_definitions", "event_data", "transaction_reports", "custom_functions", "saved_rules", "saved_schedules"],
             "preserved": ["templates"]
         }
     except Exception as e:
@@ -1462,6 +1464,8 @@ async def truncate_event_collections():
         await db.event_data.delete_many({})
         await db.transaction_reports.delete_many({})
         await db.custom_functions.delete_many({})
+        await db.saved_rules.delete_many({})
+        await db.saved_schedules.delete_many({})
     except Exception:
         # If DB unavailable, fall back to clearing in-memory structures
         global in_memory_data, USE_IN_MEMORY
@@ -1470,6 +1474,8 @@ async def truncate_event_collections():
         in_memory_data['event_data'] = []
         in_memory_data['transaction_reports'] = []
         in_memory_data['custom_functions'] = []
+        in_memory_data['saved_rules'] = []
+        in_memory_data['saved_schedules'] = []
 
 # Event Definitions
 @api_router.post("/events/upload")
