@@ -115,6 +115,7 @@ const ScheduleBuilder = ({ events, dslFunctions, onClose, onSave, initialData })
   // Fetch all saved-rules for auto-detecting context variables
   const [savedRulesVarNames, setSavedRulesVarNames] = useState([]);
   const [savedRulesVars, setSavedRulesVars] = useState([]);
+  const [priorRulesCode, setPriorRulesCode] = useState('');  // combined generatedCode from all prior rules
   useEffect(() => {
     (async () => {
       try {
@@ -148,6 +149,8 @@ const ScheduleBuilder = ({ events, dslFunctions, onClose, onSave, initialData })
         });
         setSavedRulesVarNames([...names]);
         setSavedRulesVars(allVars);
+        // Build combined generated code from all prior rules (sorted by priority)
+        setPriorRulesCode(rules.map(r => r.generatedCode || '').filter(Boolean).join('\n\n'));
       } catch { /* ignore */ }
     })();
   }, []);
@@ -298,37 +301,18 @@ const ScheduleBuilder = ({ events, dslFunctions, onClose, onSave, initialData })
     return [...externalRefs];
   }, [columns, SCHEDULE_BUILTINS, savedRulesVarNames, cfg.contextVars]);
 
-  // Test a single column — generates schedule code for columns up to this index and executes
+  // Test a single column — runs combined prior rules + partial schedule against real event data
   const testColumn = useCallback(async (colIndex) => {
     const colsToTest = columns.slice(0, colIndex + 1).filter(c => c.name && c.formula);
     if (colsToTest.length === 0) return { success: false, error: 'No valid columns to test' };
-    const lines = [];
-    // Emit ALL saved rule vars in order so transitive dependencies are available.
-    // collect/event_field vars use sample placeholders since test mode has no event data.
-    for (const v of savedRulesVars) {
-      if (!v.name) continue;
-      if (v.source === 'value') lines.push(`${v.name} = ${v.value || 0}`);
-      else if (v.source === 'event_field') {
-        const isDate = /date/i.test(v.name) || /date/i.test(v.eventField || '');
-        lines.push(`${v.name} = ${isDate ? '"2026-01-31"' : '100'}`);
-      } else if (v.source === 'formula') lines.push(`${v.name} = ${v.formula || 0}`);
-      else if (v.source === 'collect') {
-        const ct = v.collectType || 'collect';
-        const isDate = /date/i.test(v.name) || /date/i.test(v.eventField || '');
-        if (ct === 'collect_subinstrumentids') lines.push(`${v.name} = ["sub_1", "sub_2", "sub_3"]`);
-        else if (isDate) {
-          const isEnd = /end/i.test(v.name) || /end/i.test(v.eventField || '');
-          lines.push(`${v.name} = ${isEnd ? '["2026-06-30", "2026-09-30", "2026-12-31"]' : '["2026-01-01", "2026-04-01", "2026-07-01"]'}`);
-        }
-        else lines.push(`${v.name} = [100, 200, 300]`);
-      }
-    }
-    // Period
+
+    // Build partial schedule code with only the columns up to colIndex
+    const schedLines = [];
     if (periodType === 'number') {
       const countExpr = periodCountSource === 'field' && periodCountField ? periodCountField
         : periodCountSource === 'formula' && periodCountFormula ? periodCountFormula
         : (periodCount || 12);
-      lines.push(`p = period(${countExpr})`);
+      schedLines.push(`p = period(${countExpr})`);
     } else {
       const startExpr = startDateSource === 'field' && startDateField ? startDateField
         : startDateSource === 'formula' && startDateFormula ? startDateFormula
@@ -339,30 +323,50 @@ const ScheduleBuilder = ({ events, dslFunctions, onClose, onSave, initialData })
       let periodCall = `p = period(${startExpr}, ${endExpr}, "${frequency}"`;
       if (convention) periodCall += `, "${convention}"`;
       periodCall += ')';
-      lines.push(periodCall);
+      schedLines.push(periodCall);
     }
-    // Schedule with subset of columns
-    lines.push('sched = schedule(p, {');
+    schedLines.push('sched = schedule(p, {');
     colsToTest.forEach((col, idx) => {
       const comma = idx < colsToTest.length - 1 ? ',' : '';
-      lines.push(`    "${col.name}": "${col.formula}"${comma}`);
+      schedLines.push(`    "${col.name}": "${col.formula}"${comma}`);
     });
     const contextPairs = autoDetectedVars.map(v => {
       const key = (cfg.contextMapping && cfg.contextMapping[v]) || v;
       return `"${key}": ${v}`;
     });
     if (contextPairs.length > 0) {
-      lines.push(`}, {${contextPairs.join(', ')}})`);
+      schedLines.push(`}, {${contextPairs.join(', ')}})`);
     } else {
-      lines.push('})');
+      schedLines.push('})');
     }
-    lines.push('print(sched)');
-    const dslCode = lines.join('\n');
-    const today = new Date().toISOString().split('T')[0];
+    schedLines.push('print(sched)');
+
+    // Combined code: prior rules + auto-detected var definitions + partial schedule
+    const varDefs = autoDetectedVars
+      .map(varName => {
+        const sv = savedRulesVars.find(v => v.name === varName);
+        if (!sv) return null;
+        if (sv.source === 'value') return `${sv.name} = ${sv.value || 0}`;
+        if (sv.source === 'event_field') return `${sv.name} = ${sv.eventField}`;
+        if (sv.source === 'formula') return `${sv.name} = ${sv.formula || 0}`;
+        if (sv.source === 'collect') return `${sv.name} = ${sv.collectType || 'collect'}(${sv.eventField})`;
+        return null;
+      })
+      .filter(Boolean);
+    const combinedCode = [priorRulesCode, ...varDefs, ...schedLines].filter(Boolean).join('\n');
+
+    // Get posting date
+    let postingDate = new Date().toISOString().split('T')[0];
+    try {
+      const pdRes = await fetch(`${API}/event-data/posting-dates`);
+      const pdData = await pdRes.json();
+      if (pdData?.posting_dates?.length) postingDate = pdData.posting_dates[0];
+    } catch { /* ignore */ }
+
     const response = await fetch(`${API}/dsl/run`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ dsl_code: dslCode, posting_date: today }),
+      body: JSON.stringify({ dsl_code: combinedCode, posting_date: postingDate }),
     });
     const data = await response.json();
     if (response.ok && data.success) {
@@ -371,7 +375,7 @@ const ScheduleBuilder = ({ events, dslFunctions, onClose, onSave, initialData })
     } else {
       return { success: false, error: data.error || data.detail || 'Execution failed' };
     }
-  }, [columns, autoDetectedVars, savedRulesVars, events, periodType, periodCount, periodCountSource, periodCountField, periodCountFormula, startDateSource, startDateField, startDateFormula, startDate, endDateSource, endDateField, endDateFormula, endDate, frequency, convention]);
+  }, [columns, autoDetectedVars, savedRulesVars, priorRulesCode, periodType, periodCount, periodCountSource, periodCountField, periodCountFormula, startDateSource, startDateField, startDateFormula, startDate, endDateSource, endDateField, endDateFormula, endDate, frequency, convention]);
 
   const generatedCode = useMemo(() => {
     const lines = [];
@@ -560,7 +564,7 @@ const ScheduleBuilder = ({ events, dslFunctions, onClose, onSave, initialData })
       endDateSource, endDateField, endDateFormula, endDate,
       frequency, convention, columns, autoDetectedVars, events]);
 
-  // Run only the schedule-definition code and return parsed rows for the preview table
+  // Run combined code (prior rules + current schedule) against real event data
   const testSchedulePreview = useCallback(async () => {
     setSchedulePreviewTesting(true);
     setSchedulePreviewData(null);
@@ -568,13 +572,25 @@ const ScheduleBuilder = ({ events, dslFunctions, onClose, onSave, initialData })
     try {
       const validCols = columns.filter(c => c.name && c.formula);
       if (validCols.length === 0) { setSchedulePreviewError('No valid columns defined yet.'); return; }
-      const lines = buildScheduleBaseLines();
-      lines.push('print(sched)');
-      const today = new Date().toISOString().split('T')[0];
+
+      // Build combined DSL: all prior rules (with real event refs) + this schedule's generated code
+      const schedCode = generatedCode;
+      const combinedCode = priorRulesCode ? (priorRulesCode + '\n\n' + schedCode) : schedCode;
+
+      // Get posting dates from event data (like Business Preview)
+      let dates = [];
+      try {
+        const pdRes = await fetch(`${API}/event-data/posting-dates`);
+        const pdData = await pdRes.json();
+        dates = pdData?.posting_dates || [];
+      } catch { /* ignore */ }
+      if (dates.length === 0) dates.push(new Date().toISOString().split('T')[0]);
+
+      // Run for first posting date to get schedule preview
       const response = await fetch(`${API}/dsl/run`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ dsl_code: lines.join('\n'), posting_date: today }),
+        body: JSON.stringify({ dsl_code: combinedCode, posting_date: dates[0] }),
       });
       const data = await response.json();
       if (response.ok && data.success && data.print_outputs?.length > 0) {
@@ -603,62 +619,73 @@ const ScheduleBuilder = ({ events, dslFunctions, onClose, onSave, initialData })
     } finally {
       setSchedulePreviewTesting(false);
     }
-  }, [buildScheduleBaseLines, columns]);
+  }, [generatedCode, priorRulesCode, columns]);
 
-  // Test a specific output option in isolation
+  // Test a specific output option using combined code (prior rules + schedule + output op)
   const testOutputOption = useCallback(async (optType) => {
     setOutputTests(prev => ({ ...prev, [optType]: { testing: true, result: null, error: null } }));
     const setResult = (result, error) =>
       setOutputTests(prev => ({ ...prev, [optType]: { testing: false, result, error } }));
     try {
-      const lines = buildScheduleBaseLines();
+      // Build extra lines for the specific output option
+      const extraLines = [];
       switch (optType) {
         case 'first':
           if (!extractColumn) { setResult(null, 'Select a column first.'); return; }
-          lines.push(`first_${extractColumn} = schedule_first(sched, "${extractColumn}")`);
-          lines.push(`print("first_${extractColumn}:", first_${extractColumn})`);
+          extraLines.push(`first_${extractColumn} = schedule_first(sched, "${extractColumn}")`);
+          extraLines.push(`print("first_${extractColumn}:", first_${extractColumn})`);
           break;
         case 'last':
           if (!extractColumn) { setResult(null, 'Select a column first.'); return; }
-          lines.push(`last_${extractColumn} = schedule_last(sched, "${extractColumn}")`);
-          lines.push(`print("last_${extractColumn}:", last_${extractColumn})`);
+          extraLines.push(`last_${extractColumn} = schedule_last(sched, "${extractColumn}")`);
+          extraLines.push(`print("last_${extractColumn}:", last_${extractColumn})`);
           break;
         case 'sum':
           if (!sumVarName || !sumColumn) { setResult(null, 'Fill in variable name and column.'); return; }
-          lines.push(`${sumVarName} = schedule_sum(sched, "${sumColumn}")`);
-          lines.push(`print("${sumVarName}:", ${sumVarName})`);
+          extraLines.push(`${sumVarName} = schedule_sum(sched, "${sumColumn}")`);
+          extraLines.push(`print("${sumVarName}:", ${sumVarName})`);
           break;
         case 'col':
           if (!colVarName || !colColumn) { setResult(null, 'Fill in variable name and column.'); return; }
-          lines.push(`${colVarName} = schedule_column(sched, "${colColumn}")`);
-          lines.push(`print("${colVarName}:", ${colVarName})`);
+          extraLines.push(`${colVarName} = schedule_column(sched, "${colColumn}")`);
+          extraLines.push(`print("${colVarName}:", ${colVarName})`);
           break;
         case 'filter':
           if (!filterVarName || !filterMatchCol || !filterMatchValue || !filterReturnCol) {
             setResult(null, 'Fill in all filter fields.'); return;
           }
-          lines.push(`${filterVarName} = schedule_filter(sched, "${filterMatchCol}", ${filterMatchValue}, "${filterReturnCol}")`);
-          lines.push(`print("${filterVarName}:", ${filterVarName})`);
+          extraLines.push(`${filterVarName} = schedule_filter(sched, "${filterMatchCol}", ${filterMatchValue}, "${filterReturnCol}")`);
+          extraLines.push(`print("${filterVarName}:", ${filterVarName})`);
           break;
         default: return;
       }
-      const today = new Date().toISOString().split('T')[0];
+      // Combined code: prior rules + schedule generated code + output option lines
+      const combinedCode = [priorRulesCode, generatedCode, ...extraLines].filter(Boolean).join('\n\n');
+      // Get posting date
+      let postingDate = new Date().toISOString().split('T')[0];
+      try {
+        const pdRes = await fetch(`${API}/event-data/posting-dates`);
+        const pdData = await pdRes.json();
+        if (pdData?.posting_dates?.length) postingDate = pdData.posting_dates[0];
+      } catch { /* ignore */ }
       const response = await fetch(`${API}/dsl/run`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ dsl_code: lines.join('\n'), posting_date: today }),
+        body: JSON.stringify({ dsl_code: combinedCode, posting_date: postingDate }),
       });
       const data = await response.json();
       if (response.ok && data.success) {
-        const out = (data.print_outputs || []).map(p => String(p)).join('\n') || 'Ran (no output)';
-        setResult(out, null);
+        // Get only the print outputs from the extra lines (skip schedule print outputs)
+        const allPrints = data.print_outputs || [];
+        const out = allPrints.length > 0 ? allPrints[allPrints.length - 1] : 'Ran (no output)';
+        setResult(String(out), null);
       } else {
         setResult(null, data.error || data.detail || 'Execution failed');
       }
     } catch (err) {
       setResult(null, err.message);
     }
-  }, [buildScheduleBaseLines, extractColumn, sumVarName, sumColumn, colVarName, colColumn,
+  }, [priorRulesCode, generatedCode, extractColumn, sumVarName, sumColumn, colVarName, colColumn,
       filterVarName, filterMatchCol, filterMatchValue, filterReturnCol]);
 
   const handleSave = useCallback(async () => {
