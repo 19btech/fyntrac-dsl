@@ -1,9 +1,9 @@
 import React, { useState, useCallback, useRef, useEffect } from "react";
 import {
-  Box, Typography, Button, TextField, Paper, CircularProgress, Alert,
+  Box, Typography, Button, TextField, Paper, CircularProgress, Alert, IconButton,
   Dialog, DialogTitle, DialogContent, DialogActions,
 } from "@mui/material";
-import { Code, Play, Save } from "lucide-react";
+import { Code, Play, Save, X } from "lucide-react";
 import Editor from "@monaco-editor/react";
 import { API } from "../../config";
 
@@ -66,9 +66,10 @@ const CustomCodeStepModal = ({ open, step, onClose, onSaveStep, events, dslFunct
     <Dialog open={open} onClose={onClose} maxWidth="lg" fullWidth
       PaperProps={{ sx: { maxHeight: '90vh', height: '90vh' } }}>
       <DialogTitle sx={{ pb: 1, borderBottom: '1px solid #E9ECEF' }}>
-        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flex: 1 }}>
           <Code size={20} color="#607D8B" />
-          <Typography variant="h6">{step?.name ? `Edit Custom Code Step: ${step.name}` : 'Add Custom Code Step'}</Typography>
+          <Typography variant="h6" sx={{ flex: 1 }}>{step?.name ? `Edit Custom Code Step: ${step.name}` : 'Add Custom Code Step'}</Typography>
+          <IconButton size="small" onClick={onClose} sx={{ color: '#6C757D' }}><X size={18} /></IconButton>
         </Box>
       </DialogTitle>
       <DialogContent sx={{ pt: 2, overflow: 'auto' }}>

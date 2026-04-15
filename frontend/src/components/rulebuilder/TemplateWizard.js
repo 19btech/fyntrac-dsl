@@ -222,15 +222,82 @@ function parseDSLToRules(code, templateTitle) {
     });
   }
 
-  // 4. Schedule → saved-schedule entry (with createTransaction merged in if present)
+  // 4. Schedule → saved as a rule with schedule step type
   if (schedStmts.length > 0) {
     const allLines = [...schedStmts, ...journalStmts];
     const genCode = allLines.map(s => s.raw).join('\n');
     const schedCfg = parseScheduleConfig(schedStmts, journalStmts);
-    schedules.push({
+
+    // Find the schedule variable name (e.g., "sched")
+    const schedAssign = schedStmts.find(s => s.rhs && /^schedule\s*\(/.test(s.rhs));
+    const schedVarName = schedAssign?.name || 'sched';
+
+    // Build outputVars from the parsed config
+    const outputVars = [];
+    if (schedCfg.extractFirst && schedCfg.extractColumn) {
+      const firstStmt = schedStmts.find(s => s.rhs && /^schedule_first\s*\(/.test(s.rhs));
+      outputVars.push({ name: firstStmt?.name || `first_${schedCfg.extractColumn}`, type: 'first', column: schedCfg.extractColumn });
+    }
+    if (schedCfg.extractLast && schedCfg.extractColumn) {
+      const lastStmt = schedStmts.find(s => s.rhs && /^schedule_last\s*\(/.test(s.rhs));
+      outputVars.push({ name: lastStmt?.name || `last_${schedCfg.extractColumn}`, type: 'last', column: schedCfg.extractColumn });
+    }
+    if (schedCfg.enableSum && schedCfg.sumColumn) {
+      outputVars.push({ name: schedCfg.sumVarName || `sum_${schedCfg.sumColumn}`, type: 'sum', column: schedCfg.sumColumn });
+    }
+    if (schedCfg.enableCol && schedCfg.colColumn) {
+      outputVars.push({ name: schedCfg.colVarName || `col_${schedCfg.colColumn}`, type: 'column', column: schedCfg.colColumn });
+    }
+    if (schedCfg.enableFilter && schedCfg.filterReturnCol) {
+      outputVars.push({ name: schedCfg.filterVarName || `filtered_${schedCfg.filterReturnCol}`, type: 'filter', column: schedCfg.filterReturnCol, matchCol: schedCfg.filterMatchCol, matchValue: schedCfg.filterMatchValue });
+    }
+
+    // Build transactions if present
+    const txnRows = journalStmts.map(txn => ({
+      type: txn.txnType || '', amount: txn.amount || '',
+      postingDate: txn.postingDate || '', effectiveDate: txn.effectiveDate || '',
+      subInstrumentId: txn.subInstrumentId || '',
+    }));
+
+    rules.push({
+      ...defaultRule,
       name: `${templateTitle} - Schedule`,
+      ruleType: 'schedule',
+      variables: [],
+      steps: [{
+        name: schedVarName,
+        stepType: 'schedule',
+        printResult: true,
+        scheduleConfig: {
+          periodType: schedCfg.periodType,
+          startDate: schedCfg.startDate, startDateSource: schedCfg.startDateSource,
+          startDateField: schedCfg.startDateField, startDateFormula: schedCfg.startDateFormula,
+          endDate: schedCfg.endDate, endDateSource: schedCfg.endDateSource,
+          endDateField: schedCfg.endDateField, endDateFormula: schedCfg.endDateFormula,
+          periodCount: schedCfg.periodCount, periodCountSource: schedCfg.periodCountSource,
+          periodCountField: schedCfg.periodCountField, periodCountFormula: schedCfg.periodCountFormula,
+          frequency: schedCfg.frequency, convention: schedCfg.convention,
+          columns: schedCfg.columns,
+          extractFirst: schedCfg.extractFirst, extractLast: schedCfg.extractLast,
+          extractColumn: schedCfg.extractColumn,
+          firstVarName: schedCfg.extractFirst ? (outputVars.find(o => o.type === 'first')?.name || '') : '',
+          lastVarName: schedCfg.extractLast ? (outputVars.find(o => o.type === 'last')?.name || '') : '',
+          enableSum: schedCfg.enableSum, sumColumn: schedCfg.sumColumn, sumVarName: schedCfg.sumVarName,
+          enableCol: schedCfg.enableCol, colColumn: schedCfg.colColumn, colVarName: schedCfg.colVarName,
+          enableFilter: schedCfg.enableFilter, filterVarName: schedCfg.filterVarName,
+          filterMatchCol: schedCfg.filterMatchCol, filterMatchValue: schedCfg.filterMatchValue,
+          filterReturnCol: schedCfg.filterReturnCol,
+          contextVars: schedCfg.contextVars,
+        },
+        outputVars,
+      }],
+      outputs: {
+        printResult: true,
+        createTransaction: txnRows.length > 0,
+        transactions: txnRows.length > 0 ? txnRows : [{ type: '', amount: '', postingDate: '', effectiveDate: '', subInstrumentId: '' }],
+      },
       generatedCode: genCode,
-      config: schedCfg,
+      customCode: '',
     });
   } else if (journalStmts.length > 0 && !canMergeJournalIntoParams) {
     // No schedule but has createTransaction — standalone rule

@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from "react";
 import axios from "axios";
 import { useToast } from "../components/ToastProvider";
-import { Upload, FileText, Code, Play, List, BookOpen, Download, Sparkles, Trash2, BarChart3, Search as SearchIcon, Lightbulb, Settings, ChevronDown, Database, Calculator, Table as TableIcon, Eye, BookOpen as BookOpenIcon, Save } from "lucide-react";
+import { Upload, FileText, Code, Play, List, BookOpen, Download, Sparkles, Trash2, BarChart3, Search as SearchIcon, Lightbulb, Settings, ChevronDown, Database, Calculator, Eye, BookOpen as BookOpenIcon, Save } from "lucide-react";
 import { Button, Tabs, Tab, Box, Menu, MenuItem, Divider, Alert, LinearProgress, Typography, ToggleButtonGroup, ToggleButton, Tooltip } from '@mui/material';
 import Editor from "@monaco-editor/react";
 import FileUploadPanel from "../components/FileUploadPanel";
@@ -17,8 +17,6 @@ import AppDialog, { useAppDialog } from "../components/AppDialog";
 import AIAgentSetupWizard from "../components/AIAgentSetupWizard";
 import LivePreview from "../components/rulebuilder/LivePreview";
 import AccountingRuleBuilder from "../components/rulebuilder/AccountingRuleBuilder";
-import ScheduleBuilder from "../components/rulebuilder/ScheduleBuilder";
-import CustomCodeEditor from "../components/rulebuilder/CustomCodeEditor";
 import TemplateLibrary from "../components/rulebuilder/TemplateWizard";
 import ACCOUNTING_TEMPLATES from "../components/rulebuilder/AccountingTemplates";
 import SavedRules from "../components/rulebuilder/SavedRules";
@@ -828,7 +826,7 @@ const Dashboard = () => {
                 <ToggleButtonGroup
                   value={editorMode}
                   exclusive
-                  onChange={(e, val) => { if (val) { if (val === 'ruleBuilder') { setEditingRule(null); } if (val === 'scheduleBuilder') { setEditingSchedule(null); } if (val === 'customCode') { setEditingCustomCode(null); } setEditorMode(val); } }}
+                  onChange={(e, val) => { if (val) { if (val === 'ruleBuilder') { setEditingRule(null); } setEditorMode(val); } }}
                   size="small"
                   sx={{ '& .MuiToggleButton-root': { textTransform: 'none', fontSize: '0.75rem', px: 1.5, py: 0.5 } }}
                 >
@@ -837,12 +835,6 @@ const Dashboard = () => {
                   </ToggleButton>
                   <ToggleButton value="ruleBuilder">
                     <Tooltip title="Build calculations using forms"><Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}><Calculator size={14} /> Rule Builder</Box></Tooltip>
-                  </ToggleButton>
-                  <ToggleButton value="scheduleBuilder">
-                    <Tooltip title="Build amortization schedules visually"><Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}><TableIcon size={14} /> Schedule Builder</Box></Tooltip>
-                  </ToggleButton>
-                  <ToggleButton value="customCode">
-                    <Tooltip title="Write raw DSL code directly"><Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}><Code size={14} /> Custom Code</Box></Tooltip>
                   </ToggleButton>
                   <ToggleButton value="preview">
                     <Tooltip title="View business preview of execution results"><Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}><Eye size={14} /> Business Preview</Box></Tooltip>
@@ -1033,31 +1025,6 @@ const Dashboard = () => {
                 />
               </Box>
 
-              {/* Schedule Builder Mode */}
-              {editorMode === 'scheduleBuilder' && (
-                <ScheduleBuilder
-                  key={editingSchedule ? `sched-${editingSchedule.id}` : 'new-sched'}
-                  events={events}
-                  dslFunctions={dslFunctions}
-                  onGenerate={handleGeneratedCode}
-                  onClose={() => { setEditorMode('code'); setEditingSchedule(null); }}
-                  onSave={() => { setSavedRulesRefreshKey(k => k + 1); loadCombinedCode(); }}
-                  initialData={editingSchedule}
-                />
-              )}
-
-              {/* Custom Code Editor Mode */}
-              {editorMode === 'customCode' && (
-                <CustomCodeEditor
-                  key={editingCustomCode ? `cc-${editingCustomCode.id}` : 'new-cc'}
-                  events={events}
-                  dslFunctions={dslFunctions}
-                  onSave={() => { setSavedRulesRefreshKey(k => k + 1); loadCombinedCode(); }}
-                  initialData={editingCustomCode}
-                />
-              )}
-
-
               {/* Business Preview Mode */}
               {editorMode === 'preview' && (
                 <LivePreview
@@ -1073,22 +1040,15 @@ const Dashboard = () => {
                 <SavedRules
                   refreshKey={savedRulesRefreshKey}
                   onEditRule={(rule) => {
-                    if (rule.ruleType === 'custom_code') {
-                      setEditingCustomCode(rule);
-                      setEditingRule(null);
-                      setEditingSchedule(null);
-                      setEditorMode('customCode');
-                    } else {
-                      setEditingRule(rule);
-                      setEditingSchedule(null);
-                      setEditingCustomCode(null);
-                      setEditorMode('ruleBuilder');
-                    }
+                    setEditingRule(rule);
+                    setEditingSchedule(null);
+                    setEditingCustomCode(null);
+                    setEditorMode('ruleBuilder');
                   }}
                   onEditSchedule={(sched) => {
-                    setEditingSchedule(sched);
-                    setEditingRule(null);
-                    setEditorMode('scheduleBuilder');
+                    setEditingRule(sched);
+                    setEditingSchedule(null);
+                    setEditorMode('ruleBuilder');
                   }}
                   onPlayAll={(result) => {
                     setLastExecutionResult(result);

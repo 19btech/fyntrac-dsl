@@ -6,7 +6,7 @@ import {
   Menu,
 } from "@mui/material";
 import {
-  Plus, Trash2, Play, Code, Save,
+  Plus, Trash2, Play, Code, Save, X,
   Calculator, GitBranch, Repeat, GripVertical, Edit3, ChevronDown, Calendar,
 } from "lucide-react";
 import { API } from "../../config";
@@ -383,16 +383,24 @@ const IterationForm = ({ step, onChange, events, definedVarNames }) => {
 // ═══════════════════════════════════════════════════════════════════════
 // StepModal — Dialog for creating / editing a step
 // ═══════════════════════════════════════════════════════════════════════
-const StepModal = ({ open, step, stepType, onClose, onSaveStep, events, definedVarNames, onTest }) => {
+const StepModal = ({ open, step, stepType, onClose, onSaveStep, events, definedVarNames, onTest, generatedCode }) => {
   const [local, setLocal] = useState(step || {});
   const [testResult, setTestResult] = useState(null);
   const [testing, setTesting] = useState(false);
+  const [showCode, setShowCode] = useState(false);
+  const [localInlineComment, setLocalInlineComment] = useState(step?.inlineComment || false);
+  const [localCommentText, setLocalCommentText] = useState(step?.commentText || '');
+  const [localPrintResult, setLocalPrintResult] = useState(step?.printResult !== undefined ? step.printResult : true);
 
   // Reset local state when step changes (open new modal)
   useEffect(() => {
     if (open) {
       setLocal(step || {});
       setTestResult(null);
+      setShowCode(false);
+      setLocalInlineComment(step?.inlineComment || false);
+      setLocalCommentText(step?.commentText || '');
+      setLocalPrintResult(step?.printResult !== undefined ? step.printResult : true);
     }
   }, [open, step]);
 
@@ -416,20 +424,21 @@ const StepModal = ({ open, step, stepType, onClose, onSaveStep, events, definedV
 
   const handleSave = () => {
     if (!local.name) return;
-    onSaveStep({ ...local, stepType: local.stepType || stepType });
+    onSaveStep({ ...local, stepType: local.stepType || stepType, inlineComment: localInlineComment, commentText: localCommentText, printResult: localPrintResult });
     onClose();
   };
 
   return (
     <Dialog open={open} onClose={onClose} maxWidth="md" fullWidth
       PaperProps={{ sx: { maxHeight: '85vh' } }}>
-      <DialogTitle sx={{ pb: 1 }}>
-        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+      <DialogTitle sx={{ pb: 1, borderBottom: '1px solid #E9ECEF' }}>
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flex: 1 }}>
           {React.createElement(STEP_TYPE_META[local.stepType || stepType]?.icon || Calculator, { size: 20, color: STEP_TYPE_META[local.stepType || stepType]?.color })}
-          {title}
+          <Typography variant="h6" sx={{ flex: 1 }}>{title}</Typography>
+          <IconButton size="small" onClick={onClose} sx={{ color: '#6C757D' }}><X size={18} /></IconButton>
         </Box>
       </DialogTitle>
-      <DialogContent sx={{ pt: 1 }}>
+      <DialogContent sx={{ pt: 1, overflow: 'auto' }}>
         <TextField size="small" fullWidth label="Variable Name *" value={local.name || ''}
           onChange={(e) => setLocal(prev => ({ ...prev, name: e.target.value.replace(/[^a-zA-Z0-9_]/g, '') }))}
           placeholder="e.g., monthly_payment"
@@ -452,6 +461,41 @@ const StepModal = ({ open, step, stepType, onClose, onSaveStep, events, definedV
               {testResult.success ? testResult.output : testResult.error}
             </Typography>
           </Alert>
+        )}
+
+        {/* Step-level options */}
+        <Divider sx={{ my: 2 }} />
+        <Card sx={{ mb: 1 }}>
+          <CardContent sx={{ p: 1.5, '&:last-child': { pb: 1.5 } }}>
+            <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: localInlineComment ? 1 : 0 }}>
+              <Typography variant="body2">Inline comment</Typography>
+              <Switch checked={localInlineComment} onChange={(e) => setLocalInlineComment(e.target.checked)} size="small" />
+            </Box>
+            {localInlineComment && (
+              <TextField size="small" fullWidth multiline minRows={2} maxRows={4} label="Description"
+                placeholder="Describe what this step does — will appear as ## comment"
+                value={localCommentText} onChange={(e) => setLocalCommentText(e.target.value)} />
+            )}
+          </CardContent>
+        </Card>
+        <Card sx={{ mb: 1 }}>
+          <CardContent sx={{ p: 1.5, '&:last-child': { pb: 1.5 }, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+            <Typography variant="body2">Print Results for Preview</Typography>
+            <Switch checked={localPrintResult} onChange={(e) => setLocalPrintResult(e.target.checked)} size="small" />
+          </CardContent>
+        </Card>
+
+        {/* Show generated logic */}
+        <FormControlLabel
+          control={<Switch checked={showCode} onChange={(e) => setShowCode(e.target.checked)} size="small" />}
+          label={<Typography variant="body2" fontWeight={500}>Show generated logic</Typography>}
+        />
+        {showCode && generatedCode && (
+          <Paper variant="outlined" sx={{ mt: 1, p: 2, bgcolor: '#0D1117', borderRadius: 2, maxHeight: 200, overflow: 'auto' }}>
+            <pre style={{ margin: 0, fontFamily: 'monospace', fontSize: '0.8125rem', color: '#E6EDF3', whiteSpace: 'pre-wrap' }}>
+              {generatedCode}
+            </pre>
+          </Paper>
         )}
       </DialogContent>
       <DialogActions sx={{ px: 3, pb: 2 }}>
@@ -803,10 +847,6 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
   // ── Generated code ──
   const generatedCode = useMemo(() => {
     const lines = [];
-    if (inlineComment && commentText.trim()) {
-      commentText.trim().split('\n').forEach(l => lines.push(`## ${l}`));
-      lines.push('');
-    }
     lines.push('## ═══════════════════════════════════════════════════════════════');
     lines.push(`## ${(ruleName || 'CUSTOM CALCULATION').toUpperCase()}`);
     lines.push('## ═══════════════════════════════════════════════════════════════');
@@ -869,14 +909,21 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
     for (const s of steps) {
       if (!s.name && s.stepType === 'calc') continue;
 
+      // Per-step inline comment
+      if (s.inlineComment && s.commentText?.trim()) {
+        s.commentText.trim().split('\n').forEach(l => lines.push(`## ${l}`));
+      }
+
       if (s.stepType === 'calc') {
         const line = buildCalcLine(s);
         if (line) { lines.push(line); definedVars.push(s.name); }
+        if (s.printResult && s.name) lines.push(`print("${s.name} =", ${s.name})`);
       } else if (s.stepType === 'condition') {
         lines.push('## Conditional Logic');
         const expr = buildConditionExpr(s.conditions || [], s.elseFormula);
         lines.push(`${s.name} = ${expr}`);
         definedVars.push(s.name);
+        if (s.printResult && s.name) lines.push(`print("${s.name} =", ${s.name})`);
         lines.push('');
       } else if (s.stepType === 'iteration') {
         lines.push('## Iteration');
@@ -884,6 +931,10 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
         const iterLines = buildIterationLines(s.iterations || [], allCtxVars);
         lines.push(...iterLines);
         (s.iterations || []).forEach(it => { if (it.resultVar) definedVars.push(it.resultVar); });
+        if (s.printResult) {
+          const lastIter = (s.iterations || [])[(s.iterations || []).length - 1];
+          if (lastIter?.resultVar) lines.push(`print("${lastIter.resultVar} =", ${lastIter.resultVar})`);
+        }
         lines.push('');
       } else if (s.stepType === 'schedule') {
         const sc = s.scheduleConfig || {};
@@ -940,12 +991,6 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
       }
     }
 
-    // Print results
-    if (outputs.printResult && definedVars.length > 0) {
-      const lastVar = definedVars[definedVars.length - 1];
-      lines.push(`print("Result:", ${lastVar})`);
-    }
-
     // Transactions
     if (outputs.createTransaction) {
       lines.push('');
@@ -962,7 +1007,7 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
     }
 
     return lines.join('\n');
-  }, [ruleName, steps, outputs, inlineComment, commentText, savedRulesVars, events]);
+  }, [ruleName, steps, outputs, savedRulesVars, events]);
 
   // Determine the ruleType for backward-compatible saving
   const effectiveRuleType = useMemo(() => {
@@ -1303,25 +1348,6 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
         <Typography variant="body2" fontWeight={600} sx={{ mb: 1 }}>Output Options</Typography>
         <Card sx={{ mb: 1 }}>
           <CardContent sx={{ p: 1.5, '&:last-child': { pb: 1.5 } }}>
-            <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: inlineComment ? 1 : 0 }}>
-              <Typography variant="body2">Inline comment</Typography>
-              <Switch checked={inlineComment} onChange={(e) => setInlineComment(e.target.checked)} size="small" />
-            </Box>
-            {inlineComment && (
-              <TextField size="small" fullWidth multiline minRows={2} maxRows={4} label="Description"
-                placeholder="Describe what this rule does — will appear as ## comment above the rule"
-                value={commentText} onChange={(e) => setCommentText(e.target.value)} />
-            )}
-          </CardContent>
-        </Card>
-        <Card sx={{ mb: 1 }}>
-          <CardContent sx={{ p: 1.5, '&:last-child': { pb: 1.5 }, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-            <Typography variant="body2">Print Results for Preview</Typography>
-            <Switch checked={outputs.printResult} onChange={(e) => setOutputs(p => ({ ...p, printResult: e.target.checked }))} size="small" />
-          </CardContent>
-        </Card>
-        <Card sx={{ mb: 1 }}>
-          <CardContent sx={{ p: 1.5, '&:last-child': { pb: 1.5 } }}>
             <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: outputs.createTransaction ? 1 : 0 }}>
               <Typography variant="body2">Create transactions</Typography>
               <Switch checked={outputs.createTransaction} onChange={(e) => setOutputs(p => ({ ...p, createTransaction: e.target.checked }))} size="small" />
@@ -1401,20 +1427,6 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
           </CardContent>
         </Card>
 
-        {/* Code Preview */}
-        <Divider sx={{ my: 2 }} />
-        <FormControlLabel
-          control={<Switch checked={showCode} onChange={(e) => setShowCode(e.target.checked)} size="small" />}
-          label={<Typography variant="body2" fontWeight={500}>Show generated logic</Typography>}
-        />
-        {showCode && (
-          <Paper variant="outlined" sx={{ mt: 1, p: 2, bgcolor: '#0D1117', borderRadius: 2, maxHeight: 300, overflow: 'auto' }}>
-            <pre style={{ margin: 0, fontFamily: 'monospace', fontSize: '0.8125rem', color: '#E6EDF3', whiteSpace: 'pre-wrap' }}>
-              {generatedCode}
-            </pre>
-          </Paper>
-        )}
-
         {/* Save Result */}
         {saveResult && (
           <Alert severity={saveResult.success ? 'success' : 'error'} sx={{ mt: 2 }}
@@ -1465,6 +1477,7 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
           events={events}
           definedVarNames={allDefinedVarNames}
           onTest={testStepFromModal}
+          generatedCode={generatedCode}
         />
       )}
 

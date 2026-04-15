@@ -7,7 +7,7 @@ import {
   Autocomplete,
 } from "@mui/material";
 import {
-  Plus, Trash2, ArrowUp, ArrowDown, Play, Calendar, Save,
+  Plus, Trash2, ArrowUp, ArrowDown, Play, Calendar, Save, X,
   Table as TableIcon, BarChart3,
 } from "lucide-react";
 import { API } from "../../config";
@@ -129,6 +129,8 @@ const ScheduleStepModal = ({ open, step, onClose, onSaveStep, events, dslFunctio
   const [extractFirst, setExtractFirst] = useState(cfg.extractFirst || false);
   const [extractLast, setExtractLast] = useState(cfg.extractLast || false);
   const [extractColumn, setExtractColumn] = useState(cfg.extractColumn || '');
+  const [firstVarName, setFirstVarName] = useState(cfg.firstVarName || '');
+  const [lastVarName, setLastVarName] = useState(cfg.lastVarName || '');
   const [enableSum, setEnableSum] = useState(cfg.enableSum || false);
   const [sumColumn, setSumColumn] = useState(cfg.sumColumn || '');
   const [sumVarName, setSumVarName] = useState(cfg.sumVarName || '');
@@ -140,6 +142,12 @@ const ScheduleStepModal = ({ open, step, onClose, onSaveStep, events, dslFunctio
   const [filterMatchCol, setFilterMatchCol] = useState(cfg.filterMatchCol || '');
   const [filterMatchValue, setFilterMatchValue] = useState(cfg.filterMatchValue || '');
   const [filterReturnCol, setFilterReturnCol] = useState(cfg.filterReturnCol || '');
+
+  // Step-level options
+  const [localInlineComment, setLocalInlineComment] = useState(step?.inlineComment || false);
+  const [localCommentText, setLocalCommentText] = useState(step?.commentText || '');
+  const [localPrintResult, setLocalPrintResult] = useState(step?.printResult !== undefined ? step.printResult : true);
+  const [showCode, setShowCode] = useState(false);
 
   // Preview
   const [schedulePreviewTesting, setSchedulePreviewTesting] = useState(false);
@@ -208,6 +216,8 @@ const ScheduleStepModal = ({ open, step, onClose, onSaveStep, events, dslFunctio
     setExtractFirst(c.extractFirst || false);
     setExtractLast(c.extractLast || false);
     setExtractColumn(c.extractColumn || '');
+    setFirstVarName(c.firstVarName || '');
+    setLastVarName(c.lastVarName || '');
     setEnableSum(c.enableSum || false);
     setSumColumn(c.sumColumn || '');
     setSumVarName(c.sumVarName || '');
@@ -219,6 +229,10 @@ const ScheduleStepModal = ({ open, step, onClose, onSaveStep, events, dslFunctio
     setFilterMatchCol(c.filterMatchCol || '');
     setFilterMatchValue(c.filterMatchValue || '');
     setFilterReturnCol(c.filterReturnCol || '');
+    setLocalInlineComment(step?.inlineComment || false);
+    setLocalCommentText(step?.commentText || '');
+    setLocalPrintResult(step?.printResult !== undefined ? step.printResult : true);
+    setShowCode(false);
     setSchedulePreviewData(null);
     setSchedulePreviewError(null);
     setOutputTests({});
@@ -441,13 +455,15 @@ const ScheduleStepModal = ({ open, step, onClose, onSaveStep, events, dslFunctio
       switch (optType) {
         case 'first':
           if (!extractColumn) { setResult(null, 'Select a column first.'); return; }
-          extraLines.push(`first_${extractColumn} = schedule_first(sched, "${extractColumn}")`);
-          extraLines.push(`print("first_${extractColumn}:", first_${extractColumn})`);
+          { const vn = firstVarName || `first_${extractColumn}`;
+          extraLines.push(`${vn} = schedule_first(sched, "${extractColumn}")`);
+          extraLines.push(`print("${vn}:", ${vn})`); }
           break;
         case 'last':
           if (!extractColumn) { setResult(null, 'Select a column first.'); return; }
-          extraLines.push(`last_${extractColumn} = schedule_last(sched, "${extractColumn}")`);
-          extraLines.push(`print("last_${extractColumn}:", last_${extractColumn})`);
+          { const vn = lastVarName || `last_${extractColumn}`;
+          extraLines.push(`${vn} = schedule_last(sched, "${extractColumn}")`);
+          extraLines.push(`print("${vn}:", ${vn})`); }
           break;
         case 'sum':
           if (!sumVarName || !sumColumn) { setResult(null, 'Fill in variable name and column.'); return; }
@@ -490,7 +506,7 @@ const ScheduleStepModal = ({ open, step, onClose, onSaveStep, events, dslFunctio
         setResult(null, data.error || data.detail || 'Execution failed');
       }
     } catch (err) { setResult(null, err.message); }
-  }, [priorRulesCode, buildScheduleCode, extractColumn, sumVarName, sumColumn, colVarName, colColumn,
+  }, [priorRulesCode, buildScheduleCode, extractColumn, firstVarName, lastVarName, sumVarName, sumColumn, colVarName, colColumn,
       filterVarName, filterMatchCol, filterMatchValue, filterReturnCol]);
 
   const previewHeaders = useMemo(() => columns.filter(c => c.name).map(c => c.name), [columns]);
@@ -498,15 +514,15 @@ const ScheduleStepModal = ({ open, step, onClose, onSaveStep, events, dslFunctio
   // Collect all output variable names
   const collectOutputVars = useCallback(() => {
     const vars = [];
-    if (extractFirst && extractColumn) vars.push({ name: `first_${extractColumn}`, type: 'first', column: extractColumn });
-    if (extractLast && extractColumn) vars.push({ name: `last_${extractColumn}`, type: 'last', column: extractColumn });
+    if (extractFirst && extractColumn) vars.push({ name: firstVarName || `first_${extractColumn}`, type: 'first', column: extractColumn });
+    if (extractLast && extractColumn) vars.push({ name: lastVarName || `last_${extractColumn}`, type: 'last', column: extractColumn });
     if (enableSum && sumVarName && sumColumn) vars.push({ name: sumVarName, type: 'sum', column: sumColumn });
     if (enableCol && colVarName && colColumn) vars.push({ name: colVarName, type: 'column', column: colColumn });
     if (enableFilter && filterVarName && filterMatchCol && filterMatchValue && filterReturnCol) {
       vars.push({ name: filterVarName, type: 'filter', column: filterReturnCol, matchCol: filterMatchCol, matchValue: filterMatchValue });
     }
     return vars;
-  }, [extractFirst, extractLast, extractColumn, enableSum, sumVarName, sumColumn,
+  }, [extractFirst, extractLast, extractColumn, firstVarName, lastVarName, enableSum, sumVarName, sumColumn,
       enableCol, colVarName, colColumn, enableFilter, filterVarName, filterMatchCol, filterMatchValue, filterReturnCol]);
 
   const handleSave = () => {
@@ -514,12 +530,16 @@ const ScheduleStepModal = ({ open, step, onClose, onSaveStep, events, dslFunctio
     onSaveStep({
       name: stepName,
       stepType: 'schedule',
+      inlineComment: localInlineComment,
+      commentText: localCommentText,
+      printResult: localPrintResult,
       scheduleConfig: {
         periodType, startDate, startDateSource, startDateField, startDateFormula,
         endDate, endDateSource, endDateField, endDateFormula,
         periodCount, periodCountSource, periodCountField, periodCountFormula,
         frequency, convention, columns,
         extractFirst, extractLast, extractColumn,
+        firstVarName, lastVarName,
         enableSum, sumColumn, sumVarName,
         enableCol, colColumn, colVarName,
         enableFilter, filterVarName, filterMatchCol, filterMatchValue, filterReturnCol,
@@ -533,9 +553,10 @@ const ScheduleStepModal = ({ open, step, onClose, onSaveStep, events, dslFunctio
     <Dialog open={open} onClose={onClose} maxWidth="lg" fullWidth
       PaperProps={{ sx: { maxHeight: '90vh', height: '90vh' } }}>
       <DialogTitle sx={{ pb: 1, borderBottom: '1px solid #E9ECEF' }}>
-        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flex: 1 }}>
           <TableIcon size={20} color="#9C27B0" />
-          <Typography variant="h6">{step?.name ? `Edit Schedule Step: ${step.name}` : 'Add Schedule Step'}</Typography>
+          <Typography variant="h6" sx={{ flex: 1 }}>{step?.name ? `Edit Schedule Step: ${step.name}` : 'Add Schedule Step'}</Typography>
+          <IconButton size="small" onClick={onClose} sx={{ color: '#6C757D' }}><X size={18} /></IconButton>
         </Box>
       </DialogTitle>
       <DialogContent sx={{ pt: 2, overflow: 'auto' }}>
@@ -815,6 +836,21 @@ const ScheduleStepModal = ({ open, step, onClose, onSaveStep, events, dslFunctio
               </FormControl>
             )}
 
+            {(extractFirst || extractLast) && extractColumn && (
+              <Box sx={{ display: 'flex', gap: 1, mb: 0.75 }}>
+                {extractFirst && (
+                  <TextField size="small" label="First Variable Name" value={firstVarName}
+                    onChange={(e) => setFirstVarName(e.target.value.replace(/[^a-zA-Z0-9_]/g, ''))}
+                    placeholder={`first_${extractColumn}`} sx={{ flex: 1 }} />
+                )}
+                {extractLast && (
+                  <TextField size="small" label="Last Variable Name" value={lastVarName}
+                    onChange={(e) => setLastVarName(e.target.value.replace(/[^a-zA-Z0-9_]/g, ''))}
+                    placeholder={`last_${extractColumn}`} sx={{ flex: 1 }} />
+                )}
+              </Box>
+            )}
+
             {extractColumn && (extractFirst || extractLast) && (
               <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap', mb: 1 }}>
                 {extractFirst && (
@@ -1001,6 +1037,41 @@ const ScheduleStepModal = ({ open, step, onClose, onSaveStep, events, dslFunctio
             )}
           </CardContent>
         </Card>
+
+        {/* Step-level options */}
+        <Divider sx={{ my: 2 }} />
+        <Card sx={{ mb: 1 }}>
+          <CardContent sx={{ p: 1.5, '&:last-child': { pb: 1.5 } }}>
+            <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: localInlineComment ? 1 : 0 }}>
+              <Typography variant="body2">Inline comment</Typography>
+              <Switch checked={localInlineComment} onChange={(e) => setLocalInlineComment(e.target.checked)} size="small" />
+            </Box>
+            {localInlineComment && (
+              <TextField size="small" fullWidth multiline minRows={2} maxRows={4} label="Description"
+                placeholder="Describe what this step does — will appear as ## comment"
+                value={localCommentText} onChange={(e) => setLocalCommentText(e.target.value)} />
+            )}
+          </CardContent>
+        </Card>
+        <Card sx={{ mb: 1 }}>
+          <CardContent sx={{ p: 1.5, '&:last-child': { pb: 1.5 }, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+            <Typography variant="body2">Print Results for Preview</Typography>
+            <Switch checked={localPrintResult} onChange={(e) => setLocalPrintResult(e.target.checked)} size="small" />
+          </CardContent>
+        </Card>
+
+        {/* Show generated logic */}
+        <FormControlLabel
+          control={<Switch checked={showCode} onChange={(e) => setShowCode(e.target.checked)} size="small" />}
+          label={<Typography variant="body2" fontWeight={500}>Show generated logic</Typography>}
+        />
+        {showCode && (
+          <Paper variant="outlined" sx={{ mt: 1, p: 2, bgcolor: '#0D1117', borderRadius: 2, maxHeight: 200, overflow: 'auto' }}>
+            <pre style={{ margin: 0, fontFamily: 'monospace', fontSize: '0.8125rem', color: '#E6EDF3', whiteSpace: 'pre-wrap' }}>
+              {buildScheduleCode()}
+            </pre>
+          </Paper>
+        )}
       </DialogContent>
       <DialogActions sx={{ px: 3, pb: 2 }}>
         <Button onClick={onClose} color="inherit">Cancel</Button>
