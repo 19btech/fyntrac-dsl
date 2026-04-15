@@ -7,16 +7,20 @@ import {
 } from "@mui/material";
 import {
   Plus, Trash2, Play, Code, Save,
-  Calculator, GitBranch, Repeat, GripVertical, Edit3, ChevronDown,
+  Calculator, GitBranch, Repeat, GripVertical, Edit3, ChevronDown, Calendar,
 } from "lucide-react";
 import { API } from "../../config";
 import FormulaBar from "./FormulaBar";
+import ScheduleStepModal from "./ScheduleStepModal";
+import CustomCodeStepModal from "./CustomCodeStepModal";
 
 // ─── Step type metadata ────────────────────────────────────────────────
 const STEP_TYPE_META = {
-  calc:      { label: 'Calculation', color: '#5B5FED', icon: Calculator },
-  condition: { label: 'Condition',   color: '#FF9800', icon: GitBranch },
-  iteration: { label: 'Iteration',   color: '#00BCD4', icon: Repeat },
+  calc:        { label: 'Calculation', color: '#5B5FED', icon: Calculator },
+  condition:   { label: 'Condition',   color: '#FF9800', icon: GitBranch },
+  iteration:   { label: 'Iteration',   color: '#00BCD4', icon: Repeat },
+  schedule:    { label: 'Schedule',    color: '#9C27B0', icon: Calendar },
+  custom_code: { label: 'CustomCode',  color: '#607D8B', icon: Code },
 };
 
 // ─── Helper: build DSL line for a single calc variable ─────────────────
@@ -558,6 +562,9 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
       if (s.stepType === 'iteration') {
         (s.iterations || []).forEach(it => { if (it.resultVar) names.add(it.resultVar); });
       }
+      if (s.stepType === 'schedule') {
+        (s.outputVars || []).forEach(ov => { if (ov.name) names.add(ov.name); });
+      }
     }
     return [...names];
   }, [steps, savedRulesVarNames]);
@@ -610,20 +617,57 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
   }, [savedRulesVars, events, steps]);
 
   // ── Test a step (builds code for all saved rules + all steps up to this one) ──
+  const buildScheduleStepLines = useCallback((s) => {
+    const lines = [];
+    const sc = s.scheduleConfig || {};
+    if (sc.periodType === 'number') {
+      const countExpr = sc.periodCountSource === 'field' && sc.periodCountField ? sc.periodCountField
+        : sc.periodCountSource === 'formula' && sc.periodCountFormula ? sc.periodCountFormula
+        : (sc.periodCount || 12);
+      lines.push(`p = period(${countExpr})`);
+    } else {
+      const startExpr = sc.startDateSource === 'field' && sc.startDateField ? sc.startDateField
+        : sc.startDateSource === 'formula' && sc.startDateFormula ? sc.startDateFormula
+        : `"${sc.startDate || '2026-01-01'}"`;
+      const endExpr = sc.endDateSource === 'field' && sc.endDateField ? sc.endDateField
+        : sc.endDateSource === 'formula' && sc.endDateFormula ? sc.endDateFormula
+        : `"${sc.endDate || '2026-12-31'}"`;
+      let periodCall = `p = period(${startExpr}, ${endExpr}, "${sc.frequency || 'M'}"`;
+      if (sc.convention) periodCall += `, "${sc.convention}"`;
+      periodCall += ')';
+      lines.push(periodCall);
+    }
+    const validCols = (sc.columns || []).filter(c => c.name && c.formula);
+    lines.push(`${s.name} = schedule(p, {`);
+    validCols.forEach((col, idx) => {
+      const comma = idx < validCols.length - 1 ? ',' : '';
+      lines.push(`    "${col.name}": "${col.formula}"${comma}`);
+    });
+    lines.push('})');
+    for (const o of (s.outputVars || [])) {
+      if (o.type === 'first') lines.push(`${o.name} = schedule_first(${s.name}, "${o.column}")`);
+      else if (o.type === 'last') lines.push(`${o.name} = schedule_last(${s.name}, "${o.column}")`);
+      else if (o.type === 'sum') lines.push(`${o.name} = schedule_sum(${s.name}, "${o.column}")`);
+      else if (o.type === 'column') lines.push(`${o.name} = schedule_column(${s.name}, "${o.column}")`);
+      else if (o.type === 'filter') lines.push(`${o.name} = schedule_filter(${s.name}, "${o.matchCol}", ${o.matchValue}, "${o.column}")`);
+    }
+    return lines;
+  }, []);
+
   const testStep = useCallback(async (step, stepIndex) => {
     const lines = [];
     const currentStepNames = new Set(steps.filter(s => s.name).map(s => s.name));
-    // Also include all iteration resultVars to avoid circularity
     for (const s of steps) {
       if (s.stepType === 'iteration') {
         (s.iterations || []).forEach(it => { if (it.resultVar) currentStepNames.add(it.resultVar); });
       }
+      if (s.stepType === 'schedule') {
+        (s.outputVars || []).forEach(ov => { if (ov.name) currentStepNames.add(ov.name); });
+      }
     }
 
-    // Emit prior saved-rules dependencies
     lines.push(...buildPriorCodeLines(currentStepNames));
 
-    // Emit all steps up to stepIndex
     const definedVars = [];
     const targetIndex = stepIndex !== undefined ? stepIndex : steps.length - 1;
     for (let i = 0; i <= targetIndex; i++) {
@@ -637,20 +681,29 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
         lines.push(`${s.name} = ${expr}`);
         definedVars.push(s.name);
       } else if (s.stepType === 'iteration') {
-        // First emit the step's own calc-like vars if any (not typical but possible)
         const allAvailable = [...new Set([...definedVars, ...savedRulesVarNames])];
         const iterLines = buildIterationLines(s.iterations || [], allAvailable);
         lines.push(...iterLines);
         (s.iterations || []).forEach(it => { if (it.resultVar) definedVars.push(it.resultVar); });
+      } else if (s.stepType === 'schedule') {
+        lines.push(...buildScheduleStepLines(s));
+        definedVars.push(s.name);
+        (s.outputVars || []).forEach(ov => definedVars.push(ov.name));
+      } else if (s.stepType === 'custom_code') {
+        if (s.customCode) lines.push(s.customCode);
       }
     }
 
-    // Print the target step's result
     const targetStep = stepIndex !== undefined ? steps[stepIndex] : step;
     if (targetStep) {
       if (targetStep.stepType === 'iteration') {
         const lastIter = (targetStep.iterations || [])[(targetStep.iterations || []).length - 1];
         if (lastIter?.resultVar) lines.push(`print("${lastIter.resultVar} =", ${lastIter.resultVar})`);
+      } else if (targetStep.stepType === 'schedule') {
+        lines.push(`print("${targetStep.name} =", ${targetStep.name})`);
+        (targetStep.outputVars || []).forEach(ov => lines.push(`print("${ov.name} =", ${ov.name})`));
+      } else if (targetStep.stepType === 'custom_code') {
+        // custom code runs as-is, no extra print needed
       } else if (targetStep.name) {
         lines.push(`print("${targetStep.name} =", ${targetStep.name})`);
       }
@@ -670,7 +723,7 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
     } else {
       return { success: false, error: data.error || (typeof data.detail === 'string' ? data.detail : JSON.stringify(data.detail)) || 'Execution failed' };
     }
-  }, [steps, savedRulesVarNames, buildPriorCodeLines]);
+  }, [steps, savedRulesVarNames, buildPriorCodeLines, buildScheduleStepLines]);
 
   // Test for modal (builds code up to end + this new step)
   const testStepFromModal = useCallback(async (localStep) => {
@@ -701,6 +754,12 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
         const allAvailable = [...new Set([...definedVars, ...savedRulesVarNames])];
         lines.push(...buildIterationLines(s.iterations || [], allAvailable));
         (s.iterations || []).forEach(it => { if (it.resultVar) definedVars.push(it.resultVar); });
+      } else if (s.stepType === 'schedule') {
+        lines.push(...buildScheduleStepLines(s));
+        definedVars.push(s.name);
+        (s.outputVars || []).forEach(ov => definedVars.push(ov.name));
+      } else if (s.stepType === 'custom_code') {
+        if (s.customCode) lines.push(s.customCode);
       }
     }
 
@@ -718,6 +777,12 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
       lines.push(...buildIterationLines(localStep.iterations || [], allAvailable));
       const lastIter = (localStep.iterations || [])[(localStep.iterations || []).length - 1];
       if (lastIter?.resultVar) lines.push(`print("${lastIter.resultVar} =", ${lastIter.resultVar})`);
+    } else if (localStep.stepType === 'schedule') {
+      lines.push(...buildScheduleStepLines(localStep));
+      lines.push(`print("${localStep.name} =", ${localStep.name})`);
+      (localStep.outputVars || []).forEach(ov => lines.push(`print("${ov.name} =", ${ov.name})`));
+    } else if (localStep.stepType === 'custom_code') {
+      if (localStep.customCode) lines.push(localStep.customCode);
     }
 
     const dslCode = lines.join('\n');
@@ -733,7 +798,7 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
     } else {
       return { success: false, error: data.error || data.detail || 'Failed' };
     }
-  }, [steps, savedRulesVarNames, editingStepIndex, buildPriorCodeLines]);
+  }, [steps, savedRulesVarNames, editingStepIndex, buildPriorCodeLines, buildScheduleStepLines]);
 
   // ── Generated code ──
   const generatedCode = useMemo(() => {
@@ -820,6 +885,58 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
         lines.push(...iterLines);
         (s.iterations || []).forEach(it => { if (it.resultVar) definedVars.push(it.resultVar); });
         lines.push('');
+      } else if (s.stepType === 'schedule') {
+        const sc = s.scheduleConfig || {};
+        lines.push('## Schedule');
+        // Period definition
+        if (sc.periodType === 'number') {
+          const countExpr = sc.periodCountSource === 'field' && sc.periodCountField ? sc.periodCountField
+            : sc.periodCountSource === 'formula' && sc.periodCountFormula ? sc.periodCountFormula
+            : (sc.periodCount || 12);
+          lines.push(`p = period(${countExpr})`);
+        } else {
+          const startExpr = sc.startDateSource === 'field' && sc.startDateField ? sc.startDateField
+            : sc.startDateSource === 'formula' && sc.startDateFormula ? sc.startDateFormula
+            : `"${sc.startDate || '2026-01-01'}"`;
+          const endExpr = sc.endDateSource === 'field' && sc.endDateField ? sc.endDateField
+            : sc.endDateSource === 'formula' && sc.endDateFormula ? sc.endDateFormula
+            : `"${sc.endDate || '2026-12-31'}"`;
+          let periodCall = `p = period(${startExpr}, ${endExpr}, "${sc.frequency || 'M'}"`;
+          if (sc.convention) periodCall += `, "${sc.convention}"`;
+          periodCall += ')';
+          lines.push(periodCall);
+        }
+        // Schedule call
+        const validCols = (sc.columns || []).filter(c => c.name && c.formula);
+        lines.push(`${s.name} = schedule(p, {`);
+        validCols.forEach((col, idx) => {
+          const comma = idx < validCols.length - 1 ? ',' : '';
+          lines.push(`    "${col.name}": "${col.formula}"${comma}`);
+        });
+        lines.push('})');
+        lines.push(`print(${s.name})`);
+        definedVars.push(s.name);
+        // Output variables
+        const ov = s.outputVars || [];
+        for (const o of ov) {
+          if (o.type === 'first') {
+            lines.push(`${o.name} = schedule_first(${s.name}, "${o.column}")`);
+          } else if (o.type === 'last') {
+            lines.push(`${o.name} = schedule_last(${s.name}, "${o.column}")`);
+          } else if (o.type === 'sum') {
+            lines.push(`${o.name} = schedule_sum(${s.name}, "${o.column}")`);
+          } else if (o.type === 'column') {
+            lines.push(`${o.name} = schedule_column(${s.name}, "${o.column}")`);
+          } else if (o.type === 'filter') {
+            lines.push(`${o.name} = schedule_filter(${s.name}, "${o.matchCol}", ${o.matchValue}, "${o.column}")`);
+          }
+          definedVars.push(o.name);
+        }
+        lines.push('');
+      } else if (s.stepType === 'custom_code') {
+        lines.push('## Custom Code');
+        if (s.customCode) lines.push(s.customCode);
+        lines.push('');
       }
     }
 
@@ -850,6 +967,8 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
   // Determine the ruleType for backward-compatible saving
   const effectiveRuleType = useMemo(() => {
     const types = new Set(steps.map(s => s.stepType));
+    if (types.has('schedule')) return 'schedule';
+    if (types.has('custom_code')) return 'custom_code';
     if (types.has('iteration')) return 'iteration';
     if (types.has('condition')) return 'conditional';
     return 'simple_calc';
@@ -939,7 +1058,13 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
       ? { name: '', stepType: 'calc', source: 'formula', formula: '', value: '', eventField: '', collectType: 'collect' }
       : type === 'condition'
       ? { name: '', stepType: 'condition', conditions: [{ condition: '', thenFormula: '' }], elseFormula: '' }
-      : { name: '', stepType: 'iteration', iterations: [{ type: 'apply_each', sourceArray: '', varName: 'each', expression: '', resultVar: '', secondArray: '', secondVar: 'second' }] };
+      : type === 'iteration'
+      ? { name: '', stepType: 'iteration', iterations: [{ type: 'apply_each', sourceArray: '', varName: 'each', expression: '', resultVar: '', secondArray: '', secondVar: 'second' }] }
+      : type === 'schedule'
+      ? { name: '', stepType: 'schedule', scheduleConfig: {}, outputVars: [] }
+      : type === 'custom_code'
+      ? { name: '', stepType: 'custom_code', customCode: '' }
+      : { name: '', stepType: 'calc', source: 'formula', formula: '', value: '', eventField: '', collectType: 'collect' };
     setModalStep(defaults);
     setModalOpen(true);
     setAddMenuAnchor(null);
@@ -1032,6 +1157,13 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
       const count = (s.iterations || []).length;
       return `${count} iteration${count !== 1 ? 's' : ''}`;
     }
+    if (s.stepType === 'schedule') {
+      const colCount = (s.scheduleConfig?.columns || []).filter(c => c.name).length;
+      return `${colCount} column${colCount !== 1 ? 's' : ''}`;
+    }
+    if (s.stepType === 'custom_code') {
+      return 'Custom DSL';
+    }
     return '';
   };
 
@@ -1085,6 +1217,12 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
               </MenuItem>
               <MenuItem onClick={() => openAddStep('iteration')}>
                 <Repeat size={16} style={{ marginRight: 8 }} color="#00BCD4" /> Iteration
+              </MenuItem>
+              <MenuItem onClick={() => openAddStep('schedule')}>
+                <Calendar size={16} style={{ marginRight: 8 }} color="#9C27B0" /> Schedule
+              </MenuItem>
+              <MenuItem onClick={() => openAddStep('custom_code')}>
+                <Code size={16} style={{ marginRight: 8 }} color="#607D8B" /> Custom Code
               </MenuItem>
             </Menu>
           </Box>
@@ -1297,17 +1435,38 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
         </DialogActions>
       </Dialog>
 
-      {/* Step Modal */}
-      <StepModal
-        open={modalOpen}
-        step={modalStep}
-        stepType={modalStepType}
-        onClose={() => setModalOpen(false)}
-        onSaveStep={saveStepFromModal}
-        events={events}
-        definedVarNames={allDefinedVarNames}
-        onTest={testStepFromModal}
-      />
+      {/* Step Modal — conditionally render based on step type */}
+      {modalStepType === 'schedule' ? (
+        <ScheduleStepModal
+          open={modalOpen}
+          step={modalStep}
+          onClose={() => setModalOpen(false)}
+          onSaveStep={saveStepFromModal}
+          events={events}
+          dslFunctions={dslFunctions}
+          definedVarNames={allDefinedVarNames}
+        />
+      ) : modalStepType === 'custom_code' ? (
+        <CustomCodeStepModal
+          open={modalOpen}
+          step={modalStep}
+          onClose={() => setModalOpen(false)}
+          onSaveStep={saveStepFromModal}
+          events={events}
+          dslFunctions={dslFunctions}
+        />
+      ) : (
+        <StepModal
+          open={modalOpen}
+          step={modalStep}
+          stepType={modalStepType}
+          onClose={() => setModalOpen(false)}
+          onSaveStep={saveStepFromModal}
+          events={events}
+          definedVarNames={allDefinedVarNames}
+          onTest={testStepFromModal}
+        />
+      )}
 
       {/* Action Bar */}
       <Box sx={{ p: 2, borderTop: '1px solid #E9ECEF', bgcolor: 'white', display: 'flex', gap: 1, justifyContent: 'flex-end', flexShrink: 0 }}>
