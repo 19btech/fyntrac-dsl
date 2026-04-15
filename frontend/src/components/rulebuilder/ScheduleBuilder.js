@@ -341,19 +341,8 @@ const ScheduleBuilder = ({ events, dslFunctions, onClose, onSave, initialData })
     }
     schedLines.push('print(sched)');
 
-    // Combined code: prior rules + auto-detected var definitions + partial schedule
-    const varDefs = autoDetectedVars
-      .map(varName => {
-        const sv = savedRulesVars.find(v => v.name === varName);
-        if (!sv) return null;
-        if (sv.source === 'value') return `${sv.name} = ${sv.value || 0}`;
-        if (sv.source === 'event_field') return `${sv.name} = ${sv.eventField}`;
-        if (sv.source === 'formula') return `${sv.name} = ${sv.formula || 0}`;
-        if (sv.source === 'collect') return `${sv.name} = ${sv.collectType || 'collect'}(${sv.eventField})`;
-        return null;
-      })
-      .filter(Boolean);
-    const combinedCode = [priorRulesCode, ...varDefs, ...schedLines].filter(Boolean).join('\n');
+    // Combined code: prior rules (already define all vars) + partial schedule only
+    const combinedCode = [priorRulesCode, ...schedLines].filter(Boolean).join('\n');
 
     // Get posting date
     let postingDate = new Date().toISOString().split('T')[0];
@@ -375,7 +364,7 @@ const ScheduleBuilder = ({ events, dslFunctions, onClose, onSave, initialData })
     } else {
       return { success: false, error: data.error || data.detail || 'Execution failed' };
     }
-  }, [columns, autoDetectedVars, savedRulesVars, priorRulesCode, periodType, periodCount, periodCountSource, periodCountField, periodCountFormula, startDateSource, startDateField, startDateFormula, startDate, endDateSource, endDateField, endDateFormula, endDate, frequency, convention]);
+  }, [columns, autoDetectedVars, priorRulesCode, periodType, periodCount, periodCountSource, periodCountField, periodCountFormula, startDateSource, startDateField, startDateFormula, startDate, endDateSource, endDateField, endDateFormula, endDate, frequency, convention]);
 
   const generatedCode = useMemo(() => {
     const lines = [];
@@ -507,6 +496,73 @@ const ScheduleBuilder = ({ events, dslFunctions, onClose, onSave, initialData })
     return lines.join('\n');
   }, [scheduleName, periodType, startDate, startDateSource, startDateField, startDateFormula, endDate, endDateSource, endDateField, endDateFormula, periodCount, periodCountSource, periodCountField, periodCountFormula, frequency, convention, columns, autoDetectedVars, savedRulesVars, createTxn, txnType, txnAmountCol, extractFirst, extractLast, extractColumn, enableSum, sumColumn, sumVarName, enableCol, colColumn, colVarName, enableFilter, filterVarName, filterMatchCol, filterMatchValue, filterReturnCol]);
 
+  // Schedule-only code: period + schedule + print + outputs (NO variable re-definitions).
+  // Used with priorRulesCode for testing so variables aren't defined twice.
+  const scheduleOnlyCode = useMemo(() => {
+    const lines = [];
+    // Period definition
+    if (periodType === 'number') {
+      const countExpr = periodCountSource === 'field' && periodCountField ? periodCountField
+        : periodCountSource === 'formula' && periodCountFormula ? periodCountFormula
+        : (periodCount || 12);
+      lines.push(`p = period(${countExpr})`);
+    } else {
+      const startExpr = startDateSource === 'field' && startDateField ? startDateField
+        : startDateSource === 'formula' && startDateFormula ? startDateFormula
+        : `"${startDate || '2026-01-01'}"`;
+      const endExpr = endDateSource === 'field' && endDateField ? endDateField
+        : endDateSource === 'formula' && endDateFormula ? endDateFormula
+        : `"${endDate || '2026-12-31'}"`;
+      let periodCall = `p = period(${startExpr}, ${endExpr}, "${frequency}"`;
+      if (convention) periodCall += `, "${convention}"`;
+      periodCall += ')';
+      lines.push(periodCall);
+    }
+    // Schedule definition
+    const validCols = columns.filter(c => c.name && c.formula);
+    lines.push('sched = schedule(p, {');
+    validCols.forEach((col, idx) => {
+      const comma = idx < validCols.length - 1 ? ',' : '';
+      lines.push(`    "${col.name}": "${col.formula}"${comma}`);
+    });
+    const contextPairs = autoDetectedVars.map(v => {
+      const key = (cfg.contextMapping && cfg.contextMapping[v]) || v;
+      return `"${key}": ${v}`;
+    });
+    if (contextPairs.length > 0) lines.push(`}, {${contextPairs.join(', ')}})`);
+    else lines.push('})');
+    lines.push('print(sched)');
+    // Summary totals
+    const numericCols = validCols.filter(c => c.name !== 'date' && c.formula !== 'period_date' && c.formula !== 'period_number');
+    numericCols.forEach(col => lines.push(`print("Total ${col.name}:", schedule_sum(sched, "${col.name}"))`));
+    // Extract first/last
+    const targetCol = extractColumn || (numericCols.length > 0 ? numericCols[numericCols.length - 1].name : '');
+    if (extractFirst && targetCol) {
+      lines.push(`first_${targetCol} = schedule_first(sched, "${targetCol}")`);
+      lines.push(`print("First ${targetCol}:", first_${targetCol})`);
+    }
+    if (extractLast && targetCol) {
+      lines.push(`last_${targetCol} = schedule_last(sched, "${targetCol}")`);
+      lines.push(`print("Last ${targetCol}:", last_${targetCol})`);
+    }
+    if (enableSum && sumColumn && sumVarName) {
+      lines.push(`${sumVarName} = schedule_sum(sched, "${sumColumn}")`);
+      lines.push(`print("${sumVarName}:", ${sumVarName})`);
+    }
+    if (enableCol && colColumn && colVarName) {
+      lines.push(`${colVarName} = schedule_column(sched, "${colColumn}")`);
+      lines.push(`print("${colVarName}:", ${colVarName})`);
+    }
+    if (enableFilter && filterVarName && filterMatchCol && filterMatchValue && filterReturnCol) {
+      lines.push(`${filterVarName} = schedule_filter(sched, "${filterMatchCol}", ${filterMatchValue}, "${filterReturnCol}")`);
+      lines.push(`print("${filterVarName}:", ${filterVarName})`);
+    }
+    if (createTxn && txnType && txnAmountCol) {
+      lines.push(`createTransaction(postingdate, postingdate, "${txnType}", ${txnAmountCol})`);
+    }
+    return lines.join('\n');
+  }, [periodType, startDate, startDateSource, startDateField, startDateFormula, endDate, endDateSource, endDateField, endDateFormula, periodCount, periodCountSource, periodCountField, periodCountFormula, frequency, convention, columns, autoDetectedVars, cfg.contextMapping, extractFirst, extractLast, extractColumn, enableSum, sumColumn, sumVarName, enableCol, colColumn, colVarName, enableFilter, filterVarName, filterMatchCol, filterMatchValue, filterReturnCol, createTxn, txnType, txnAmountCol]);
+
   // Build schedule base lines (vars + period + schedule() call) — shared by test functions
   const buildScheduleBaseLines = useCallback(() => {
     const lines = [];
@@ -573,8 +629,8 @@ const ScheduleBuilder = ({ events, dslFunctions, onClose, onSave, initialData })
       const validCols = columns.filter(c => c.name && c.formula);
       if (validCols.length === 0) { setSchedulePreviewError('No valid columns defined yet.'); return; }
 
-      // Build combined DSL: all prior rules (with real event refs) + this schedule's generated code
-      const schedCode = generatedCode;
+      // Build combined DSL: all prior rules (with real event refs) + schedule-only code (no var re-defs)
+      const schedCode = scheduleOnlyCode;
       const combinedCode = priorRulesCode ? (priorRulesCode + '\n\n' + schedCode) : schedCode;
 
       // Get posting dates from event data (like Business Preview)
@@ -619,7 +675,7 @@ const ScheduleBuilder = ({ events, dslFunctions, onClose, onSave, initialData })
     } finally {
       setSchedulePreviewTesting(false);
     }
-  }, [generatedCode, priorRulesCode, columns]);
+  }, [scheduleOnlyCode, priorRulesCode, columns]);
 
   // Test a specific output option using combined code (prior rules + schedule + output op)
   const testOutputOption = useCallback(async (optType) => {
@@ -659,8 +715,8 @@ const ScheduleBuilder = ({ events, dslFunctions, onClose, onSave, initialData })
           break;
         default: return;
       }
-      // Combined code: prior rules + schedule generated code + output option lines
-      const combinedCode = [priorRulesCode, generatedCode, ...extraLines].filter(Boolean).join('\n\n');
+      // Combined code: prior rules + schedule-only code (no var re-defs) + output option lines
+      const combinedCode = [priorRulesCode, scheduleOnlyCode, ...extraLines].filter(Boolean).join('\n\n');
       // Get posting date
       let postingDate = new Date().toISOString().split('T')[0];
       try {
@@ -685,7 +741,7 @@ const ScheduleBuilder = ({ events, dslFunctions, onClose, onSave, initialData })
     } catch (err) {
       setResult(null, err.message);
     }
-  }, [priorRulesCode, generatedCode, extractColumn, sumVarName, sumColumn, colVarName, colColumn,
+  }, [priorRulesCode, scheduleOnlyCode, extractColumn, sumVarName, sumColumn, colVarName, colColumn,
       filterVarName, filterMatchCol, filterMatchValue, filterReturnCol]);
 
   const handleSave = useCallback(async () => {
