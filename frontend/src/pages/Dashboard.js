@@ -18,6 +18,7 @@ import AIAgentSetupWizard from "../components/AIAgentSetupWizard";
 import LivePreview from "../components/rulebuilder/LivePreview";
 import AccountingRuleBuilder from "../components/rulebuilder/AccountingRuleBuilder";
 import ScheduleBuilder from "../components/rulebuilder/ScheduleBuilder";
+import CustomCodeEditor from "../components/rulebuilder/CustomCodeEditor";
 import TemplateLibrary from "../components/rulebuilder/TemplateWizard";
 import ACCOUNTING_TEMPLATES from "../components/rulebuilder/AccountingTemplates";
 import SavedRules from "../components/rulebuilder/SavedRules";
@@ -67,13 +68,14 @@ const Dashboard = () => {
   const [showEventDataViewer, setShowEventDataViewer] = useState(false);
   const [showAISetup, setShowAISetup] = useState(false);
   const [providerRefreshKey, setProviderRefreshKey] = useState(0);
-  // Editor mode: 'code' | 'ruleBuilder' | 'scheduleBuilder' | 'preview' | 'savedRules'
+  // Editor mode: 'code' | 'ruleBuilder' | 'scheduleBuilder' | 'customCode' | 'preview' | 'savedRules'
   const [editorMode, setEditorMode] = useState('code');
   // Accounting template library dialog
   const [showTemplateLibrary, setShowTemplateLibrary] = useState(false);
   // Saved rules
   const [editingRule, setEditingRule] = useState(null);
   const [editingSchedule, setEditingSchedule] = useState(null);
+  const [editingCustomCode, setEditingCustomCode] = useState(null);
   const [savedRulesRefreshKey, setSavedRulesRefreshKey] = useState(0);
   // Execution results for LivePreview
   const [lastExecutionResult, setLastExecutionResult] = useState({ transactions: [], printOutputs: [], templateName: '' });
@@ -825,7 +827,7 @@ const Dashboard = () => {
                 <ToggleButtonGroup
                   value={editorMode}
                   exclusive
-                  onChange={(e, val) => { if (val) { if (val === 'ruleBuilder') { setEditingRule(null); } if (val === 'scheduleBuilder') { setEditingSchedule(null); } setEditorMode(val); } }}
+                  onChange={(e, val) => { if (val) { if (val === 'ruleBuilder') { setEditingRule(null); } if (val === 'scheduleBuilder') { setEditingSchedule(null); } if (val === 'customCode') { setEditingCustomCode(null); } setEditorMode(val); } }}
                   size="small"
                   sx={{ '& .MuiToggleButton-root': { textTransform: 'none', fontSize: '0.75rem', px: 1.5, py: 0.5 } }}
                 >
@@ -837,6 +839,9 @@ const Dashboard = () => {
                   </ToggleButton>
                   <ToggleButton value="scheduleBuilder">
                     <Tooltip title="Build amortization schedules visually"><Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}><TableIcon size={14} /> Schedule Builder</Box></Tooltip>
+                  </ToggleButton>
+                  <ToggleButton value="customCode">
+                    <Tooltip title="Write raw DSL code directly"><Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}><Code size={14} /> Custom Code</Box></Tooltip>
                   </ToggleButton>
                   <ToggleButton value="preview">
                     <Tooltip title="View business preview of execution results"><Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}><Eye size={14} /> Business Preview</Box></Tooltip>
@@ -1040,6 +1045,17 @@ const Dashboard = () => {
                 />
               )}
 
+              {/* Custom Code Editor Mode */}
+              {editorMode === 'customCode' && (
+                <CustomCodeEditor
+                  key={editingCustomCode ? `cc-${editingCustomCode.id}` : 'new-cc'}
+                  events={events}
+                  dslFunctions={dslFunctions}
+                  onSave={() => { setSavedRulesRefreshKey(k => k + 1); loadCombinedCode(); }}
+                  initialData={editingCustomCode}
+                />
+              )}
+
 
               {/* Business Preview Mode */}
               {editorMode === 'preview' && (
@@ -1056,9 +1072,17 @@ const Dashboard = () => {
                 <SavedRules
                   refreshKey={savedRulesRefreshKey}
                   onEditRule={(rule) => {
-                    setEditingRule(rule);
-                    setEditingSchedule(null);
-                    setEditorMode('ruleBuilder');
+                    if (rule.ruleType === 'custom_code') {
+                      setEditingCustomCode(rule);
+                      setEditingRule(null);
+                      setEditingSchedule(null);
+                      setEditorMode('customCode');
+                    } else {
+                      setEditingRule(rule);
+                      setEditingSchedule(null);
+                      setEditingCustomCode(null);
+                      setEditorMode('ruleBuilder');
+                    }
                   }}
                   onEditSchedule={(sched) => {
                     setEditingSchedule(sched);
