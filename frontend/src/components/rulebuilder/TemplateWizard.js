@@ -151,11 +151,18 @@ function parseDSLToRules(code, templateTitle) {
     const genCode = canMergeJournalIntoParams
       ? [...paramStmts.map(s => s.raw), ...journalStmts.map(s => s.raw)].join('\n')
       : paramStmts.map(s => s.raw).join('\n');
+    // Build unified steps from variables
+    const calcSteps = vars.map(v => ({
+      name: v.name, stepType: 'calc',
+      source: v.source || 'formula', formula: v.formula || '', value: v.value || '',
+      eventField: v.eventField || '', collectType: v.collectType || 'collect',
+    }));
     rules.push({
       ...defaultRule,
       name: `${templateTitle} - Parameters`,
       ruleType: 'simple_calc',
       variables: vars,
+      steps: calcSteps,
       outputs: canMergeJournalIntoParams
         ? {
             printResult: true,
@@ -177,6 +184,12 @@ function parseDSLToRules(code, templateTitle) {
       name: `${templateTitle} - Conditional`,
       ruleType: 'conditional',
       variables: [],
+      steps: [{
+        name: stmt.name,
+        stepType: 'condition',
+        conditions: parsed.conditions,
+        elseFormula: parsed.elseFormula,
+      }],
       conditions: parsed.conditions,
       elseFormula: parsed.elseFormula,
       conditionResultVar: stmt.name,
@@ -190,12 +203,18 @@ function parseDSLToRules(code, templateTitle) {
     const iterAssigns = iterStmts.filter(s => s.type === 'iteration');
     const genCode = iterStmts.map(s => s.raw).join('\n');
     const allIterCfgs = iterAssigns.map(ia => parseIterConfig(ia.rhs, ia.name));
+    const lastIterName = allIterCfgs.length > 0 ? (allIterCfgs[allIterCfgs.length - 1].resultVar || 'mapped_result') : 'mapped_result';
 
     rules.push({
       ...defaultRule,
       name: `${templateTitle} - Iteration`,
       ruleType: 'iteration',
       variables: [],
+      steps: [{
+        name: lastIterName,
+        stepType: 'iteration',
+        iterations: allIterCfgs,
+      }],
       iterations: allIterCfgs,
       iterConfig: allIterCfgs[0] || {},
       generatedCode: genCode,
@@ -222,6 +241,7 @@ function parseDSLToRules(code, templateTitle) {
       name: `${templateTitle} - Transactions`,
       ruleType: 'simple_calc',
       variables: [],
+      steps: [],
       outputs: {
         printResult: false,
         createTransaction: true,
@@ -239,6 +259,7 @@ function parseDSLToRules(code, templateTitle) {
       name: templateTitle,
       ruleType: 'custom_code',
       variables: [],
+      steps: [],
       generatedCode: code,
       customCode: code,
     });

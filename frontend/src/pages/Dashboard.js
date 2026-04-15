@@ -565,6 +565,7 @@ const Dashboard = () => {
               outputs: rule.outputs || {},
               customCode: rule.customCode || '',
               generatedCode: rule.generatedCode || '',
+              steps: rule.steps || [],
             });
             created++;
           } catch (err) {
