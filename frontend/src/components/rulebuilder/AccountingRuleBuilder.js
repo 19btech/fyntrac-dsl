@@ -617,7 +617,7 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
     const emittedSaved = new Set();
     const deferredIterResults = [];
 
-    // Determine which _isIterResult vars are needed by current rule's iterations
+    // Determine which _isIterResult vars are needed by current rule's iterations or schedule contextVars
     const iterNeeded = new Set();
     for (const s of steps) {
       if (s.stepType === 'iteration') {
@@ -625,6 +625,25 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
           (iter.expression || '').match(/[a-zA-Z_][a-zA-Z0-9_]*/g)?.forEach(id => iterNeeded.add(id));
           if (iter.sourceArray && /^[a-zA-Z_]\w*$/.test(iter.sourceArray)) iterNeeded.add(iter.sourceArray);
           if (iter.secondArray && /^[a-zA-Z_]\w*$/.test(iter.secondArray)) iterNeeded.add(iter.secondArray);
+        }
+      }
+      if (s.stepType === 'schedule') {
+        (s.scheduleConfig?.contextVars || []).forEach(v => iterNeeded.add(v));
+      }
+    }
+    // Transitively resolve: if a needed _isIterResult var's formula references other _isIterResult vars, include those too
+    const iterResultMap = new Map(savedRulesVars.filter(v => v._isIterResult).map(v => [v.name, v]));
+    let changed = true;
+    while (changed) {
+      changed = false;
+      for (const v of iterResultMap.values()) {
+        if (!iterNeeded.has(v.name)) continue;
+        const refs = (v.formula || '').match(/[a-zA-Z_][a-zA-Z0-9_]*/g) || [];
+        for (const ref of refs) {
+          if (iterResultMap.has(ref) && !iterNeeded.has(ref)) {
+            iterNeeded.add(ref);
+            changed = true;
+          }
         }
       }
     }
@@ -683,7 +702,8 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
     });
     const ctxVars = sc.contextVars || [];
     if (ctxVars.length > 0) {
-      const ctxPairs = ctxVars.map(v => `"${v}": ${v}`).join(', ');
+      const ctxMapping = sc.contextMapping || {};
+      const ctxPairs = ctxVars.map(v => { const key = ctxMapping[v] || v; return `"${key}": ${v}`; }).join(', ');
       lines.push(`}, {${ctxPairs}})`);
     } else {
       lines.push('})');
@@ -875,6 +895,25 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
           if (iter.secondArray && /^[a-zA-Z_]\w*$/.test(iter.secondArray)) iterNeeded.add(iter.secondArray);
         }
       }
+      if (s.stepType === 'schedule') {
+        (s.scheduleConfig?.contextVars || []).forEach(v => iterNeeded.add(v));
+      }
+    }
+    // Transitively resolve: if a needed _isIterResult var's formula references other _isIterResult vars, include those too
+    const iterResultMap2 = new Map(savedRulesVars.filter(v => v._isIterResult).map(v => [v.name, v]));
+    let changed2 = true;
+    while (changed2) {
+      changed2 = false;
+      for (const v of iterResultMap2.values()) {
+        if (!iterNeeded.has(v.name)) continue;
+        const refs = (v.formula || '').match(/[a-zA-Z_][a-zA-Z0-9_]*/g) || [];
+        for (const ref of refs) {
+          if (iterResultMap2.has(ref) && !iterNeeded.has(ref)) {
+            iterNeeded.add(ref);
+            changed2 = true;
+          }
+        }
+      }
     }
 
     const deferredIterDeps = [];
@@ -964,7 +1003,13 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
           const comma = idx < validCols.length - 1 ? ',' : '';
           lines.push(`    "${col.name}": "${col.formula}"${comma}`);
         });
-        lines.push('})');
+        const ctxVars = sc.contextVars || [];
+        if (ctxVars.length > 0) {
+          const ctxPairs = ctxVars.map(v => `"${v}": ${v}`).join(', ');
+          lines.push(`}, {${ctxPairs}})`);
+        } else {
+          lines.push('})');  
+        }
         lines.push(`print(${s.name})`);
         definedVars.push(s.name);
         // Output variables

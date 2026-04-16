@@ -288,6 +288,7 @@ function parseDSLToRules(code, templateTitle) {
           filterMatchCol: schedCfg.filterMatchCol, filterMatchValue: schedCfg.filterMatchValue,
           filterReturnCol: schedCfg.filterReturnCol,
           contextVars: schedCfg.contextVars,
+          contextMapping: schedCfg.contextMapping,
         },
         outputVars,
       }],

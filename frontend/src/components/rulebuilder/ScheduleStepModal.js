@@ -350,7 +350,8 @@ const ScheduleStepModal = ({ open, step, onClose, onSaveStep, events, dslFunctio
       const comma = idx < validCols.length - 1 ? ',' : '';
       lines.push(`    "${col.name}": "${col.formula}"${comma}`);
     });
-    const contextPairs = autoDetectedVars.map(v => `"${v}": ${v}`);
+    const ctxMapping = cfg.contextMapping || {};
+    const contextPairs = autoDetectedVars.map(v => { const key = ctxMapping[v] || v; return `"${key}": ${v}`; });
     if (contextPairs.length > 0) lines.push(`}, {${contextPairs.join(', ')}})`);
     else lines.push('})');
     lines.push('print(sched)');
@@ -358,7 +359,7 @@ const ScheduleStepModal = ({ open, step, onClose, onSaveStep, events, dslFunctio
   }, [periodType, periodCount, periodCountSource, periodCountField, periodCountFormula,
       startDate, startDateSource, startDateField, startDateFormula,
       endDate, endDateSource, endDateField, endDateFormula,
-      frequency, convention, columns, autoDetectedVars]);
+      frequency, convention, columns, autoDetectedVars, cfg.contextMapping]);
 
   // Test column
   const testColumn = useCallback(async (colIndex) => {
@@ -387,7 +388,8 @@ const ScheduleStepModal = ({ open, step, onClose, onSaveStep, events, dslFunctio
       const comma = idx < colsToTest.length - 1 ? ',' : '';
       schedLines.push(`    "${col.name}": "${col.formula}"${comma}`);
     });
-    const contextPairs = autoDetectedVars.map(v => `"${v}": ${v}`);
+    const ctxMapping2 = cfg.contextMapping || {};
+    const contextPairs = autoDetectedVars.map(v => { const key = ctxMapping2[v] || v; return `"${key}": ${v}`; });
     if (contextPairs.length > 0) schedLines.push(`}, {${contextPairs.join(', ')}})`);
     else schedLines.push('})');
     schedLines.push('print(sched)');
@@ -440,7 +442,12 @@ const ScheduleStepModal = ({ open, step, onClose, onSaveStep, events, dslFunctio
           // Use the last print output (the schedule print), prior code may have earlier prints
           let parsed = JSON.parse(data.print_outputs[data.print_outputs.length - 1]);
           if (Array.isArray(parsed) && Array.isArray(parsed[0])) parsed = parsed[0];
-          if (Array.isArray(parsed) && parsed[0]?.schedule) parsed = parsed.flatMap(item => item.schedule || []);
+          if (Array.isArray(parsed) && parsed[0]?.schedule) {
+            parsed = parsed.flatMap(item => {
+              const sid = item.subinstrument_id;
+              return (item.schedule || []).map(row => sid != null ? { subinstrument_id: sid, ...row } : row);
+            });
+          }
           if (Array.isArray(parsed) && parsed.length > 0 && typeof parsed[0] === 'object' && !Array.isArray(parsed[0])) {
             setSchedulePreviewData(parsed);
           } else {
@@ -553,6 +560,7 @@ const ScheduleStepModal = ({ open, step, onClose, onSaveStep, events, dslFunctio
         enableCol, colColumn, colVarName,
         enableFilter, filterVarName, filterMatchCol, filterMatchValue, filterReturnCol,
         contextVars: autoDetectedVars,
+        contextMapping: cfg.contextMapping || {},
       },
       outputVars: collectOutputVars(),
     });
@@ -627,12 +635,12 @@ const ScheduleStepModal = ({ open, step, onClose, onSaveStep, events, dslFunctio
         ) : (
           <>
             <Box sx={{ display: 'flex', gap: 1.5, mb: 1.5 }}>
-              <Box sx={{ flex: 1 }}>
+              <Box sx={{ flex: 1, minWidth: 0 }}>
                 <Typography variant="caption" fontWeight={600} color="text.secondary" sx={{ mb: 0.5, display: 'block' }}>Start Date</Typography>
-                <Box sx={{ display: 'flex', gap: 0.5, mb: 0.5 }}>
+                <Box sx={{ display: 'flex', gap: 0.5, mb: 0.5, flexWrap: 'wrap' }}>
                   <ToggleButtonGroup size="small" exclusive value={startDateSource}
                     onChange={(e, v) => { if (v) setStartDateSource(v); }}
-                    sx={{ '& .MuiToggleButton-root': { textTransform: 'none', fontSize: '0.6875rem', px: 1, py: 0.25 } }}>
+                    sx={{ flexWrap: 'wrap', '& .MuiToggleButton-root': { textTransform: 'none', fontSize: '0.6875rem', px: 1, py: 0.25 } }}>
                     <ToggleButton value="value">Fixed</ToggleButton>
                     <ToggleButton value="field">Event Field</ToggleButton>
                     <ToggleButton value="formula">Formula</ToggleButton>
@@ -656,12 +664,12 @@ const ScheduleStepModal = ({ open, step, onClose, onSaveStep, events, dslFunctio
                     placeholder="e.g., add_months(effectivedate, 12)" />
                 )}
               </Box>
-              <Box sx={{ flex: 1 }}>
+              <Box sx={{ flex: 1, minWidth: 0 }}>
                 <Typography variant="caption" fontWeight={600} color="text.secondary" sx={{ mb: 0.5, display: 'block' }}>End Date</Typography>
-                <Box sx={{ display: 'flex', gap: 0.5, mb: 0.5 }}>
+                <Box sx={{ display: 'flex', gap: 0.5, mb: 0.5, flexWrap: 'wrap' }}>
                   <ToggleButtonGroup size="small" exclusive value={endDateSource}
                     onChange={(e, v) => { if (v) setEndDateSource(v); }}
-                    sx={{ '& .MuiToggleButton-root': { textTransform: 'none', fontSize: '0.6875rem', px: 1, py: 0.25 } }}>
+                    sx={{ flexWrap: 'wrap', '& .MuiToggleButton-root': { textTransform: 'none', fontSize: '0.6875rem', px: 1, py: 0.25 } }}>
                     <ToggleButton value="value">Fixed</ToggleButton>
                     <ToggleButton value="field">Event Field</ToggleButton>
                     <ToggleButton value="formula">Formula</ToggleButton>
@@ -764,7 +772,10 @@ const ScheduleStepModal = ({ open, step, onClose, onSaveStep, events, dslFunctio
                 <TableHead>
                   <TableRow sx={{ bgcolor: '#F8F9FA' }}>
                     <TableCell sx={{ fontWeight: 600, fontSize: '0.75rem', bgcolor: '#F8F9FA' }}>#</TableCell>
-                    {(schedulePreviewData ? Object.keys(schedulePreviewData[0] || {}) : previewHeaders).map(h => (
+                    {(schedulePreviewData
+                      ? (() => { const keys = Object.keys(schedulePreviewData[0] || {}); const idx = keys.indexOf('subinstrument_id'); if (idx > 0) { keys.splice(idx, 1); keys.unshift('subinstrument_id'); } return keys; })()
+                      : previewHeaders
+                    ).map(h => (
                       <TableCell key={h} sx={{ fontWeight: 600, fontSize: '0.75rem', bgcolor: '#F8F9FA', whiteSpace: 'nowrap' }}>{h}</TableCell>
                     ))}
                   </TableRow>
@@ -774,7 +785,9 @@ const ScheduleStepModal = ({ open, step, onClose, onSaveStep, events, dslFunctio
                     schedulePreviewData.slice(0, 20).map((row, rowIdx) => (
                       <TableRow key={rowIdx} hover sx={{ '&:last-child td': { borderBottom: 0 } }}>
                         <TableCell sx={{ fontSize: '0.75rem', color: '#6C757D' }}>{rowIdx + 1}</TableCell>
-                        {Object.values(row).map((val, ci) => (
+                        {(() => { const keys = Object.keys(row); const idx = keys.indexOf('subinstrument_id'); if (idx > 0) { keys.splice(idx, 1); keys.unshift('subinstrument_id'); } return keys; })().map((k, ci) => {
+                          const val = row[k];
+                          return (
                           <TableCell key={ci} sx={{ fontSize: '0.75rem',
                             fontFamily: typeof val === 'number' ? 'monospace' : 'inherit',
                             fontWeight: typeof val === 'number' ? 500 : 400 }}>
@@ -782,7 +795,8 @@ const ScheduleStepModal = ({ open, step, onClose, onSaveStep, events, dslFunctio
                               ? (Number.isInteger(val) ? val.toLocaleString() : val.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 4 }))
                               : String(val ?? '—')}
                           </TableCell>
-                        ))}
+                          );
+                        })}
                       </TableRow>
                     ))
                   ) : (
