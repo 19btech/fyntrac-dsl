@@ -702,8 +702,7 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
     });
     const ctxVars = sc.contextVars || [];
     if (ctxVars.length > 0) {
-      const ctxMapping = sc.contextMapping || {};
-      const ctxPairs = ctxVars.map(v => { const key = ctxMapping[v] || v; return `"${key}": ${v}`; }).join(', ');
+      const ctxPairs = ctxVars.map(v => `"${v}": ${v}`).join(', ');
       lines.push(`}, {${ctxPairs}})`);
     } else {
       lines.push('})');

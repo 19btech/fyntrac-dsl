@@ -213,8 +213,8 @@ const ACCOUNTING_TEMPLATES = [
         lines.push('p = period(start_dates, end_dates, "M")');
         lines.push('sched = schedule(p, {');
         lines.push('    "date": "period_date",');
-        lines.push('    "revenue": "divide(amount, total_periods)"');
-        lines.push('}, {"amounts": allocated_revenues, "subinstrument_ids": subinstrument_ids})');
+        lines.push('    "revenue": "divide(allocated_revenues, total_periods)"');
+        lines.push('}, {"allocated_revenues": allocated_revenues, "subinstrument_ids": subinstrument_ids})');
         lines.push('print(sched)');
         lines.push('');
         lines.push('print("Total Revenue:", schedule_sum(sched, "revenue"))');

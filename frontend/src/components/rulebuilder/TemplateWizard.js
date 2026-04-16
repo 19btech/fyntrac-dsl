@@ -288,7 +288,6 @@ function parseDSLToRules(code, templateTitle) {
           filterMatchCol: schedCfg.filterMatchCol, filterMatchValue: schedCfg.filterMatchValue,
           filterReturnCol: schedCfg.filterReturnCol,
           contextVars: schedCfg.contextVars,
-          contextMapping: schedCfg.contextMapping,
         },
         outputVars,
       }],
@@ -554,15 +553,12 @@ function parseScheduleConfig(schedStmts, journalStmts) {
       if (allBlocks.length >= 2) {
         const ctxBlock = allBlocks[allBlocks.length - 1][1]; // last {} is context
         const ctxVars = [];
-        const ctxMapping = {}; // key→varName mapping (e.g., "amounts" → "allocated_revenues")
         const ctxPairs = [...ctxBlock.matchAll(/"([^"]+)"\s*:\s*([a-zA-Z_]\w*)/g)];
         for (const m of ctxPairs) {
           ctxVars.push(m[2]); // the variable name (value side)
-          ctxMapping[m[2]] = m[1]; // varName → original key name
         }
         if (ctxVars.length > 0) {
           cfg.contextVars = ctxVars;
-          cfg.contextMapping = ctxMapping;
         }
       }
     }

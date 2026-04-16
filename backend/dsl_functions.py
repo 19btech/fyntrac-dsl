@@ -2014,15 +2014,21 @@ def generate_schedules(
         if not start or not end:
             raise ValueError(f"Schedule could not be created for subInstrumentId {subinstrument} — start_date or end_date is missing")
 
-        # Skip items with zero amount
-        if not amount or amount == 0:
-            results.append(result)
-            continue
-        
         # Generate period definition
         period_def = period(start, end, freq)
         total_periods = len(period_def.get("dates", []))
         result["total_periods"] = total_periods
+
+        # Skip items with zero amount only when no other context arrays exist
+        _skip_keys = ('amounts', 'amount', 'start_dates', 'end_dates',
+                      'subinstrument_ids', 'item_names', 'product_names')
+        has_other_arrays = context and any(
+            isinstance(v, list) and k not in _skip_keys
+            for k, v in context.items()
+        )
+        if not has_other_arrays and (not amount or amount == 0):
+            results.append(result)
+            continue
         
         # Build context for schedule expressions
         sched_context = {
@@ -2035,9 +2041,15 @@ def generate_schedules(
             "end_date": end
         }
         
-        # Add user-provided context
+        # Add user-provided context — auto-extract per-item values from arrays
         if context:
-            sched_context.update(context)
+            for k, v in context.items():
+                if k in _skip_keys:
+                    continue  # already handled by dedicated parameters
+                if isinstance(v, list):
+                    sched_context[k] = v[i] if i < len(v) else (v[-1] if v else None)
+                else:
+                    sched_context[k] = v
         
         # Generate the schedule
         sched = schedule(period_def, columns, sched_context)

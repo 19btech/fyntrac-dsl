@@ -271,7 +271,7 @@ const ScheduleStepModal = ({ open, step, onClose, onSaveStep, events, dslFunctio
 
   const SCHEDULE_BUILTINS = useMemo(() => new Set([
     'period_date', 'period_index', 'period_start', 'period_number', 'dcf', 'lag',
-    'days_in_current_period', 'amount', 'total_periods', 'daily_basis', 'item_name',
+    'days_in_current_period', 'total_periods', 'daily_basis', 'item_name',
     'subinstrument_id', 's_no', 'index', 'start_date', 'end_date',
     ...(dslFunctions || []).map(f => f.name),
   ]), [dslFunctions]);
@@ -350,8 +350,7 @@ const ScheduleStepModal = ({ open, step, onClose, onSaveStep, events, dslFunctio
       const comma = idx < validCols.length - 1 ? ',' : '';
       lines.push(`    "${col.name}": "${col.formula}"${comma}`);
     });
-    const ctxMapping = cfg.contextMapping || {};
-    const contextPairs = autoDetectedVars.map(v => { const key = ctxMapping[v] || v; return `"${key}": ${v}`; });
+    const contextPairs = autoDetectedVars.map(v => `"${v}": ${v}`);
     if (contextPairs.length > 0) lines.push(`}, {${contextPairs.join(', ')}})`);
     else lines.push('})');
     lines.push('print(sched)');
@@ -359,7 +358,7 @@ const ScheduleStepModal = ({ open, step, onClose, onSaveStep, events, dslFunctio
   }, [periodType, periodCount, periodCountSource, periodCountField, periodCountFormula,
       startDate, startDateSource, startDateField, startDateFormula,
       endDate, endDateSource, endDateField, endDateFormula,
-      frequency, convention, columns, autoDetectedVars, cfg.contextMapping]);
+      frequency, convention, columns, autoDetectedVars]);
 
   // Test column
   const testColumn = useCallback(async (colIndex) => {
@@ -388,8 +387,7 @@ const ScheduleStepModal = ({ open, step, onClose, onSaveStep, events, dslFunctio
       const comma = idx < colsToTest.length - 1 ? ',' : '';
       schedLines.push(`    "${col.name}": "${col.formula}"${comma}`);
     });
-    const ctxMapping2 = cfg.contextMapping || {};
-    const contextPairs = autoDetectedVars.map(v => { const key = ctxMapping2[v] || v; return `"${key}": ${v}`; });
+    const contextPairs = autoDetectedVars.map(v => `"${v}": ${v}`);
     if (contextPairs.length > 0) schedLines.push(`}, {${contextPairs.join(', ')}})`);
     else schedLines.push('})');
     schedLines.push('print(sched)');
@@ -560,7 +558,6 @@ const ScheduleStepModal = ({ open, step, onClose, onSaveStep, events, dslFunctio
         enableCol, colColumn, colVarName,
         enableFilter, filterVarName, filterMatchCol, filterMatchValue, filterReturnCol,
         contextVars: autoDetectedVars,
-        contextMapping: cfg.contextMapping || {},
       },
       outputVars: collectOutputVars(),
     });
@@ -726,6 +723,30 @@ const ScheduleStepModal = ({ open, step, onClose, onSaveStep, events, dslFunctio
         <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 1 }}>
           <Typography variant="body2" fontWeight={600}>Schedule Columns ({columns.length})</Typography>
           <Button size="small" startIcon={<Plus size={14} />} onClick={addColumn}>Custom Column</Button>
+        </Box>
+        <Box sx={{ mb: 1.5, px: 1.5, py: 1, bgcolor: '#F0F4FF', borderRadius: 1, border: '1px solid #E0E7FF' }}>
+          <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 0.5, fontWeight: 600, fontSize: '0.7rem' }}>
+            Built-in variables you can use in column formulas:
+          </Typography>
+          <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.5 }}>
+            {[
+              { name: 'period_date', tip: 'Current period date' },
+              { name: 'period_index', tip: 'Period number (0, 1, 2…)' },
+              { name: 'total_periods', tip: 'Total number of periods' },
+              { name: 'subinstrument_id', tip: 'Current sub-instrument ID' },
+              { name: 'item_name', tip: 'Current item name' },
+              { name: 'start_date', tip: 'Schedule start date' },
+              { name: 'end_date', tip: 'Schedule end date' },
+              { name: 'dcf', tip: 'Day count fraction' },
+              { name: 'lag(col, n)', tip: 'Previous row value' },
+            ].map(v => (
+              <Tooltip key={v.name} title={v.tip} arrow>
+                <Chip label={v.name} size="small"
+                  sx={{ fontSize: '0.675rem', height: 20, bgcolor: '#fff', border: '1px solid #C7D2FE',
+                    fontFamily: 'monospace', cursor: 'help', '&:hover': { bgcolor: '#EEF2FF' } }} />
+              </Tooltip>
+            ))}
+          </Box>
         </Box>
 
         {columns.map((col, idx) => (
