@@ -1,17 +1,14 @@
 import React, { useState, useEffect, useRef } from "react";
 import axios from "axios";
 import { useToast } from "../components/ToastProvider";
-import { Upload, FileText, Code, Play, List, BookOpen, Download, Sparkles, Trash2, BarChart3, Search as SearchIcon, Lightbulb, Settings, ChevronDown, Database, Calculator, Eye, BookOpen as BookOpenIcon, Save } from "lucide-react";
-import { Button, Tabs, Tab, Box, Menu, MenuItem, Divider, Alert, LinearProgress, Typography, ToggleButtonGroup, ToggleButton, Tooltip } from '@mui/material';
+import { Upload, Code, BookOpen, Sparkles, Trash2, Search as SearchIcon, Settings, ChevronDown, Database, Calculator, Eye, Save } from "lucide-react";
+import { Button, Tabs, Tab, Box, Menu, MenuItem, Divider, Alert, Typography, ToggleButtonGroup, ToggleButton, Tooltip } from '@mui/material';
 import Editor from "@monaco-editor/react";
 import FileUploadPanel from "../components/FileUploadPanel";
 import LeftSidebar from "../components/LeftSidebar";
 import ChatAssistant from "../components/ChatAssistant";
 import ConsoleOutput from "../components/ConsoleOutput";
-import TemplatesPanel from "../components/TemplatesPanel";
-import TransactionReports from "../components/TransactionReports";
 import FunctionBrowser from "../components/FunctionBrowser";
-import DSLExamples from "../components/DSLExamples";
 import EventDataViewer from "../components/EventDataViewer";
 import AppDialog, { useAppDialog } from "../components/AppDialog";
 import AIAgentSetupWizard from "../components/AIAgentSetupWizard";
@@ -58,7 +55,6 @@ const Dashboard = () => {
   const [templates, setTemplates] = useState([]);
   const [selectedEvent, setSelectedEvent] = useState("");
   const [consoleOutput, setConsoleOutput] = useState([]);
-  const [transactionReports, setTransactionReports] = useState([]);
   const [tabValue, setTabValue] = useState(0);
   const [showFunctionBrowser, setShowFunctionBrowser] = useState(false);
   const [settingsAnchorEl, setSettingsAnchorEl] = useState(null);
@@ -68,8 +64,6 @@ const Dashboard = () => {
   const [providerRefreshKey, setProviderRefreshKey] = useState(0);
   // Editor mode: 'code' | 'ruleBuilder' | 'scheduleBuilder' | 'customCode' | 'preview' | 'savedRules'
   const [editorMode, setEditorMode] = useState('code');
-  // Accounting template library dialog
-  const [showTemplateLibrary, setShowTemplateLibrary] = useState(false);
   // Saved rules
   const [editingRule, setEditingRule] = useState(null);
   const [editingSchedule, setEditingSchedule] = useState(null);
@@ -91,7 +85,6 @@ const Dashboard = () => {
     loadEvents();
     loadDslFunctions();
     loadTemplates();
-    loadTransactionReports();
     loadCombinedCode();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -150,40 +143,9 @@ const Dashboard = () => {
     }
   };
 
-  const loadTransactionReports = async () => {
-    try {
-      const response = await axios.get(`${API}/transaction-reports`);
-      setTransactionReports(response.data);
-    } catch (error) {
-      console.error("Error loading transaction reports:", error);
-    }
-  };
-
   const addConsoleLog = (message, type = "info") => {
     const timestamp = new Date().toLocaleTimeString();
     setConsoleOutput(prev => [...prev, { timestamp, message, type }]);
-  };
-
-  const handleLoadSampleData = async () => {
-    try {
-      addConsoleLog("Loading sample data...", "info");
-      const response = await axios.post(`${API}/load-sample-data`);
-      
-      addConsoleLog(`✓ Sample data loaded successfully!`, "success");
-      addConsoleLog(`Events: ${response.data.events.join(", ")}`, "info");
-      
-      if (response.data.sample_dsl_code) {
-        setDslCode(response.data.sample_dsl_code);
-      }
-      
-      await loadEvents();
-      await loadDslFunctions();
-      
-      toast.success("Sample data loaded! Ready to test.");
-    } catch (error) {
-      addConsoleLog(`✗ Error loading sample data: ${error.message}`, "error");
-      toast.error("Failed to load sample data");
-    }
   };
 
   const handleClearAllData = async () => {
@@ -202,7 +164,6 @@ const Dashboard = () => {
           setEvents([]);
           setDslFunctions([]);
           setTemplates([]);
-          setTransactionReports([]);
           setSelectedEvent("");
           setDslCode('');
           setShowEventDataViewer(false);
@@ -235,7 +196,6 @@ const Dashboard = () => {
 
           await loadDslFunctions();
           await loadTemplates();
-          await loadTransactionReports();
 
           toast.success("All data cleared! Fresh environment ready.");
         } catch (error) {
@@ -359,7 +319,6 @@ const Dashboard = () => {
         addConsoleLog(`Report ID: ${response.data.report_id}`, "info");
         addConsoleLog(JSON.stringify(response.data.transactions, null, 2), "result");
         toast.success(`Generated ${response.data.transactions.length} transactions`);
-        loadTransactionReports();
       } catch (error) {
         addConsoleLog(`✗ Execution error: ${error.response?.data?.detail || error.message}`, "error");
         toast.error("Execution failed");
@@ -413,8 +372,6 @@ const Dashboard = () => {
       });
       toast.error(`Batch finished with ${batchErrors.length} failure(s)`);
     }
-
-    loadTransactionReports();
   };
 
   const handleDeployTemplate = async (templateId, templateName) => {
@@ -438,47 +395,6 @@ const Dashboard = () => {
     }
   };
 
-  const handleDownloadReport = async (reportId) => {
-    try {
-      const response = await axios.get(`${API}/transaction-reports/download/${reportId}`, {
-        responseType: 'blob'
-      });
-      const url = window.URL.createObjectURL(new Blob([response.data]));
-      const link = document.createElement('a');
-      link.href = url;
-      const filename = response.headers['content-disposition']?.split('filename=')[1] || 'transactions.csv';
-      link.setAttribute('download', filename);
-      document.body.appendChild(link);
-      link.click();
-      link.remove();
-      toast.success("Transaction report downloaded!");
-    } catch (error) {
-      toast.error("Failed to download report");
-    }
-  };
-
-  const handleDeleteReport = async (reportId, reportName) => {
-    openConfirm({
-      title: "Delete Report",
-      message: `Are you sure you want to delete report "${reportName}"?`,
-      confirmLabel: "Delete",
-      confirmColor: "error",
-      onConfirm: async () => {
-        try {
-          addConsoleLog(`Deleting report '${reportName}'...`, "info");
-          await axios.delete(`${API}/transaction-reports/${reportId}`);
-          
-          addConsoleLog(`✓ Report deleted successfully!`, "success");
-          toast.success("Report deleted!");
-          loadTransactionReports();
-        } catch (error) {
-          addConsoleLog(`✗ Error deleting report: ${error.message}`, "error");
-          toast.error("Failed to delete report");
-        }
-      }
-    });
-  };
-
   const handleDeleteTemplate = async (templateId, templateName) => {
     try {
       addConsoleLog(`Deleting template '${templateName}'...`, "info");
@@ -499,11 +415,6 @@ const Dashboard = () => {
     setDslCode(template.dsl_code);
     addConsoleLog(`Loaded template: ${template.name}`, "info");
     toast.success(`Loaded template: ${template.name}`);
-  };
-
-  const handleLoadExample = (exampleCode) => {
-    setDslCode(exampleCode);
-    addConsoleLog("Loaded DSL example", "info");
   };
 
   const handleInsertFunction = (functionCall) => {
@@ -715,17 +626,6 @@ const Dashboard = () => {
               >
                 <MenuItem
                   onClick={() => {
-                    handleLoadSampleData();
-                    setSettingsAnchorEl(null);
-                  }}
-                  data-testid="menu-sample-data"
-                  sx={{ fontSize: '0.875rem', py: 1.5 }}
-                >
-                  <Sparkles className="w-4 h-4 text-[#6C757D] mr-2" />
-                  Sample Data
-                </MenuItem>
-                <MenuItem
-                  onClick={() => {
                     handleClearAllData();
                     setSettingsAnchorEl(null);
                   }}
@@ -785,27 +685,6 @@ const Dashboard = () => {
                   data-testid="editor-tab"
                   sx={{ textTransform: 'none', fontSize: '0.875rem' }}
                 />
-                <Tab 
-                  icon={<List className="w-4 h-4" />} 
-                  iconPosition="start" 
-                  label="Templates" 
-                  data-testid="templates-tab"
-                  sx={{ textTransform: 'none', fontSize: '0.875rem' }}
-                />
-                <Tab 
-                  icon={<BarChart3 className="w-4 h-4" />} 
-                  iconPosition="start" 
-                  label="Transaction Report" 
-                  data-testid="reports-tab"
-                  sx={{ textTransform: 'none', fontSize: '0.875rem' }}
-                />
-                <Tab 
-                  icon={<Lightbulb className="w-4 h-4" />} 
-                  iconPosition="start" 
-                  label="Examples" 
-                  data-testid="examples-tab"
-                  sx={{ textTransform: 'none', fontSize: '0.875rem' }}
-                />
               </Tabs>
             </Box>
 
@@ -842,15 +721,10 @@ const Dashboard = () => {
                   <ToggleButton value="code">
                     <Tooltip title="View combined DSL code from all rules"><Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}><Code size={14} /> Code Viewer</Box></Tooltip>
                   </ToggleButton>
+                  <ToggleButton value="templates">
+                    <Tooltip title="Browse accounting templates (ASC 310, 360, 606, 842...)"><Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}><BookOpen size={14} /> Templates</Box></Tooltip>
+                  </ToggleButton>
                 </ToggleButtonGroup>
-                <Tooltip title="Browse accounting templates (ASC 310, 360, 606, 842...)">
-                  <Button size="small" variant="outlined" startIcon={<BookOpen size={14} />}
-                    onClick={() => setShowTemplateLibrary(true)}
-                    sx={{ textTransform: 'none', fontSize: '0.75rem', ml: 1, borderColor: '#CED4DA', color: '#495057',
-                      '&:hover': { borderColor: '#5B5FED', color: '#5B5FED', bgcolor: '#EEF0FE' } }}>
-                    Templates
-                  </Button>
-                </Tooltip>
               </Box>
 
               {/* Code Editor Mode */}
@@ -1068,7 +942,6 @@ const Dashboard = () => {
                       setEvents([]);
                       setDslFunctions([]);
                       setTemplates([]);
-                      setTransactionReports([]);
                       setSelectedEvent('');
                       setDslCode('');
                       setShowEventDataViewer(false);
@@ -1101,7 +974,6 @@ const Dashboard = () => {
                       await loadEvents();
                       await loadDslFunctions();
                       await loadTemplates();
-                      await loadTransactionReports();
 
                       addConsoleLog(`✓ ${response?.data?.message || 'All data cleared'}`, 'success');
                       toast.success('All data cleared! Fresh environment ready.');
@@ -1113,71 +985,19 @@ const Dashboard = () => {
                   }}
                 />
               )}
-            </TabPanel>
 
-            <TabPanel value={tabValue} index={2}>
-              {/* Batch execution progress banner */}
-              {batchRunning && batchStatus && (
-                <Box sx={{ px: 2, pt: 1.5, pb: 1 }}>
-                  <Alert severity="info" sx={{ mb: 1, fontSize: '0.8125rem' }}>
-                    Running posting date {batchStatus.current} of {batchStatus.total}
-                    {batchStatus.currentDate ? ` — ${batchStatus.currentDate}` : ''}
-                  </Alert>
-                  <LinearProgress
-                    variant="determinate"
-                    value={Math.round((batchStatus.current / batchStatus.total) * 100)}
-                    sx={{ height: 6, borderRadius: 3 }}
+              {/* Templates Mode */}
+              {editorMode === 'templates' && (
+                <Box sx={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'auto' }}>
+                  <TemplateLibrary
+                    templates={ACCOUNTING_TEMPLATES}
+                    events={events}
+                    onLoadTemplate={handleGeneratedCode}
+                    onClose={() => setEditorMode('savedRules')}
+                    inline
                   />
                 </Box>
               )}
-              {!batchRunning && batchStatus && (batchStatus.results.length > 0 || batchStatus.errors.length > 0) && (
-                <Box sx={{ px: 2, pt: 1.5, pb: 0.5 }}>
-                  <Alert
-                    severity={batchStatus.errors.length === 0 ? "success" : "warning"}
-                    onClose={() => setBatchStatus(null)}
-                    sx={{ fontSize: '0.8125rem' }}
-                  >
-                    {batchStatus.errors.length === 0
-                      ? `Batch complete — ${batchStatus.results.reduce((s, r) => s + r.transactions, 0)} transaction(s) across all ${batchStatus.total} posting dates.`
-                      : `Batch finished with ${batchStatus.errors.length} failure(s). Check the Console for details.`}
-                  </Alert>
-                </Box>
-              )}
-              <TemplatesPanel 
-                templates={templates}
-                onLoadTemplate={handleLoadTemplate}
-                onRunTemplate={handleRunTemplate}
-                onDeleteTemplate={handleDeleteTemplate}
-                onDeployTemplate={handleDeployTemplate}
-                selectedEvent={selectedEvent}
-                batchRunning={batchRunning}
-              />
-              <Box sx={{ px: 2, py: 1.5 }}>
-                <Divider sx={{ mb: 1.5 }} />
-                <Button
-                  variant="outlined"
-                  startIcon={<BookOpen size={16} />}
-                  onClick={() => setShowTemplateLibrary(true)}
-                  sx={{ textTransform: 'none' }}
-                >
-                  Browse Accounting Templates
-                </Button>
-                <Typography variant="caption" color="text.secondary" sx={{ ml: 1.5 }}>
-                  Pre-built templates for ASC 310, ASC 360, ASC 606, ASC 842 and more
-                </Typography>
-              </Box>
-            </TabPanel>
-
-            <TabPanel value={tabValue} index={3}>
-              <TransactionReports 
-                reports={transactionReports}
-                onDownloadReport={handleDownloadReport}
-                onDeleteReport={handleDeleteReport}
-              />
-            </TabPanel>
-
-            <TabPanel value={tabValue} index={4}>
-              <DSLExamples onLoadExample={handleLoadExample} />
             </TabPanel>
           </Box>
 
@@ -1213,15 +1033,6 @@ const Dashboard = () => {
       {showEventDataViewer && (
         <EventDataViewer 
           onClose={() => setShowEventDataViewer(false)}
-        />
-      )}
-
-      {showTemplateLibrary && (
-        <TemplateLibrary
-          templates={ACCOUNTING_TEMPLATES}
-          events={events}
-          onLoadTemplate={handleGeneratedCode}
-          onClose={() => setShowTemplateLibrary(false)}
         />
       )}
 

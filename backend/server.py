@@ -3848,6 +3848,7 @@ async def save_rule(request: dict):
         "commentText": request.get("commentText", ""),
         "customCode": request.get("customCode", ""),
         "generatedCode": request.get("generatedCode", ""),
+        "steps": request.get("steps", []),
         "updated_at": now,
     }
 

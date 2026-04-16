@@ -187,7 +187,15 @@ const ScheduleStepModal = ({ open, step, onClose, onSaveStep, events, dslFunctio
         });
         setSavedRulesVarNames([...names]);
         setSavedRulesVars(allVars);
-        setPriorRulesCode(rules.map(r => r.generatedCode || '').filter(Boolean).join('\n\n'));
+        // Build prior code from saved rules, stripping print/createTransaction side effects
+        const priorLines = rules.map(r => r.generatedCode || '').filter(Boolean).join('\n\n')
+          .split('\n')
+          .filter(l => {
+            const t = l.trim();
+            return t && !t.startsWith('print(') && !t.startsWith('print (') && !t.startsWith('createTransaction(');
+          })
+          .join('\n');
+        setPriorRulesCode(priorLines);
       } catch { /* ignore */ }
     })();
   }, []);
@@ -429,7 +437,8 @@ const ScheduleStepModal = ({ open, step, onClose, onSaveStep, events, dslFunctio
       const data = await response.json();
       if (response.ok && data.success && data.print_outputs?.length > 0) {
         try {
-          let parsed = JSON.parse(data.print_outputs[0]);
+          // Use the last print output (the schedule print), prior code may have earlier prints
+          let parsed = JSON.parse(data.print_outputs[data.print_outputs.length - 1]);
           if (Array.isArray(parsed) && Array.isArray(parsed[0])) parsed = parsed[0];
           if (Array.isArray(parsed) && parsed[0]?.schedule) parsed = parsed.flatMap(item => item.schedule || []);
           if (Array.isArray(parsed) && parsed.length > 0 && typeof parsed[0] === 'object' && !Array.isArray(parsed[0])) {
@@ -543,6 +552,7 @@ const ScheduleStepModal = ({ open, step, onClose, onSaveStep, events, dslFunctio
         enableSum, sumColumn, sumVarName,
         enableCol, colColumn, colVarName,
         enableFilter, filterVarName, filterMatchCol, filterMatchValue, filterReturnCol,
+        contextVars: autoDetectedVars,
       },
       outputVars: collectOutputVars(),
     });
@@ -1074,7 +1084,6 @@ const ScheduleStepModal = ({ open, step, onClose, onSaveStep, events, dslFunctio
         )}
       </DialogContent>
       <DialogActions sx={{ px: 3, pb: 2 }}>
-        <Button onClick={onClose} color="inherit">Cancel</Button>
         <Button onClick={handleSave} disabled={!stepName} variant="contained" startIcon={<Save size={14} />}>
           Save Step
         </Button>

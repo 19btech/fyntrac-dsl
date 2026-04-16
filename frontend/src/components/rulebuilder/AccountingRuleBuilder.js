@@ -499,12 +499,6 @@ const StepModal = ({ open, step, stepType, onClose, onSaveStep, events, definedV
         )}
       </DialogContent>
       <DialogActions sx={{ px: 3, pb: 2 }}>
-        <Button onClick={onClose} color="inherit">Cancel</Button>
-        <Button onClick={handleTest} disabled={testing || !local.name}
-          startIcon={testing ? <CircularProgress size={14} /> : <Play size={14} />}
-          variant="outlined" sx={{ color: '#4CAF50', borderColor: '#4CAF50' }}>
-          Test
-        </Button>
         <Button onClick={handleSave} disabled={!local.name} variant="contained"
           startIcon={<Save size={14} />}>
           Save Step
@@ -687,7 +681,13 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
       const comma = idx < validCols.length - 1 ? ',' : '';
       lines.push(`    "${col.name}": "${col.formula}"${comma}`);
     });
-    lines.push('})');
+    const ctxVars = sc.contextVars || [];
+    if (ctxVars.length > 0) {
+      const ctxPairs = ctxVars.map(v => `"${v}": ${v}`).join(', ');
+      lines.push(`}, {${ctxPairs}})`);
+    } else {
+      lines.push('})');
+    }
     for (const o of (s.outputVars || [])) {
       if (o.type === 'first') lines.push(`${o.name} = schedule_first(${s.name}, "${o.column}")`);
       else if (o.type === 'last') lines.push(`${o.name} = schedule_last(${s.name}, "${o.column}")`);
@@ -1366,28 +1366,6 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
                     <Card key={idx} variant="outlined" sx={{ p: 1, mb: 1, bgcolor: '#FAFAFA' }}>
                       <Box sx={{ display: 'flex', gap: 1, mb: 0.5, alignItems: 'flex-end' }}>
                         <Box sx={{ flex: 1 }}>
-                          <Typography variant="caption" fontWeight={600} color="text.secondary" sx={{ mb: 0.25, display: 'block' }}>Transaction Type</Typography>
-                          <TextField size="small" fullWidth value={txn.type} placeholder="e.g., Calculation Result"
-                            onChange={(e) => updateTransaction(idx, 'type', e.target.value)} />
-                        </Box>
-                        <Box sx={{ flex: 1 }}>
-                          <Typography variant="caption" fontWeight={600} color="text.secondary" sx={{ mb: 0.25, display: 'block' }}>Amount</Typography>
-                          <FormControl size="small" fullWidth>
-                            <Select value={txn.amount || ''} onChange={(e) => updateTransaction(idx, 'amount', e.target.value)}
-                              displayEmpty renderValue={(val) => val || <em style={{ color: '#999' }}>Select amount...</em>}>
-                              {allVarNames.length > 0 && <MenuItem disabled sx={{ fontSize: '0.75rem', fontWeight: 600, color: '#5B5FED' }}>— Variables —</MenuItem>}
-                              {allVarNames.map(v => <MenuItem key={`var-${v}`} value={v} sx={{ fontFamily: 'monospace', fontSize: '0.8125rem' }}>{v}</MenuItem>)}
-                              {eventFieldOptions.length > 0 && <MenuItem disabled sx={{ fontSize: '0.75rem', fontWeight: 600, color: '#FF9800' }}>— Event Fields —</MenuItem>}
-                              {eventFieldOptions.map(ef => <MenuItem key={`ef-${ef}`} value={ef} sx={{ fontFamily: 'monospace', fontSize: '0.8125rem' }}>{ef}</MenuItem>)}
-                            </Select>
-                          </FormControl>
-                        </Box>
-                        {outputs.transactions.length > 1 && (
-                          <IconButton size="small" onClick={() => removeTransaction(idx)} sx={{ color: '#F44336', alignSelf: 'center' }}><Trash2 size={12} /></IconButton>
-                        )}
-                      </Box>
-                      <Box sx={{ display: 'flex', gap: 1 }}>
-                        <Box sx={{ flex: 1 }}>
                           <Typography variant="caption" fontWeight={600} color="text.secondary" sx={{ mb: 0.25, display: 'block' }}>Posting Date</Typography>
                           <FormControl size="small" fullWidth>
                             <Select value={txn.postingDate || ''} onChange={(e) => updateTransaction(idx, 'postingDate', e.target.value)}
@@ -1414,6 +1392,28 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
                               displayEmpty renderValue={(val) => val || <em style={{ color: '#999' }}>default (1)</em>}>
                               <MenuItem value="" sx={{ fontFamily: 'monospace', fontSize: '0.8125rem' }}><em>default (1)</em></MenuItem>
                               {allVarNames.map(v => <MenuItem key={`sid-${v}`} value={v} sx={{ fontFamily: 'monospace', fontSize: '0.8125rem' }}>{v}</MenuItem>)}
+                            </Select>
+                          </FormControl>
+                        </Box>
+                        {outputs.transactions.length > 1 && (
+                          <IconButton size="small" onClick={() => removeTransaction(idx)} sx={{ color: '#F44336', alignSelf: 'center' }}><Trash2 size={12} /></IconButton>
+                        )}
+                      </Box>
+                      <Box sx={{ display: 'flex', gap: 1 }}>
+                        <Box sx={{ flex: 1 }}>
+                          <Typography variant="caption" fontWeight={600} color="text.secondary" sx={{ mb: 0.25, display: 'block' }}>Transaction Type</Typography>
+                          <TextField size="small" fullWidth value={txn.type} placeholder="e.g., Calculation Result"
+                            onChange={(e) => updateTransaction(idx, 'type', e.target.value)} />
+                        </Box>
+                        <Box sx={{ flex: 1 }}>
+                          <Typography variant="caption" fontWeight={600} color="text.secondary" sx={{ mb: 0.25, display: 'block' }}>Amount</Typography>
+                          <FormControl size="small" fullWidth>
+                            <Select value={txn.amount || ''} onChange={(e) => updateTransaction(idx, 'amount', e.target.value)}
+                              displayEmpty renderValue={(val) => val || <em style={{ color: '#999' }}>Select amount...</em>}>
+                              {allVarNames.length > 0 && <MenuItem disabled sx={{ fontSize: '0.75rem', fontWeight: 600, color: '#5B5FED' }}>— Variables —</MenuItem>}
+                              {allVarNames.map(v => <MenuItem key={`var-${v}`} value={v} sx={{ fontFamily: 'monospace', fontSize: '0.8125rem' }}>{v}</MenuItem>)}
+                              {eventFieldOptions.length > 0 && <MenuItem disabled sx={{ fontSize: '0.75rem', fontWeight: 600, color: '#FF9800' }}>— Event Fields —</MenuItem>}
+                              {eventFieldOptions.map(ef => <MenuItem key={`ef-${ef}`} value={ef} sx={{ fontFamily: 'monospace', fontSize: '0.8125rem' }}>{ef}</MenuItem>)}
                             </Select>
                           </FormControl>
                         </Box>
@@ -1541,6 +1541,15 @@ function convertInitialDataToSteps(data) {
         iterations: iters,
       });
     }
+  }
+
+  // Fallback for legacy schedule rules without steps: create a custom_code step
+  if (data.ruleType === 'schedule' && steps.length === 0 && data.generatedCode) {
+    steps.push({
+      name: 'schedule_code',
+      stepType: 'custom_code',
+      customCode: data.generatedCode,
+    });
   }
 
   return steps;

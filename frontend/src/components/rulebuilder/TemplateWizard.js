@@ -1079,7 +1079,7 @@ const UserTemplateWizard = ({ template, onApply, onClose }) => {
 /**
  * TemplateLibrary — Browse standard and user-created accounting templates.
  */
-const TemplateLibrary = ({ events, onLoadTemplate, onClose }) => {
+const TemplateLibrary = ({ events, onLoadTemplate, onClose, inline }) => {
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedCategory, setSelectedCategory] = useState('All');
   const [activeTemplate, setActiveTemplate] = useState(null);
@@ -1171,24 +1171,25 @@ const TemplateLibrary = ({ events, onLoadTemplate, onClose }) => {
     );
   }
 
-  return (
-    <Dialog open={true} onClose={onClose} maxWidth="lg" fullWidth PaperProps={{ sx: { height: '85vh' } }}>
-      <DialogTitle>
-        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
-          <BookOpen size={24} color="#5B5FED" />
-          <Box sx={{ flex: 1 }}>
-            <Typography variant="h4">Accounting Templates</Typography>
-            <Typography variant="body2" color="text.secondary">
-              Pre-built and user-created calculation templates
-            </Typography>
-          </Box>
+  const content = (
+    <>
+      {/* Header */}
+      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5, ...(inline ? { px: 2, py: 1.5, borderBottom: '1px solid #E9ECEF' } : {}) }}>
+        <BookOpen size={24} color="#5B5FED" />
+        <Box sx={{ flex: 1 }}>
+          <Typography variant={inline ? "h6" : "h4"}>Accounting Templates</Typography>
+          <Typography variant="body2" color="text.secondary">
+            Pre-built and user-created calculation templates
+          </Typography>
+        </Box>
+        {!inline && (
           <IconButton onClick={onClose} sx={{ alignSelf: 'flex-start' }}>
             <X size={20} />
           </IconButton>
-        </Box>
-      </DialogTitle>
+        )}
+      </Box>
 
-      <DialogContent sx={{ display: 'flex', flexDirection: 'column', p: 3 }}>
+      <Box sx={{ display: 'flex', flexDirection: 'column', flex: 1, p: inline ? 2 : 3, overflow: 'auto' }}>
         {/* Section Toggle */}
         <Box sx={{ display: 'flex', gap: 1, mb: 2 }}>
           <Button
@@ -1325,7 +1326,17 @@ const TemplateLibrary = ({ events, onLoadTemplate, onClose }) => {
             </>
           )}
         </Box>
-      </DialogContent>
+      </Box>
+    </>
+  );
+
+  if (inline) {
+    return content;
+  }
+
+  return (
+    <Dialog open={true} onClose={onClose} maxWidth="lg" fullWidth PaperProps={{ sx: { height: '85vh', display: 'flex', flexDirection: 'column' } }}>
+      {content}
     </Dialog>
   );
 };

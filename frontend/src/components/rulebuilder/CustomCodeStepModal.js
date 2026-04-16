@@ -219,7 +219,6 @@ const CustomCodeStepModal = ({ open, step, onClose, onSaveStep, events, dslFunct
         </Box>
       </DialogContent>
       <DialogActions sx={{ px: 3, pb: 2 }}>
-        <Button onClick={onClose} color="inherit">Cancel</Button>
         <Button onClick={handleSave} disabled={!stepName} variant="contained" startIcon={<Save size={14} />}>
           Save Step
         </Button>
