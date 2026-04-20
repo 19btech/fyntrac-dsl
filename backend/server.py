@@ -143,6 +143,7 @@ try:
         TransactionOutput, TransactionReport, ChatMessage, ChatResponse,
         AIProviderTestRequest, AIProviderSaveRequest, DSLValidationRequest,
         SaveTemplateRequest, DSLRunRequest, TemplateExecuteRequest,
+        TemplateDeployRequest,
     )
 except Exception:
     try:
