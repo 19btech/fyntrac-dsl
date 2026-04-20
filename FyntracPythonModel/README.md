@@ -1,4 +1,8 @@
-# FyntracPythonModel — Model Runner for Main Repo
+# FyntracPythonModel — Optional Export Runtime
+
+This package is intended for running exported/generated models outside the main DSL Studio backend.
+
+In this repository, the primary application runtime is the FastAPI service in `backend/` started by `startup.sh`. This package is a secondary integration target, not the default server runtime.
 
 This folder contains everything the main Fyntrac app needs to run
 calculation models that were built and tested in the DSL Studio playground.

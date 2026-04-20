@@ -123,3 +123,7 @@ class TemplateExecuteRequest(BaseModel):
     event_name: str
     posting_date: Optional[str] = None
     effective_date: Optional[str] = None
+
+
+class TemplateDeployRequest(BaseModel):
+    template_id: str

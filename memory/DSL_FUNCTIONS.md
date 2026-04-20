@@ -1,5 +1,7 @@
 # DSL Functions Reference
 
+This file is a convenience reference only. The canonical implementation lives in `backend/dsl_functions.py`.
+
 | Function | Description |
 |---|---|
 | _clear_print_outputs | Clear the print outputs list |

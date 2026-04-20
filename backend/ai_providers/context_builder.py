@@ -83,17 +83,6 @@ def invalidate_static_cache() -> None:
     _static_cache = None
 
 
-def get_static_cache_info() -> dict | None:
-    """Return cache metadata (for diagnostics)."""
-    if not _static_cache:
-        return None
-    return {
-        "registry_hash": _static_cache["registry_hash"],
-        "built_at": _static_cache["built_at"],
-        "function_count": _static_cache["function_count"],
-    }
-
-
 # ──────────────────────────────────────────────────────
 # Live context builder (per-message, fast)
 # ──────────────────────────────────────────────────────

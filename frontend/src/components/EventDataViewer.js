@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import axios from "axios";
 import { useToast } from "./ToastProvider";
 import { X, Database, Download } from "lucide-react";
@@ -14,6 +14,32 @@ const EventDataViewer = ({ onClose }) => {
   const [uploadErrors, setUploadErrors] = useState([]);
   const [instrumentWarning, setInstrumentWarning] = useState(null); // array of instrument ids or null
   const toast = useToast();
+
+  const loadEventDataSummary = useCallback(async () => {
+    try {
+      // Clear prior viewer state before loading summary
+      setSelectedEvent(null);
+      setEventData(null);
+      setLeftTab(0);
+      const response = await axios.get(`${API}/event-data`);
+      setEventDataSummary(response.data);
+    } catch (error) {
+      console.error("Error loading event data summary:", error);
+    }
+  }, []);
+
+  const loadEventData = useCallback(async (eventName) => {
+    setLoading(true);
+    try {
+      const response = await axios.get(`${API}/event-data/${eventName}`);
+      setEventData(response.data);
+      setSelectedEvent(eventName);
+    } catch (error) {
+      toast.error("Failed to load event data");
+    } finally {
+      setLoading(false);
+    }
+  }, [toast]);
 
   useEffect(() => {
     loadEventDataSummary();
@@ -63,40 +89,14 @@ const EventDataViewer = ({ onClose }) => {
       window.removeEventListener('dsl-clear-event-viewer', clearViewerHandler);
       window.removeEventListener('dsl-event-data-refresh', refreshHandler);
     };
-  }, []);
+  }, [loadEventDataSummary]);
 
   // When summary is loaded and there's no selection, auto-select the first event
   useEffect(() => {
     if (eventDataSummary && eventDataSummary.length > 0 && !selectedEvent) {
       loadEventData(eventDataSummary[0].event_name);
     }
-  }, [eventDataSummary]);
-
-  const loadEventDataSummary = async () => {
-    try {
-      // Clear prior viewer state before loading summary
-      setSelectedEvent(null);
-      setEventData(null);
-      setLeftTab(0);
-      const response = await axios.get(`${API}/event-data`);
-      setEventDataSummary(response.data);
-    } catch (error) {
-      console.error("Error loading event data summary:", error);
-    }
-  };
-
-  const loadEventData = async (eventName) => {
-    setLoading(true);
-    try {
-      const response = await axios.get(`${API}/event-data/${eventName}`);
-      setEventData(response.data);
-      setSelectedEvent(eventName);
-    } catch (error) {
-      toast.error("Failed to load event data");
-    } finally {
-      setLoading(false);
-    }
-  };
+  }, [eventDataSummary, loadEventData, selectedEvent]);
 
   const downloadEventData = async (eventName) => {
     try {

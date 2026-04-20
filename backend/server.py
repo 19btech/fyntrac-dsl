@@ -151,6 +151,7 @@ except Exception:
             TransactionOutput, TransactionReport, ChatMessage, ChatResponse,
             AIProviderTestRequest, AIProviderSaveRequest, DSLValidationRequest,
             SaveTemplateRequest, DSLRunRequest, TemplateExecuteRequest,
+            TemplateDeployRequest,
         )
     except Exception:
         from .models import (
@@ -158,6 +159,7 @@ except Exception:
             TransactionOutput, TransactionReport, ChatMessage, ChatResponse,
             AIProviderTestRequest, AIProviderSaveRequest, DSLValidationRequest,
             SaveTemplateRequest, DSLRunRequest, TemplateExecuteRequest,
+            TemplateDeployRequest,
         )
 
 # ============= Sample Data (for when MongoDB is unavailable) =============
@@ -1457,27 +1459,6 @@ async def clear_all_data():
         raise HTTPException(status_code=500, detail=str(e))
 
 
-async def truncate_event_collections():
-    """Helper to truncate all event-related collections (preserve templates)."""
-    try:
-        await db.event_definitions.delete_many({})
-        await db.event_data.delete_many({})
-        await db.transaction_reports.delete_many({})
-        await db.custom_functions.delete_many({})
-        await db.saved_rules.delete_many({})
-        await db.saved_schedules.delete_many({})
-    except Exception:
-        # If DB unavailable, fall back to clearing in-memory structures
-        global in_memory_data, USE_IN_MEMORY
-        USE_IN_MEMORY = True
-        in_memory_data['event_definitions'] = []
-        in_memory_data['event_data'] = []
-        in_memory_data['transaction_reports'] = []
-        in_memory_data['custom_functions'] = []
-        in_memory_data['saved_rules'] = []
-        in_memory_data['saved_schedules'] = []
-
-# Event Definitions
 @api_router.post("/events/upload")
 async def upload_event_definitions(file: UploadFile = File(...)):
     """Upload event definitions CSV (EventName, EventField, DataType[, EventType[, EventTable]])"""
@@ -1906,150 +1887,6 @@ async def upload_event_data_excel(file: UploadFile = File(...)):
         logger.error(f"Error uploading Excel event data: {str(e)}")
         raise HTTPException(status_code=400, detail=str(e))
 
-# Event Data - CSV Upload (single event)
-@api_router.post("/event-data/upload/{event_name}")
-async def upload_event_data(event_name: str, file: UploadFile = File(...)):
-    """Upload event data CSV for a specific event"""
-    try:
-        # Check if event exists (DB first, fallback to in-memory)
-        try:
-            event = await db.event_definitions.find_one({"event_name": event_name}, {"_id": 0})
-        except Exception:
-            # DB unavailable - look in in-memory definitions
-            event = next((e for e in in_memory_data.get('event_definitions', []) if str(e.get('event_name', '')).lower() == event_name.lower()), None)
-
-        if not event:
-            raise HTTPException(status_code=404, detail=f"Event '{event_name}' not found")
-        
-        # Clear existing event data (preserve event_definitions)
-        try:
-            await db.event_data.delete_many({})
-        except Exception as e:
-            logger.warning(f"Could not clear event_data in DB: {e} - continuing with in-memory fallback")
-        
-        content = await file.read()
-        csv_content = content.decode('utf-8')
-        rows = parse_csv_content(csv_content)
-        
-        if len(rows) < 2:
-            raise HTTPException(status_code=400, detail="CSV must have header and at least one row")
-        
-        # Parse data
-        headers = [h.strip() for h in rows[0]]
-        data_rows = []
-
-        # Build header -> canonical field name mapping using event definition
-        def _normalize(s: str) -> str:
-            import re
-            return re.sub(r'[^A-Za-z0-9]', '_', (s or '').strip()).strip('_').upper()
-
-        field_names = [f['name'] for f in event.get('fields', [])]
-        norm_to_field = { _normalize(fn): fn for fn in field_names }
-
-        # Build header mapping summary
-        remapped_headers = []
-        header_to_field = {}
-        for h in headers:
-            hnorm = _normalize(h)
-            if hnorm in norm_to_field:
-                header_to_field[h] = norm_to_field[hnorm]
-                remapped_headers.append({"incoming": h, "mapped_to": norm_to_field[hnorm]})
-            else:
-                header_to_field[h] = h.strip()
-                remapped_headers.append({"incoming": h, "mapped_to": None})
-
-        for row in rows[1:]:
-            if row:
-                raw = {headers[i]: row[i].strip() if i < len(row) else '' for i in range(len(headers))}
-                # Map raw headers to canonical field names when possible
-                row_dict = {}
-                for h, v in raw.items():
-                    mapped_key = header_to_field.get(h, h.strip())
-                    row_dict[mapped_key] = v
-                data_rows.append(row_dict)
-        
-        # Get field types from event definition
-        field_types = {f['name']: f.get('datatype', 'string') for f in event.get('fields', [])}
-
-        cleaned_rows = []
-        coercions = {}
-        for row in data_rows:
-            cleaned_row = {}
-            for key, value in row.items():
-                field_type = field_types.get(str(key), 'string')
-                sval = '' if value is None else str(value).strip()
-                if sval == '' or sval.lower() in ('none', 'null'):
-                    # Empty for numeric types -> coerce to 0, otherwise keep empty string
-                    if field_type in ('decimal', 'float'):
-                        cleaned_row[str(key)] = 0.0
-                        coercions[str(key)] = coercions.get(str(key), 0) + 1
-                    elif field_type in ('integer', 'int'):
-                        cleaned_row[str(key)] = 0
-                        coercions[str(key)] = coercions.get(str(key), 0) + 1
-                    else:
-                        cleaned_row[str(key)] = ''
-                elif field_type in ('decimal', 'float'):
-                    try:
-                        cleaned_row[str(key)] = float(sval)
-                    except Exception:
-                        cleaned_row[str(key)] = 0.0
-                        coercions[str(key)] = coercions.get(str(key), 0) + 1
-                elif field_type in ('integer', 'int'):
-                    try:
-                        cleaned_row[str(key)] = int(float(sval))
-                    except Exception:
-                        cleaned_row[str(key)] = 0
-                        coercions[str(key)] = coercions.get(str(key), 0) + 1
-                else:
-                    cleaned_row[str(key)] = str(value)
-            cleaned_rows.append(cleaned_row)
-
-        # Store event data
-        event_data = EventData(event_name=event_name, data_rows=cleaned_rows)
-        doc = event_data.model_dump()
-        doc['created_at'] = doc['created_at'].isoformat()
-
-        # Replace existing data for this event (DB first, fallback to in-memory)
-        try:
-            await db.event_data.delete_many({"event_name": event_name})
-            await db.event_data.insert_one(doc)
-        except Exception as e:
-            logger.warning(f"Could not write event data to DB, using in-memory store: {e}")
-            # Remove old entries for this event and append the new doc
-            in_memory_event_data = [ed for ed in in_memory_data.get('event_data', []) if ed.get('event_name') != event_name]
-            in_memory_event_data.append(doc)
-            in_memory_data['event_data'] = in_memory_event_data
-
-        summary = {
-            "message": f"Uploaded {len(cleaned_rows)} data rows for event '{event_name}'",
-            "event_name": event_name,
-            "rows_uploaded": len(cleaned_rows),
-            "remapped_headers": remapped_headers,
-            "coercions": coercions if coercions else None
-        }
-
-        logger.info(f"Event data upload summary for '{event_name}': {summary}")
-
-        return summary
-    except Exception as e:
-        logger.exception(f"Error uploading event data: {str(e)}")
-        # If possible, fall back to storing the prepared doc in in-memory storage
-        try:
-            if 'doc' in locals():
-                in_memory_event_data = [ed for ed in in_memory_data.get('event_data', []) if ed.get('event_name') != event_name]
-                in_memory_event_data.append(doc)
-                in_memory_data['event_data'] = in_memory_event_data
-                logger.info(f"Stored event data for '{event_name}' in in-memory fallback after error: {str(e)}")
-                return {
-                    "message": f"Uploaded {len(cleaned_rows)} data rows for event '{event_name}' (in-memory fallback)",
-                    "event_name": event_name,
-                    "rows_uploaded": len(cleaned_rows),
-                    "remapped_headers": remapped_headers,
-                    "coercions": coercions if coercions else None
-                }
-        except Exception:
-            pass
-        raise HTTPException(status_code=400, detail=str(e))
 
 @api_router.get("/event-data")
 async def get_all_event_data():
@@ -2137,57 +1974,6 @@ async def get_event_data(event_name: str):
     
     return event_data
 
-# DSL Validation and Conversion
-@api_router.post("/dsl/validate")
-async def validate_dsl(request: DSLValidationRequest):
-    """Validate DSL code and convert to Python"""
-    try:
-        # Editor-level safety: reject raw Python syntax or system calls in DSL input
-        code_text = (request.dsl_code or '')
-        code_lower = code_text.lower()
-        forbidden_tokens = [
-            'import ', ' from ', 'def ', 'class ', 'return ', 'exec(', 'eval(', 'compile(',
-            'async ', 'await ', 'lambda ', 'with ', 'try:', 'except ', 'raise ', 'open(', 'os.', 'sys.', 'subprocess'
-        ]
-        for tok in forbidden_tokens:
-            if tok in code_lower:
-                return {"valid": False, "error": f"Python syntax or system calls not allowed in editor: '{tok.strip()}' detected", "message": "Remove Python syntax; use DSL functions only."}
-
-        # For validation, use a generic set of event fields with decimal type
-        event_fields = [
-            {"name": "principal", "datatype": "decimal"},
-            {"name": "rate", "datatype": "decimal"},
-            {"name": "term", "datatype": "decimal"},
-            {"name": "payment_amount", "datatype": "decimal"},
-            {"name": "payment_date", "datatype": "date"}
-        ]
-        
-        # Convert to Python
-        python_code = dsl_to_python(request.dsl_code, event_fields)
-        
-        # Try to compile the Python code
-        compile(python_code, '<string>', 'exec')
-        
-        return {
-            "valid": True,
-            "python_code": python_code,
-            "message": "DSL code is valid"
-        }
-    except SyntaxError as e:
-        return {
-            "valid": False,
-            "error": str(e),
-            "message": "Invalid DSL syntax"
-        }
-    except Exception as e:
-        logger.error(f"DSL validation error: {str(e)}")
-        return {
-            "valid": False,
-            "error": str(e),
-            "message": "Validation error"
-        }
-
-# DSL Run (Console Play Button)
 @api_router.post("/dsl/run")
 async def run_dsl_code(request: DSLRunRequest):
     """Run DSL code directly and return results (for console testing)"""
@@ -2624,69 +2410,23 @@ async def delete_template(template_id: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-# Debug helper to inspect where a template exists
-@api_router.get("/debug/templates/check/{template_id}")
-async def debug_check_template(template_id: str):
-    info = {
-        "db_has": False,
-        "in_memory": False,
-        "in_sample": False
-    }
+@api_router.post("/templates/deploy")
+async def deploy_template(request: TemplateDeployRequest):
+    """Mark a template as deployed."""
     try:
-        doc = await db.dsl_templates.find_one({"id": template_id}, {"_id": 0})
-        info["db_has"] = bool(doc)
-    except Exception as e:
-        logger.debug(f"DB check error: {e}")
-
-    info["in_memory"] = any(t.get("id") == template_id or t.get("name") == template_id for t in in_memory_data.get("templates", []))
-    info["in_sample"] = any(t.get("id") == template_id or t.get("name") == template_id for t in SAMPLE_TEMPLATES)
-
-    return info
-
-
-@api_router.get("/templates/{template_id}/artifact")
-async def get_template_artifact(template_id: str, version: Optional[int] = None):
-    """Return the stored Python artifact for a template. If version is omitted, return latest."""
-    try:
-        query = {"template_id": template_id}
-        if version is not None:
-            query['version'] = version
-
-        artifact = None
-        try:
-            # Find latest if version not specified
-            if version is None:
-                doc = await db.dsl_template_artifacts.find(query).sort([('version', -1)]).limit(1).to_list(1)
-                artifact = doc[0] if doc else None
-            else:
-                artifact = await db.dsl_template_artifacts.find_one(query, {"_id": 0})
-        except Exception:
-            logger.warning("DB unavailable when fetching template artifact, checking in-memory storage")
-
-        # If not found in DB or DB unavailable, check in-memory artifacts
-        if not artifact:
-            for art in in_memory_data.get('template_artifacts', []):
-                if art.get('template_id') == template_id:
-                    if version is None or art.get('version') == version:
-                        artifact = art
-                        break
-
-        if not artifact:
-            raise HTTPException(status_code=404, detail="Artifact not found")
-
-        result = {
-            "template_id": artifact.get('template_id'),
-            "template_name": artifact.get('template_name'),
-            "version": artifact.get('version'),
-            "created_at": artifact.get('created_at'),
-            "python_code": artifact.get('python_code')
-        }
-        return sanitize_for_json(result)
+        result = await db.dsl_templates.update_one(
+            {"id": request.template_id},
+            {"$set": {"deployed": True, "deployed_at": datetime.now(timezone.utc).isoformat()}}
+        )
+        if result.matched_count == 0:
+            raise HTTPException(status_code=404, detail="Template not found")
+        return {"success": True, "message": f"Template {request.template_id} deployed successfully"}
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error fetching artifact for {template_id}: {str(e)}")
+        logger.error(f"Error deploying template {request.template_id}: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
+
 
 @api_router.post("/templates/execute")
 async def execute_template(request: TemplateExecuteRequest):
@@ -2814,76 +2554,6 @@ async def execute_template(request: TemplateExecuteRequest):
         logger.error(f"Error executing template: {str(e)}")
         raise HTTPException(status_code=400, detail=str(e))
 
-@api_router.get("/transaction-reports")
-async def get_transaction_reports():
-    """Get all transaction reports, merging batches per template with batch_id preserved"""
-    try:
-        reports = await db.transaction_reports.find({}, {"_id": 0}).sort("executed_at", 1).to_list(10000)
-        # Merge all batches for the same template_name into one report
-        merged = {}
-        for report in reports:
-            name = report.get('template_name', '')
-            batch_id = report.get('batch_id', '')
-            # Tag each transaction with its batch_id
-            for tx in report.get('transactions', []):
-                tx['batch_id'] = batch_id
-            if name not in merged:
-                merged[name] = report
-            else:
-                merged[name]['transactions'].extend(report.get('transactions', []))
-                # Keep the latest executed_at
-                merged[name]['executed_at'] = report.get('executed_at', merged[name]['executed_at'])
-        result = list(merged.values())
-        # Sort transactions within each report by batch_id
-        for r in result:
-            r['transactions'].sort(key=lambda tx: tx.get('batch_id', ''))
-            if isinstance(r.get('executed_at'), str):
-                r['executed_at'] = datetime.fromisoformat(r['executed_at'])
-        return result
-    except Exception as e:
-        logger.warning(f"Could not load transaction reports from database: {str(e)}")
-        return []
-
-@api_router.get("/transaction-reports/download/{report_id}")
-async def download_transaction_report(report_id: str):
-    """Download transaction report as CSV (merges all batches for the template)"""
-    # Find the report to get its template_name, then merge all batches
-    anchor = await db.transaction_reports.find_one({"id": report_id}, {"_id": 0})
-    if not anchor:
-        raise HTTPException(status_code=404, detail="Report not found")
-    
-    template_name = anchor.get('template_name', '')
-    all_batches = await db.transaction_reports.find(
-        {"template_name": template_name}, {"_id": 0}
-    ).sort("executed_at", 1).to_list(10000)
-    
-    all_transactions = []
-    for batch in all_batches:
-        all_transactions.extend(batch.get('transactions', []))
-    
-    # Create CSV
-    output = io.StringIO()
-    
-    if all_transactions:
-        headers = ['batch_id', 'postingdate', 'effectivedate', 'instrumentid', 'subinstrumentid', 'transactiontype', 'amount']
-        writer = csv.DictWriter(output, fieldnames=headers, extrasaction='ignore')
-        writer.writeheader()
-        for tx in all_transactions:
-            if 'subinstrumentid' not in tx or not tx.get('subinstrumentid'):
-                tx['subinstrumentid'] = '1'
-            if 'batch_id' not in tx:
-                tx['batch_id'] = ''
-        writer.writerows(all_transactions)
-    
-    output.seek(0)
-    timestamp = datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')
-    filename = f"transactions_{template_name}_{timestamp}.csv"
-    
-    return StreamingResponse(
-        iter([output.getvalue()]),
-        media_type="text/csv",
-        headers={"Content-Disposition": f"attachment; filename={filename}"}
-    )
 
 @api_router.delete("/transaction-reports/all")
 async def delete_all_transaction_reports():
@@ -2906,12 +2576,6 @@ async def delete_transaction_report(report_id: str):
     result = await db.transaction_reports.delete_many({"template_name": template_name})
     return {"message": f"Deleted {result.deleted_count} batch(es) for '{template_name}'"}
 
-# ============= AI Provider Configuration =============
-
-@api_router.get("/ai/providers")
-async def get_available_providers():
-    """Return metadata for all supported AI providers."""
-    return PROVIDER_INFO
 
 @api_router.post("/ai/provider/test")
 async def test_ai_provider(req: AIProviderTestRequest):
@@ -3623,46 +3287,6 @@ def _validate_imported_events(data: Any) -> str | None:
         if "values" not in item["eventDetail"]:
             return f"Item at index {i}: 'eventDetail' must contain a 'values' field."
     return None
-
-
-@api_router.post("/import-events")
-async def import_events(file: UploadFile = File(...)):
-    """Import events from a JSON file and persist to the imported_events collection."""
-    # Validate file type
-    if not file.filename or not file.filename.lower().endswith(".json"):
-        raise HTTPException(status_code=400, detail="Only .json files are accepted.")
-    try:
-        content = await file.read()
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Could not read file: {e}")
-
-    # Parse JSON
-    try:
-        data = json.loads(content.decode("utf-8"))
-    except Exception:
-        raise HTTPException(status_code=400, detail="File is not valid JSON.")
-
-    # Structural validation
-    error = _validate_imported_events(data)
-    if error:
-        raise HTTPException(status_code=422, detail=error)
-
-    # Persist to imported_events collection
-    try:
-        # Add an import timestamp to each document
-        import_ts = datetime.now(timezone.utc).isoformat()
-        docs = []
-        for item in data:
-            doc = dict(item)
-            doc["_imported_at"] = import_ts
-            # Remove MongoDB's special _id to let Motor assign a new one
-            doc.pop("_id", None)
-            docs.append(doc)
-        await db.imported_events.insert_many(docs)
-        return {"message": f"Successfully imported {len(docs)} event(s).", "count": len(docs)}
-    except Exception as e:
-        logger.error(f"Error saving imported events: {e}")
-        raise HTTPException(status_code=500, detail="Failed to save events to the database.")
 
 
 @api_router.post("/import-events/transform")
