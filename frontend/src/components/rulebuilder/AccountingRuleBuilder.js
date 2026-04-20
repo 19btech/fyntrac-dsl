@@ -7,7 +7,7 @@ import {
 } from "@mui/material";
 import {
   Plus, Trash2, Play, Code, Save, X,
-  Calculator, GitBranch, Repeat, GripVertical, Edit3, ChevronDown, Calendar,
+  Calculator, GitBranch, Repeat, GripVertical, Edit3, ChevronDown, Calendar, Copy,
 } from "lucide-react";
 import { API } from "../../config";
 import FormulaBar from "./FormulaBar";
@@ -1180,6 +1180,24 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
     setStepTestResults({});
   };
 
+  const duplicateStep = (index) => {
+    const original = steps[index];
+    const baseName = original.name || 'step';
+    const existingNames = new Set(steps.map(s => s.name));
+    let newName = `${baseName}_copy`;
+    let counter = 2;
+    while (existingNames.has(newName)) {
+      newName = `${baseName}_copy${counter++}`;
+    }
+    const copy = { ...JSON.parse(JSON.stringify(original)), name: newName };
+    setSteps(prev => {
+      const arr = [...prev];
+      arr.splice(index + 1, 0, copy);
+      return arr;
+    });
+    setStepTestResults({});
+  };
+
   // ── Inline test (play button on the step row) ──
   const handleInlineTest = useCallback(async (index) => {
     setStepTesting(prev => ({ ...prev, [index]: true }));
@@ -1362,6 +1380,11 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
                       {stepTesting[idx] ? <CircularProgress size={14} /> : <Play size={14} />}
                     </IconButton>
                   </Tooltip>
+                  <Tooltip title="Duplicate step">
+                    <IconButton size="small" onClick={() => duplicateStep(idx)} sx={{ color: '#607D8B' }}>
+                      <Copy size={14} />
+                    </IconButton>
+                  </Tooltip>
                   <Tooltip title="Edit step">
                     <IconButton size="small" onClick={() => openEditStep(idx)} sx={{ color: meta.color }}>
                       <Edit3 size={14} />
@@ -1406,6 +1429,22 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
                     ...ev.fields.map(f => `${ev.event_name}.${f.name}`),
                   ]) || [];
 
+                  // Collect valid subinstrumentid values:
+                  // 1. Direct event field references ending in .subinstrumentid
+                  const subIdEventFields = (events || []).map(ev => `${ev.event_name}.subinstrumentid`);
+                  // 2. Variables sourced from collect_subinstrumentids or pointing at subinstrumentid field
+                  const isSubIdStep = (s) => {
+                    if (!s.name) return false;
+                    if (s.source === 'collect' && s.collectType === 'collect_subinstrumentids') return true;
+                    if (s.source === 'event_field' && s.eventField?.toLowerCase().endsWith('.subinstrumentid')) return true;
+                    return false;
+                  };
+                  const subIdVarNames = [
+                    ...steps.filter(isSubIdStep).map(s => s.name),
+                    ...savedRulesVars.filter(isSubIdStep).map(s => s.name),
+                  ];
+                  const validSubIds = [...new Set([...subIdVarNames, ...subIdEventFields])];
+
                   return (
                     <Card key={idx} variant="outlined" sx={{ p: 1, mb: 1, bgcolor: '#FAFAFA' }}>
                       <Box sx={{ display: 'flex', gap: 1, mb: 0.5, alignItems: 'flex-end' }}>
@@ -1435,7 +1474,8 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
                             <Select value={txn.subInstrumentId || ''} onChange={(e) => updateTransaction(idx, 'subInstrumentId', e.target.value)}
                               displayEmpty renderValue={(val) => val || <em style={{ color: '#999' }}>default (1)</em>}>
                               <MenuItem value="" sx={{ fontFamily: 'monospace', fontSize: '0.8125rem' }}><em>default (1)</em></MenuItem>
-                              {allVarNames.map(v => <MenuItem key={`sid-${v}`} value={v} sx={{ fontFamily: 'monospace', fontSize: '0.8125rem' }}>{v}</MenuItem>)}
+                              {validSubIds.length > 0 && <MenuItem disabled sx={{ fontSize: '0.75rem', fontWeight: 600, color: '#5B5FED' }}>— Sub Instrument IDs —</MenuItem>}
+                              {validSubIds.map(v => <MenuItem key={`sid-${v}`} value={v} sx={{ fontFamily: 'monospace', fontSize: '0.8125rem' }}>{v}</MenuItem>)}
                             </Select>
                           </FormControl>
                         </Box>

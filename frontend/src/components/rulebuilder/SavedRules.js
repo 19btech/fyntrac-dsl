@@ -4,7 +4,7 @@ import {
   CircularProgress, Alert, Tooltip, Divider,
   Dialog, DialogTitle, DialogContent, DialogContentText, DialogActions,
 } from "@mui/material";
-import { Trash2, Edit3, Calculator, GitBranch, Repeat, Database, Clock, Play, GripVertical, BookmarkPlus, RotateCcw, Code, Calendar } from "lucide-react";
+import { Trash2, Edit3, Calculator, GitBranch, Repeat, Database, Clock, Play, GripVertical, BookmarkPlus, RotateCcw, Code, Calendar, Copy } from "lucide-react";
 import { API } from "../../config";
 
 const RULE_TYPE_META = {
@@ -32,6 +32,10 @@ const SavedRules = ({ onEditRule, onEditSchedule, refreshKey, onPlayAll, onClear
   const [templateResult, setTemplateResult] = useState(null);
   const [showClearAll, setShowClearAll] = useState(false);
   const [clearing, setClearing] = useState(false);
+  const [duplicateTarget, setDuplicateTarget] = useState(null);
+  const [dupName, setDupName] = useState('');
+  const [dupPriority, setDupPriority] = useState('');
+  const [duplicating, setDuplicating] = useState(false);
 
   const loadRules = useCallback(async () => {
     setLoading(true);
@@ -82,6 +86,41 @@ const SavedRules = ({ onEditRule, onEditSchedule, refreshKey, onPlayAll, onClear
       return new Date(iso).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric', hour: '2-digit', minute: '2-digit' });
     } catch { return iso; }
   };
+
+  const handleDuplicate = useCallback(async () => {
+    if (!duplicateTarget || !dupName.trim() || dupPriority === '') return;
+    setDuplicating(true);
+    try {
+      const endpoint = duplicateTarget._isSchedule ? `${API}/saved-schedules` : `${API}/saved-rules`;
+      const payload = {
+        ...duplicateTarget,
+        id: undefined,
+        name: dupName.trim(),
+        priority: Number(dupPriority),
+        created_at: undefined,
+        updated_at: undefined,
+      };
+      delete payload.id;
+      delete payload.created_at;
+      delete payload.updated_at;
+      const res = await fetch(endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      if (res.ok) {
+        await loadRules();
+        setDuplicateTarget(null);
+      } else {
+        const data = await res.json();
+        setError(data.detail || data.error || 'Duplicate failed');
+      }
+    } catch (err) {
+      setError(err.message || 'Duplicate failed');
+    } finally {
+      setDuplicating(false);
+    }
+  }, [duplicateTarget, dupName, dupPriority, loadRules]);
 
   // Merge rules and schedules, sort by priority
   const allItems = [
@@ -309,6 +348,17 @@ const SavedRules = ({ onEditRule, onEditSchedule, refreshKey, onPlayAll, onClear
                       <Edit3 size={16} />
                     </IconButton>
                   </Tooltip>
+                  <Tooltip title={rule._isSchedule ? 'Duplicate schedule' : 'Duplicate rule'}>
+                    <IconButton size="small" onClick={(e) => {
+                      e.stopPropagation();
+                      setDuplicateTarget(rule);
+                      setDupName(`${rule.name} Copy`);
+                      const maxPriority = allItems.reduce((m, r) => Math.max(m, r.priority ?? 0), 0);
+                      setDupPriority(String(maxPriority + 1));
+                    }} sx={{ color: '#607D8B' }}>
+                      <Copy size={16} />
+                    </IconButton>
+                  </Tooltip>
                   <Tooltip title={rule._isSchedule ? 'Delete schedule' : 'Delete rule'}>
                     <IconButton size="small" onClick={(e) => { e.stopPropagation(); setDeleteTarget(rule); }}
                       disabled={deleting === rule.id}
@@ -384,6 +434,35 @@ const SavedRules = ({ onEditRule, onEditSchedule, refreshKey, onPlayAll, onClear
         <DialogActions>
           <Button onClick={() => setDeleteTarget(null)} color="inherit">Cancel</Button>
           <Button onClick={() => handleDelete(deleteTarget)} color="error" variant="contained">Delete</Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* Duplicate Rule/Schedule Dialog */}
+      <Dialog open={!!duplicateTarget} onClose={() => setDuplicateTarget(null)} maxWidth="xs" fullWidth>
+        <DialogTitle>Duplicate {duplicateTarget?._isSchedule ? 'Schedule' : 'Rule'}</DialogTitle>
+        <DialogContent>
+          <DialogContentText sx={{ mb: 2 }}>
+            Create a copy of "{duplicateTarget?.name}" with a new name and priority.
+          </DialogContentText>
+          <TextField
+            autoFocus fullWidth size="small" label="New Name *"
+            value={dupName} onChange={(e) => setDupName(e.target.value)}
+            sx={{ mb: 1.5 }} />
+          <TextField
+            fullWidth size="small" label="Priority *" type="number"
+            inputProps={{ min: 1, step: 1 }}
+            value={dupPriority} onChange={(e) => setDupPriority(e.target.value)} />
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setDuplicateTarget(null)} color="inherit">Cancel</Button>
+          <Button
+            onClick={handleDuplicate}
+            variant="contained"
+            disabled={duplicating || !dupName.trim() || dupPriority === ''}
+            startIcon={duplicating ? <CircularProgress size={14} color="inherit" /> : null}
+          >
+            {duplicating ? 'Duplicating…' : 'Duplicate'}
+          </Button>
         </DialogActions>
       </Dialog>
 

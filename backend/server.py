@@ -1448,7 +1448,16 @@ async def clear_all_data():
         await db.custom_functions.delete_many({})
         await db.saved_rules.delete_many({})
         await db.saved_schedules.delete_many({})
-        
+
+        # Also clear in-memory fallback data so stale entries don't survive
+        global in_memory_data
+        in_memory_data['event_definitions'] = []
+        in_memory_data['event_data'] = []
+        in_memory_data['transaction_reports'] = []
+        in_memory_data['custom_functions'] = []
+        in_memory_data.pop('saved_rules', None)
+        in_memory_data.pop('saved_schedules', None)
+
         return {
             "message": "All data cleared successfully (templates preserved).",
             "cleared": ["event_definitions", "event_data", "transaction_reports", "custom_functions", "saved_rules", "saved_schedules"],

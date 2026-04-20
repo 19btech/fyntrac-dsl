@@ -946,6 +946,8 @@ const Dashboard = () => {
                       setDslCode('');
                       setShowEventDataViewer(false);
                       setConsoleOutput([]);
+                      setEditingRule(null);
+                      setEditingSchedule(null);
 
                       if (chatAssistantRef.current && chatAssistantRef.current.clearChat) {
                         chatAssistantRef.current.clearChat();
