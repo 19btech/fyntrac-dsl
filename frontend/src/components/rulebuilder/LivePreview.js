@@ -71,11 +71,14 @@ const SchedulePreview = ({ data, title, maxRows = 6 }) => {
   );
 };
 
-const TransactionPreview = ({ transactions, selectedInstrument }) => {
+const TransactionPreview = ({ transactions, filterValue, filterDimension }) => {
   if (!transactions || transactions.length === 0) return null;
 
-  const filtered = selectedInstrument
-    ? transactions.filter(t => String(t.instrumentid || '') === selectedInstrument)
+  const filtered = filterValue
+    ? transactions.filter(t => {
+        if (filterDimension === 'subinstrument') return String(t.subinstrumentid ?? '') === filterValue;
+        return String(t.instrumentid || '') === filterValue;
+      })
     : transactions;
 
   return (
@@ -84,7 +87,7 @@ const TransactionPreview = ({ transactions, selectedInstrument }) => {
         <FileText size={14} color="#5B5FED" />
         <Typography variant="body2" fontWeight={600} color="text.primary">Transactions</Typography>
         <Chip label={`${filtered.length} entries`} size="small" sx={{ fontSize: '0.6875rem', height: 20, bgcolor: '#D4EDDA', color: '#155724' }} />
-        {selectedInstrument && filtered.length !== transactions.length && (
+        {filterValue && filtered.length !== transactions.length && (
           <Chip label={`${transactions.length} total`} size="small" sx={{ fontSize: '0.6875rem', height: 20, bgcolor: '#F0F0F0', color: '#6C757D' }} />
         )}
       </Box>
@@ -291,14 +294,25 @@ const LivePreview = ({ consoleOutput = [], transactions = [], schedules = [], wa
 
   const hasContent = extractedSchedules.length > 0 || transactions.length > 0;
 
-  // Derive unique instrument IDs from transactions
+  // Derive unique instrument IDs and sub-instrument IDs from transactions
   const instrumentOptions = useMemo(() => {
     if (!transactions || transactions.length === 0) return [];
     return [...new Set(transactions.map(t => String(t.instrumentid || '')).filter(Boolean))].sort();
   }, [transactions]);
 
-  // Reset instrument selection if transactions change and selected is no longer valid
-  const resolvedInstrument = instrumentOptions.includes(selectedInstrument) ? selectedInstrument : null;
+  const subInstrumentOptions = useMemo(() => {
+    if (!transactions || transactions.length === 0) return [];
+    return [...new Set(transactions.map(t => String(t.subinstrumentid ?? '')).filter(s => s !== ''))].sort((a, b) => Number(a) - Number(b) || a.localeCompare(b));
+  }, [transactions]);
+
+  // Decide which dimension to filter by:
+  // - multiple instruments → filter by instrument
+  // - single instrument but multiple sub-instruments → filter by sub-instrument
+  const filterDimension = instrumentOptions.length > 1 ? 'instrument' : (subInstrumentOptions.length > 1 ? 'subinstrument' : null);
+  const filterOptions = filterDimension === 'instrument' ? instrumentOptions : filterDimension === 'subinstrument' ? subInstrumentOptions : [];
+
+  // Reset selection if it's no longer valid
+  const resolvedFilter = filterOptions.includes(selectedInstrument) ? selectedInstrument : null;
 
   const handleExportPDF = useCallback(async () => {
     if (!contentRef.current) return;
@@ -349,11 +363,11 @@ const LivePreview = ({ consoleOutput = [], transactions = [], schedules = [], wa
         </Box>
       )}
 
-      {/* Instrument filter — shown when multiple instruments exist */}
-      {instrumentOptions.length > 1 && (
+      {/* Instrument/sub-instrument filter */}
+      {filterDimension && (
         <Box sx={{ mb: 2 }}>
           <Typography variant="caption" color="text.secondary" sx={{ mb: 0.75, display: 'block', fontWeight: 600 }}>
-            Filter by Instrument
+            {filterDimension === 'instrument' ? 'Filter by Instrument' : 'Filter by Sub-Instrument'}
           </Typography>
           <Box sx={{ display: 'flex', gap: 0.75, flexWrap: 'wrap' }}>
             <Chip
@@ -362,24 +376,24 @@ const LivePreview = ({ consoleOutput = [], transactions = [], schedules = [], wa
               onClick={() => setSelectedInstrument(null)}
               sx={{
                 fontSize: '0.75rem', height: 24, cursor: 'pointer',
-                bgcolor: !resolvedInstrument ? '#5B5FED' : '#F0F0F0',
-                color: !resolvedInstrument ? '#fff' : '#495057',
-                fontWeight: !resolvedInstrument ? 600 : 400,
-                '&:hover': { bgcolor: !resolvedInstrument ? '#4A4ED0' : '#E0E0E0' },
+                bgcolor: !resolvedFilter ? '#5B5FED' : '#F0F0F0',
+                color: !resolvedFilter ? '#fff' : '#495057',
+                fontWeight: !resolvedFilter ? 600 : 400,
+                '&:hover': { bgcolor: !resolvedFilter ? '#4A4ED0' : '#E0E0E0' },
               }}
             />
-            {instrumentOptions.map(inst => (
+            {filterOptions.map(opt => (
               <Chip
-                key={inst}
-                label={inst}
+                key={opt}
+                label={opt}
                 size="small"
-                onClick={() => setSelectedInstrument(inst === resolvedInstrument ? null : inst)}
+                onClick={() => setSelectedInstrument(opt === resolvedFilter ? null : opt)}
                 sx={{
                   fontSize: '0.75rem', height: 24, cursor: 'pointer', fontFamily: 'monospace',
-                  bgcolor: resolvedInstrument === inst ? '#5B5FED' : '#F0F0F0',
-                  color: resolvedInstrument === inst ? '#fff' : '#495057',
-                  fontWeight: resolvedInstrument === inst ? 600 : 400,
-                  '&:hover': { bgcolor: resolvedInstrument === inst ? '#4A4ED0' : '#E0E0E0' },
+                  bgcolor: resolvedFilter === opt ? '#5B5FED' : '#F0F0F0',
+                  color: resolvedFilter === opt ? '#fff' : '#495057',
+                  fontWeight: resolvedFilter === opt ? 600 : 400,
+                  '&:hover': { bgcolor: resolvedFilter === opt ? '#4A4ED0' : '#E0E0E0' },
                 }}
               />
             ))}
@@ -408,7 +422,7 @@ const LivePreview = ({ consoleOutput = [], transactions = [], schedules = [], wa
           {extractedSchedules.map((sched, idx) => (
             <SchedulePreview key={idx} data={sched} title={extractedSchedules.length > 1 ? `Schedule ${idx + 1}` : 'Schedule'} maxRows={999} />
           ))}
-          <TransactionPreview transactions={transactions} selectedInstrument={resolvedInstrument} />
+          <TransactionPreview transactions={transactions} filterValue={resolvedFilter} filterDimension={filterDimension} />
         </>
       )}
       </Box>
