@@ -975,6 +975,12 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
       lines.push('');
     }
 
+    // Add a Steps section header so strip-deps terminates correctly when this rule
+    // is used as a non-first rule in combined code (calc steps have no own header).
+    if (steps.length > 0) {
+      lines.push('## Steps');
+    }
+
     // Emit each step
     const definedVars = [];
     for (const s of steps) {
