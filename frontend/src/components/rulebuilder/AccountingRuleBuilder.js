@@ -536,6 +536,7 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
   // ── Saved rules variables (for FormulaBar hints and code generation) ──
   const [savedRulesVarNames, setSavedRulesVarNames] = useState([]);
   const [savedRulesVars, setSavedRulesVars] = useState([]);
+  const [savedRulesRaw, setSavedRulesRaw] = useState([]);
   useEffect(() => {
     (async () => {
       try {
@@ -544,6 +545,7 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
         const data = await res.json();
         const rules = (Array.isArray(data) ? data : (data.rules || []))
           .sort((a, b) => (a.priority ?? Infinity) - (b.priority ?? Infinity));
+        setSavedRulesRaw(rules);
         const names = new Set();
         const allVars = [];
         rules.forEach(r => {
@@ -1561,18 +1563,25 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
           dslFunctions={dslFunctions}
           definedVarNames={allDefinedVarNames}
           freshPriorCode={(() => {
-            // Build correctly-ordered prior-rules code (avoids stale generatedCode ordering bugs)
-            const currentStepNames = new Set();
-            for (const s of steps) {
-              if (s.name) currentStepNames.add(s.name);
-              if (s.stepType === 'iteration') {
-                (s.iterations || []).forEach(it => { if (it.resultVar) currentStepNames.add(it.resultVar); });
+            // Build prior-rules code by concatenating saved rules' generatedCode in priority order,
+            // stripping the "## Dependencies from saved rules" section from all rules except the
+            // first (same approach as /api/combined-code endpoint) to avoid stale ordering bugs.
+            const stripDeps = (code) => {
+              const out = []; let skip = false;
+              for (const line of code.split('\n')) {
+                const t = line.trim();
+                if (t === '## Dependencies from saved rules') { skip = true; out.push(line); continue; }
+                if (skip && t.startsWith('## ') && !t.startsWith('## \u2550')) { skip = false; }
+                if (!skip) out.push(line);
               }
-              if (s.stepType === 'schedule') {
-                (s.outputVars || []).forEach(ov => { if (ov.name) currentStepNames.add(ov.name); });
-              }
-            }
-            return buildPriorCodeLines(currentStepNames).join('\n');
+              return out.join('\n');
+            };
+            return savedRulesRaw
+              .map((r, idx) => idx === 0 ? (r.generatedCode || '') : stripDeps(r.generatedCode || ''))
+              .filter(Boolean).join('\n\n')
+              .split('\n')
+              .filter(l => { const t = l.trim(); return t && !t.startsWith('print(') && !t.startsWith('print (') && !t.startsWith('createTransaction('); })
+              .join('\n');
           })()}
           currentRulePreStepCode={(() => {
             // Emit code for all steps before the one being edited so that variables

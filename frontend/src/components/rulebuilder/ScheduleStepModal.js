@@ -188,8 +188,23 @@ const ScheduleStepModal = ({ open, step, onClose, onSaveStep, events, dslFunctio
         });
         setSavedRulesVarNames([...names]);
         setSavedRulesVars(allVars);
-        // Build prior code from saved rules, stripping print/createTransaction side effects
-        const priorLines = rules.map(r => r.generatedCode || '').filter(Boolean).join('\n\n')
+        // Build prior code from saved rules, stripping print/createTransaction side effects.
+        // Also strip the "## Dependencies from saved rules" section from all rules except the
+        // first — later rules re-emit prior-rule variables in potentially wrong order (stale
+        // generatedCode), which overwrites the correct values from earlier rules.
+        const stripDeps = (code) => {
+          const out = []; let skip = false;
+          for (const line of code.split('\n')) {
+            const t = line.trim();
+            if (t === '## Dependencies from saved rules') { skip = true; out.push(line); continue; }
+            if (skip && t.startsWith('## ') && !t.startsWith('## \u2550')) { skip = false; }
+            if (!skip) out.push(line);
+          }
+          return out.join('\n');
+        };
+        const priorLines = rules
+          .map((r, idx) => idx === 0 ? (r.generatedCode || '') : stripDeps(r.generatedCode || ''))
+          .filter(Boolean).join('\n\n')
           .split('\n')
           .filter(l => {
             const t = l.trim();
