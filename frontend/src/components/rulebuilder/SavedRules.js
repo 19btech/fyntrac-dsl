@@ -30,6 +30,10 @@ const SavedRules = ({ onEditRule, onEditSchedule, refreshKey, onPlayAll, onClear
   const [templateCategory, setTemplateCategory] = useState('');
   const [savingTemplate, setSavingTemplate] = useState(false);
   const [templateResult, setTemplateResult] = useState(null);
+  // Persist the last saved template id so repeat saves overwrite without showing the modal
+  const [savedTemplateId, setSavedTemplateId] = useState(() => {
+    try { return localStorage.getItem('savedRulesTemplateId') || null; } catch { return null; }
+  });
   const [showClearAll, setShowClearAll] = useState(false);
   const [clearing, setClearing] = useState(false);
   const [duplicateTarget, setDuplicateTarget] = useState(null);
@@ -256,9 +260,40 @@ const SavedRules = ({ onEditRule, onEditSchedule, refreshKey, onPlayAll, onClear
                   {playing ? <CircularProgress size={16} /> : <Play size={16} />}
                 </IconButton>
               </Tooltip>
-              <Tooltip title="Save all rules as a reusable template">
-                <IconButton size="small" onClick={() => { setShowSaveTemplate(true); setTemplateResult(null); }} sx={{ color: '#FF9800' }}>
-                  <BookmarkPlus size={16} />
+              <Tooltip title={savedTemplateId ? 'Update saved template' : 'Save all rules as a reusable template'}>
+                <IconButton size="small" onClick={async () => {
+                  if (savedTemplateId) {
+                    // Overwrite existing template directly — no modal
+                    setSavingTemplate(true);
+                    try {
+                      const combinedCode = sortedRules.map(r => r.generatedCode || '').filter(Boolean).join('\n\n');
+                      const ruleSummaries = sortedRules.map(r => ({
+                        name: r.name, priority: r.priority, ruleType: r.ruleType,
+                        generatedCode: r.generatedCode, variables: r.variables || [],
+                        conditions: r.conditions || [], elseFormula: r.elseFormula || '',
+                        conditionResultVar: r.conditionResultVar || 'result',
+                        iterations: r.iterations || [], iterConfig: r.iterConfig || {},
+                        outputs: r.outputs || {}, customCode: r.customCode || '',
+                        steps: r.steps || [],
+                      }));
+                      const res = await fetch(`${API}/user-templates/${savedTemplateId}`, {
+                        method: 'PUT',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ rules: ruleSummaries, combinedCode }),
+                      });
+                      if (res.status === 404) {
+                        // Template was deleted externally — fall back to showing the modal
+                        try { localStorage.removeItem('savedRulesTemplateId'); } catch { /* ignore */ }
+                        setSavedTemplateId(null);
+                        setShowSaveTemplate(true); setTemplateResult(null);
+                      }
+                      // Silently succeed — no success toast needed
+                    } catch { /* ignore */ } finally { setSavingTemplate(false); }
+                  } else {
+                    setShowSaveTemplate(true); setTemplateResult(null);
+                  }
+                }} disabled={savingTemplate} sx={{ color: '#FF9800' }}>
+                  {savingTemplate ? <CircularProgress size={16} /> : <BookmarkPlus size={16} />}
                 </IconButton>
               </Tooltip>
               <Divider orientation="vertical" flexItem sx={{ mx: 0.5 }} />
@@ -375,7 +410,7 @@ const SavedRules = ({ onEditRule, onEditSchedule, refreshKey, onPlayAll, onClear
 
       {/* Clear All Confirmation Dialog */}
       <Dialog open={showClearAll} onClose={() => setShowClearAll(false)} maxWidth="sm" fullWidth>
-        <DialogTitle sx={{ color: '#D32F2F' }}>Clear Everything</DialogTitle>
+        <DialogTitle sx={{ color: '#D32F2F' }}>Clear Rules & Editor</DialogTitle>
         <DialogContent>
           <DialogContentText sx={{ mb: 2 }}>
             This will reset your workspace by clearing:
@@ -384,12 +419,10 @@ const SavedRules = ({ onEditRule, onEditSchedule, refreshKey, onPlayAll, onClear
             <Box component="li" sx={{ mb: 0.75 }}><Typography variant="body2"><strong>Code Editor</strong> — all code in the editor will be removed</Typography></Box>
             <Box component="li" sx={{ mb: 0.75 }}><Typography variant="body2"><strong>Console Output</strong> — all logs and results will be cleared</Typography></Box>
             <Box component="li" sx={{ mb: 0.75 }}><Typography variant="body2"><strong>Business Preview</strong> — execution results will be reset</Typography></Box>
-            <Box component="li" sx={{ mb: 0.75 }}><Typography variant="body2"><strong>Event Definitions</strong> — uploaded event schemas will be deleted</Typography></Box>
-            <Box component="li" sx={{ mb: 0.75 }}><Typography variant="body2"><strong>Event Data</strong> — uploaded event rows will be deleted</Typography></Box>
             <Box component="li"><Typography variant="body2"><strong>Rule Manager</strong> — all {totalCount} saved rule{totalCount !== 1 ? 's' : ''} and schedule{totalCount !== 1 ? 's' : ''} will be deleted</Typography></Box>
           </Box>
-          <DialogContentText sx={{ mt: 2, fontWeight: 500 }}>
-            This action cannot be undone.
+          <DialogContentText sx={{ mt: 2, fontWeight: 500, color: 'text.secondary', fontSize: '0.8125rem' }}>
+            Event definitions and event data are preserved. This action cannot be undone.
           </DialogContentText>
         </DialogContent>
         <DialogActions>
@@ -405,8 +438,8 @@ const SavedRules = ({ onEditRule, onEditSchedule, refreshKey, onPlayAll, onClear
                     fetch(`${API}/saved-rules`, { method: 'DELETE' }),
                     fetch(`${API}/saved-schedules`, { method: 'DELETE' }).catch(() => {}),
                   ]);
+                  await loadRules();
                 }
-                await loadRules();
               } catch (err) {
                 console.error('Clear all failed:', err);
               } finally {
@@ -530,6 +563,9 @@ const SavedRules = ({ onEditRule, onEditSchedule, refreshKey, onPlayAll, onClear
                 });
                 const data = await res.json();
                 if (res.ok && data.success) {
+                  // Persist the template id so future saves overwrite without showing the modal
+                  try { localStorage.setItem('savedRulesTemplateId', data.id); } catch { /* ignore */ }
+                  setSavedTemplateId(data.id);
                   setTemplateResult({ success: true, message: data.message || 'Template saved!' });
                   setTimeout(() => {
                     setShowSaveTemplate(false);

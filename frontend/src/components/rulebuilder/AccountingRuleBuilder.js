@@ -279,7 +279,11 @@ const ConditionForm = ({ step, onChange, events, definedVarNames }) => {
 // IterationForm — form fields for an Iteration step (used inside StepModal)
 // ═══════════════════════════════════════════════════════════════════════
 const IterationForm = ({ step, onChange, events, definedVarNames }) => {
-  const iterations = step.iterations || [{ type: 'apply_each', sourceArray: '', varName: 'each', expression: '', resultVar: step.name || 'mapped_result', secondArray: '', secondVar: 'second' }];
+  const rawIterations = step.iterations || [{ type: 'apply_each', sourceArray: '', varName: 'each', expression: '', resultVar: step.name || 'mapped_result', secondArray: '', secondVar: 'second' }];
+  // Always keep the last iteration's resultVar in sync with the top-level step name
+  const iterations = rawIterations.map((it, i) =>
+    i === rawIterations.length - 1 ? { ...it, resultVar: step.name || it.resultVar } : it
+  );
 
   const updateIter = (idx, field, value) => {
     const arr = [...iterations];
@@ -315,13 +319,13 @@ const IterationForm = ({ step, onChange, events, definedVarNames }) => {
                 <Select value={iter.type} label="Mode" onChange={(e) => updateIter(idx, 'type', e.target.value)}>
                   <MenuItem value="apply_each">Each Item — apply formula to every item</MenuItem>
                   <MenuItem value="apply_each_paired">Paired Items — process two arrays together</MenuItem>
-                  <MenuItem value="map_array">map_array (advanced)</MenuItem>
-                  <MenuItem value="for_each">for_each (advanced)</MenuItem>
                 </Select>
               </FormControl>
-              <TextField size="small" label="Result Variable" value={iter.resultVar}
-                onChange={(e) => updateIter(idx, 'resultVar', e.target.value.replace(/[^a-zA-Z0-9_]/g, ''))}
-                sx={{ flex: '0 0 150px' }} />
+              {idx < iterations.length - 1 && (
+                <TextField size="small" label="Variable Name" value={iter.resultVar}
+                  onChange={(e) => updateIter(idx, 'resultVar', e.target.value.replace(/[^a-zA-Z0-9_]/g, ''))}
+                  sx={{ flex: '0 0 150px' }} />
+              )}
             </Box>
             <Box sx={{ display: 'flex', gap: 1, mb: 1 }}>
               <FormControl size="small" fullWidth>
@@ -332,13 +336,8 @@ const IterationForm = ({ step, onChange, events, definedVarNames }) => {
                   {varOptions.map(name => <MenuItem key={name} value={name} sx={{ fontFamily: 'monospace' }}>{name}</MenuItem>)}
                 </Select>
               </FormControl>
-              {(iter.type === 'map_array' || iter.type === 'for_each') && (
-                <TextField size="small" label="Element Variable" value={iter.varName}
-                  onChange={(e) => updateIter(idx, 'varName', e.target.value.replace(/[^a-zA-Z0-9_]/g, ''))}
-                  sx={{ flex: '0 0 150px' }} />
-              )}
             </Box>
-            {(iter.type === 'for_each' || iter.type === 'apply_each_paired') && (
+            {iter.type === 'apply_each_paired' && (
               <Box sx={{ display: 'flex', gap: 1, mb: 1 }}>
                 <FormControl size="small" fullWidth>
                   <InputLabel>Second Array</InputLabel>
@@ -348,11 +347,6 @@ const IterationForm = ({ step, onChange, events, definedVarNames }) => {
                     {varOptions.map(name => <MenuItem key={name} value={name} sx={{ fontFamily: 'monospace' }}>{name}</MenuItem>)}
                   </Select>
                 </FormControl>
-                {iter.type === 'for_each' && (
-                  <TextField size="small" label="Second Variable" value={iter.secondVar}
-                    onChange={(e) => updateIter(idx, 'secondVar', e.target.value.replace(/[^a-zA-Z0-9_]/g, ''))}
-                    sx={{ flex: '0 0 150px' }} />
-                )}
               </Box>
             )}
             {(iter.type === 'apply_each' || iter.type === 'apply_each_paired') && (

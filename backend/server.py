@@ -3586,6 +3586,26 @@ async def delete_user_template(template_id: str):
         raise HTTPException(status_code=404, detail="Template not found.")
     return {"success": True, "message": "Template deleted."}
 
+@api_router.put("/user-templates/{template_id}")
+async def update_user_template(template_id: str, request: dict):
+    """Overwrite an existing user template's rules and code (keeps name/description/category)."""
+    existing = await db.user_templates.find_one({"id": template_id}, {"_id": 0})
+    if not existing:
+        raise HTTPException(status_code=404, detail="Template not found.")
+    now = datetime.now(timezone.utc).isoformat()
+    update_fields = {"updated_at": now}
+    if "rules" in request:
+        update_fields["rules"] = request["rules"]
+    if "combinedCode" in request:
+        update_fields["combinedCode"] = request["combinedCode"]
+    # Allow optional metadata updates
+    if "description" in request:
+        update_fields["description"] = request["description"]
+    if "category" in request:
+        update_fields["category"] = request["category"]
+    await db.user_templates.update_one({"id": template_id}, {"$set": update_fields})
+    return {"success": True, "id": template_id, "message": f"Template \"{existing['name']}\" updated."}
+
 # ── Template Sample Data ────────────────────────────────────────────────
 
 @api_router.post("/template-sample-data/{template_id}")

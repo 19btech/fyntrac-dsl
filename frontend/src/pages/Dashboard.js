@@ -936,52 +936,29 @@ const Dashboard = () => {
                   }}
                   onClearAll={async () => {
                     try {
-                      addConsoleLog('Clearing all data...', 'info');
-                      const response = await axios.delete(`${API}/clear-all-data`);
+                      addConsoleLog('Clearing rules & editor...', 'info');
+                      // Only delete rules and schedules — event definitions and event data are preserved
+                      await Promise.all([
+                        axios.delete(`${API}/saved-rules`),
+                        axios.delete(`${API}/saved-schedules`).catch(() => {}),
+                      ]);
 
-                      setEvents([]);
-                      setDslFunctions([]);
-                      setTemplates([]);
-                      setSelectedEvent('');
                       setDslCode('');
-                      setShowEventDataViewer(false);
                       setConsoleOutput([]);
                       setEditingRule(null);
                       setEditingSchedule(null);
-
-                      if (chatAssistantRef.current && chatAssistantRef.current.clearChat) {
-                        chatAssistantRef.current.clearChat();
-                      }
-
-                      try {
-                        localStorage.removeItem('dslCode');
-                        localStorage.removeItem('chatMessages');
-                        localStorage.removeItem('chatSessionId');
-                        localStorage.removeItem('uploadedEventFileName');
-                        localStorage.removeItem('uploadedExcelFileName');
-                        localStorage.removeItem('lastEventDataUploadFailedFile');
-                        localStorage.removeItem('lastEventDataUploadFileName');
-                        localStorage.removeItem('lastEventDataUploadStatus');
-                        localStorage.removeItem('lastEventDataUploadErrors');
-                        localStorage.removeItem('importSelectedInstruments');
-                        try { window.dispatchEvent(new Event('dsl-clear-uploaded-files')); } catch(e) {}
-                        try { window.dispatchEvent(new Event('dsl-clear-event-viewer')); } catch(e) {}
-                      } catch (e) {
-                        // ignore
-                      }
-
                       setLastExecutionResult({ transactions: [], printOutputs: [], templateName: '' });
                       setSavedRulesRefreshKey(k => k + 1);
 
-                      await loadEvents();
-                      await loadDslFunctions();
-                      await loadTemplates();
+                      try {
+                        localStorage.removeItem('dslCode');
+                      } catch (e) { /* ignore */ }
 
-                      addConsoleLog(`✓ ${response?.data?.message || 'All data cleared'}`, 'success');
-                      toast.success('All data cleared! Fresh environment ready.');
+                      addConsoleLog('✓ Rules, schedules and editor cleared. Event definitions and data preserved.', 'success');
+                      toast.success('Rules cleared! Event data preserved.');
                     } catch (error) {
-                      addConsoleLog(`✗ Error clearing data: ${error.message}`, 'error');
-                      toast.error('Failed to clear data');
+                      addConsoleLog(`✗ Error clearing rules: ${error.message}`, 'error');
+                      toast.error('Failed to clear rules');
                       throw error;
                     }
                   }}

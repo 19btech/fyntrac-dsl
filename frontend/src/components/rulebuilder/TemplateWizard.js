@@ -9,7 +9,7 @@ import {
   BookOpen, Search, ArrowRight, ArrowLeft, Play, Code, Eye, CheckCircle2,
   TrendingUp, TrendingDown, DollarSign, Percent, Receipt, Calculator, Building,
   Sparkles, Copy, Settings2, X, Trash2, FileText, Users, GitBranch, Repeat, Database,
-  Download,
+  Download, Upload, AlertCircle,
 } from "lucide-react";
 import ACCOUNTING_TEMPLATES from "./AccountingTemplates";
 import { API } from "../../config";
@@ -1072,6 +1072,300 @@ const UserTemplateWizard = ({ template, onApply, onClose }) => {
   );
 };
 
+// ═══════════════════════════════════════════════════════════════════════
+// .fyn Export / Import utilities
+// ═══════════════════════════════════════════════════════════════════════
+const FYN_VERSION = '1.0';
+
+/** Build and download a .fyn file from a user template object (from API). */
+function exportUserTemplateAsFyn(template) {
+  const payload = {
+    fyn_version: FYN_VERSION,
+    type: 'custom',
+    exported_at: new Date().toISOString(),
+    template: {
+      name: template.name,
+      description: template.description || '',
+      category: template.category || 'User Created',
+      rules: template.rules || [],
+      combinedCode: template.combinedCode || '',
+      created_at: template.created_at,
+      updated_at: template.updated_at,
+    },
+  };
+  triggerFynDownload(payload, template.name);
+}
+
+/** Build and download a .fyn file for a built-in ACCOUNTING_TEMPLATE (uses default config). */
+function exportStandardTemplateAsFyn(template) {
+  // Build default config from fields
+  const config = {};
+  template.fields.forEach((f) => {
+    config[f.key] = f.default || '';
+    config[`${f.key}_source`] = 'value';
+    config[`${f.key}_field`] = '';
+  });
+  template.outputs.forEach((o) => {
+    config[`outputs_${o.key}`] = o.default;
+    if (o.txnType) config['txn_type'] = o.txnType;
+  });
+
+  const code = template.generateDSL(config);
+  const { rules } = parseDSLToRules(code, template.title);
+
+  const payload = {
+    fyn_version: FYN_VERSION,
+    type: 'standard',
+    source_standard_id: template.id,
+    exported_at: new Date().toISOString(),
+    template: {
+      name: template.title,
+      description: template.description || '',
+      category: template.category || 'Standard',
+      rules: rules || [],
+      combinedCode: code,
+      fields: template.fields,       // metadata only for reference
+      outputs: template.outputs,
+      standard: template.standard || '',
+    },
+  };
+  triggerFynDownload(payload, template.title);
+}
+
+function triggerFynDownload(payload, name) {
+  const json = JSON.stringify(payload, null, 2);
+  const blob = new Blob([json], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `${(name || 'template').replace(/[^a-z0-9_\-\s]/gi, '_').trim()}.fyn`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+/** Validate a parsed .fyn object. Returns { valid, error }. */
+function validateFynFile(obj) {
+  if (!obj || typeof obj !== 'object') return { valid: false, error: 'File is not valid JSON.' };
+  if (!obj.fyn_version) return { valid: false, error: 'Missing fyn_version field. This may not be a .fyn file.' };
+  if (obj.fyn_version !== FYN_VERSION) return { valid: false, error: `Unsupported version "${obj.fyn_version}". Expected "${FYN_VERSION}".` };
+  if (!obj.template) return { valid: false, error: 'Missing template data in file.' };
+  if (!obj.template.name) return { valid: false, error: 'Template has no name.' };
+  if (!Array.isArray(obj.template.rules)) return { valid: false, error: 'Template rules must be an array.' };
+  return { valid: true };
+}
+
+/**
+ * ImportFynModal — upload & preview a .fyn file, then create a user template.
+ */
+const ImportFynModal = ({ open, onClose, onImported }) => {
+  const [parsed, setParsed] = useState(null);
+  const [parseError, setParseError] = useState('');
+  const [fileName, setFileName] = useState('');
+  const [importName, setImportName] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState('');
+  const fileInputRef = React.useRef(null);
+
+  const reset = () => {
+    setParsed(null);
+    setParseError('');
+    setFileName('');
+    setImportName('');
+    setSaving(false);
+    setSaveError('');
+  };
+
+  const handleClose = () => { reset(); onClose(); };
+
+  const handleFileChange = (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setFileName(file.name);
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      try {
+        const obj = JSON.parse(ev.target.result);
+        const { valid, error } = validateFynFile(obj);
+        if (!valid) { setParseError(error); setParsed(null); return; }
+        setParseError('');
+        setParsed(obj);
+        // Pre-fill import name, appending " (imported)" if it's a standard template
+        const baseName = obj.template.name || '';
+        setImportName(obj.type === 'standard' ? `${baseName} (imported)` : baseName);
+      } catch {
+        setParseError('Could not parse file. Make sure it is a valid .fyn JSON file.');
+        setParsed(null);
+      }
+    };
+    reader.readAsText(file);
+    // Reset input so same file can be re-selected
+    e.target.value = '';
+  };
+
+  const handleImport = async () => {
+    if (!parsed) return;
+    setSaving(true);
+    setSaveError('');
+
+    const body = {
+      name: importName.trim() || parsed.template.name,
+      description: parsed.template.description || '',
+      category: parsed.template.category || 'User Created',
+      rules: parsed.template.rules || [],
+      combinedCode: parsed.template.combinedCode || '',
+    };
+
+    try {
+      const res = await fetch(`${API}/user-templates`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      if (res.status === 409) {
+        const data = await res.json();
+        setSaveError(data.detail || 'A template with this name already exists. Please rename it.');
+        setSaving(false);
+        return;
+      }
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        setSaveError(data.detail || 'Failed to import template.');
+        setSaving(false);
+        return;
+      }
+      onImported();
+      handleClose();
+    } catch (err) {
+      setSaveError(err.message || 'Network error during import.');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <Dialog open={open} onClose={handleClose} maxWidth="sm" fullWidth>
+      <DialogTitle>
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
+          <Upload size={20} color="#5B5FED" />
+          <Typography variant="h6">Import Template (.fyn)</Typography>
+        </Box>
+      </DialogTitle>
+      <DialogContent sx={{ pt: 1 }}>
+        <input type="file" accept=".fyn,application/json" ref={fileInputRef}
+          style={{ display: 'none' }} onChange={handleFileChange} />
+
+        {/* File picker */}
+        <Box sx={{ mb: 2 }}>
+          <Button variant="outlined" size="small" startIcon={<Upload size={14} />}
+            onClick={() => fileInputRef.current?.click()}
+            sx={{ textTransform: 'none', borderColor: '#5B5FED', color: '#5B5FED' }}>
+            {fileName ? `Change file` : 'Choose .fyn file'}
+          </Button>
+          {fileName && (
+            <Typography variant="caption" color="text.secondary" sx={{ ml: 1.5 }}>
+              {fileName}
+            </Typography>
+          )}
+        </Box>
+
+        {/* Parse error */}
+        {parseError && (
+          <Alert severity="error" icon={<AlertCircle size={16} />} sx={{ mb: 2 }}>
+            {parseError}
+          </Alert>
+        )}
+
+        {/* Preview */}
+        {parsed && (
+          <Box>
+            <Alert severity="info" sx={{ mb: 2, py: 0.5 }}>
+              <Typography variant="caption">
+                {parsed.type === 'standard'
+                  ? 'This is a standard template — it will be imported as an editable copy.'
+                  : 'User template ready to import.'}
+                {parsed.exported_at && ` Exported: ${new Date(parsed.exported_at).toLocaleString()}`}
+              </Typography>
+            </Alert>
+
+            {/* Editable name */}
+            <TextField fullWidth size="small" label="Template Name" value={importName}
+              onChange={(e) => setImportName(e.target.value)}
+              sx={{ mb: 2 }} required />
+
+            {/* Summary chips */}
+            <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.75, mb: 2 }}>
+              <Chip size="small" label={parsed.template.category || 'User Created'}
+                sx={{ bgcolor: '#EEF0FE', color: '#5B5FED', fontSize: '0.6875rem', height: 20 }} />
+              <Chip size="small" label={`${(parsed.template.rules || []).length} rules`}
+                sx={{ bgcolor: '#F8F9FA', fontSize: '0.6875rem', height: 20 }} />
+              {parsed.template.standard && (
+                <Chip size="small" label={parsed.template.standard}
+                  sx={{ bgcolor: '#EEF0FE', color: '#5B5FED', fontSize: '0.6875rem', height: 20 }} />
+              )}
+            </Box>
+
+            {/* Description */}
+            {parsed.template.description && (
+              <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
+                {parsed.template.description}
+              </Typography>
+            )}
+
+            {/* Rules list */}
+            {(parsed.template.rules || []).length > 0 && (
+              <Box>
+                <Typography variant="caption" fontWeight={600} color="text.secondary" sx={{ display: 'block', mb: 0.5 }}>
+                  Rules included:
+                </Typography>
+                <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.5 }}>
+                  {parsed.template.rules.map((r, i) => (
+                    <Chip key={i} size="small" label={r.name || `Rule ${i + 1}`}
+                      icon={<CheckCircle2 size={11} />}
+                      sx={{ bgcolor: '#D4EDDA', color: '#155724', fontSize: '0.6875rem', height: 20 }} />
+                  ))}
+                </Box>
+              </Box>
+            )}
+
+            {/* Parameters list (for standard templates) */}
+            {parsed.type === 'standard' && Array.isArray(parsed.template.fields) && parsed.template.fields.length > 0 && (
+              <Box sx={{ mt: 1.5 }}>
+                <Typography variant="caption" fontWeight={600} color="text.secondary" sx={{ display: 'block', mb: 0.5 }}>
+                  Parameters ({parsed.template.fields.length}):
+                </Typography>
+                <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.5 }}>
+                  {parsed.template.fields.map((f) => (
+                    <Chip key={f.key} size="small" label={f.label}
+                      sx={{ bgcolor: '#F8F9FA', fontSize: '0.6875rem', height: 20 }} />
+                  ))}
+                </Box>
+              </Box>
+            )}
+
+            {/* Save error */}
+            {saveError && (
+              <Alert severity="error" icon={<AlertCircle size={16} />} sx={{ mt: 2 }}>
+                {saveError}
+              </Alert>
+            )}
+          </Box>
+        )}
+      </DialogContent>
+      <DialogActions sx={{ px: 3, py: 2 }}>
+        <Button onClick={handleClose} color="inherit">Cancel</Button>
+        <Button variant="contained" onClick={handleImport}
+          disabled={!parsed || !importName.trim() || saving}
+          startIcon={saving ? <CircularProgress size={14} color="inherit" /> : <Upload size={14} />}
+          sx={{ textTransform: 'none' }}>
+          {saving ? 'Importing…' : 'Import Template'}
+        </Button>
+      </DialogActions>
+    </Dialog>
+  );
+};
+
 /**
 /**
  * TemplateLibrary — Browse standard and user-created accounting templates.
@@ -1085,19 +1379,22 @@ const TemplateLibrary = ({ events, onLoadTemplate, onClose, inline }) => {
   const [loadingUser, setLoadingUser] = useState(true);
   const [deletingId, setDeletingId] = useState(null);
   const [section, setSection] = useState('standard'); // 'standard' | 'user'
+  const [showImport, setShowImport] = useState(false);
 
   // Fetch user templates
-  useEffect(() => {
-    (async () => {
-      setLoadingUser(true);
-      try {
-        const res = await fetch(`${API}/user-templates`);
-        const data = await res.json();
-        setUserTemplates(Array.isArray(data) ? data : []);
-      } catch { /* ignore */ }
-      finally { setLoadingUser(false); }
-    })();
+  const loadUserTemplates = useCallback(async () => {
+    setLoadingUser(true);
+    try {
+      const res = await fetch(`${API}/user-templates`);
+      const data = await res.json();
+      setUserTemplates(Array.isArray(data) ? data : []);
+    } catch { /* ignore */ }
+    finally { setLoadingUser(false); }
   }, []);
+
+  useEffect(() => {
+    loadUserTemplates();
+  }, [loadUserTemplates]);
 
   const categories = useMemo(() => {
     return ['All', ...new Set(ACCOUNTING_TEMPLATES.map(t => t.category))];
@@ -1170,6 +1467,10 @@ const TemplateLibrary = ({ events, onLoadTemplate, onClose, inline }) => {
 
   const content = (
     <>
+      {/* Import modal */}
+      <ImportFynModal open={showImport} onClose={() => setShowImport(false)}
+        onImported={() => { loadUserTemplates(); setSection('user'); }} />
+
       {/* Header */}
       <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5, ...(inline ? { px: 2, py: 1.5, borderBottom: '1px solid #E9ECEF' } : {}) }}>
         <BookOpen size={24} color="#5B5FED" />
@@ -1179,6 +1480,13 @@ const TemplateLibrary = ({ events, onLoadTemplate, onClose, inline }) => {
             Pre-built and user-created calculation templates
           </Typography>
         </Box>
+        <Tooltip title="Import a .fyn template file">
+          <Button size="small" variant="outlined" startIcon={<Upload size={14} />}
+            onClick={() => setShowImport(true)}
+            sx={{ textTransform: 'none', borderColor: '#5B5FED', color: '#5B5FED', flexShrink: 0 }}>
+            Import
+          </Button>
+        </Tooltip>
         {!inline && (
           <IconButton onClick={onClose} sx={{ alignSelf: 'flex-start' }}>
             <X size={20} />
@@ -1244,12 +1552,19 @@ const TemplateLibrary = ({ events, onLoadTemplate, onClose, inline }) => {
                         <Box sx={{ p: 1, bgcolor: '#EEF0FE', borderRadius: 1.5, display: 'flex' }}>
                           <Icon size={20} color="#5B5FED" />
                         </Box>
-                        <Box sx={{ flex: 1 }}>
+                        <Box sx={{ flex: 1, minWidth: 0 }}>
                           <Typography variant="h6" sx={{ mb: 0.25 }}>{template.title}</Typography>
                           <Typography variant="body2" color="text.secondary" sx={{ lineHeight: 1.4 }}>
                             {template.description}
                           </Typography>
                         </Box>
+                        <Tooltip title="Export as .fyn file">
+                          <IconButton size="small"
+                            onClick={(e) => { e.stopPropagation(); exportStandardTemplateAsFyn(template); }}
+                            sx={{ color: '#5B5FED', flexShrink: 0 }}>
+                            <Download size={16} />
+                          </IconButton>
+                        </Tooltip>
                       </Box>
                       <Box sx={{ display: 'flex', gap: 0.75, flexWrap: 'wrap' }}>
                         <Chip label={template.category} size="small" sx={{ fontSize: '0.6875rem', height: 20, bgcolor: '#F8F9FA' }} />
@@ -1299,6 +1614,13 @@ const TemplateLibrary = ({ events, onLoadTemplate, onClose, inline }) => {
                               {template.description || 'No description'}
                             </Typography>
                           </Box>
+                          <Tooltip title="Export as .fyn file">
+                            <IconButton size="small"
+                              onClick={(e) => { e.stopPropagation(); exportUserTemplateAsFyn(template); }}
+                              sx={{ color: '#5B5FED', flexShrink: 0 }}>
+                              <Download size={16} />
+                            </IconButton>
+                          </Tooltip>
                           <Tooltip title="Delete template">
                             <IconButton size="small"
                               onClick={(e) => { e.stopPropagation(); handleDeleteUserTemplate(template.id); }}
