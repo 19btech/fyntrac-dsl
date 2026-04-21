@@ -2696,6 +2696,10 @@ def createTransaction(postingdate: Any, effectivedate: Any, transactiontype: Any
             return 0.0
 
     # Normalize mapping: all fields are mapped by sub-instrument index.
+    # If sub_list has 1 item but amount_list has M items, broadcast sub_list to M
+    # (M transactions all mapped to the same sub-instrument).
+    if len(sub_list) == 1 and len(amount_list) > 1:
+        sub_list = sub_list * len(amount_list)
     N = len(sub_list)
 
     def _validate_and_broadcast(vals, name):
