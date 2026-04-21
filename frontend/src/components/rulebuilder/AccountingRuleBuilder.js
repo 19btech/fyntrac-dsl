@@ -547,18 +547,47 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
         const names = new Set();
         const allVars = [];
         rules.forEach(r => {
+          // Legacy calc variables
           (r.variables || []).forEach(v => {
-            if (v.name) { names.add(v.name); allVars.push(v); }
+            if (v.name && !names.has(v.name)) { names.add(v.name); allVars.push(v); }
           });
+          // All step types from unified steps format (condition, iteration, schedule outputVars)
+          (r.steps || []).forEach(step => {
+            if (step.stepType === 'calc' && step.name && !names.has(step.name)) {
+              names.add(step.name);
+              allVars.push({ name: step.name, source: step.source || 'formula', formula: step.formula || '', value: step.value || '', eventField: step.eventField || '', collectType: step.collectType || 'collect' });
+            } else if (step.stepType === 'condition' && step.name && !names.has(step.name)) {
+              names.add(step.name);
+              const expr = buildConditionExpr(step.conditions || [], step.elseFormula);
+              allVars.push({ name: step.name, source: 'formula', formula: expr, value: '', eventField: '', collectType: 'collect' });
+            } else if (step.stepType === 'iteration') {
+              (step.iterations || []).forEach(iter => {
+                const rv = iter.resultVar;
+                if (rv && !names.has(rv)) {
+                  names.add(rv);
+                  // Store the raw iterData so buildIterationLines can reconstruct the correct DSL line
+                  allVars.push({ name: rv, source: 'formula', formula: '', iterData: { ...iter }, _isIterResult: true });
+                }
+              });
+            } else if (step.stepType === 'schedule') {
+              (step.outputVars || []).forEach(ov => {
+                if (ov.name && !names.has(ov.name)) {
+                  names.add(ov.name);
+                  const codeLine = (r.generatedCode || '').split('\n').find(l => l.trim().startsWith(ov.name + ' ='));
+                  const formula = codeLine ? codeLine.trim().replace(new RegExp('^' + ov.name + '\\s*=\\s*'), '') : '0';
+                  allVars.push({ name: ov.name, source: 'formula', formula, value: '', eventField: '', collectType: 'collect' });
+                }
+              });
+            }
+          });
+          // Legacy iteration result vars (old-format rules without unified steps)
           if (r.ruleType === 'iteration') {
             const iters = r.iterations?.length ? r.iterations : (r.iterConfig?.type ? [r.iterConfig] : []);
             for (const iter of iters) {
               const rv = iter.resultVar;
               if (rv && !names.has(rv)) {
                 names.add(rv);
-                const codeLine = (r.generatedCode || '').split('\n').find(l => l.trim().startsWith(rv + ' ='));
-                const formula = codeLine ? codeLine.trim().replace(new RegExp('^' + rv + '\\s*=\\s*'), '') : rv;
-                allVars.push({ name: rv, source: 'formula', formula, value: '', eventField: '', collectType: 'collect', _isIterResult: true });
+                allVars.push({ name: rv, source: 'formula', formula: '', iterData: { ...iter }, _isIterResult: true });
               }
             }
           }
@@ -607,65 +636,57 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
   // ── Build DSL lines for code prior to current-rule (from saved rules) ──
   const buildPriorCodeLines = useCallback((currentStepNames) => {
     const lines = [];
-    const knownEvents = new Set((events || []).map(e => (e.event_name || '').toLowerCase()));
     const emittedSaved = new Set();
     const deferredIterResults = [];
+    const deferredDependsOnIter = [];
 
-    // Determine which _isIterResult vars are needed by current rule's iterations or schedule contextVars
-    const iterNeeded = new Set();
-    for (const s of steps) {
-      if (s.stepType === 'iteration') {
-        for (const iter of (s.iterations || [])) {
-          (iter.expression || '').match(/[a-zA-Z_][a-zA-Z0-9_]*/g)?.forEach(id => iterNeeded.add(id));
-          if (iter.sourceArray && /^[a-zA-Z_]\w*$/.test(iter.sourceArray)) iterNeeded.add(iter.sourceArray);
-          if (iter.secondArray && /^[a-zA-Z_]\w*$/.test(iter.secondArray)) iterNeeded.add(iter.secondArray);
-        }
-      }
-      if (s.stepType === 'schedule') {
-        (s.scheduleConfig?.contextVars || []).forEach(v => iterNeeded.add(v));
-      }
-    }
-    // Transitively resolve: if a needed _isIterResult var's formula references other _isIterResult vars, include those too
-    const iterResultMap = new Map(savedRulesVars.filter(v => v._isIterResult).map(v => [v.name, v]));
-    let changed = true;
-    while (changed) {
-      changed = false;
-      for (const v of iterResultMap.values()) {
-        if (!iterNeeded.has(v.name)) continue;
-        const refs = (v.formula || '').match(/[a-zA-Z_][a-zA-Z0-9_]*/g) || [];
-        for (const ref of refs) {
-          if (iterResultMap.has(ref) && !iterNeeded.has(ref)) {
-            iterNeeded.add(ref);
-            changed = true;
-          }
-        }
-      }
-    }
+    // Pre-compute iteration-result variable names so we can detect dependencies
+    const iterResultVarNames = new Set(
+      savedRulesVars.filter(v => v._isIterResult).map(v => v.name)
+    );
 
-    // Pass 1: regular vars
+    // Pass 1: regular (non-iteration-result) vars that don't depend on iter results
     for (const v of savedRulesVars) {
       if (!v.name || currentStepNames.has(v.name) || emittedSaved.has(v.name)) continue;
       if (v._isIterResult) {
-        if (iterNeeded.has(v.name)) deferredIterResults.push(v);
+        // Always defer to Pass 2 so their dependencies (regular vars) are emitted first
+        deferredIterResults.push(v);
         continue;
       }
-      if ((v.source === 'event_field' || v.source === 'collect') && v.eventField) {
-        const evtName = v.eventField.split('.')[0];
-        if (evtName && !knownEvents.has(evtName.toLowerCase())) continue;
+      // If this regular var's formula references an iter-result variable, defer to Pass 3
+      const refText = (v.formula || '') + ' ' + (v.value || '');
+      const dependsOnIter = [...iterResultVarNames].some(n => new RegExp(`\\b${n}\\b`).test(refText));
+      if (dependsOnIter) {
+        deferredDependsOnIter.push(v);
+        continue;
       }
       emittedSaved.add(v.name);
       const line = buildCalcLine(v);
       if (line) lines.push(line);
     }
-    // Pass 2: deferred iteration results
+    // Pass 2: iteration result vars (depend on regular vars from Pass 1)
     for (const v of deferredIterResults) {
+      if (emittedSaved.has(v.name)) continue;
+      emittedSaved.add(v.name);
+      if (v.iterData) {
+        // Use buildIterationLines with already-emitted vars as available context
+        const available = [...emittedSaved];
+        const iterLines = buildIterationLines([v.iterData], available);
+        iterLines.forEach(l => lines.push(l));
+      } else {
+        const line = buildCalcLine(v);
+        if (line) lines.push(line);
+      }
+    }
+    // Pass 3: regular vars that depended on iter results (now safe to emit)
+    for (const v of deferredDependsOnIter) {
       if (emittedSaved.has(v.name)) continue;
       emittedSaved.add(v.name);
       const line = buildCalcLine(v);
       if (line) lines.push(line);
     }
     return lines;
-  }, [savedRulesVars, events, steps]);
+  }, [savedRulesVars, steps]);
 
   // ── Test a step (builds code for all saved rules + all steps up to this one) ──
   const buildScheduleStepLines = useCallback((s) => {
@@ -713,8 +734,14 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
 
   const testStep = useCallback(async (step, stepIndex) => {
     const lines = [];
-    const currentStepNames = new Set(steps.filter(s => s.name).map(s => s.name));
+    const targetIndex = stepIndex !== undefined ? stepIndex : steps.length - 1;
+
+    // Exclude ALL of the current rule's step names so savedRulesVars for this rule
+    // don't get re-emitted. Prior-rule vars (e.g. SSP from Stage 1) are not in steps
+    // so they will still be injected correctly.
+    const currentStepNames = new Set();
     for (const s of steps) {
+      if (s.name) currentStepNames.add(s.name);
       if (s.stepType === 'iteration') {
         (s.iterations || []).forEach(it => { if (it.resultVar) currentStepNames.add(it.resultVar); });
       }
@@ -726,7 +753,6 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
     lines.push(...buildPriorCodeLines(currentStepNames));
 
     const definedVars = [];
-    const targetIndex = stepIndex !== undefined ? stepIndex : steps.length - 1;
     for (let i = 0; i <= targetIndex; i++) {
       const s = steps[i];
       if (!s.name) continue;
@@ -785,10 +811,17 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
   // Test for modal (builds code up to end + this new step)
   const testStepFromModal = useCallback(async (localStep) => {
     const lines = [];
-    const currentStepNames = new Set(steps.filter(s => s.name).map(s => s.name));
+    // Only include step names that will actually be emitted in the steps loop below
+    // (excludes the step being edited, so prior-rule vars aren't wrongly blocked)
+    const currentStepNames = new Set();
     for (const s of steps) {
+      if (editingStepIndex !== null && s === steps[editingStepIndex]) continue;
+      if (s.name) currentStepNames.add(s.name);
       if (s.stepType === 'iteration') {
         (s.iterations || []).forEach(it => { if (it.resultVar) currentStepNames.add(it.resultVar); });
+      }
+      if (s.stepType === 'schedule') {
+        (s.outputVars || []).forEach(ov => { if (ov.name) currentStepNames.add(ov.name); });
       }
     }
 
@@ -874,57 +907,49 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
     }
 
     // Prior-rules dependencies
-    const knownEvts = new Set((events || []).map(e => (e.event_name || '').toLowerCase()));
     const emittedSaved = new Set();
     const depLines = [];
 
-    // Determine which _isIterResult vars are needed
-    const iterNeeded = new Set();
-    for (const s of steps) {
-      if (s.stepType === 'iteration') {
-        for (const iter of (s.iterations || [])) {
-          (iter.expression || '').match(/[a-zA-Z_][a-zA-Z0-9_]*/g)?.forEach(id => iterNeeded.add(id));
-          if (iter.sourceArray && /^[a-zA-Z_]\w*$/.test(iter.sourceArray)) iterNeeded.add(iter.sourceArray);
-          if (iter.secondArray && /^[a-zA-Z_]\w*$/.test(iter.secondArray)) iterNeeded.add(iter.secondArray);
-        }
-      }
-      if (s.stepType === 'schedule') {
-        (s.scheduleConfig?.contextVars || []).forEach(v => iterNeeded.add(v));
-      }
-    }
-    // Transitively resolve: if a needed _isIterResult var's formula references other _isIterResult vars, include those too
-    const iterResultMap2 = new Map(savedRulesVars.filter(v => v._isIterResult).map(v => [v.name, v]));
-    let changed2 = true;
-    while (changed2) {
-      changed2 = false;
-      for (const v of iterResultMap2.values()) {
-        if (!iterNeeded.has(v.name)) continue;
-        const refs = (v.formula || '').match(/[a-zA-Z_][a-zA-Z0-9_]*/g) || [];
-        for (const ref of refs) {
-          if (iterResultMap2.has(ref) && !iterNeeded.has(ref)) {
-            iterNeeded.add(ref);
-            changed2 = true;
-          }
-        }
-      }
-    }
-
     const deferredIterDeps = [];
+    const deferredDepsDependOnIter = [];
+
+    // Pre-compute iteration-result variable names
+    const iterResultVarNames = new Set(
+      savedRulesVars.filter(v => v._isIterResult).map(v => v.name)
+    );
+
     for (const v of savedRulesVars) {
       if (!v.name || currentStepNames.has(v.name) || emittedSaved.has(v.name)) continue;
       if (v._isIterResult) {
-        if (iterNeeded.has(v.name)) deferredIterDeps.push(v);
+        // Always defer to pass 2 so regular var dependencies are emitted first
+        deferredIterDeps.push(v);
         continue;
       }
-      if ((v.source === 'event_field' || v.source === 'collect') && v.eventField) {
-        const evtName = v.eventField.split('.')[0];
-        if (evtName && !knownEvts.has(evtName.toLowerCase())) continue;
+      // Defer regular vars that reference iter-result vars to pass 3
+      const refText = (v.formula || '') + ' ' + (v.value || '');
+      const dependsOnIter = [...iterResultVarNames].some(n => new RegExp(`\\b${n}\\b`).test(refText));
+      if (dependsOnIter) {
+        deferredDepsDependOnIter.push(v);
+        continue;
       }
       emittedSaved.add(v.name);
       const line = buildCalcLine(v);
       if (line) depLines.push(line);
     }
     for (const v of deferredIterDeps) {
+      if (emittedSaved.has(v.name)) continue;
+      emittedSaved.add(v.name);
+      if (v.iterData) {
+        const available = [...emittedSaved];
+        const iterLines = buildIterationLines([v.iterData], available);
+        iterLines.forEach(l => depLines.push(l));
+      } else {
+        const line = buildCalcLine(v);
+        if (line) depLines.push(line);
+      }
+    }
+    // Pass 3: regular vars that depended on iter results
+    for (const v of deferredDepsDependOnIter) {
       if (emittedSaved.has(v.name)) continue;
       emittedSaved.add(v.name);
       const line = buildCalcLine(v);
@@ -1045,7 +1070,7 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
     }
 
     return lines.join('\n');
-  }, [ruleName, steps, outputs, savedRulesVars, events]);
+  }, [ruleName, steps, outputs, savedRulesVars]);
 
   // Determine the ruleType for backward-compatible saving
   const effectiveRuleType = useMemo(() => {
