@@ -1560,6 +1560,35 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
           events={events}
           dslFunctions={dslFunctions}
           definedVarNames={allDefinedVarNames}
+          currentRulePreStepCode={(() => {
+            // Emit code for all steps before the one being edited so that variables
+            // like start_dates / end_dates are available when testing the schedule.
+            const preLines = [];
+            const definedSoFar = [];
+            for (const s of steps) {
+              if (editingStepIndex !== null && s === steps[editingStepIndex]) break;
+              if (!s.name && s.stepType !== 'custom_code') continue;
+              if (s.stepType === 'calc') {
+                const line = buildCalcLine(s);
+                if (line) { preLines.push(line); definedSoFar.push(s.name); }
+              } else if (s.stepType === 'condition') {
+                const expr = buildConditionExpr(s.conditions || [], s.elseFormula);
+                preLines.push(`${s.name} = ${expr}`);
+                definedSoFar.push(s.name);
+              } else if (s.stepType === 'iteration') {
+                const allAvail = [...new Set([...definedSoFar, ...savedRulesVarNames])];
+                preLines.push(...buildIterationLines(s.iterations || [], allAvail));
+                (s.iterations || []).forEach(it => { if (it.resultVar) definedSoFar.push(it.resultVar); });
+              } else if (s.stepType === 'schedule') {
+                preLines.push(...buildScheduleStepLines(s));
+                definedSoFar.push(s.name);
+                (s.outputVars || []).forEach(ov => definedSoFar.push(ov.name));
+              } else if (s.stepType === 'custom_code') {
+                if (s.customCode) preLines.push(s.customCode);
+              }
+            }
+            return preLines.join('\n');
+          })()}
         />
       ) : modalStepType === 'custom_code' ? (
         <CustomCodeStepModal

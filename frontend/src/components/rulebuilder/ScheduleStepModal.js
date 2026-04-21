@@ -103,7 +103,7 @@ const ColumnCard = ({ column, index, events, variables, onUpdate, onRemove, onMo
  * inside the Rule Builder. Shows Time Period config, schedule columns,
  * preview, and output options (no rule name/priority/createTransaction).
  */
-const ScheduleStepModal = ({ open, step, onClose, onSaveStep, events, dslFunctions, definedVarNames }) => {
+const ScheduleStepModal = ({ open, step, onClose, onSaveStep, events, dslFunctions, definedVarNames, currentRulePreStepCode }) => {
   const cfg = step?.scheduleConfig || {};
 
   // Period config
@@ -391,7 +391,8 @@ const ScheduleStepModal = ({ open, step, onClose, onSaveStep, events, dslFunctio
     if (contextPairs.length > 0) schedLines.push(`}, {${contextPairs.join(', ')}})`);
     else schedLines.push('})');
     schedLines.push('print(sched)');
-    const combinedCode = [priorRulesCode, ...schedLines].filter(Boolean).join('\n');
+    const allPriorCode = [priorRulesCode, currentRulePreStepCode].filter(Boolean).join('\n\n');
+    const combinedCode = [allPriorCode, ...schedLines].filter(Boolean).join('\n');
     let postingDate = new Date().toISOString().split('T')[0];
     try {
       const pdRes = await fetch(`${API}/event-data/posting-dates`);
@@ -408,7 +409,7 @@ const ScheduleStepModal = ({ open, step, onClose, onSaveStep, events, dslFunctio
       return { success: true, output: (data.print_outputs || []).map(String).join('\n') || 'OK' };
     }
     return { success: false, error: data.error || data.detail || 'Execution failed' };
-  }, [columns, autoDetectedVars, priorRulesCode, periodType, periodCount, periodCountSource, periodCountField, periodCountFormula,
+  }, [columns, autoDetectedVars, priorRulesCode, currentRulePreStepCode, periodType, periodCount, periodCountSource, periodCountField, periodCountFormula,
       startDateSource, startDateField, startDateFormula, startDate,
       endDateSource, endDateField, endDateFormula, endDate, frequency, convention]);
 
@@ -421,7 +422,8 @@ const ScheduleStepModal = ({ open, step, onClose, onSaveStep, events, dslFunctio
       const validCols = columns.filter(c => c.name && c.formula);
       if (validCols.length === 0) { setSchedulePreviewError('No valid columns defined yet.'); return; }
       const schedCode = buildScheduleCode();
-      const combinedCode = priorRulesCode ? (priorRulesCode + '\n\n' + schedCode) : schedCode;
+      const allPriorCode = [priorRulesCode, currentRulePreStepCode].filter(Boolean).join('\n\n');
+      const combinedCode = allPriorCode ? (allPriorCode + '\n\n' + schedCode) : schedCode;
       let dates = [];
       try {
         const pdRes = await fetch(`${API}/event-data/posting-dates`);
@@ -457,7 +459,7 @@ const ScheduleStepModal = ({ open, step, onClose, onSaveStep, events, dslFunctio
       }
     } catch (err) { setSchedulePreviewError(err.message || 'Network error'); }
     finally { setSchedulePreviewTesting(false); }
-  }, [buildScheduleCode, priorRulesCode, columns]);
+  }, [buildScheduleCode, priorRulesCode, currentRulePreStepCode, columns]);
 
   // Test output option
   const testOutputOption = useCallback(async (optType) => {
@@ -499,7 +501,8 @@ const ScheduleStepModal = ({ open, step, onClose, onSaveStep, events, dslFunctio
         default: return;
       }
       const schedCode = buildScheduleCode();
-      const combinedCode = [priorRulesCode, schedCode, ...extraLines].filter(Boolean).join('\n\n');
+      const allPriorCode = [priorRulesCode, currentRulePreStepCode].filter(Boolean).join('\n\n');
+      const combinedCode = [allPriorCode, schedCode, ...extraLines].filter(Boolean).join('\n\n');
       let postingDate = new Date().toISOString().split('T')[0];
       try {
         const pdRes = await fetch(`${API}/event-data/posting-dates`);
