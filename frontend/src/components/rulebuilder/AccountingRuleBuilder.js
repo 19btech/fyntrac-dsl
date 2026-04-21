@@ -1444,6 +1444,15 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
               <>
                 {outputs.transactions.map((txn, idx) => {
                   const varNames = steps.filter(s => s.name).map(s => s.name);
+                  // Also include outputVars from schedule steps (schedule_sum, schedule_filter, etc.)
+                  steps.forEach(s => {
+                    if (s.stepType === 'schedule') {
+                      (s.outputVars || []).forEach(ov => { if (ov.name) varNames.push(ov.name); });
+                    }
+                    if (s.stepType === 'iteration') {
+                      (s.iterations || []).forEach(it => { if (it.resultVar) varNames.push(it.resultVar); });
+                    }
+                  });
                   const allVarNames = [...new Set([...varNames, ...savedRulesVarNames])];
                   const eventFieldOptions = events?.flatMap(ev => [
                     ...['postingdate', 'effectivedate'].map(sf => `${ev.event_name}.${sf}`),
