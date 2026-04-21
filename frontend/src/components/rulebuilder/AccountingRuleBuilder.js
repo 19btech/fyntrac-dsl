@@ -3,7 +3,7 @@ import {
   Box, Typography, Card, CardContent, Button, TextField, MenuItem, Chip, IconButton,
   Tooltip, Divider, Select, FormControl, InputLabel, Paper, Switch, FormControlLabel,
   Alert, CircularProgress, Dialog, DialogTitle, DialogContent, DialogContentText, DialogActions,
-  Menu,
+  Menu, Autocomplete,
 } from "@mui/material";
 import {
   Plus, Trash2, Play, Code, Save, X,
@@ -1526,15 +1526,26 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
                         </Box>
                         <Box sx={{ flex: 1 }}>
                           <Typography variant="caption" fontWeight={600} color="text.secondary" sx={{ mb: 0.25, display: 'block' }}>Amount</Typography>
-                          <FormControl size="small" fullWidth>
-                            <Select value={txn.amount || ''} onChange={(e) => updateTransaction(idx, 'amount', e.target.value)}
-                              displayEmpty renderValue={(val) => val || <em style={{ color: '#999' }}>Select amount...</em>}>
-                              {allVarNames.length > 0 && <MenuItem disabled sx={{ fontSize: '0.75rem', fontWeight: 600, color: '#5B5FED' }}>— Variables —</MenuItem>}
-                              {allVarNames.map(v => <MenuItem key={`var-${v}`} value={v} sx={{ fontFamily: 'monospace', fontSize: '0.8125rem' }}>{v}</MenuItem>)}
-                              {eventFieldOptions.length > 0 && <MenuItem disabled sx={{ fontSize: '0.75rem', fontWeight: 600, color: '#FF9800' }}>— Event Fields —</MenuItem>}
-                              {eventFieldOptions.map(ef => <MenuItem key={`ef-${ef}`} value={ef} sx={{ fontFamily: 'monospace', fontSize: '0.8125rem' }}>{ef}</MenuItem>)}
-                            </Select>
-                          </FormControl>
+                          <Autocomplete
+                            size="small"
+                            freeSolo
+                            options={[...allVarNames, ...eventFieldOptions]}
+                            value={txn.amount || ''}
+                            onInputChange={(_, val) => updateTransaction(idx, 'amount', val)}
+                            onChange={(_, val) => updateTransaction(idx, 'amount', val || '')}
+                            renderInput={(params) => (
+                              <TextField {...params} placeholder="Variable or expression" size="small"
+                                inputProps={{ ...params.inputProps, style: { fontFamily: 'monospace', fontSize: '0.8125rem' } }} />
+                            )}
+                            renderOption={(props, option) => (
+                              <li {...props} style={{ fontFamily: 'monospace', fontSize: '0.8125rem' }}>{option}</li>
+                            )}
+                            noOptionsText={
+                              <Typography variant="caption" color="text.secondary">
+                                No variables found. Configure Output Options inside the Schedule Step first, then Save Step.
+                              </Typography>
+                            }
+                          />
                         </Box>
                       </Box>
                     </Card>
