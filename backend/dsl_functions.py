@@ -2020,13 +2020,17 @@ def generate_schedules(
         result["total_periods"] = total_periods
 
         # Skip items with zero amount only when no other context arrays exist
+        # AND at least one column formula actually references 'amount' — pure
+        # calendar/date schedules (e.g. period_date, month_end) should always
+        # generate rows even when no monetary amount is provided.
         _skip_keys = ('amounts', 'amount', 'start_dates', 'end_dates',
                       'subinstrument_ids', 'item_names', 'product_names')
         has_other_arrays = context and any(
             isinstance(v, list) and k not in _skip_keys
             for k, v in context.items()
         )
-        if not has_other_arrays and (not amount or amount == 0):
+        has_amount_col = any('amount' in str(v) for v in columns.values())
+        if not has_other_arrays and (not amount or amount == 0) and has_amount_col:
             results.append(result)
             continue
         
