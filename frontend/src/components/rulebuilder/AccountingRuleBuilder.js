@@ -1443,14 +1443,19 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
             {outputs.createTransaction && (
               <>
                 {outputs.transactions.map((txn, idx) => {
-                  const varNames = steps.filter(s => s.name).map(s => s.name);
-                  // Also include outputVars from schedule steps (schedule_sum, schedule_filter, etc.)
+                  // Build the amount variable list:
+                  // - skip schedule step primary names (the schedule object is not a scalar)
+                  // - include schedule outputVars (schedule_sum/filter/first/last results) instead
+                  // - include iteration resultVars
+                  const varNames = [];
                   steps.forEach(s => {
                     if (s.stepType === 'schedule') {
                       (s.outputVars || []).forEach(ov => { if (ov.name) varNames.push(ov.name); });
-                    }
-                    if (s.stepType === 'iteration') {
+                    } else if (s.stepType === 'iteration') {
                       (s.iterations || []).forEach(it => { if (it.resultVar) varNames.push(it.resultVar); });
+                      if (s.name) varNames.push(s.name);
+                    } else {
+                      if (s.name) varNames.push(s.name);
                     }
                   });
                   const allVarNames = [...new Set([...varNames, ...savedRulesVarNames])];
