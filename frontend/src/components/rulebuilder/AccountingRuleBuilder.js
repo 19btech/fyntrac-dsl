@@ -1477,6 +1477,8 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
                     if (!s.name) return false;
                     if (s.source === 'collect' && s.collectType === 'collect_subinstrumentids') return true;
                     if (s.source === 'event_field' && s.eventField?.toLowerCase().endsWith('.subinstrumentid')) return true;
+                    // collect_by_instrument on a subinstrumentid field also produces a valid sub-id list
+                    if (s.source === 'collect' && s.eventField?.toLowerCase().endsWith('.subinstrumentid')) return true;
                     return false;
                   };
                   const subIdVarNames = [

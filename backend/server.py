@@ -3515,6 +3515,20 @@ async def delete_saved_rule(rule_id: str):
         raise HTTPException(status_code=404, detail="Rule not found.")
     return {"success": True, "message": "Rule deleted."}
 
+@api_router.put("/saved-rules/{rule_id}")
+async def update_saved_rule(rule_id: str, request: dict):
+    """Patch specific fields of a saved rule (generatedCode, outputs, steps, etc.)."""
+    allowed = {"generatedCode", "outputs", "steps", "name", "priority", "variables",
+               "conditions", "elseFormula", "conditionResultVar", "iterations",
+               "iterConfig", "inlineComment", "commentText", "ruleType"}
+    update_fields = {k: v for k, v in request.items() if k in allowed}
+    if not update_fields:
+        raise HTTPException(status_code=400, detail="No valid fields to update.")
+    result = await db.saved_rules.update_one({"id": rule_id}, {"$set": update_fields})
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Rule not found.")
+    return {"success": True, "message": "Rule updated."}
+
 @api_router.delete("/saved-rules")
 async def delete_all_saved_rules():
     """Delete ALL saved rules."""
