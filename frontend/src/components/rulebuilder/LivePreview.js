@@ -1,10 +1,10 @@
 import React, { useMemo, useRef, useCallback, useState } from "react";
 import {
   Box, Typography, Card, CardContent, Chip, Alert, Table, TableBody,
-  TableCell, TableContainer, TableHead, TableRow, Paper, Divider, Tooltip, IconButton,
-  CircularProgress,
+  TableCell, TableContainer, TableHead, TableRow, Paper, Tooltip, IconButton,
+  CircularProgress, Collapse,
 } from "@mui/material";
-import { Eye, AlertTriangle, CheckCircle2, FileText, DollarSign, Calendar, TrendingUp, Download } from "lucide-react";
+import { Eye, AlertTriangle, CheckCircle2, FileText, DollarSign, Calendar, TrendingUp, Download, ChevronDown, ChevronRight } from "lucide-react";
 import html2pdf from "html2pdf.js";
 
 const formatNumber = (val) => {
@@ -71,18 +71,25 @@ const SchedulePreview = ({ data, title, maxRows = 6 }) => {
   );
 };
 
-const TransactionPreview = ({ transactions }) => {
+const TransactionPreview = ({ transactions, selectedInstrument }) => {
   if (!transactions || transactions.length === 0) return null;
+
+  const filtered = selectedInstrument
+    ? transactions.filter(t => String(t.instrumentid || '') === selectedInstrument)
+    : transactions;
 
   return (
     <Box sx={{ mb: 2 }}>
       <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1 }}>
         <FileText size={14} color="#5B5FED" />
         <Typography variant="body2" fontWeight={600} color="text.primary">Transactions</Typography>
-        <Chip label={`${transactions.length} entries`} size="small" sx={{ fontSize: '0.6875rem', height: 20, bgcolor: '#D4EDDA', color: '#155724' }} />
+        <Chip label={`${filtered.length} entries`} size="small" sx={{ fontSize: '0.6875rem', height: 20, bgcolor: '#D4EDDA', color: '#155724' }} />
+        {selectedInstrument && filtered.length !== transactions.length && (
+          <Chip label={`${transactions.length} total`} size="small" sx={{ fontSize: '0.6875rem', height: 20, bgcolor: '#F0F0F0', color: '#6C757D' }} />
+        )}
       </Box>
-      <TableContainer component={Paper} variant="outlined" sx={{ borderRadius: 2 }}>
-        <Table size="small">
+      <TableContainer component={Paper} variant="outlined" sx={{ borderRadius: 2, maxHeight: 300 }}>
+        <Table size="small" stickyHeader>
           <TableHead>
             <TableRow>
               <TableCell sx={{ fontWeight: 600, fontSize: '0.75rem', py: 0.75, bgcolor: '#F8F9FA' }}>Posting Date</TableCell>
@@ -94,7 +101,7 @@ const TransactionPreview = ({ transactions }) => {
             </TableRow>
           </TableHead>
           <TableBody>
-            {transactions.slice(0, 10).map((txn, idx) => {
+            {filtered.map((txn, idx) => {
               const amount = typeof txn.amount === 'number' ? txn.amount : parseFloat(txn.amount) || 0;
               return (
                 <TableRow key={idx} hover>
@@ -104,12 +111,8 @@ const TransactionPreview = ({ transactions }) => {
                     <Chip label={txn.transactiontype || 'Unknown'} size="small"
                       sx={{ fontSize: '0.6875rem', height: 18, bgcolor: '#EEF0FE', color: '#5B5FED' }} />
                   </TableCell>
-                  <TableCell sx={{ fontSize: '0.75rem', py: 0.5, color: '#6C757D' }}>
-                    {txn.instrumentid || '—'}
-                  </TableCell>
-                  <TableCell sx={{ fontSize: '0.75rem', py: 0.5, color: '#6C757D' }}>
-                    {txn.subinstrumentid || '1'}
-                  </TableCell>
+                  <TableCell sx={{ fontSize: '0.75rem', py: 0.5, color: '#6C757D' }}>{txn.instrumentid || '—'}</TableCell>
+                  <TableCell sx={{ fontSize: '0.75rem', py: 0.5, color: '#6C757D' }}>{txn.subinstrumentid || '1'}</TableCell>
                   <TableCell align="right" sx={{ fontSize: '0.75rem', py: 0.5, fontFamily: 'monospace', fontWeight: 500, color: '#14213D' }}>
                     {formatNumber(amount)}
                   </TableCell>
@@ -119,26 +122,60 @@ const TransactionPreview = ({ transactions }) => {
           </TableBody>
         </Table>
       </TableContainer>
-      {transactions.length > 10 && (
-        <Typography variant="caption" color="text.secondary" sx={{ mt: 0.5, display: 'block' }}>
-          Showing 10 of {transactions.length} transactions
-        </Typography>
-      )}
+    </Box>
+  );
+};
+
+const CollapsibleSection = ({ title, icon: Icon, iconColor, count, countColor, countBg, children, defaultOpen = true }) => {
+  const [open, setOpen] = useState(defaultOpen);
+  return (
+    <Box sx={{ mb: 2 }}>
+      <Box
+        onClick={() => setOpen(o => !o)}
+        sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: open ? 1 : 0, cursor: 'pointer', userSelect: 'none',
+          p: 0.5, borderRadius: 1, '&:hover': { bgcolor: '#F0F0F0' } }}>
+        {open ? <ChevronDown size={14} color="#6C757D" /> : <ChevronRight size={14} color="#6C757D" />}
+        {Icon && <Icon size={14} color={iconColor || '#5B5FED'} />}
+        <Typography variant="body2" fontWeight={600} color="text.primary">{title}</Typography>
+        {count !== undefined && (
+          <Chip label={count} size="small"
+            sx={{ fontSize: '0.6875rem', height: 20, bgcolor: countBg || '#EEF0FE', color: countColor || '#5B5FED' }} />
+        )}
+      </Box>
+      <Collapse in={open}>{children}</Collapse>
     </Box>
   );
 };
 
 const ValidationWarnings = ({ warnings }) => {
   if (!warnings || warnings.length === 0) return null;
+  const errors = warnings.filter(w => w.severity === 'error');
+  const others = warnings.filter(w => w.severity !== 'error');
   return (
-    <Box sx={{ mb: 2 }}>
-      {warnings.map((w, idx) => (
-        <Alert key={idx} severity={w.severity || 'warning'} sx={{ mb: 1, fontSize: '0.8125rem', '& .MuiAlert-message': { fontSize: '0.8125rem' } }}
-          icon={w.severity === 'success' ? <CheckCircle2 size={16} /> : <AlertTriangle size={16} />}>
-          {w.message}
-        </Alert>
-      ))}
-    </Box>
+    <>
+      {errors.length > 0 && (
+        <CollapsibleSection title="Errors" icon={AlertTriangle} iconColor="#D32F2F"
+          count={errors.length} countBg="#FFEBEE" countColor="#D32F2F" defaultOpen={true}>
+          {errors.map((w, idx) => (
+            <Alert key={idx} severity="error" sx={{ mb: 0.75, fontSize: '0.8125rem', '& .MuiAlert-message': { fontSize: '0.8125rem' } }}>
+              {w.message}
+            </Alert>
+          ))}
+        </CollapsibleSection>
+      )}
+      {others.length > 0 && (
+        <CollapsibleSection title="Warnings & Info" icon={AlertTriangle} iconColor="#F57C00"
+          count={others.length} countBg="#FFF3E0" countColor="#E65100" defaultOpen={false}>
+          {others.map((w, idx) => (
+            <Alert key={idx} severity={w.severity || 'warning'}
+              sx={{ mb: 0.75, fontSize: '0.8125rem', '& .MuiAlert-message': { fontSize: '0.8125rem' } }}
+              icon={w.severity === 'success' ? <CheckCircle2 size={16} /> : <AlertTriangle size={16} />}>
+              {w.message}
+            </Alert>
+          ))}
+        </CollapsibleSection>
+      )}
+    </>
   );
 };
 
@@ -194,6 +231,7 @@ const SummaryMetrics = ({ transactions, schedules }) => {
 const LivePreview = ({ consoleOutput = [], transactions = [], schedules = [], warnings = [], visible = true, templateName = '' }) => {
   const contentRef = useRef(null);
   const [exporting, setExporting] = useState(false);
+  const [selectedInstrument, setSelectedInstrument] = useState(null);
   // Extract schedule data from console print outputs
   const extractedSchedules = useMemo(() => {
     if (schedules && schedules.length > 0) return schedules;
@@ -253,6 +291,15 @@ const LivePreview = ({ consoleOutput = [], transactions = [], schedules = [], wa
 
   const hasContent = extractedSchedules.length > 0 || transactions.length > 0;
 
+  // Derive unique instrument IDs from transactions
+  const instrumentOptions = useMemo(() => {
+    if (!transactions || transactions.length === 0) return [];
+    return [...new Set(transactions.map(t => String(t.instrumentid || '')).filter(Boolean))].sort();
+  }, [transactions]);
+
+  // Reset instrument selection if transactions change and selected is no longer valid
+  const resolvedInstrument = instrumentOptions.includes(selectedInstrument) ? selectedInstrument : null;
+
   const handleExportPDF = useCallback(async () => {
     if (!contentRef.current) return;
     setExporting(true);
@@ -302,6 +349,44 @@ const LivePreview = ({ consoleOutput = [], transactions = [], schedules = [], wa
         </Box>
       )}
 
+      {/* Instrument filter — shown when multiple instruments exist */}
+      {instrumentOptions.length > 1 && (
+        <Box sx={{ mb: 2 }}>
+          <Typography variant="caption" color="text.secondary" sx={{ mb: 0.75, display: 'block', fontWeight: 600 }}>
+            Filter by Instrument
+          </Typography>
+          <Box sx={{ display: 'flex', gap: 0.75, flexWrap: 'wrap' }}>
+            <Chip
+              label="All"
+              size="small"
+              onClick={() => setSelectedInstrument(null)}
+              sx={{
+                fontSize: '0.75rem', height: 24, cursor: 'pointer',
+                bgcolor: !resolvedInstrument ? '#5B5FED' : '#F0F0F0',
+                color: !resolvedInstrument ? '#fff' : '#495057',
+                fontWeight: !resolvedInstrument ? 600 : 400,
+                '&:hover': { bgcolor: !resolvedInstrument ? '#4A4ED0' : '#E0E0E0' },
+              }}
+            />
+            {instrumentOptions.map(inst => (
+              <Chip
+                key={inst}
+                label={inst}
+                size="small"
+                onClick={() => setSelectedInstrument(inst === resolvedInstrument ? null : inst)}
+                sx={{
+                  fontSize: '0.75rem', height: 24, cursor: 'pointer', fontFamily: 'monospace',
+                  bgcolor: resolvedInstrument === inst ? '#5B5FED' : '#F0F0F0',
+                  color: resolvedInstrument === inst ? '#fff' : '#495057',
+                  fontWeight: resolvedInstrument === inst ? 600 : 400,
+                  '&:hover': { bgcolor: resolvedInstrument === inst ? '#4A4ED0' : '#E0E0E0' },
+                }}
+              />
+            ))}
+          </Box>
+        </Box>
+      )}
+
       {!hasContent && computedWarnings.length === 0 && (
         <Card sx={{ textAlign: 'center', py: 4 }}>
           <CardContent>
@@ -323,7 +408,7 @@ const LivePreview = ({ consoleOutput = [], transactions = [], schedules = [], wa
           {extractedSchedules.map((sched, idx) => (
             <SchedulePreview key={idx} data={sched} title={extractedSchedules.length > 1 ? `Schedule ${idx + 1}` : 'Schedule'} maxRows={999} />
           ))}
-          <TransactionPreview transactions={transactions} />
+          <TransactionPreview transactions={transactions} selectedInstrument={resolvedInstrument} />
         </>
       )}
       </Box>
