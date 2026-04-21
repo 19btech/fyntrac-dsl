@@ -1469,10 +1469,7 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
                     ...ev.fields.map(f => `${ev.event_name}.${f.name}`),
                   ]) || [];
 
-                  // Collect valid subinstrumentid values:
-                  // 1. Direct event field references ending in .subinstrumentid
-                  const subIdEventFields = (events || []).map(ev => `${ev.event_name}.subinstrumentid`);
-                  // 2. Variables sourced from collect_subinstrumentids or pointing at subinstrumentid field
+                  // Collect defined variables that hold sub-instrument id lists
                   const isSubIdStep = (s) => {
                     if (!s.name) return false;
                     if (s.source === 'collect' && s.collectType === 'collect_subinstrumentids') return true;
@@ -1481,11 +1478,12 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
                     if (s.source === 'collect' && s.eventField?.toLowerCase().endsWith('.subinstrumentid')) return true;
                     return false;
                   };
-                  const subIdVarNames = [
+                  const subIdVarOptions = [
                     ...steps.filter(isSubIdStep).map(s => s.name),
                     ...savedRulesVars.filter(isSubIdStep).map(s => s.name),
-                  ];
-                  const validSubIds = [...new Set([...subIdVarNames, ...subIdEventFields])];
+                  ].filter(Boolean);
+                  // Deduplicate; show defined var options only (no raw event fields)
+                  const validSubIds = [...new Set(subIdVarOptions)];
 
                   return (
                     <Card key={idx} variant="outlined" sx={{ p: 1, mb: 1, bgcolor: '#FAFAFA' }}>
@@ -1512,14 +1510,21 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
                         </Box>
                         <Box sx={{ flex: 1 }}>
                           <Typography variant="caption" fontWeight={600} color="text.secondary" sx={{ mb: 0.25, display: 'block' }}>Sub Instrument ID</Typography>
-                          <FormControl size="small" fullWidth>
-                            <Select value={txn.subInstrumentId || ''} onChange={(e) => updateTransaction(idx, 'subInstrumentId', e.target.value)}
-                              displayEmpty renderValue={(val) => val || <em style={{ color: '#999' }}>default (1)</em>}>
-                              <MenuItem value="" sx={{ fontFamily: 'monospace', fontSize: '0.8125rem' }}><em>default (1)</em></MenuItem>
-                              {validSubIds.length > 0 && <MenuItem disabled sx={{ fontSize: '0.75rem', fontWeight: 600, color: '#5B5FED' }}>— Sub Instrument IDs —</MenuItem>}
-                              {validSubIds.map(v => <MenuItem key={`sid-${v}`} value={v} sx={{ fontFamily: 'monospace', fontSize: '0.8125rem' }}>{v}</MenuItem>)}
-                            </Select>
-                          </FormControl>
+                          <Autocomplete
+                            size="small"
+                            freeSolo
+                            options={validSubIds}
+                            value={txn.subInstrumentId || ''}
+                            onInputChange={(_, val) => updateTransaction(idx, 'subInstrumentId', val)}
+                            onChange={(_, val) => updateTransaction(idx, 'subInstrumentId', val || '')}
+                            renderInput={(params) => (
+                              <TextField {...params} placeholder="default (1)" size="small"
+                                inputProps={{ ...params.inputProps, style: { fontFamily: 'monospace', fontSize: '0.8125rem' } }} />
+                            )}
+                            renderOption={(props, option) => (
+                              <li {...props} style={{ fontFamily: 'monospace', fontSize: '0.8125rem' }}>{option}</li>
+                            )}
+                          />
                         </Box>
                         {outputs.transactions.length > 1 && (
                           <IconButton size="small" onClick={() => removeTransaction(idx)} sx={{ color: '#F44336', alignSelf: 'center' }}><Trash2 size={12} /></IconButton>
