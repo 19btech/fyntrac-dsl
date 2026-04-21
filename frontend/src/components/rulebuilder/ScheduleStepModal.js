@@ -449,6 +449,15 @@ const ScheduleStepModal = ({ open, step, onClose, onSaveStep, events, dslFunctio
             });
           }
           if (Array.isArray(parsed) && parsed.length > 0 && typeof parsed[0] === 'object' && !Array.isArray(parsed[0])) {
+            // Sort by subinstrument_id (numeric if possible), then by period_date
+            parsed.sort((a, b) => {
+              const sa = a.subinstrument_id ?? '';
+              const sb = b.subinstrument_id ?? '';
+              const na = parseFloat(sa), nb = parseFloat(sb);
+              const sidCmp = (!isNaN(na) && !isNaN(nb)) ? na - nb : String(sa).localeCompare(String(sb));
+              if (sidCmp !== 0) return sidCmp;
+              return String(a.period_date ?? '').localeCompare(String(b.period_date ?? ''));
+            });
             setSchedulePreviewData(parsed);
           } else {
             setSchedulePreviewError('Schedule ran but returned no rows.');
