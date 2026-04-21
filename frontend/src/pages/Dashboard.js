@@ -705,7 +705,7 @@ const Dashboard = () => {
                 <ToggleButtonGroup
                   value={editorMode}
                   exclusive
-                  onChange={(e, val) => { if (val) { if (val === 'ruleBuilder') { setEditingRule(null); } setEditorMode(val); } }}
+                  onChange={(e, val) => { if (val) { setEditorMode(val); } }}
                   size="small"
                   sx={{ '& .MuiToggleButton-root': { textTransform: 'none', fontSize: '0.75rem', px: 1.5, py: 0.5 } }}
                 >
