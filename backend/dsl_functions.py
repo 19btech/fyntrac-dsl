@@ -59,8 +59,12 @@ def safe_eval_expression(expression: str, context: Dict[str, Any]):
 
     # Evaluate expression using eval with restricted globals and provided locals
     # The context variables are provided as locals so they shadow DSL functions if needed
+    # Replace 'if(' with 'iif(' because 'if' is a Python keyword and cannot be used as a
+    # function name in eval(), even though DSL_FUNCTIONS has 'iif' mapped to if_op.
+    import re as _re
+    expr_for_eval = _re.sub(r'\bif\s*\(', 'iif(', expr_str)
     try:
-        return eval(expression, safe_globals, context or {})
+        return eval(expr_for_eval, safe_globals, context or {})
     except Exception:
         # Re-raise to let callers handle/log; callers often catch and return None
         raise

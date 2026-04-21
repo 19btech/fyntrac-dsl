@@ -512,6 +512,7 @@ def clear_print_outputs():
         stripped = re.sub(r'\band\s*\(', 'and_op(', stripped)
         stripped = re.sub(r'\bor\s*\(', 'or_op(', stripped)
         stripped = re.sub(r'\bnot\s*\(', 'not_op(', stripped)
+        stripped = re.sub(r'\bif\s*\(', 'iif(', stripped)
 
         # Simply add the line with DSL line marker
         processed_lines.append(f"    {stripped}  # DSL_LINE:{dsl_line_num}")
@@ -527,6 +528,12 @@ def process_standalone(override_postingdate=None, override_effectivedate=None):
     
     # Set instrumentid for standalone mode
     _set_current_instrumentid('STANDALONE')
+    
+    # Expose posting_date in scope so schedule column formulas can reference it
+    postingdate = override_postingdate or ''
+    posting_date = postingdate
+    effectivedate = override_effectivedate or ''
+    effective_date = effectivedate
     
     # Execute DSL logic - transactions are created via createTransaction()
 {python_body}
@@ -959,6 +966,7 @@ def collect_effectivedates_for_subinstrument(subinstrument_id=None):
         line = re.sub(r'\band\s*\(', 'and_op(', line)
         line = re.sub(r'\bor\s*\(', 'or_op(', line)
         line = re.sub(r'\bnot\s*\(', 'not_op(', line)
+        line = re.sub(r'\bif\s*\(', 'iif(', line)
 
         # Add the line with DSL line marker
         processed_lines.append(f"        {line}  # DSL_LINE:{dsl_line_num}")
@@ -1043,6 +1051,9 @@ def process_event_data(event_data, raw_event_data=None, override_postingdate=Non
         effectivedate = get_field_case_insensitive(row, 'effectivedate', '') or postingdate
         instrumentid = get_field_case_insensitive(row, 'instrumentid', '')
         subinstrumentid = get_field_case_insensitive(row, 'subinstrumentid', '1') or '1'
+        # Expose underscore aliases so schedule column formulas can reference them
+        posting_date = postingdate
+        effective_date = effectivedate
         
         # Set current instrumentid for createTransaction()
         _set_current_instrumentid(instrumentid)
