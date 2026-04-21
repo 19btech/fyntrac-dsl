@@ -577,7 +577,9 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
                   names.add(ov.name);
                   const codeLine = (r.generatedCode || '').split('\n').find(l => l.trim().startsWith(ov.name + ' ='));
                   const formula = codeLine ? codeLine.trim().replace(new RegExp('^' + ov.name + '\\s*=\\s*'), '') : '0';
-                  allVars.push({ name: ov.name, source: 'formula', formula, value: '', eventField: '', collectType: 'collect' });
+                  // Mark as schedule output — formula references the schedule variable (defined in another
+                  // rule's steps section), so it cannot be safely emitted as a standalone dep line.
+                  allVars.push({ name: ov.name, source: 'formula', formula, value: '', eventField: '', collectType: 'collect', _isScheduleOutput: true });
                 }
               });
             }
@@ -655,6 +657,11 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
         deferredIterResults.push(v);
         continue;
       }
+      // Schedule outputVars (e.g. recognition_results) reference the schedule variable
+      // from another rule's steps section — emitting them as standalone calc lines would
+      // reference an undefined name. Skip them here; the full prior-rule code is injected
+      // via savedRulesRaw in testStep/testStepFromModal.
+      if (v._isScheduleOutput) continue;
       // If this regular var's formula references an iter-result variable, defer to Pass 3
       const refText = (v.formula || '') + ' ' + (v.value || '');
       const dependsOnIter = [...iterResultVarNames].some(n => new RegExp(`\\b${n}\\b`).test(refText));
@@ -734,25 +741,36 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
     return lines;
   }, []);
 
+  // Helper: strip the deps section from a rule's generatedCode (same logic as handlePlayAll / backend)
+  const _stripDepsSection = useCallback((code) => {
+    const out = []; let skip = false;
+    for (const line of (code || '').split('\n')) {
+      const t = line.trim();
+      if (t === '## Dependencies from saved rules') { skip = true; out.push(line); continue; }
+      if (skip && t.startsWith('## ') && !t.startsWith('## ═')) { skip = false; }
+      if (!skip) out.push(line);
+    }
+    return out.join('\n');
+  }, []);
+
+  // Build full prior-rules code using savedRulesRaw (strip-deps on all but first),
+  // excluding the rule currently being edited so it doesn't re-define its own vars.
+  const _buildPriorRulesCode = useCallback((excludeId) => {
+    const priorRules = (savedRulesRaw || []).filter(r => !excludeId || r.id !== excludeId);
+    return priorRules
+      .map((r, idx) => idx === 0 ? (r.generatedCode || '') : _stripDepsSection(r.generatedCode || ''))
+      .filter(Boolean)
+      .join('\n\n');
+  }, [savedRulesRaw, _stripDepsSection]);
+
   const testStep = useCallback(async (step, stepIndex) => {
     const lines = [];
     const targetIndex = stepIndex !== undefined ? stepIndex : steps.length - 1;
 
-    // Exclude ALL of the current rule's step names so savedRulesVars for this rule
-    // don't get re-emitted. Prior-rule vars (e.g. SSP from Stage 1) are not in steps
-    // so they will still be injected correctly.
-    const currentStepNames = new Set();
-    for (const s of steps) {
-      if (s.name) currentStepNames.add(s.name);
-      if (s.stepType === 'iteration') {
-        (s.iterations || []).forEach(it => { if (it.resultVar) currentStepNames.add(it.resultVar); });
-      }
-      if (s.stepType === 'schedule') {
-        (s.outputVars || []).forEach(ov => { if (ov.name) currentStepNames.add(ov.name); });
-      }
-    }
-
-    lines.push(...buildPriorCodeLines(currentStepNames));
+    // Inject full prior-rules code (strip-deps). This correctly handles schedule steps
+    // whose outputVars reference the schedule variable from the prior rule's context.
+    const priorCode = _buildPriorRulesCode(ruleId || null);
+    if (priorCode) lines.push(priorCode);
 
     const definedVars = [];
     for (let i = 0; i <= targetIndex; i++) {
@@ -808,27 +826,16 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
     } else {
       return { success: false, error: data.error || (typeof data.detail === 'string' ? data.detail : JSON.stringify(data.detail)) || 'Execution failed' };
     }
-  }, [steps, savedRulesVarNames, buildPriorCodeLines, buildScheduleStepLines]);
+  }, [steps, savedRulesVarNames, ruleId, _buildPriorRulesCode, buildScheduleStepLines]);
 
   // Test for modal (builds code up to end + this new step)
   const testStepFromModal = useCallback(async (localStep) => {
     const lines = [];
-    // Only include step names that will actually be emitted in the steps loop below
-    // (excludes the step being edited, so prior-rule vars aren't wrongly blocked)
-    const currentStepNames = new Set();
-    for (const s of steps) {
-      if (editingStepIndex !== null && s === steps[editingStepIndex]) continue;
-      if (s.name) currentStepNames.add(s.name);
-      if (s.stepType === 'iteration') {
-        (s.iterations || []).forEach(it => { if (it.resultVar) currentStepNames.add(it.resultVar); });
-      }
-      if (s.stepType === 'schedule') {
-        (s.outputVars || []).forEach(ov => { if (ov.name) currentStepNames.add(ov.name); });
-      }
-    }
 
-    // Emit prior saved-rules dependencies
-    lines.push(...buildPriorCodeLines(currentStepNames));
+    // Inject full prior-rules code (strip-deps). Correctly handles schedule outputVars
+    // that reference the schedule variable defined inside a prior rule's steps section.
+    const priorCode = _buildPriorRulesCode(ruleId || null);
+    if (priorCode) lines.push(priorCode);
 
     // Emit ALL existing steps (since this step depends on them)
     const definedVars = [];
@@ -890,7 +897,7 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
     } else {
       return { success: false, error: data.error || data.detail || 'Failed' };
     }
-  }, [steps, savedRulesVarNames, editingStepIndex, buildPriorCodeLines, buildScheduleStepLines]);
+  }, [steps, savedRulesVarNames, editingStepIndex, ruleId, _buildPriorRulesCode, buildScheduleStepLines]);
 
   // ── Generated code ──
   const generatedCode = useMemo(() => {
