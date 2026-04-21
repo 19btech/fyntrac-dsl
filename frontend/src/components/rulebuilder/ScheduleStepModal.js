@@ -153,6 +153,7 @@ const ScheduleStepModal = ({ open, step, onClose, onSaveStep, events, dslFunctio
   const [schedulePreviewTesting, setSchedulePreviewTesting] = useState(false);
   const [schedulePreviewData, setSchedulePreviewData] = useState(null);
   const [schedulePreviewError, setSchedulePreviewError] = useState(null);
+  const [previewSelectedSubId, setPreviewSelectedSubId] = useState('__all__');
   const [outputTests, setOutputTests] = useState({});
 
   // Saved rules vars for context detection
@@ -243,6 +244,7 @@ const ScheduleStepModal = ({ open, step, onClose, onSaveStep, events, dslFunctio
     setShowCode(false);
     setSchedulePreviewData(null);
     setSchedulePreviewError(null);
+    setPreviewSelectedSubId('__all__');
     setOutputTests({});
   }, [open, step]);
 
@@ -780,8 +782,34 @@ const ScheduleStepModal = ({ open, step, onClose, onSaveStep, events, dslFunctio
                 Schedule Preview
               </Typography>
               <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                {schedulePreviewData && (() => {
+                  const subIds = [...new Set(schedulePreviewData.map(r => r.subinstrument_id).filter(v => v != null))].sort((a, b) => {
+                    const na = parseFloat(a), nb = parseFloat(b);
+                    return (!isNaN(na) && !isNaN(nb)) ? na - nb : String(a).localeCompare(String(b));
+                  });
+                  if (subIds.length <= 1) return null;
+                  return (
+                    <FormControl size="small" sx={{ minWidth: 160 }}>
+                      <Select
+                        value={previewSelectedSubId}
+                        onChange={e => setPreviewSelectedSubId(e.target.value)}
+                        displayEmpty
+                        sx={{ fontSize: '0.75rem', height: 28 }}
+                      >
+                        <MenuItem value="__all__" sx={{ fontSize: '0.75rem' }}>All Subinstruments</MenuItem>
+                        {subIds.map(sid => (
+                          <MenuItem key={sid} value={String(sid)} sx={{ fontSize: '0.75rem' }}>Sub ID: {sid}</MenuItem>
+                        ))}
+                      </Select>
+                    </FormControl>
+                  );
+                })()}
                 {schedulePreviewData && (
-                  <Chip label={`${schedulePreviewData.length} rows`} size="small"
+                  <Chip label={`${
+                    previewSelectedSubId === '__all__'
+                      ? schedulePreviewData.length
+                      : schedulePreviewData.filter(r => String(r.subinstrument_id) === previewSelectedSubId).length
+                  } rows`} size="small"
                     sx={{ fontSize: '0.6875rem', height: 20, bgcolor: '#EEF0FE', color: '#5B5FED' }} />
                 )}
                 <Tooltip title="Run schedule and show real data">
@@ -815,7 +843,11 @@ const ScheduleStepModal = ({ open, step, onClose, onSaveStep, events, dslFunctio
                 </TableHead>
                 <TableBody>
                   {schedulePreviewData ? (
-                    schedulePreviewData.slice(0, 20).map((row, rowIdx) => (
+                    (() => {
+                      const filtered = previewSelectedSubId === '__all__'
+                        ? schedulePreviewData
+                        : schedulePreviewData.filter(r => String(r.subinstrument_id) === previewSelectedSubId);
+                      return filtered.slice(0, 20).map((row, rowIdx) => (
                       <TableRow key={rowIdx} hover sx={{ '&:last-child td': { borderBottom: 0 } }}>
                         <TableCell sx={{ fontSize: '0.75rem', color: '#6C757D' }}>{rowIdx + 1}</TableCell>
                         {(() => { const keys = Object.keys(row); const idx = keys.indexOf('subinstrument_id'); if (idx > 0) { keys.splice(idx, 1); keys.unshift('subinstrument_id'); } return keys; })().map((k, ci) => {
@@ -831,7 +863,8 @@ const ScheduleStepModal = ({ open, step, onClose, onSaveStep, events, dslFunctio
                           );
                         })}
                       </TableRow>
-                    ))
+                    ));
+                    })()
                   ) : (
                     [1, 2, 3].map(row => (
                       <TableRow key={row} sx={{ '&:last-child td': { borderBottom: 0 } }}>
@@ -847,11 +880,16 @@ const ScheduleStepModal = ({ open, step, onClose, onSaveStep, events, dslFunctio
                 </TableBody>
               </Table>
             </TableContainer>
-            {schedulePreviewData && schedulePreviewData.length > 20 && (
-              <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 1 }}>
-                Showing 20 of {schedulePreviewData.length} rows
-              </Typography>
-            )}
+            {schedulePreviewData && (() => {
+              const filtered = previewSelectedSubId === '__all__'
+                ? schedulePreviewData
+                : schedulePreviewData.filter(r => String(r.subinstrument_id) === previewSelectedSubId);
+              return filtered.length > 20 ? (
+                <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 1 }}>
+                  Showing 20 of {filtered.length} rows
+                </Typography>
+              ) : null;
+            })()}
           </>
         )}
 
