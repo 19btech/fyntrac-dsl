@@ -194,8 +194,20 @@ const SavedRules = ({ onEditRule, onEditSchedule, refreshKey, onPlayAll, onClear
     setPlaying(true);
     setError(null);
     try {
+      // Strip the "## Dependencies from saved rules" section from all rules after the first
+      // to avoid duplicate or out-of-order variable assignments across combined rules.
+      const stripDeps = (code) => {
+        const out = []; let skip = false;
+        for (const line of code.split('\n')) {
+          const t = line.trim();
+          if (t === '## Dependencies from saved rules') { skip = true; out.push(line); continue; }
+          if (skip && t.startsWith('## ') && !t.startsWith('## ═')) { skip = false; }
+          if (!skip) out.push(line);
+        }
+        return out.join('\n');
+      };
       const combinedCode = sortedRules
-        .map(r => r.generatedCode || '')
+        .map((r, idx) => idx === 0 ? (r.generatedCode || '') : stripDeps(r.generatedCode || ''))
         .filter(Boolean)
         .join('\n\n');
       const pdRes = await fetch(`${API}/event-data/posting-dates`);

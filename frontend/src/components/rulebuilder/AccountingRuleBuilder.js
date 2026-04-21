@@ -906,6 +906,11 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
       if (s.stepType === 'iteration') {
         (s.iterations || []).forEach(it => { if (it.resultVar) currentStepNames.add(it.resultVar); });
       }
+      if (s.stepType === 'schedule') {
+        // Must exclude outputVars too — they depend on the schedule variable (defined in steps),
+        // so emitting them in the deps section would reference the schedule before it's assigned.
+        (s.outputVars || []).forEach(ov => { if (ov.name) currentStepNames.add(ov.name); });
+      }
     }
 
     // Prior-rules dependencies
