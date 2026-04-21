@@ -103,7 +103,7 @@ const ColumnCard = ({ column, index, events, variables, onUpdate, onRemove, onMo
  * inside the Rule Builder. Shows Time Period config, schedule columns,
  * preview, and output options (no rule name/priority/createTransaction).
  */
-const ScheduleStepModal = ({ open, step, onClose, onSaveStep, events, dslFunctions, definedVarNames, currentRulePreStepCode }) => {
+const ScheduleStepModal = ({ open, step, onClose, onSaveStep, events, dslFunctions, definedVarNames, currentRulePreStepCode, freshPriorCode }) => {
   const cfg = step?.scheduleConfig || {};
 
   // Period config
@@ -200,6 +200,12 @@ const ScheduleStepModal = ({ open, step, onClose, onSaveStep, events, dslFunctio
       } catch { /* ignore */ }
     })();
   }, []);
+
+  // When parent provides freshly-generated prior code (correctly ordered), prefer it
+  // over the stale generatedCode fetched above (which may have ordering bugs).
+  useEffect(() => {
+    if (freshPriorCode != null) setPriorRulesCode(freshPriorCode);
+  }, [freshPriorCode]);
 
   // Reset state when step changes
   useEffect(() => {
@@ -353,6 +359,8 @@ const ScheduleStepModal = ({ open, step, onClose, onSaveStep, events, dslFunctio
       lines.push(`    "${col.name}": "${col.formula}"${comma}`);
     });
     const contextPairs = autoDetectedVars.map(v => `"${v}": ${v}`);
+    // Always include instrumentid so schedule result rows carry it for the composite-ID dropdown
+    if (!autoDetectedVars.includes('instrumentid')) contextPairs.push('"instrumentid": instrumentid');
     if (contextPairs.length > 0) lines.push(`}, {${contextPairs.join(', ')}})`);
     else lines.push('})');
     lines.push('print(sched)');
@@ -447,7 +455,9 @@ const ScheduleStepModal = ({ open, step, onClose, onSaveStep, events, dslFunctio
           if (Array.isArray(parsed) && parsed[0]?.schedule) {
             parsed = parsed.flatMap(item => {
               const sid = item.subinstrument_id;
-              return (item.schedule || []).map(row => sid != null ? { subinstrument_id: sid, ...row } : row);
+              const iid = item.instrumentid ?? '';
+              const compositeId = iid ? `${iid}_${sid ?? ''}` : String(sid ?? '');
+              return (item.schedule || []).map(row => sid != null ? { _composite_id: compositeId, subinstrument_id: sid, ...row } : row);
             });
           }
           if (Array.isArray(parsed) && parsed.length > 0 && typeof parsed[0] === 'object' && !Array.isArray(parsed[0])) {
@@ -783,11 +793,11 @@ const ScheduleStepModal = ({ open, step, onClose, onSaveStep, events, dslFunctio
               </Typography>
               <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
                 {schedulePreviewData && (() => {
-                  const subIds = [...new Set(schedulePreviewData.map(r => r.subinstrument_id).filter(v => v != null))].sort((a, b) => {
+                  const compositeIds = [...new Set(schedulePreviewData.map(r => r._composite_id ?? String(r.subinstrument_id ?? '')).filter(Boolean))].sort((a, b) => {
                     const na = parseFloat(a), nb = parseFloat(b);
                     return (!isNaN(na) && !isNaN(nb)) ? na - nb : String(a).localeCompare(String(b));
                   });
-                  if (subIds.length <= 1) return null;
+                  if (compositeIds.length <= 1) return null;
                   return (
                     <FormControl size="small" sx={{ minWidth: 160 }}>
                       <Select
@@ -797,8 +807,8 @@ const ScheduleStepModal = ({ open, step, onClose, onSaveStep, events, dslFunctio
                         sx={{ fontSize: '0.75rem', height: 28 }}
                       >
                         <MenuItem value="__all__" sx={{ fontSize: '0.75rem' }}>All Subinstruments</MenuItem>
-                        {subIds.map(sid => (
-                          <MenuItem key={sid} value={String(sid)} sx={{ fontSize: '0.75rem' }}>Sub ID: {sid}</MenuItem>
+                        {compositeIds.map(cid => (
+                          <MenuItem key={cid} value={cid} sx={{ fontSize: '0.75rem' }}>{cid}</MenuItem>
                         ))}
                       </Select>
                     </FormControl>
@@ -808,7 +818,7 @@ const ScheduleStepModal = ({ open, step, onClose, onSaveStep, events, dslFunctio
                   <Chip label={`${
                     previewSelectedSubId === '__all__'
                       ? schedulePreviewData.length
-                      : schedulePreviewData.filter(r => String(r.subinstrument_id) === previewSelectedSubId).length
+                      : schedulePreviewData.filter(r => (r._composite_id ?? String(r.subinstrument_id ?? '')) === previewSelectedSubId).length
                   } rows`} size="small"
                     sx={{ fontSize: '0.6875rem', height: 20, bgcolor: '#EEF0FE', color: '#5B5FED' }} />
                 )}
@@ -834,7 +844,12 @@ const ScheduleStepModal = ({ open, step, onClose, onSaveStep, events, dslFunctio
                   <TableRow sx={{ bgcolor: '#F8F9FA' }}>
                     <TableCell sx={{ fontWeight: 600, fontSize: '0.75rem', bgcolor: '#F8F9FA' }}>#</TableCell>
                     {(schedulePreviewData
-                      ? (() => { const keys = Object.keys(schedulePreviewData[0] || {}); const idx = keys.indexOf('subinstrument_id'); if (idx > 0) { keys.splice(idx, 1); keys.unshift('subinstrument_id'); } return keys; })()
+                      ? (() => {
+                          const keys = Object.keys(schedulePreviewData[0] || {}).filter(k => k !== '_composite_id');
+                          const idx = keys.indexOf('subinstrument_id');
+                          if (idx > 0) { keys.splice(idx, 1); keys.unshift('subinstrument_id'); }
+                          return keys;
+                        })()
                       : previewHeaders
                     ).map(h => (
                       <TableCell key={h} sx={{ fontWeight: 600, fontSize: '0.75rem', bgcolor: '#F8F9FA', whiteSpace: 'nowrap' }}>{h}</TableCell>
@@ -846,11 +861,16 @@ const ScheduleStepModal = ({ open, step, onClose, onSaveStep, events, dslFunctio
                     (() => {
                       const filtered = previewSelectedSubId === '__all__'
                         ? schedulePreviewData
-                        : schedulePreviewData.filter(r => String(r.subinstrument_id) === previewSelectedSubId);
+                        : schedulePreviewData.filter(r => (r._composite_id ?? String(r.subinstrument_id ?? '')) === previewSelectedSubId);
                       return filtered.slice(0, 20).map((row, rowIdx) => (
                       <TableRow key={rowIdx} hover sx={{ '&:last-child td': { borderBottom: 0 } }}>
                         <TableCell sx={{ fontSize: '0.75rem', color: '#6C757D' }}>{rowIdx + 1}</TableCell>
-                        {(() => { const keys = Object.keys(row); const idx = keys.indexOf('subinstrument_id'); if (idx > 0) { keys.splice(idx, 1); keys.unshift('subinstrument_id'); } return keys; })().map((k, ci) => {
+                        {(() => {
+                          const keys = Object.keys(row).filter(k => k !== '_composite_id');
+                          const idx = keys.indexOf('subinstrument_id');
+                          if (idx > 0) { keys.splice(idx, 1); keys.unshift('subinstrument_id'); }
+                          return keys;
+                        })().map((k, ci) => {
                           const val = row[k];
                           return (
                           <TableCell key={ci} sx={{ fontSize: '0.75rem',
@@ -883,7 +903,7 @@ const ScheduleStepModal = ({ open, step, onClose, onSaveStep, events, dslFunctio
             {schedulePreviewData && (() => {
               const filtered = previewSelectedSubId === '__all__'
                 ? schedulePreviewData
-                : schedulePreviewData.filter(r => String(r.subinstrument_id) === previewSelectedSubId);
+                : schedulePreviewData.filter(r => (r._composite_id ?? String(r.subinstrument_id ?? '')) === previewSelectedSubId);
               return filtered.length > 20 ? (
                 <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 1 }}>
                   Showing 20 of {filtered.length} rows

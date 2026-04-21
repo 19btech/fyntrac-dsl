@@ -1560,6 +1560,20 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
           events={events}
           dslFunctions={dslFunctions}
           definedVarNames={allDefinedVarNames}
+          freshPriorCode={(() => {
+            // Build correctly-ordered prior-rules code (avoids stale generatedCode ordering bugs)
+            const currentStepNames = new Set();
+            for (const s of steps) {
+              if (s.name) currentStepNames.add(s.name);
+              if (s.stepType === 'iteration') {
+                (s.iterations || []).forEach(it => { if (it.resultVar) currentStepNames.add(it.resultVar); });
+              }
+              if (s.stepType === 'schedule') {
+                (s.outputVars || []).forEach(ov => { if (ov.name) currentStepNames.add(ov.name); });
+              }
+            }
+            return buildPriorCodeLines(currentStepNames).join('\n');
+          })()}
           currentRulePreStepCode={(() => {
             // Emit code for all steps before the one being edited so that variables
             // like start_dates / end_dates are available when testing the schedule.
