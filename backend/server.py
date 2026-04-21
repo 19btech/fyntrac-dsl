@@ -3753,7 +3753,16 @@ async def delete_all_saved_schedules():
 
 @api_router.get("/combined-code")
 async def get_combined_code():
-    """Return generated code from all saved rules and schedules, ordered by priority (ascending)."""
+    """Return generated code from all saved rules and schedules, ordered by priority (ascending).
+
+    The 'Dependencies from saved rules' section inside each rule's generatedCode
+    re-emits variables that were already defined (and correctly ordered) by earlier
+    rules.  When the combined code is executed, those re-emissions overwrite the
+    correct values with potentially wrong-ordered ones (e.g. totalssp used before
+    it is computed).  To prevent this we track every variable name that has already
+    been assigned and strip any re-assignment from later rules' dependency sections.
+    """
+    import re as _re
     try:
         rules = await db.saved_rules.find({}, {"_id": 0}).to_list(500)
         schedules = await db.saved_schedules.find({}, {"_id": 0}).to_list(500)
@@ -3767,7 +3776,46 @@ async def get_combined_code():
             items.append({"priority": p if p is not None else float('inf'), "code": s.get("generatedCode", ""), "name": s.get("name", "")})
 
         items.sort(key=lambda x: (x["priority"], x["name"]))
-        code_blocks = [item["code"] for item in items if item["code"]]
+
+        # For all rules after the first, strip the "## Dependencies from saved rules"
+        # section so that prior-rule variables are not redefined in (potentially wrong) order.
+        _assign_re = _re.compile(r'^([A-Za-z_][A-Za-z0-9_]*)\s*=')
+
+        def strip_dependencies_section(code: str) -> str:
+            """Remove lines between '## Dependencies from saved rules' and the next '##' heading."""
+            out = []
+            in_deps = False
+            for line in code.split('\n'):
+                stripped = line.strip()
+                if stripped == '## Dependencies from saved rules':
+                    in_deps = True
+                    # Keep the comment itself so the viewer stays readable
+                    out.append(line)
+                    continue
+                if in_deps:
+                    # End of deps section: another ## comment (but not ## ═ which is the
+                    # rule header) or a non-empty line that looks like a section marker
+                    if stripped.startswith('## ') and not stripped.startswith('## ═'):
+                        in_deps = False
+                        out.append(line)
+                    # else: skip dependency assignment lines
+                    continue
+                out.append(line)
+            return '\n'.join(out)
+
+        code_blocks = []
+        for idx, item in enumerate(items):
+            code = item.get("code", "")
+            if not code:
+                continue
+            if idx == 0:
+                # First rule: emit as-is; record all variables it defines
+                code_blocks.append(code)
+            else:
+                # Later rules: strip their dependencies section to avoid redefining
+                # prior-rule variables with stale/wrong ordering
+                code_blocks.append(strip_dependencies_section(code))
+
         combined = "\n\n".join(code_blocks)
         return {"success": True, "code": combined, "count": len(code_blocks)}
     except Exception as e:
