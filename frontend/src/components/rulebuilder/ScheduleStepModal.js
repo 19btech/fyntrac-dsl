@@ -745,9 +745,11 @@ const ScheduleStepModal = ({ open, step, onClose, onSaveStep, events, dslFunctio
                   </FormControl>
                 )}
                 {startDateSource === 'formula' && (
-                  <FormulaBar value={startDateFormula} onChange={setStartDateFormula}
-                    events={events} variables={allVarNames}
-                    placeholder="e.g., add_months(effectivedate, 12)" />
+                  <Box sx={{ mt: 1 }}>
+                    <FormulaBar value={startDateFormula} onChange={setStartDateFormula}
+                      events={events} variables={allVarNames}
+                      placeholder="e.g., add_months(effectivedate, 12)" />
+                  </Box>
                 )}
               </Box>
               <Box sx={{ flex: 1, minWidth: 0 }}>
@@ -774,9 +776,11 @@ const ScheduleStepModal = ({ open, step, onClose, onSaveStep, events, dslFunctio
                   </FormControl>
                 )}
                 {endDateSource === 'formula' && (
-                  <FormulaBar value={endDateFormula} onChange={setEndDateFormula}
-                    events={events} variables={allVarNames}
-                    placeholder="e.g., add_months(effectivedate, 60)" />
+                  <Box sx={{ mt: 1 }}>
+                    <FormulaBar value={endDateFormula} onChange={setEndDateFormula}
+                      events={events} variables={allVarNames}
+                      placeholder="e.g., add_months(effectivedate, 60)" />
+                  </Box>
                 )}
               </Box>
             </Box>
