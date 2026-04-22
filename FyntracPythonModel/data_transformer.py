@@ -121,6 +121,46 @@ def get_field_case_insensitive(row: Dict[str, Any], field_name: str, default: An
     return default
 
 
+def _sort_activity_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Enforce canonical activity-data ordering:
+        instrumentid ASC, postingdate ASC, effectivedate ASC, subinstrumentid ASC
+
+    Mirrors backend/server.py::_sort_activity_rows so the export runtime
+    delivers activity rows to the generated template in the same canonical
+    order as the playground. Reference / custom event data is intentionally
+    skipped by the caller — it has no instrument/date axis.
+    """
+    if not isinstance(rows, list) or len(rows) <= 1:
+        return rows
+
+    def _ci(row, name):
+        if not isinstance(row, dict):
+            return ''
+        if name in row:
+            v = row[name]
+        else:
+            lname = name.lower()
+            v = ''
+            for k, val in row.items():
+                if str(k).lower() == lname:
+                    v = val
+                    break
+        if v is None:
+            return ''
+        return str(v)
+
+    try:
+        rows.sort(key=lambda r: (
+            _ci(r, 'instrumentid'),
+            _ci(r, 'postingdate'),
+            _ci(r, 'effectivedate'),
+            _ci(r, 'subinstrumentid') or '1',
+        ))
+    except Exception:
+        pass
+    return rows
+
+
 # ---------------------------------------------------------------------------
 # Validation
 # ---------------------------------------------------------------------------
@@ -223,6 +263,13 @@ def build_event_data_from_import(
                     row[key] = value
 
             event_rows[event_id].append(row)
+
+    # Activity-data only: enforce canonical sort
+    # (instrumentid ASC, postingdate ASC, effectivedate ASC, subinstrumentid ASC)
+    # for every non-custom event. Custom/reference events are left untouched.
+    for _eid, _rows in event_rows.items():
+        if _eid not in custom_events:
+            _sort_activity_rows(_rows)
 
     return [
         {"event_name": eid, "data_rows": rows}
@@ -343,14 +390,21 @@ def filter_event_data_by_posting_date(
     event_data_dict: Dict[str, List[Dict]],
     posting_date: str,
 ) -> Dict[str, List[Dict]]:
-    """Filter each event's rows to only those matching the given posting_date."""
+    """Filter each event's rows to only those matching the given posting_date.
+
+    The result is also re-sorted in the canonical activity-data order so that
+    collect_by_instrument() / collect_all() and similar primitives in the
+    generated template iterate rows deterministically.
+    """
     target = posting_date.strip()
     filtered: Dict[str, List[Dict]] = {}
     for event_name, rows in event_data_dict.items():
-        filtered[event_name] = [
+        scoped = [
             row for row in rows
             if str(get_field_case_insensitive(row, "postingdate", "")).strip() == target
         ]
+        _sort_activity_rows(scoped)
+        filtered[event_name] = scoped
     return filtered
 
 
