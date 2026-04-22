@@ -1003,7 +1003,7 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
       const comma = idx < validCols.length - 1 ? ',' : '';
       lines.push(`    "${col.name}": "${col.formula}"${comma}`);
     });
-    const ctxVars = sc.contextVars || [];
+    const ctxVars = (sc.contextVars || []).filter(v => v !== s.name);
     if (ctxVars.length > 0) {
       const ctxPairs = ctxVars.map(v => `"${v}": ${v}`).join(', ');
       lines.push(`}, {${ctxPairs}})`);
@@ -1049,6 +1049,30 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
     return out.join('\n');
   }, []);
 
+  // Helper: sanitize legacy/broken `X = schedule(p, {...}, {... "X": X ...})`
+  // lines in saved generatedCode. Earlier versions of the schedule modal could
+  // emit the step's own variable name into its own context dict, which causes
+  // a Python UnboundLocalError because Python sees `X = ...` and treats X as
+  // function-local, but the right-hand side reads X before it is bound.
+  // We strip out the offending `"X": X` entry on any line that assigns X via
+  // schedule(). Safe for code that doesn't have the bug (regex no-op).
+  const _sanitizeSelfRefSchedules = useCallback((code) => {
+    const lines = (code || '').split('\n');
+    return lines.map(line => {
+      const m = line.match(/^(\s*)([A-Za-z_]\w*)\s*=\s*schedule\(/);
+      if (!m) return line;
+      const name = m[2];
+      // Remove `"NAME": NAME,` or `, "NAME": NAME` or sole `"NAME": NAME` from
+      // any context dict on this line. Names match exactly the assigned variable.
+      const re = new RegExp(`(,\\s*)?"${name}"\\s*:\\s*${name}\\b(\\s*,)?`, 'g');
+      return line.replace(re, (match, leadingComma, trailingComma) => {
+        // If this entry was in the middle of the dict (both commas), keep one comma.
+        if (leadingComma && trailingComma) return ',';
+        return '';
+      });
+    }).join('\n');
+  }, []);
+
   // Build full prior-rules code using savedRulesRaw (strip-deps on all but first),
   // excluding the rule currently being edited so it doesn't re-define its own vars.
   // Only includes rules that should run BEFORE this one (priority strictly less than
@@ -1077,7 +1101,7 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
         return pa - pb;
       });
     return priorRules
-      .map(r => _stripCreateTxnSection(_stripDepsSection(r.generatedCode || '')))
+      .map(r => _sanitizeSelfRefSchedules(_stripCreateTxnSection(_stripDepsSection(r.generatedCode || ''))))
       .filter(Boolean)
       .join('\n\n')
       // Drop any print() lines from prior rules so their output never leaks into
@@ -1089,7 +1113,7 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
         return !(t.startsWith('print(') || t.startsWith('print ('));
       })
       .join('\n');
-  }, [savedRulesRaw, _stripDepsSection, _stripCreateTxnSection, rulePriority]);
+  }, [savedRulesRaw, _stripDepsSection, _stripCreateTxnSection, _sanitizeSelfRefSchedules, rulePriority]);
 
   const testStep = useCallback(async (step, stepIndex) => {
     const lines = [];
@@ -1369,7 +1393,7 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
           const comma = idx < validCols.length - 1 ? ',' : '';
           lines.push(`    "${col.name}": "${col.formula}"${comma}`);
         });
-        const ctxVars = sc.contextVars || [];
+        const ctxVars = (sc.contextVars || []).filter(v => v !== s.name);
         if (ctxVars.length > 0) {
           const ctxPairs = ctxVars.map(v => `"${v}": ${v}`).join(', ');
           lines.push(`}, {${ctxPairs}})`);
@@ -2123,7 +2147,7 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
                 const pb = b.priority == null ? Infinity : Number(b.priority);
                 return pa - pb;
               })
-              .map(r => stripSection(stripSection(r.generatedCode || '', '## Dependencies from saved rules'), '## Create Transactions'))
+              .map(r => _sanitizeSelfRefSchedules(stripSection(stripSection(r.generatedCode || '', '## Dependencies from saved rules'), '## Create Transactions')))
               .filter(Boolean).join('\n\n')
               .split('\n')
               .filter(l => { const t = l.trim(); return t && !t.startsWith('print(') && !t.startsWith('print (') && !t.startsWith('createTransaction('); })
