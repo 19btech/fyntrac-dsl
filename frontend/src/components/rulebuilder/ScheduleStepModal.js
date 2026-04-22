@@ -578,7 +578,13 @@ const ScheduleStepModal = ({ open, step, onClose, onSaveStep, events, dslFunctio
       // Standalone DSL (no event refs) falls back to a plain print to avoid
       // referencing instrumentid/subinstrumentid which won't be defined.
       const _hasEventRefs = (code) => /\b[A-Z][A-Z0-9_]*\.[a-zA-Z_]\w*/.test(code || '');
-      const schedCode = buildScheduleCode();
+      // Drop the trailing `print(sched)` that buildScheduleCode appends — we
+      // only want the marker print for the output variable. Otherwise the raw
+      // schedule dump (item_index, item_name, ...) leaks into the result row.
+      const schedCode = buildScheduleCode()
+        .split('\n')
+        .filter(l => l.trim() !== 'print(sched)')
+        .join('\n');
       const allPriorCode = [priorRulesCode, currentRulePreStepCode].filter(Boolean).join('\n\n');
       const printLine = _hasEventRefs([allPriorCode, schedCode, ...extraLines].join('\n'))
         ? `print("__TEST_ROW__|" + str(instrumentid) + "|" + str(subinstrumentid) + "| ${entry.name} =", ${entry.name})`
