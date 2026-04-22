@@ -1638,7 +1638,10 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
         const data = await response.json();
         if (response.ok && data.success) {
           const txns = data.transactions || [];
-          const justThis = txns.length > 0 ? [txns[txns.length - 1]] : [];
+          // Match by transaction type so we show every transaction this draft
+          // produced (e.g. one per sub-instrument when amount is an array).
+          const matching = txns.filter(t => (t?.transactiontype || t?.type) === txn.type);
+          const justThis = matching.length > 0 ? matching : (txns.length > 0 ? [txns[txns.length - 1]] : []);
           const out = justThis.length > 0
             ? `transaction = ${JSON.stringify(justThis)}`
             : 'transaction = []';
@@ -1802,7 +1805,8 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
       const data = await response.json();
       if (response.ok && data.success) {
         const txns = data.transactions || [];
-        const justThis = txns.length > 0 ? [txns[txns.length - 1]] : [];
+        const matching = txns.filter(t => (t?.transactiontype || t?.type) === txn.type);
+        const justThis = matching.length > 0 ? matching : (txns.length > 0 ? [txns[txns.length - 1]] : []);
         const out = justThis.length > 0 ? `transaction = ${JSON.stringify(justThis)}` : 'transaction = []';
         return { success: true, output: out, variableName };
       }
