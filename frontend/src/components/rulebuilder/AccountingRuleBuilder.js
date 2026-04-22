@@ -40,6 +40,18 @@ const STEP_TYPE_META = {
   custom_code: { label: 'CustomCode',  color: '#607D8B', icon: Code },
 };
 
+// ─── Identifier-aware test print ───────────────────────────────────────
+// When the rule references events, the backend runs the DSL once per
+// (instrument, subinstrument) at the chosen posting date. To make the
+// per-step test results meaningful, we tag each print with the row's
+// instrument + sub-instrument identifier so the UI can render a table.
+const _hasEventRefs = (code) => /\b[A-Z][A-Z0-9_]*\.[a-zA-Z_]\w*/.test(code || '');
+const _testPrintLine = (varName, codeSoFar) =>
+  _hasEventRefs(codeSoFar)
+    ? `print("__TEST_ROW__|" + str(instrumentid) + "|" + str(subinstrumentid) + "| ${varName} =", ${varName})`
+    : `print("${varName} =", ${varName})`;
+
+
 // ─── Helper: build DSL line for a single calc variable ─────────────────
 const buildCalcLine = (v) => {
   if (v.source === 'value')       return `${v.name} = ${v.value || 0}`;
@@ -1070,23 +1082,24 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
 
     const targetStep = stepIndex !== undefined ? steps[stepIndex] : step;
     let variableName = '';
+    const _codeSoFar = lines.join('\n');
     if (targetStep) {
       if (targetStep.stepType === 'iteration') {
         const lastIter = (targetStep.iterations || [])[(targetStep.iterations || []).length - 1];
         if (lastIter?.resultVar) {
           variableName = lastIter.resultVar;
-          lines.push(`print("${lastIter.resultVar} =", ${lastIter.resultVar})`);
+          lines.push(_testPrintLine(lastIter.resultVar, _codeSoFar));
         }
       } else if (targetStep.stepType === 'schedule') {
         // Per-step play tests the schedule itself only — outputVars (sum/filter/etc.)
         // are tested individually from inside the Schedule modal.
         variableName = targetStep.name;
-        lines.push(`print("${targetStep.name} =", ${targetStep.name})`);
+        lines.push(_testPrintLine(targetStep.name, _codeSoFar));
       } else if (targetStep.stepType === 'custom_code') {
         // custom code runs as-is, no extra print needed
       } else if (targetStep.name) {
         variableName = targetStep.name;
-        lines.push(`print("${targetStep.name} =", ${targetStep.name})`);
+        lines.push(_testPrintLine(targetStep.name, _codeSoFar));
       }
     }
 
@@ -1100,9 +1113,8 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
     const data = await response.json();
     if (response.ok && data.success) {
       const prints = data.print_outputs || [];
-      // Only the LAST print is the tested variable's value (prior prints, if any
-      // leaked, are ignored by TestResultCard but we trim here too for cleanliness).
-      const out = prints.length > 0 ? String(prints[prints.length - 1]) : '';
+      // Join ALL prints so the card can group __TEST_ROW__ rows by (instrument, subinstrument).
+      const out = prints.map(String).join('\n');
       return { success: true, output: out, variableName };
     } else {
       return { success: false, error: data.error || (typeof data.detail === 'string' ? data.detail : JSON.stringify(data.detail)) || 'Execution failed', variableName };
@@ -1145,19 +1157,20 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
 
     // Now emit the step being tested
     let variableName = '';
+    const _codeSoFar2 = lines.join('\n');
     if (localStep.stepType === 'calc') {
       const line = buildCalcLine(localStep);
       if (line) lines.push(line);
       if (localStep.name) {
         variableName = localStep.name;
-        lines.push(`print("${localStep.name} =", ${localStep.name})`);
+        lines.push(_testPrintLine(localStep.name, _codeSoFar2));
       }
     } else if (localStep.stepType === 'condition') {
       const expr = buildConditionExpr(localStep.conditions || [], localStep.elseFormula);
       lines.push(`${localStep.name} = ${expr}`);
       if (localStep.name) {
         variableName = localStep.name;
-        lines.push(`print("${localStep.name} =", ${localStep.name})`);
+        lines.push(_testPrintLine(localStep.name, _codeSoFar2));
       }
     } else if (localStep.stepType === 'iteration') {
       const allAvailable = [...new Set([...definedVars, ...savedRulesVarNames])];
@@ -1165,14 +1178,14 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
       const lastIter = (localStep.iterations || [])[(localStep.iterations || []).length - 1];
       if (lastIter?.resultVar) {
         variableName = lastIter.resultVar;
-        lines.push(`print("${lastIter.resultVar} =", ${lastIter.resultVar})`);
+        lines.push(_testPrintLine(lastIter.resultVar, _codeSoFar2));
       }
     } else if (localStep.stepType === 'schedule') {
       lines.push(...buildScheduleStepLines(localStep));
       // Only print the schedule itself (single tested variable). Output variables
       // (sum/filter/etc.) have their own play buttons inside the modal.
       variableName = localStep.name;
-      lines.push(`print("${localStep.name} =", ${localStep.name})`);
+      lines.push(_testPrintLine(localStep.name, _codeSoFar2));
     } else if (localStep.stepType === 'custom_code') {
       if (localStep.customCode) lines.push(localStep.customCode);
     }
@@ -1187,7 +1200,7 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
     const data = await response.json();
     if (response.ok && data.success) {
       const prints = data.print_outputs || [];
-      const out = prints.length > 0 ? String(prints[prints.length - 1]) : '';
+      const out = prints.map(String).join('\n');
       return { success: true, output: out, variableName };
     } else {
       return { success: false, error: data.error || data.detail || 'Failed', variableName };

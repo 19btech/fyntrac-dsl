@@ -64,6 +64,32 @@ function formatScalar(v) {
   return String(v);
 }
 
+/** Compact one-line preview of any parsed value, suitable for a table cell. */
+function formatPreview(value, raw, max = 80) {
+  if (value === undefined || value === null) {
+    const s = (raw || '').replace(/\s+/g, ' ').trim();
+    if (!s) return '—';
+    return s.length > max ? s.slice(0, max - 1) + '…' : s;
+  }
+  if (Array.isArray(value)) {
+    if (value.length === 0) return '[ ]';
+    const items = value.slice(0, 6).map(v => {
+      if (v === null || v === undefined) return '—';
+      if (typeof v === 'object') return JSON.stringify(v);
+      return formatScalar(v);
+    });
+    let out = '[' + items.join(', ');
+    if (value.length > items.length) out += `, … +${value.length - items.length}`;
+    out += ']';
+    return out.length > max ? out.slice(0, max - 1) + '…' : out;
+  }
+  if (typeof value === 'object') {
+    const s = JSON.stringify(value);
+    return s.length > max ? s.slice(0, max - 1) + '…' : s;
+  }
+  return formatScalar(value);
+}
+
 /**
  * Friendly translation of common backend / DSL error messages.
  */
@@ -130,6 +156,43 @@ function ScalarValue({ value }) {
   );
 }
 
+function PerInstrumentTable({ rows, valueLabel }) {
+  const visible = rows.slice(0, 100);
+  return (
+    <Box>
+      <TableContainer sx={{ border: '1px solid #E0E4EA', borderRadius: 1, maxHeight: 360 }}>
+        <Table size="small" stickyHeader>
+          <TableHead>
+            <TableRow>
+              <TableCell sx={{ fontWeight: 700, bgcolor: '#F5F7FA', width: 40 }}>#</TableCell>
+              <TableCell sx={{ fontWeight: 700, bgcolor: '#F5F7FA' }}>Instrument</TableCell>
+              <TableCell sx={{ fontWeight: 700, bgcolor: '#F5F7FA' }}>Sub-Instrument</TableCell>
+              <TableCell sx={{ fontWeight: 700, bgcolor: '#F5F7FA' }}>{valueLabel}</TableCell>
+            </TableRow>
+          </TableHead>
+          <TableBody>
+            {visible.map((r, idx) => (
+              <TableRow key={idx} hover>
+                <TableCell sx={{ color: '#90A4AE', fontFamily: 'monospace' }}>{idx + 1}</TableCell>
+                <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.8125rem' }}>{r.instrument || '—'}</TableCell>
+                <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.8125rem' }}>{r.subInstrument || '—'}</TableCell>
+                <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.8125rem', wordBreak: 'break-word' }}>
+                  {formatPreview(r.value, r.raw)}
+                </TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      </TableContainer>
+      {rows.length > visible.length && (
+        <Typography variant="caption" color="text.secondary" sx={{ mt: 0.5, display: 'block' }}>
+          Showing first {visible.length} of {rows.length} rows
+        </Typography>
+      )}
+    </Box>
+  );
+}
+
 function RowsTable({ rows }) {
   // Determine columns from the first object row; otherwise treat as 1-column list.
   const isObjectList = rows.length > 0 && typeof rows[0] === 'object' && rows[0] !== null && !Array.isArray(rows[0]);
@@ -187,8 +250,39 @@ function RowsTable({ rows }) {
  *   sx           optional MUI sx for outer Card
  */
 export default function TestResultCard({ success, output, error, variableName, onClose, sx }) {
+  // Per-instrument rows produced by `__TEST_ROW__|inst|sub| name = value` markers.
+  const perInstrumentRows = useMemo(() => {
+    if (!success) return null;
+    const text = String(output || '');
+    if (!text.includes('__TEST_ROW__')) return null;
+    const lines = text.split('\n');
+    // A marker line begins with "__TEST_ROW__|<inst>|<sub>| <name> ="; the value
+    // may span multiple following lines until the next marker.
+    const rows = [];
+    let current = null;
+    for (const line of lines) {
+      const m = line.match(/^__TEST_ROW__\|([^|]*)\|([^|]*)\|\s*(.*)$/);
+      if (m) {
+        if (current) rows.push(current);
+        const [, inst, sub, rest] = m;
+        const { label, raw } = splitLabelAndValue(rest);
+        current = { instrument: inst.trim(), subInstrument: sub.trim(), label, rawLines: [raw] };
+      } else if (current) {
+        current.rawLines.push(line);
+      }
+    }
+    if (current) rows.push(current);
+    if (rows.length === 0) return null;
+    return rows.map(r => {
+      const raw = r.rawLines.join('\n').trim();
+      const value = tryParsePythonRepr(raw);
+      return { instrument: r.instrument, subInstrument: r.subInstrument, label: r.label, raw, value };
+    });
+  }, [success, output]);
+
   const parsed = useMemo(() => {
     if (!success) return null;
+    if (perInstrumentRows) return null; // handled separately
     const text = String(output || '');
     const allLines = text.split('\n').map(l => l.trimEnd());
     // A single print can span many lines (Python pretty-prints lists/dicts):
@@ -213,9 +307,9 @@ export default function TestResultCard({ success, output, error, variableName, o
     const { label, raw } = splitLabelAndValue(block);
     const value = tryParsePythonRepr(raw);
     return { label, raw, value };
-  }, [success, output]);
+  }, [success, output, perInstrumentRows]);
 
-  const headerLabel = variableName || parsed?.label || (success ? 'Result' : 'Error');
+  const headerLabel = variableName || parsed?.label || perInstrumentRows?.[0]?.label || (success ? 'Result' : 'Error');
 
   if (!success) {
     const { message, detail, expr } = humanizeError(error);
@@ -265,7 +359,10 @@ export default function TestResultCard({ success, output, error, variableName, o
         <Typography variant="body2" fontWeight={700} sx={{ color: COLOR.ok, flex: 1 }}>
           {headerLabel}
         </Typography>
-        {isList && (
+        {perInstrumentRows ? (
+          <Chip size="small" label={`${perInstrumentRows.length} ${perInstrumentRows.length === 1 ? 'row' : 'rows'}`}
+            sx={{ height: 18, fontSize: '0.6875rem', bgcolor: COLOR.numBg, color: COLOR.num, fontWeight: 600 }} />
+        ) : isList && (
           <Chip size="small" label={`${value.length} ${value.length === 1 ? 'row' : 'rows'}`}
             sx={{ height: 18, fontSize: '0.6875rem', bgcolor: COLOR.numBg, color: COLOR.num, fontWeight: 600 }} />
         )}
@@ -276,7 +373,9 @@ export default function TestResultCard({ success, output, error, variableName, o
         )}
       </Box>
 
-      {isEmpty ? (
+      {perInstrumentRows ? (
+        <PerInstrumentTable rows={perInstrumentRows} valueLabel={perInstrumentRows[0]?.label || 'value'} />
+      ) : isEmpty ? (
         <Typography variant="body2" color="text.secondary" fontStyle="italic">
           Ran successfully (no value produced)
         </Typography>
