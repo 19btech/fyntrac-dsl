@@ -149,7 +149,6 @@ const CustomCodeStepModal = ({ open, step, onClose, onSaveStep, events, dslFunct
                     { name: 'schedule_filter', params: 'sched, date_col, target_date, value_col', desc: 'Filter schedule rows' },
                     { name: 'period', params: 'start, end, freq, convention?', desc: 'Create a period definition' },
                     { name: 'print', params: 'value', desc: 'Print value to console' },
-                    { name: 'collect', params: 'EVENT.field', desc: 'Collect values for current instrument/postingdate' },
                     { name: 'collect_by_instrument', params: 'EVENT.field', desc: 'Collect values grouped by instrument' },
                     { name: 'collect_all', params: 'EVENT.field', desc: 'Collect all values' },
                     { name: 'createTransaction', params: 'posting_date, effective_date, type, amount, subinstrumentid?', desc: 'Create transaction' },

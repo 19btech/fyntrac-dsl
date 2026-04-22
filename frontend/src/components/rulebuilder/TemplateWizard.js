@@ -155,7 +155,7 @@ function parseDSLToRules(code, templateTitle) {
     const calcSteps = vars.map(v => ({
       name: v.name, stepType: 'calc',
       source: v.source || 'formula', formula: v.formula || '', value: v.value || '',
-      eventField: v.eventField || '', collectType: v.collectType || 'collect',
+      eventField: v.eventField || '', collectType: v.collectType || 'collect_by_instrument',
     }));
     rules.push({
       ...defaultRule,
@@ -380,10 +380,10 @@ function classifyAssignment(name, rhs) {
 /** Convert a parsed statement into a Rule Builder variable object */
 function classifyToVariable(stmt) {
   const rhs = stmt.rhs;
-  const base = { name: stmt.name, value: '', formula: '', eventField: '', collectType: 'collect' };
+  const base = { name: stmt.name, value: '', formula: '', eventField: '', collectType: 'collect_by_instrument' };
 
   // Collect functions
-  const collectMatch = rhs.match(/^(collect_by_instrument|collect_all|collect_by_subinstrument|collect_subinstrumentids|collect)\(([^)]*)\)$/);
+  const collectMatch = rhs.match(/^(collect_by_instrument|collect_all|collect_by_subinstrument|collect_subinstrumentids)\(([^)]*)\)$/);
   if (collectMatch) return { ...base, source: 'collect', collectType: collectMatch[1], eventField: collectMatch[2] || '' };
 
   // Plain number

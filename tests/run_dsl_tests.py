@@ -226,7 +226,6 @@ TEST_CASES = [
     {"name": "createTransaction","cat": "Transaction",   "dsl": 'print(createTransaction("2024-01-15", "2024-01-15", "PAYMENT", 5000))'},
 
     # ── Array Collection (6 — require events, tested with simplified args) ──
-    {"name": "collect",                          "cat": "Array", "dsl": "print(collect([100, 200, 300]))",             "skip": True},
     {"name": "collect_by_instrument",            "cat": "Array", "dsl": "print(collect_by_instrument([100, 200]))",  "skip": True},
     {"name": "collect_all",                      "cat": "Array", "dsl": "print(collect_all([100, 200, 300]))",        "skip": True},
     {"name": "collect_by_subinstrument",         "cat": "Array", "dsl": "print(collect_by_subinstrument([100]))",    "skip": True},

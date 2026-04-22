@@ -399,13 +399,12 @@ schedule_data = schedule(
 This is a general rule applied to all generated schedule code to avoid None/undefined errors.
 
 ARRAY COLLECTION FUNCTIONS (for npv, irr, sum_vals, avg, etc.):
-- collect(EVENT.field) - Collects all values for current instrument/postingdate/effectivedate
-- collect_by_instrument(EVENT.field) - Collects all values for current instrument (ignores dates)
+- collect_by_instrument(EVENT.field) - Collects all values for current instrument (across all dates)
 - collect_all(EVENT.field) - Collects ALL values across all rows
 - collect_by_subinstrument(EVENT.field) - Collects values for current instrumentId AND subInstrumentId
 - collect_subinstrumentids() - Get all unique subInstrumentIds for current instrumentId
 - collect_effectivedates_for_subinstrument(subid?) - Get all effectiveDates for a specific subInstrumentId
-- Example: npv_value = npv(rate, collect(ECF.ExpectedCF))
+- Example: npv_value = npv(rate, collect_by_instrument(ECF.ExpectedCF))
 
 AGGREGATION FUNCTIONS FOR OBJECT ARRAYS:
 - sum_field(array, field) - Sum a specific field from array of objects (None values treated as 0)

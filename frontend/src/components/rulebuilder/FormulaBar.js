@@ -177,8 +177,7 @@ const FORMULA_CATALOG = [
   { name: 'ARR_EXTEND', dsl: 'array_extend', args: ['array', 'other'], desc: 'Extend with another array', category: 'Array', example: 'ARR_EXTEND(arr1, arr2)' },
   { name: 'ARR_FILTER', dsl: 'array_filter', args: ['array', 'var', 'condition'], desc: 'Filter by condition', category: 'Array', example: 'ARR_FILTER(items, "x", "gt(x, 0)")' },
 
-  // ── Collect (Event Data) (6) ─────────────────────────────────────────
-  { name: 'COLLECT', dsl: 'collect', args: ['EVENT.field'], desc: 'Collect field values for posting date', category: 'Collect', example: 'COLLECT(LoanEvent.balance)' },
+  // ── Collect (Event Data) (5) ────────────────────────────────
   { name: 'COLLECT_INSTR', dsl: 'collect_by_instrument', args: ['EVENT.field'], desc: 'Collect by instrument ID', category: 'Collect', example: 'COLLECT_INSTR(LoanEvent.rate)' },
   { name: 'COLLECT_ALL', dsl: 'collect_all', args: ['EVENT.field'], desc: 'Collect all values (all dates)', category: 'Collect', example: 'COLLECT_ALL(LoanEvent.amount)' },
   { name: 'COLLECT_SUB', dsl: 'collect_by_subinstrument', args: ['EVENT.field'], desc: 'Collect by sub-instrument', category: 'Collect', example: 'COLLECT_SUB(LoanEvent.tranche)' },

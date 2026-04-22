@@ -159,8 +159,7 @@ const SAMPLE_DATA = [
   { name: 'trim', category: 'String', dsl: 'print(trim("  hello  "))', description: 'Trim whitespace', expectedType: 'string' },
   { name: 'str_length', category: 'String', dsl: 'print(str_length("Fyntrac"))', description: 'Length of "Fyntrac"', expectedType: 'number' },
 
-  // ── Array Collection (6) — require event context ─────────────
-  { name: 'collect', category: 'Array', dsl: 'print(collect([100, 200, 300]))', description: 'Collect field values (simplified — normally uses EVENT.field)', expectedType: 'array', requiresEvents: true },
+  // ── Array Collection (5) — require event context ─────────────
   { name: 'collect_by_instrument', category: 'Array', dsl: 'print(collect_by_instrument([100, 200, 300]))', description: 'Collect values for current instrument', expectedType: 'array', requiresEvents: true },
   { name: 'collect_all', category: 'Array', dsl: 'print(collect_all([100, 200, 300]))', description: 'Collect ALL values across all rows', expectedType: 'array', requiresEvents: true },
   { name: 'collect_by_subinstrument', category: 'Array', dsl: 'print(collect_by_subinstrument([100, 200]))', description: 'Collect values for current sub-instrument', expectedType: 'array', requiresEvents: true },

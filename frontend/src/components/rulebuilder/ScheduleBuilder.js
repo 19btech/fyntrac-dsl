@@ -142,7 +142,7 @@ const ScheduleBuilder = ({ events, dslFunctions, onClose, onSave, initialData })
                 names.add(rv);
                 const codeLine = (r.generatedCode || '').split('\n').find(l => l.trim().startsWith(rv + ' ='));
                 const formula = codeLine ? codeLine.trim().replace(new RegExp('^' + rv + '\\s*=\\s*'), '') : rv;
-                allVars.push({ name: rv, source: 'formula', formula, value: '', eventField: '', collectType: 'collect', _isIterResult: true });
+                allVars.push({ name: rv, source: 'formula', formula, value: '', eventField: '', collectType: 'collect_by_instrument', _isIterResult: true });
               }
             }
           }
@@ -385,7 +385,7 @@ const ScheduleBuilder = ({ events, dslFunctions, onClose, onSave, initialData })
         } else if (savedVar.source === 'formula') {
           lines.push(`${savedVar.name} = ${savedVar.formula || 0}`);
         } else if (savedVar.source === 'collect') {
-          lines.push(`${savedVar.name} = ${savedVar.collectType || 'collect'}(${savedVar.eventField})`);
+          lines.push(`${savedVar.name} = ${savedVar.collectType || 'collect_by_instrument'}(${savedVar.eventField})`);
         }
         emittedVars.push(varName);
       }
@@ -575,7 +575,7 @@ const ScheduleBuilder = ({ events, dslFunctions, onClose, onSave, initialData })
         lines.push(`${v.name} = ${isDate ? '"2026-01-31"' : '100'}`);
       } else if (v.source === 'formula') lines.push(`${v.name} = ${v.formula || 0}`);
       else if (v.source === 'collect') {
-        const ct = v.collectType || 'collect';
+        const ct = v.collectType || 'collect_by_instrument';
         const isDate = /date/i.test(v.name) || /date/i.test(v.eventField || '');
         if (ct === 'collect_subinstrumentids') lines.push(`${v.name} = ["sub_1", "sub_2", "sub_3"]`);
         else if (isDate) {

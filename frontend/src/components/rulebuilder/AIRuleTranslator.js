@@ -85,9 +85,9 @@ KEY DSL PATTERNS — Use these as references:
 4. TRANSACTION PATTERN:
    createTransaction(postingdate, effectivedate, transactiontype, amount)
 
-5. COLLECT PATTERN (read event data by instrument/posting date):
-   amounts = collect(EVENT.amount)
-   dates = collect(EVENT.postingdate)
+5. COLLECT PATTERN (read event data scoped to current instrument):
+   amounts = collect_by_instrument(EVENT.amount)
+   dates = collect_by_instrument(EVENT.postingdate)
 
 6. ITERATION PATTERN:
    result = map_array(arr, "item", "multiply(item, 2)")

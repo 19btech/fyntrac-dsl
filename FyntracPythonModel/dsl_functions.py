@@ -3618,7 +3618,6 @@ DSL_FUNCTION_METADATA = [
     {"name": "str_length", "params": "s", "description": "Return the number of characters in a text value.", "category": "String"},
 
     # Array Collection (6)
-    {"name": "collect", "params": "EVENT.field", "description": "Gather all values of an event field for the current instrument and posting date into a list, for use in calculations such as NPV or IRR.", "category": "Array"},
     {"name": "collect_by_instrument", "params": "EVENT.field", "description": "Gather all values of an event field for the current instrument across all dates into a single list.", "category": "Array"},
     {"name": "collect_all", "params": "EVENT.field", "description": "Gather every value of an event field across all rows in the dataset without any filtering.", "category": "Array"},
     {"name": "collect_by_subinstrument", "params": "EVENT.field", "description": "Gather all values of an event field for a specific instrument and sub-instrument combination.", "category": "Array"},

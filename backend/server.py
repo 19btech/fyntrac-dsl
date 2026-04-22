@@ -820,7 +820,7 @@ def set_raw_event_data(data):
     _raw_event_data = data
 
 def set_current_context(instrumentid, postingdate, effectivedate, subinstrumentid='1'):
-    \"\"\"Set the current row context for filtering collect()\"\"\"
+    \"\"\"Set the current row context for filtering collect_by_* functions\"\"\"
     global _current_context
     _current_context = {
         'instrumentid': instrumentid,
@@ -828,51 +828,6 @@ def set_current_context(instrumentid, postingdate, effectivedate, subinstrumenti
         'postingdate': postingdate,
         'effectivedate': effectivedate
     }
-
-def collect(field_name):
-    \"\"\"
-    Collect all values of a field for the current instrumentid, postingdate, and effectivedate.
-    Usage: cashflows = collect('ECF_ExpectedCF')
-    Returns a list of numeric values from RAW event data (all rows, not merged).
-    \"\"\"
-    values = []
-    current_instrument = _current_context.get('instrumentid', '')
-    current_posting = _current_context.get('postingdate', '')
-    current_effective = _current_context.get('effectivedate', '')
-    
-    # Parse field_name to get event name and field (e.g., 'ECF_ExpectedCF' -> 'ECF', 'ExpectedCF')
-    parts = field_name.split('_', 1)
-    if len(parts) == 2:
-        event_name, actual_field = parts[0], parts[1]
-    else:
-        event_name, actual_field = None, field_name
-    
-    # Search in raw event data
-    for evt_name, rows in _raw_event_data.items():
-        # If event_name specified, only search that event
-        if event_name and evt_name.upper() != event_name.upper():
-            continue
-            
-        for row in rows:
-            row_instrument = get_field_case_insensitive(row, 'instrumentid', '')
-            row_posting = get_field_case_insensitive(row, 'postingdate', '')
-            row_effective = get_field_case_insensitive(row, 'effectivedate', '') or row_posting
-            
-            if (row_instrument == current_instrument and 
-                row_posting == current_posting and 
-                row_effective == current_effective):
-                # Try the actual field name
-                val = get_field_case_insensitive(row, actual_field, None)
-                if val is None:
-                    # Try the full field name
-                    val = get_field_case_insensitive(row, field_name, None)
-                if val is not None and val != '':
-                    try:
-                        values.append(float(val))
-                    except (ValueError, TypeError):
-                        # Keep string values (dates, etc.)
-                        values.append(str(val))
-    return values
 
 def collect_by_instrument(field_name):
     \"\"\"
@@ -1127,16 +1082,7 @@ def collect_effectivedates_for_subinstrument(subinstrument_id=None):
             i += 1
             continue
 
-        # Replace collect(...) patterns. For reference events, use collect_all
-        def _collect_repl(m):
-            evt, fld = m.group(1), m.group(2)
-            if evt in reference_events:
-                return f"collect_all('{evt}_{fld}')"
-            return f"collect('{evt}_{fld}')"
-
-        line = re.sub(r"collect\(\s*([A-Z][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)\s*\)", _collect_repl, line)
-
-        # collect_by_instrument -> use collect_all for reference events
+        # Replace collect_by_instrument(...) -> use collect_all for reference events
         def _collect_by_inst_repl(m):
             evt, fld = m.group(1), m.group(2)
             if evt in reference_events:
@@ -3065,7 +3011,7 @@ async def chat_with_assistant(message: ChatMessage):
                             allowed_funcs.add(name)
                 except Exception:
                     pass
-                extra_allowed = {'print', 'iif', 'collect', 'collect_by_instrument', 'collect_all', 'collect_by_subinstrument', 'collect_subinstrumentids', 'collect_effectivedates_for_subinstrument', 'npv', 'irr', 'sum_field', 'sum', 'len', 'min', 'max', 'abs', 'round', 'lag'}
+                extra_allowed = {'print', 'iif', 'collect_by_instrument', 'collect_all', 'collect_by_subinstrument', 'collect_subinstrumentids', 'collect_effectivedates_for_subinstrument', 'npv', 'irr', 'sum_field', 'sum', 'len', 'min', 'max', 'abs', 'round', 'lag'}
                 allowed_funcs.update(extra_allowed)
 
                 lines = code.splitlines()

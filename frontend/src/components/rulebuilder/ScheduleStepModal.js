@@ -212,7 +212,7 @@ const ScheduleStepModal = ({ open, step, onClose, onSaveStep, events, dslFunctio
                 names.add(rv);
                 const codeLine = (r.generatedCode || '').split('\n').find(l => l.trim().startsWith(rv + ' ='));
                 const formula = codeLine ? codeLine.trim().replace(new RegExp('^' + rv + '\\s*=\\s*'), '') : rv;
-                allVars.push({ name: rv, source: 'formula', formula, value: '', eventField: '', collectType: 'collect', _isIterResult: true });
+                allVars.push({ name: rv, source: 'formula', formula, value: '', eventField: '', collectType: 'collect_by_instrument', _isIterResult: true });
               }
             }
           }

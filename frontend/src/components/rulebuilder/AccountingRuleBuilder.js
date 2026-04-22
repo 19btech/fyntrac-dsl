@@ -146,7 +146,7 @@ const buildCalcLine = (v) => {
   if (v.source === 'value')       return `${v.name} = ${v.value || 0}`;
   if (v.source === 'event_field') return `${v.name} = ${v.eventField}`;
   if (v.source === 'formula')     return `${v.name} = ${v.formula || 0}`;
-  if (v.source === 'collect')     return `${v.name} = ${v.collectType || 'collect'}(${v.eventField})`;
+  if (v.source === 'collect')     return `${v.name} = ${v.collectType || 'collect_by_instrument'}(${v.eventField})`;
   return null;
 };
 
@@ -248,9 +248,8 @@ const CalcForm = ({ step, onChange, events, definedVarNames }) => {
         <Box sx={{ display: 'flex', gap: 1 }}>
           <FormControl size="small" sx={{ minWidth: 180 }}>
             <InputLabel>Collect Type</InputLabel>
-            <Select value={step.collectType || 'collect'} label="Collect Type"
+            <Select value={step.collectType || 'collect_by_instrument'} label="Collect Type"
               onChange={(e) => onChange({ ...step, collectType: e.target.value })}>
-              <MenuItem value="collect">collect (by posting date)</MenuItem>
               <MenuItem value="collect_by_instrument">collect_by_instrument</MenuItem>
               <MenuItem value="collect_all">collect_all</MenuItem>
               <MenuItem value="collect_by_subinstrument">collect_by_subinstrument</MenuItem>
@@ -911,11 +910,11 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
           (r.steps || []).forEach(step => {
             if (step.stepType === 'calc' && step.name && !names.has(step.name)) {
               names.add(step.name);
-              allVars.push({ name: step.name, source: step.source || 'formula', formula: step.formula || '', value: step.value || '', eventField: step.eventField || '', collectType: step.collectType || 'collect' });
+              allVars.push({ name: step.name, source: step.source || 'formula', formula: step.formula || '', value: step.value || '', eventField: step.eventField || '', collectType: step.collectType || 'collect_by_instrument' });
             } else if (step.stepType === 'condition' && step.name && !names.has(step.name)) {
               names.add(step.name);
               const expr = buildConditionExpr(step.conditions || [], step.elseFormula);
-              allVars.push({ name: step.name, source: 'formula', formula: expr, value: '', eventField: '', collectType: 'collect' });
+              allVars.push({ name: step.name, source: 'formula', formula: expr, value: '', eventField: '', collectType: 'collect_by_instrument' });
             } else if (step.stepType === 'iteration') {
               (step.iterations || []).forEach(iter => {
                 const rv = iter.resultVar;
@@ -933,7 +932,7 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
                   const formula = codeLine ? codeLine.trim().replace(new RegExp('^' + ov.name + '\\s*=\\s*'), '') : '0';
                   // Mark as schedule output — formula references the schedule variable (defined in another
                   // rule's steps section), so it cannot be safely emitted as a standalone dep line.
-                  allVars.push({ name: ov.name, source: 'formula', formula, value: '', eventField: '', collectType: 'collect', _isScheduleOutput: true });
+                  allVars.push({ name: ov.name, source: 'formula', formula, value: '', eventField: '', collectType: 'collect_by_instrument', _isScheduleOutput: true });
                 }
               });
             }
@@ -1567,7 +1566,7 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
     // Convert unified steps back to the legacy format for backward compatibility
     const variables = steps.filter(s => s.stepType === 'calc').map(s => ({
       name: s.name, source: s.source || 'formula', formula: s.formula || '', value: s.value || '',
-      eventField: s.eventField || '', collectType: s.collectType || 'collect',
+      eventField: s.eventField || '', collectType: s.collectType || 'collect_by_instrument',
     }));
     const condStep = steps.find(s => s.stepType === 'condition');
     const conditions = condStep?.conditions || [];
@@ -1623,7 +1622,7 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
     setEditingStepIndex(null);
     setModalStepType(type);
     const defaults = type === 'calc'
-      ? { name: '', stepType: 'calc', source: 'formula', formula: '', value: '', eventField: '', collectType: 'collect' }
+      ? { name: '', stepType: 'calc', source: 'formula', formula: '', value: '', eventField: '', collectType: 'collect_by_instrument' }
       : type === 'condition'
       ? { name: '', stepType: 'condition', conditions: [{ condition: '', thenFormula: '' }], elseFormula: '' }
       : type === 'iteration'
@@ -1632,7 +1631,7 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
       ? { name: '', stepType: 'schedule', scheduleConfig: {}, outputVars: [] }
       : type === 'custom_code'
       ? { name: '', stepType: 'custom_code', customCode: '' }
-      : { name: '', stepType: 'calc', source: 'formula', formula: '', value: '', eventField: '', collectType: 'collect' };
+      : { name: '', stepType: 'calc', source: 'formula', formula: '', value: '', eventField: '', collectType: 'collect_by_instrument' };
     setModalStep(defaults);
     setModalOpen(true);
     setAddMenuAnchor(null);
@@ -2409,7 +2408,7 @@ function convertInitialDataToSteps(data) {
         formula: v.formula || '',
         value: v.value || '',
         eventField: v.eventField || '',
-        collectType: v.collectType || 'collect',
+        collectType: v.collectType || 'collect_by_instrument',
       });
     }
   }

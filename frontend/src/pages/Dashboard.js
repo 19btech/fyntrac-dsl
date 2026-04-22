@@ -830,7 +830,7 @@ const Dashboard = () => {
                               { name: 'schedule_last', params: 'sched, col', description: 'Last value of schedule column' },
                               { name: 'period', params: 'start, end, freq, convention?', description: 'Create a period definition' },
                               { name: 'print', params: 'value', description: 'Print value to console' },
-                              { name: 'collect', params: 'EVENT.field', description: 'Collect values for current instrument/postingdate' },
+                              { name: 'collect_by_instrument', params: 'EVENT.field', description: 'Collect values for current instrument' },
                               { name: 'for_each', params: 'dates_arr, amounts_arr, date_var, amount_var, expression', description: 'Iterate paired arrays and evaluate expression' },
                               { name: 'map_array', params: 'array, var_name, expression, context?', description: 'Transform array elements' },
                               { name: 'sum_vals', params: 'array', description: 'Sum numeric values in array' }
