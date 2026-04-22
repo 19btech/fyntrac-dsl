@@ -304,7 +304,49 @@ export default function TestResultCard({ success, output, error, variableName, o
   const parsed = useMemo(() => {
     if (!success) return null;
     if (perInstrumentRows) return null; // handled separately
-    const text = String(output || '');
+    // Strip per-instrument markers so a collapsed (all-equal) result doesn't
+    // leak `__TEST_ROW__|...` prefixes or duplicate prints into the rendered
+    // output. Lines that are JUST a marker header become a "name =" line; any
+    // remaining unmarked print lines (e.g. an upstream debug `print(x)`) are
+    // dropped because they're duplicates of the markered value.
+    const rawText = String(output || '');
+    const markerRe = /^__TEST_ROW__\|[^|]*\|[^|]*\|\s*/;
+    const oldMarkerRe = /^__TEST_ROW__\|[^|]*\|\s*/;
+    const hasMarker = rawText.includes('__TEST_ROW__');
+    let text;
+    if (hasMarker) {
+      // Find the first marker line, keep its rest plus everything after it,
+      // discarding any prints that came before (those are duplicates).
+      const lines = rawText.split('\n');
+      let firstMarkerIdx = -1;
+      for (let i = 0; i < lines.length; i++) {
+        if (markerRe.test(lines[i]) || oldMarkerRe.test(lines[i])) { firstMarkerIdx = i; break; }
+      }
+      if (firstMarkerIdx >= 0) {
+        const tail = lines.slice(firstMarkerIdx);
+        // Strip the marker prefix from any marker line; drop subsequent marker
+        // lines entirely (collapsed = all-equal, no need to repeat).
+        const cleaned = [];
+        for (let i = 0; i < tail.length; i++) {
+          const l = tail[i];
+          if (markerRe.test(l) || oldMarkerRe.test(l)) {
+            if (i === 0) cleaned.push(l.replace(markerRe, '').replace(oldMarkerRe, ''));
+            // else: skip duplicate marker lines and their continuation rows
+            else {
+              // skip this marker AND any continuation lines until the next marker
+              while (i + 1 < tail.length && !markerRe.test(tail[i + 1]) && !oldMarkerRe.test(tail[i + 1])) i++;
+            }
+          } else {
+            cleaned.push(l);
+          }
+        }
+        text = cleaned.join('\n');
+      } else {
+        text = rawText;
+      }
+    } else {
+      text = rawText;
+    }
     const allLines = text.split('\n').map(l => l.trimEnd());
     // A single print can span many lines (Python pretty-prints lists/dicts):
     //   product_names = [
