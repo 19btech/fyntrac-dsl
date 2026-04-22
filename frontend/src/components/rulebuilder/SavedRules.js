@@ -270,9 +270,16 @@ const SavedRules = ({ onEditRule, onEditSchedule, refreshKey, onPlayAll, onClear
                   {playing ? <CircularProgress size={16} /> : <Play size={16} />}
                 </IconButton>
               </Tooltip>
-              <Tooltip title={savedTemplateId ? 'Update saved template' : 'Save all rules as a reusable template'}>
+              <Tooltip title={(() => { try { return localStorage.getItem('savedRulesTemplateId') || null; } catch { return null; } })() ? 'Update saved template' : 'Save all rules as a reusable template'}>
                 <IconButton size="small" onClick={async () => {
-                  if (savedTemplateId) {
+                  // Always read localStorage fresh — state may be stale if template was deleted
+                  // while this component was mounted (e.g. user visited Templates tab and came back).
+                  const currentTemplateId = (() => {
+                    try { return localStorage.getItem('savedRulesTemplateId') || null; } catch { return null; }
+                  })();
+                  // Sync state with localStorage if they diverged
+                  if (currentTemplateId !== savedTemplateId) { setSavedTemplateId(currentTemplateId); }
+                  if (currentTemplateId) {
                     // Overwrite existing template directly — no modal.
                     // Fetch full rules (with generatedCode) on demand.
                     setSavingTemplate(true);
@@ -293,7 +300,7 @@ const SavedRules = ({ onEditRule, onEditSchedule, refreshKey, onPlayAll, onClear
                         outputs: r.outputs || {}, customCode: r.customCode || '',
                         steps: r.steps || [],
                       }));
-                      const res = await fetch(`${API}/user-templates/${savedTemplateId}`, {
+                      const res = await fetch(`${API}/user-templates/${currentTemplateId}`, {
                         method: 'PUT',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({ rules: ruleSummaries, combinedCode }),
