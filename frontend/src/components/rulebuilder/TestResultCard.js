@@ -290,6 +290,14 @@ export default function TestResultCard({ success, output, error, variableName, o
     // "S04" comes before "S05" and "10" comes after "2".
     const cmp = (a, b) => String(a ?? '').localeCompare(String(b ?? ''), undefined, { numeric: true, sensitivity: 'base' });
     parsed.sort((a, b) => cmp(a.instrument, b.instrument) || cmp(a.subInstrument, b.subInstrument));
+    // If every instrument has the exact same value (e.g. a reference-table
+    // collect_all() that doesn't depend on instrumentid), collapse to a
+    // single-value rendering so we don't show meaningless duplicate rows.
+    if (parsed.length > 1) {
+      const first = parsed[0].raw;
+      const allEqual = parsed.every(p => p.raw === first);
+      if (allEqual) return null;
+    }
     return parsed;
   }, [success, output]);
 

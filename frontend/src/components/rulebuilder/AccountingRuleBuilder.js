@@ -156,7 +156,12 @@ const CalcForm = ({ step, onChange, events, definedVarNames }) => {
     if (!events?.length) return [];
     const r = [];
     events.forEach(ev => {
-      ['postingdate', 'effectivedate', 'subinstrumentid'].forEach(sf => r.push(`${ev.event_name}.${sf}`));
+      const evtType = (ev.eventType || ev.event_type || 'activity').toString().toLowerCase();
+      // Reference tables (custom tables) don't carry postingdate/effectivedate/
+      // instrumentid/subinstrumentid — only their declared fields are addressable.
+      if (evtType !== 'reference') {
+        ['postingdate', 'effectivedate', 'subinstrumentid'].forEach(sf => r.push(`${ev.event_name}.${sf}`));
+      }
       ev.fields.forEach(f => r.push(`${ev.event_name}.${f.name}`));
     });
     return r;
