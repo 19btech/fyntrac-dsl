@@ -2243,10 +2243,19 @@ async def run_dsl_code(request: DSLRunRequest):
         
         # Generate and execute Python code. Pass event metadata (fields + eventType)
         python_code = dsl_to_python_multi_event(dsl_code, all_event_fields)
+        # When a posting date is supplied (per-step tests use the earliest posting
+        # date), also restrict the raw event data so collect_by_instrument() and
+        # collect_all() — which normally span all dates — only see rows for that
+        # date. collect() already filters by date, but the broader variants do not.
+        raw_for_collect = (
+            filter_event_data_by_posting_date(event_data_dict, request.posting_date)
+            if request.posting_date
+            else event_data_dict
+        )
         execution_result = await execute_python_template(
             python_code, 
             merged_data,
-            event_data_dict,  # Pass raw event data for collect() functions
+            raw_for_collect,  # Raw event data for collect() functions
             request.posting_date,
             request.effective_date
         )

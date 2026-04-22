@@ -44,11 +44,13 @@ const STEP_TYPE_META = {
 // When the rule references events, the backend runs the DSL once per
 // (instrument, subinstrument) at the chosen posting date. To make the
 // per-step test results meaningful, we tag each print with the row's
-// instrument identifier so the UI can render a table.
+// instrument identifier so the UI can render a table. Sub-instrument is
+// included so the UI can sort by (instrument, subinstrument) even though
+// it isn't displayed.
 const _hasEventRefs = (code) => /\b[A-Z][A-Z0-9_]*\.[a-zA-Z_]\w*/.test(code || '');
 const _testPrintLine = (varName, codeSoFar) =>
   _hasEventRefs(codeSoFar)
-    ? `print("__TEST_ROW__|" + str(instrumentid) + "| ${varName} =", ${varName})`
+    ? `print("__TEST_ROW__|" + str(instrumentid) + "|" + str(subinstrumentid) + "| ${varName} =", ${varName})`
     : `print("${varName} =", ${varName})`;
 
 

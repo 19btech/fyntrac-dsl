@@ -248,34 +248,49 @@ function RowsTable({ rows }) {
  *   sx           optional MUI sx for outer Card
  */
 export default function TestResultCard({ success, output, error, variableName, onClose, sx }) {
-  // Per-instrument rows produced by `__TEST_ROW__|inst| name = value` markers.
+  // Per-instrument rows produced by `__TEST_ROW__|inst|sub| name = value` markers.
+  // Sub-instrument is captured for sorting only and not displayed.
   const perInstrumentRows = useMemo(() => {
     if (!success) return null;
     const text = String(output || '');
     if (!text.includes('__TEST_ROW__')) return null;
     const lines = text.split('\n');
-    // A marker line begins with "__TEST_ROW__|<inst>| <name> ="; the value
-    // may span multiple following lines until the next marker.
+    // A marker line begins with "__TEST_ROW__|<inst>|<sub>| <name> ="; the value
+    // may span multiple following lines until the next marker. For backwards
+    // compatibility we also accept the older 2-segment form without sub.
     const rows = [];
     let current = null;
+    const newRe = /^__TEST_ROW__\|([^|]*)\|([^|]*)\|\s*(.*)$/;
+    const oldRe = /^__TEST_ROW__\|([^|]*)\|\s*(.*)$/;
     for (const line of lines) {
-      const m = line.match(/^__TEST_ROW__\|([^|]*)\|\s*(.*)$/);
-      if (m) {
+      let inst, sub, rest;
+      const mNew = line.match(newRe);
+      if (mNew) {
+        inst = mNew[1]; sub = mNew[2]; rest = mNew[3];
+      } else {
+        const mOld = line.match(oldRe);
+        if (mOld) { inst = mOld[1]; sub = ''; rest = mOld[2]; }
+      }
+      if (inst !== undefined) {
         if (current) rows.push(current);
-        const [, inst, rest] = m;
         const { label, raw } = splitLabelAndValue(rest);
-        current = { instrument: inst.trim(), label, rawLines: [raw] };
+        current = { instrument: inst.trim(), subInstrument: sub.trim(), label, rawLines: [raw] };
       } else if (current) {
         current.rawLines.push(line);
       }
     }
     if (current) rows.push(current);
     if (rows.length === 0) return null;
-    return rows.map(r => {
+    const parsed = rows.map(r => {
       const raw = r.rawLines.join('\n').trim();
       const value = tryParsePythonRepr(raw);
-      return { instrument: r.instrument, label: r.label, raw, value };
+      return { instrument: r.instrument, subInstrument: r.subInstrument, label: r.label, raw, value };
     });
+    // Sort by instrument asc, then sub-instrument asc. Numeric-aware so
+    // "S04" comes before "S05" and "10" comes after "2".
+    const cmp = (a, b) => String(a ?? '').localeCompare(String(b ?? ''), undefined, { numeric: true, sensitivity: 'base' });
+    parsed.sort((a, b) => cmp(a.instrument, b.instrument) || cmp(a.subInstrument, b.subInstrument));
+    return parsed;
   }, [success, output]);
 
   const parsed = useMemo(() => {
