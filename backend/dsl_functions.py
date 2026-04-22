@@ -2327,10 +2327,30 @@ def print_schedule(sched: List[Dict[str, Any]], title: str = "Schedule") -> List
         return sched
     
     _dsl_print(f"═══ {title} ═══")
+    # Tag each printed row with the current (_instrumentid, _postingdate) so
+    # the Business Preview can strictly scope schedule display to the
+    # filtered instrument AND selected posting date. We clone the rows so the
+    # caller's in-memory schedule object is untouched.
     try:
-        _dsl_print(json.dumps(sched, indent=2, default=str))
+        _iid = _get_current_instrumentid()
+        _pd = _get_current_postingdate()
+        tagged = []
+        for _r in sched:
+            if isinstance(_r, dict):
+                _row = dict(_r)
+                if '_instrumentid' not in _row:
+                    _row['_instrumentid'] = _iid
+                if '_postingdate' not in _row and _pd:
+                    _row['_postingdate'] = _pd
+                tagged.append(_row)
+            else:
+                tagged.append(_r)
     except Exception:
-        _dsl_print(str(sched))
+        tagged = sched
+    try:
+        _dsl_print(json.dumps(tagged, indent=2, default=str))
+    except Exception:
+        _dsl_print(str(tagged))
     
     return sched
 
@@ -2674,6 +2694,11 @@ def _clear_transaction_results():
 # Global variable to hold the current instrumentid (set by server.py during execution)
 _current_instrumentid = "STANDALONE"
 
+# Global variable to hold the current postingdate (set by server.py during execution
+# alongside _current_instrumentid). Used by print_schedule() to tag emitted schedule
+# rows so the Business Preview can scope them to the right (instrument, posting date).
+_current_postingdate = ""
+
 # Guard to detect evaluation inside `schedule()` to prevent helper re-entrancy
 _in_schedule_evaluation = 0
 
@@ -2686,6 +2711,16 @@ def _get_current_instrumentid():
     """Get the current instrumentid"""
     global _current_instrumentid
     return _current_instrumentid
+
+def _set_current_postingdate(postingdate: str):
+    """Set the current postingdate (used to tag emitted schedule rows)."""
+    global _current_postingdate
+    _current_postingdate = str(postingdate) if postingdate is not None else ""
+
+def _get_current_postingdate():
+    """Get the current postingdate."""
+    global _current_postingdate
+    return _current_postingdate
 
 
 def _in_schedule_eval():

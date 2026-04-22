@@ -18,7 +18,11 @@ const formatNumber = (val) => {
 
 const SchedulePreview = ({ data, title, maxRows = 6 }) => {
   if (!data || !Array.isArray(data) || data.length === 0) return null;
-  const allKeys = [...new Set(data.flatMap(obj => Object.keys(obj)))];
+  // Hide internal tagging columns (e.g. _instrumentid, _postingdate) used
+  // only for Business Preview filtering — they are not part of the
+  // user's schedule output.
+  const allKeys = [...new Set(data.flatMap(obj => Object.keys(obj)))]
+    .filter(k => !String(k).startsWith('_'));
   const displayRows = data.slice(0, maxRows);
   const hasMore = data.length > maxRows;
 
@@ -71,25 +75,15 @@ const SchedulePreview = ({ data, title, maxRows = 6 }) => {
   );
 };
 
-const TransactionPreview = ({ transactions, filterValue, filterDimension }) => {
+const TransactionPreview = ({ transactions }) => {
   if (!transactions || transactions.length === 0) return null;
-
-  const filtered = filterValue
-    ? transactions.filter(t => {
-        if (filterDimension === 'subinstrument') return String(t.subinstrumentid ?? '') === filterValue;
-        return String(t.instrumentid || '') === filterValue;
-      })
-    : transactions;
 
   return (
     <Box sx={{ mb: 2 }}>
       <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1 }}>
         <FileText size={14} color="#5B5FED" />
         <Typography variant="body2" fontWeight={600} color="text.primary">Transactions</Typography>
-        <Chip label={`${filtered.length} entries`} size="small" sx={{ fontSize: '0.6875rem', height: 20, bgcolor: '#D4EDDA', color: '#155724' }} />
-        {filterValue && filtered.length !== transactions.length && (
-          <Chip label={`${transactions.length} total`} size="small" sx={{ fontSize: '0.6875rem', height: 20, bgcolor: '#F0F0F0', color: '#6C757D' }} />
-        )}
+        <Chip label={`${transactions.length} entries`} size="small" sx={{ fontSize: '0.6875rem', height: 20, bgcolor: '#D4EDDA', color: '#155724' }} />
       </Box>
       <TableContainer component={Paper} variant="outlined" sx={{ borderRadius: 2, maxHeight: 300 }}>
         <Table size="small" stickyHeader>
@@ -104,7 +98,7 @@ const TransactionPreview = ({ transactions, filterValue, filterDimension }) => {
             </TableRow>
           </TableHead>
           <TableBody>
-            {filtered.map((txn, idx) => {
+            {transactions.map((txn, idx) => {
               const amount = typeof txn.amount === 'number' ? txn.amount : parseFloat(txn.amount) || 0;
               return (
                 <TableRow key={idx} hover>
@@ -235,6 +229,7 @@ const LivePreview = ({ consoleOutput = [], transactions = [], schedules = [], wa
   const contentRef = useRef(null);
   const [exporting, setExporting] = useState(false);
   const [selectedInstrument, setSelectedInstrument] = useState(null);
+  const [selectedPostingDate, setSelectedPostingDate] = useState(null);
   // Extract schedule data from console print outputs
   const extractedSchedules = useMemo(() => {
     if (schedules && schedules.length > 0) return schedules;
@@ -294,25 +289,70 @@ const LivePreview = ({ consoleOutput = [], transactions = [], schedules = [], wa
 
   const hasContent = extractedSchedules.length > 0 || transactions.length > 0;
 
-  // Derive unique instrument IDs and sub-instrument IDs from transactions
+  // Derive unique instrument IDs from transactions AND schedules
   const instrumentOptions = useMemo(() => {
-    if (!transactions || transactions.length === 0) return [];
-    return [...new Set(transactions.map(t => String(t.instrumentid || '')).filter(Boolean))].sort();
-  }, [transactions]);
+    const set = new Set();
+    for (const t of (transactions || [])) {
+      const v = String(t.instrumentid ?? '').trim();
+      if (v) set.add(v);
+    }
+    for (const sched of extractedSchedules) {
+      if (Array.isArray(sched)) {
+        for (const row of sched) {
+          const v = String(row?._instrumentid ?? '').trim();
+          if (v) set.add(v);
+        }
+      }
+    }
+    return [...set].sort();
+  }, [transactions, extractedSchedules]);
 
-  const subInstrumentOptions = useMemo(() => {
-    if (!transactions || transactions.length === 0) return [];
-    return [...new Set(transactions.map(t => String(t.subinstrumentid ?? '')).filter(s => s !== ''))].sort((a, b) => Number(a) - Number(b) || a.localeCompare(b));
-  }, [transactions]);
+  // Derive unique posting dates from transactions AND schedules
+  const postingDateOptions = useMemo(() => {
+    const set = new Set();
+    for (const t of (transactions || [])) {
+      const v = String(t.postingdate ?? '').trim();
+      if (v) set.add(v);
+    }
+    for (const sched of extractedSchedules) {
+      if (Array.isArray(sched)) {
+        for (const row of sched) {
+          const v = String(row?._postingdate ?? '').trim();
+          if (v) set.add(v);
+        }
+      }
+    }
+    return [...set].sort();
+  }, [transactions, extractedSchedules]);
 
-  // Decide which dimension to filter by:
-  // - multiple instruments → filter by instrument
-  // - single instrument but multiple sub-instruments → filter by sub-instrument
-  const filterDimension = instrumentOptions.length > 1 ? 'instrument' : (subInstrumentOptions.length > 1 ? 'subinstrument' : null);
-  const filterOptions = filterDimension === 'instrument' ? instrumentOptions : filterDimension === 'subinstrument' ? subInstrumentOptions : [];
+  // Resolve current selections (drop if no longer valid)
+  const resolvedInstrument = instrumentOptions.includes(selectedInstrument) ? selectedInstrument : null;
+  const resolvedPostingDate = postingDateOptions.includes(selectedPostingDate) ? selectedPostingDate : null;
 
-  // Reset selection if it's no longer valid
-  const resolvedFilter = filterOptions.includes(selectedInstrument) ? selectedInstrument : null;
+  // Apply both filters to transactions (AND semantics)
+  const filteredTransactions = useMemo(() => {
+    return (transactions || []).filter(t => {
+      if (resolvedInstrument && String(t.instrumentid ?? '') !== resolvedInstrument) return false;
+      if (resolvedPostingDate && String(t.postingdate ?? '') !== resolvedPostingDate) return false;
+      return true;
+    });
+  }, [transactions, resolvedInstrument, resolvedPostingDate]);
+
+  // Apply both filters to schedules: a schedule is shown only if at least one
+  // tagged row matches both. Untagged rows (legacy artifacts) are treated as matches.
+  const filteredSchedules = useMemo(() => {
+    if (!resolvedInstrument && !resolvedPostingDate) return extractedSchedules;
+    return extractedSchedules.filter(sched => {
+      if (!Array.isArray(sched) || sched.length === 0) return false;
+      return sched.some(row => {
+        const rowInst = row?._instrumentid !== undefined ? String(row._instrumentid) : null;
+        const rowDate = row?._postingdate !== undefined ? String(row._postingdate) : null;
+        if (resolvedInstrument && rowInst !== null && rowInst !== resolvedInstrument) return false;
+        if (resolvedPostingDate && rowDate !== null && rowDate !== resolvedPostingDate) return false;
+        return true;
+      });
+    });
+  }, [extractedSchedules, resolvedInstrument, resolvedPostingDate]);
 
   const handleExportPDF = useCallback(async () => {
     if (!contentRef.current) return;
@@ -363,11 +403,11 @@ const LivePreview = ({ consoleOutput = [], transactions = [], schedules = [], wa
         </Box>
       )}
 
-      {/* Instrument/sub-instrument filter */}
-      {filterDimension && (
+      {/* Instrument filter */}
+      {instrumentOptions.length > 1 && (
         <Box sx={{ mb: 2 }}>
           <Typography variant="caption" color="text.secondary" sx={{ mb: 0.75, display: 'block', fontWeight: 600 }}>
-            {filterDimension === 'instrument' ? 'Filter by Instrument' : 'Filter by Sub-Instrument'}
+            Filter by Instrument
           </Typography>
           <Box sx={{ display: 'flex', gap: 0.75, flexWrap: 'wrap' }}>
             <Chip
@@ -376,24 +416,62 @@ const LivePreview = ({ consoleOutput = [], transactions = [], schedules = [], wa
               onClick={() => setSelectedInstrument(null)}
               sx={{
                 fontSize: '0.75rem', height: 24, cursor: 'pointer',
-                bgcolor: !resolvedFilter ? '#5B5FED' : '#F0F0F0',
-                color: !resolvedFilter ? '#fff' : '#495057',
-                fontWeight: !resolvedFilter ? 600 : 400,
-                '&:hover': { bgcolor: !resolvedFilter ? '#4A4ED0' : '#E0E0E0' },
+                bgcolor: !resolvedInstrument ? '#5B5FED' : '#F0F0F0',
+                color: !resolvedInstrument ? '#fff' : '#495057',
+                fontWeight: !resolvedInstrument ? 600 : 400,
+                '&:hover': { bgcolor: !resolvedInstrument ? '#4A4ED0' : '#E0E0E0' },
               }}
             />
-            {filterOptions.map(opt => (
+            {instrumentOptions.map(opt => (
               <Chip
                 key={opt}
                 label={opt}
                 size="small"
-                onClick={() => setSelectedInstrument(opt === resolvedFilter ? null : opt)}
+                onClick={() => setSelectedInstrument(opt === resolvedInstrument ? null : opt)}
                 sx={{
                   fontSize: '0.75rem', height: 24, cursor: 'pointer', fontFamily: 'monospace',
-                  bgcolor: resolvedFilter === opt ? '#5B5FED' : '#F0F0F0',
-                  color: resolvedFilter === opt ? '#fff' : '#495057',
-                  fontWeight: resolvedFilter === opt ? 600 : 400,
-                  '&:hover': { bgcolor: resolvedFilter === opt ? '#4A4ED0' : '#E0E0E0' },
+                  bgcolor: resolvedInstrument === opt ? '#5B5FED' : '#F0F0F0',
+                  color: resolvedInstrument === opt ? '#fff' : '#495057',
+                  fontWeight: resolvedInstrument === opt ? 600 : 400,
+                  '&:hover': { bgcolor: resolvedInstrument === opt ? '#4A4ED0' : '#E0E0E0' },
+                }}
+              />
+            ))}
+          </Box>
+        </Box>
+      )}
+
+      {/* Posting date filter */}
+      {postingDateOptions.length > 1 && (
+        <Box sx={{ mb: 2 }}>
+          <Typography variant="caption" color="text.secondary" sx={{ mb: 0.75, display: 'block', fontWeight: 600 }}>
+            Filter by Posting Date
+          </Typography>
+          <Box sx={{ display: 'flex', gap: 0.75, flexWrap: 'wrap' }}>
+            <Chip
+              label="All"
+              size="small"
+              onClick={() => setSelectedPostingDate(null)}
+              sx={{
+                fontSize: '0.75rem', height: 24, cursor: 'pointer',
+                bgcolor: !resolvedPostingDate ? '#5B5FED' : '#F0F0F0',
+                color: !resolvedPostingDate ? '#fff' : '#495057',
+                fontWeight: !resolvedPostingDate ? 600 : 400,
+                '&:hover': { bgcolor: !resolvedPostingDate ? '#4A4ED0' : '#E0E0E0' },
+              }}
+            />
+            {postingDateOptions.map(opt => (
+              <Chip
+                key={opt}
+                label={opt}
+                size="small"
+                onClick={() => setSelectedPostingDate(opt === resolvedPostingDate ? null : opt)}
+                sx={{
+                  fontSize: '0.75rem', height: 24, cursor: 'pointer', fontFamily: 'monospace',
+                  bgcolor: resolvedPostingDate === opt ? '#5B5FED' : '#F0F0F0',
+                  color: resolvedPostingDate === opt ? '#fff' : '#495057',
+                  fontWeight: resolvedPostingDate === opt ? 600 : 400,
+                  '&:hover': { bgcolor: resolvedPostingDate === opt ? '#4A4ED0' : '#E0E0E0' },
                 }}
               />
             ))}
@@ -417,12 +495,12 @@ const LivePreview = ({ consoleOutput = [], transactions = [], schedules = [], wa
 
       {(hasContent || computedWarnings.length > 0) && (
         <>
-          <SummaryMetrics transactions={transactions} schedules={extractedSchedules} />
+          <SummaryMetrics transactions={filteredTransactions} schedules={filteredSchedules} />
           <ValidationWarnings warnings={computedWarnings} />
-          {extractedSchedules.map((sched, idx) => (
-            <SchedulePreview key={idx} data={sched} title={extractedSchedules.length > 1 ? `Schedule ${idx + 1}` : 'Schedule'} maxRows={999} />
+          {filteredSchedules.map((sched, idx) => (
+            <SchedulePreview key={idx} data={sched} title={filteredSchedules.length > 1 ? `Schedule ${idx + 1}` : 'Schedule'} maxRows={999} />
           ))}
-          <TransactionPreview transactions={transactions} filterValue={resolvedFilter} filterDimension={filterDimension} />
+          <TransactionPreview transactions={filteredTransactions} />
         </>
       )}
       </Box>

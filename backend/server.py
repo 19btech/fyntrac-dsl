@@ -475,9 +475,9 @@ except Exception:
 if ROOT_DIR not in sys.path:
     sys.path.insert(0, ROOT_DIR)
 try:
-    from backend.dsl_functions import DSL_FUNCTIONS, _set_current_instrumentid, _clear_transaction_results, _get_transaction_results, _set_dsl_print
+    from backend.dsl_functions import DSL_FUNCTIONS, _set_current_instrumentid, _set_current_postingdate, _clear_transaction_results, _get_transaction_results, _set_dsl_print
 except Exception:
-    from dsl_functions import DSL_FUNCTIONS, _set_current_instrumentid, _clear_transaction_results, _get_transaction_results, _set_dsl_print
+    from dsl_functions import DSL_FUNCTIONS, _set_current_instrumentid, _set_current_postingdate, _clear_transaction_results, _get_transaction_results, _set_dsl_print
 from datetime import datetime
 import json
 
@@ -622,6 +622,7 @@ def process_standalone(override_postingdate=None, override_effectivedate=None):
     # Expose posting_date in scope so schedule column formulas can reference it
     postingdate = override_postingdate or ''
     posting_date = postingdate
+    _set_current_postingdate(postingdate)
     effectivedate = override_effectivedate or ''
     effective_date = effectivedate
     
@@ -668,9 +669,9 @@ ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__)))
 if ROOT_DIR not in sys.path:
     sys.path.insert(0, ROOT_DIR)
 try:
-    from backend.dsl_functions import DSL_FUNCTIONS, _set_current_instrumentid, _clear_transaction_results, _get_transaction_results, _set_dsl_print
+    from backend.dsl_functions import DSL_FUNCTIONS, _set_current_instrumentid, _set_current_postingdate, _clear_transaction_results, _get_transaction_results, _set_dsl_print
 except Exception:
-    from dsl_functions import DSL_FUNCTIONS, _set_current_instrumentid, _clear_transaction_results, _get_transaction_results, _set_dsl_print
+    from dsl_functions import DSL_FUNCTIONS, _set_current_instrumentid, _set_current_postingdate, _clear_transaction_results, _get_transaction_results, _set_dsl_print
 from datetime import datetime
 import json
 
@@ -1262,6 +1263,9 @@ def process_event_data(event_data, raw_event_data=None, override_postingdate=Non
         
         # Set current instrumentid for createTransaction()
         _set_current_instrumentid(instrumentid)
+        # Set current postingdate so print_schedule() can tag emitted rows
+        # with (_instrumentid, _postingdate) for the Business Preview filter.
+        _set_current_postingdate(postingdate)
         
         # Set current context for collect() filtering
         set_current_context(instrumentid, postingdate, effectivedate, subinstrumentid)
