@@ -325,8 +325,13 @@ const ScheduleStepModal = ({ open, step, onClose, onSaveStep, events, dslFunctio
         externalRefs.add(id);
       }
     }
+    // Never reference the step's own variable name as context — it is being
+    // assigned by THIS step (sched = schedule(...)) and would cause a Python
+    // UnboundLocalError when emitted as `{"Schedule": Schedule}` because the
+    // wrapper function sees a later `Schedule = ...` and treats it as local.
+    if (stepName) externalRefs.delete(stepName);
     return [...externalRefs];
-  }, [columns, SCHEDULE_BUILTINS, savedRulesVarNames, cfg.contextVars]);
+  }, [columns, SCHEDULE_BUILTINS, savedRulesVarNames, cfg.contextVars, stepName]);
 
   // Filter value options for schedule_filter
   const filterValueOptions = useMemo(() => {

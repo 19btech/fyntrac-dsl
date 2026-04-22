@@ -19,9 +19,52 @@ import TestResultCard from "./TestResultCard";
 // behaviour is deterministic across the whole UI. The /event-data/posting-dates
 // endpoint already returns dates sorted ascending, so we just take index 0.
 // Falls back to "today" only when no event data has been loaded.
+const _fetchWithTimeout = async (url, opts = {}, timeoutMs = 20000) => {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...opts, signal: ctrl.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+};
+
+// Run a `/dsl/run` POST with a hard timeout. Returns a normalized result so
+// callers don't have to handle AbortError separately. variableName is echoed
+// back so the caller can stash it on the test result.
+const _runDslWithTimeout = async (dslCode, postingDate, variableName, timeoutMs = 30000) => {
+  try {
+    const response = await _fetchWithTimeout(`${API}/dsl/run`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ dsl_code: dslCode, posting_date: postingDate }),
+    }, timeoutMs);
+    let data;
+    try { data = await response.json(); } catch { data = {}; }
+    if (response.ok && data.success) {
+      const prints = data.print_outputs || [];
+      return { success: true, output: prints.map(String).join('\n'), variableName };
+    }
+    return {
+      success: false,
+      error: data.error || (typeof data.detail === 'string' ? data.detail : (data.detail ? JSON.stringify(data.detail) : null)) || `Execution failed (HTTP ${response.status})`,
+      variableName,
+    };
+  } catch (err) {
+    const isAbort = err?.name === 'AbortError';
+    return {
+      success: false,
+      error: isAbort
+        ? `Test timed out after ${Math.round(timeoutMs / 1000)}s. The backend may be slow or unreachable.`
+        : (err?.message || 'Network error'),
+      variableName,
+    };
+  }
+};
+
 const fetchEarliestPostingDate = async () => {
   try {
-    const res = await fetch(`${API}/event-data/posting-dates`);
+    const res = await _fetchWithTimeout(`${API}/event-data/posting-dates`, {}, 8000);
     if (res.ok) {
       const data = await res.json();
       const dates = data?.posting_dates || [];
@@ -1107,20 +1150,7 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
 
     const dslCode = lines.join('\n');
     const postingDate = await fetchEarliestPostingDate();
-    const response = await fetch(`${API}/dsl/run`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ dsl_code: dslCode, posting_date: postingDate }),
-    });
-    const data = await response.json();
-    if (response.ok && data.success) {
-      const prints = data.print_outputs || [];
-      // Join ALL prints so the card can group __TEST_ROW__ rows by (instrument, subinstrument).
-      const out = prints.map(String).join('\n');
-      return { success: true, output: out, variableName };
-    } else {
-      return { success: false, error: data.error || (typeof data.detail === 'string' ? data.detail : JSON.stringify(data.detail)) || 'Execution failed', variableName };
-    }
+    return _runDslWithTimeout(dslCode, postingDate, variableName);
   }, [steps, savedRulesVarNames, ruleId, _buildPriorRulesCode, buildScheduleStepLines]);
 
   // Test for modal (builds code up to end + this new step)
@@ -1194,19 +1224,7 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
 
     const dslCode = lines.join('\n');
     const postingDate = await fetchEarliestPostingDate();
-    const response = await fetch(`${API}/dsl/run`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ dsl_code: dslCode, posting_date: postingDate }),
-    });
-    const data = await response.json();
-    if (response.ok && data.success) {
-      const prints = data.print_outputs || [];
-      const out = prints.map(String).join('\n');
-      return { success: true, output: out, variableName };
-    } else {
-      return { success: false, error: data.error || data.detail || 'Failed', variableName };
-    }
+    return _runDslWithTimeout(dslCode, postingDate, variableName);
   }, [steps, savedRulesVarNames, editingStepIndex, ruleId, _buildPriorRulesCode, buildScheduleStepLines]);
 
   // ── Generated code ──
@@ -1586,26 +1604,31 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
       else lines.push(`createTransaction(${pd}, ${ed}, "${txn.type}", ${amt})`);
       const dslCode = lines.join('\n');
       const postingDate = await fetchEarliestPostingDate();
-      const response = await fetch(`${API}/dsl/run`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ dsl_code: dslCode, posting_date: postingDate }),
-      });
-      const data = await response.json();
-      if (response.ok && data.success) {
-        const txns = data.transactions || [];
-        // Only the LAST transaction is the one we just emitted (prior rules'
-        // createTransaction sections are stripped, but defensive slicing here too).
-        const justThis = txns.length > 0 ? [txns[txns.length - 1]] : [];
-        // Render a compact one-row table by serialising as a Python-style list of dicts;
-        // TestResultCard will parse and table-ify it.
-        const out = justThis.length > 0
-          ? `transaction = ${JSON.stringify(justThis)}`
-          : 'transaction = []';
-        const variableName = txn.type ? `${txn.type} transaction` : 'transaction';
-        setTxnTestResults(prev => ({ ...prev, [txnIdx]: { success: true, output: out, variableName } }));
-      } else {
-        setTxnTestResults(prev => ({ ...prev, [txnIdx]: { success: false, error: data.error || 'Execution failed', variableName: txn.type ? `${txn.type} transaction` : 'transaction' } }));
+      const variableName = txn.type ? `${txn.type} transaction` : 'transaction';
+      try {
+        const response = await _fetchWithTimeout(`${API}/dsl/run`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ dsl_code: dslCode, posting_date: postingDate }),
+        }, 30000);
+        const data = await response.json();
+        if (response.ok && data.success) {
+          const txns = data.transactions || [];
+          const justThis = txns.length > 0 ? [txns[txns.length - 1]] : [];
+          const out = justThis.length > 0
+            ? `transaction = ${JSON.stringify(justThis)}`
+            : 'transaction = []';
+          setTxnTestResults(prev => ({ ...prev, [txnIdx]: { success: true, output: out, variableName } }));
+        } else {
+          setTxnTestResults(prev => ({ ...prev, [txnIdx]: { success: false, error: data.error || 'Execution failed', variableName } }));
+        }
+      } catch (e2) {
+        const isAbort = e2?.name === 'AbortError';
+        setTxnTestResults(prev => ({ ...prev, [txnIdx]: {
+          success: false,
+          error: isAbort ? 'Test timed out after 30s. The backend may be slow or unreachable.' : (e2.message || 'Network error'),
+          variableName,
+        } }));
       }
     } catch (e) {
       setTxnTestResults(prev => ({ ...prev, [txnIdx]: { success: false, error: e.message, variableName: txn.type ? `${txn.type} transaction` : 'transaction' } }));
@@ -1745,20 +1768,29 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
     else lines.push(`createTransaction(${pd}, ${ed}, "${txn.type}", ${amt})`);
     const dslCode = lines.join('\n');
     const postingDate = await fetchEarliestPostingDate();
-    const response = await fetch(`${API}/dsl/run`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ dsl_code: dslCode, posting_date: postingDate }),
-    });
-    const data = await response.json();
     const variableName = `${txn.type} transaction`;
-    if (response.ok && data.success) {
-      const txns = data.transactions || [];
-      const justThis = txns.length > 0 ? [txns[txns.length - 1]] : [];
-      const out = justThis.length > 0 ? `transaction = ${JSON.stringify(justThis)}` : 'transaction = []';
-      return { success: true, output: out, variableName };
+    try {
+      const response = await _fetchWithTimeout(`${API}/dsl/run`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ dsl_code: dslCode, posting_date: postingDate }),
+      }, 30000);
+      const data = await response.json();
+      if (response.ok && data.success) {
+        const txns = data.transactions || [];
+        const justThis = txns.length > 0 ? [txns[txns.length - 1]] : [];
+        const out = justThis.length > 0 ? `transaction = ${JSON.stringify(justThis)}` : 'transaction = []';
+        return { success: true, output: out, variableName };
+      }
+      return { success: false, error: data.error || 'Execution failed', variableName };
+    } catch (e) {
+      const isAbort = e?.name === 'AbortError';
+      return {
+        success: false,
+        error: isAbort ? 'Test timed out after 30s. The backend may be slow or unreachable.' : (e.message || 'Network error'),
+        variableName,
+      };
     }
-    return { success: false, error: data.error || 'Execution failed', variableName };
   }, [steps, ruleId, _buildPriorRulesCode, buildScheduleStepLines, savedRulesVarNames]);
 
   // ── Get step display name ──
