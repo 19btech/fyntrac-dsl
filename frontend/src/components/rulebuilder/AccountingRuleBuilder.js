@@ -756,17 +756,11 @@ const TransactionModal = ({ open, txn, onClose, onSaveTxn, onTest, amountOptions
           />
         )}
       </DialogContent>
-      <DialogActions sx={{ px: 2, py: 1.5, borderTop: '1px solid #E9ECEF' }}>
-        <Button onClick={handleTest} disabled={testing || !local.type}
-          startIcon={testing ? <CircularProgress size={14} /> : <Play size={14} />}
-          sx={{ color: '#4CAF50' }}>
-          {testing ? 'Testing…' : 'Test'}
-        </Button>
+      <DialogActions sx={{ px: 3, py: 2, borderTop: '1px solid #E9ECEF' }}>
+        <Button onClick={onClose} color="inherit">Cancel</Button>
         <Box sx={{ flex: 1 }} />
-        <Button onClick={onClose} startIcon={<X size={14} />}>Cancel</Button>
         <Button onClick={handleSave} variant="contained" disabled={!local.type}
-          startIcon={<Save size={14} />}
-          sx={{ bgcolor: TXN_COLOR, '&:hover': { bgcolor: '#0277BD' } }}>
+          startIcon={<Save size={14} />}>
           Save Transaction
         </Button>
       </DialogActions>
