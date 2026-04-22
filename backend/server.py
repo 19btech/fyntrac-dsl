@@ -862,16 +862,38 @@ def collect_by_instrument(field_name):
                 if val is None:
                     val = get_field_case_insensitive(row, field_name, None)
                 # Always emit a row per subinstrument so parallel arrays stay
-                # index-aligned. Null / empty values become 0.
+                # index-aligned. Type-aware placeholder is decided after the
+                # scan so dates/strings don't get coerced to 0.
                 sub = get_field_case_insensitive(row, 'subinstrumentid', '') or ''
-                if val is None or val == '':
-                    out_val = 0
-                else:
-                    try:
-                        out_val = float(val)
-                    except (ValueError, TypeError):
-                        out_val = str(val)
-                pairs.append((str(sub), out_val))
+                pairs.append((str(sub), val))
+
+    # Decide whether this is a numeric field. If every non-null value parses
+    # as a number, missing entries become 0; otherwise they become ''. This
+    # preserves subinstrument alignment without polluting date/string arrays
+    # with a meaningless 0.
+    all_numeric = True
+    has_value = False
+    for _s, v in pairs:
+        if v is None or v == '':
+            continue
+        has_value = True
+        try:
+            float(v)
+        except (ValueError, TypeError):
+            all_numeric = False
+            break
+    null_placeholder = 0 if (has_value and all_numeric) else ''
+
+    converted = []
+    for s, v in pairs:
+        if v is None or v == '':
+            converted.append((s, null_placeholder))
+        else:
+            try:
+                converted.append((s, float(v)))
+            except (ValueError, TypeError):
+                converted.append((s, str(v)))
+    pairs = converted
 
     def _sort_key(p):
         s = p[0]
@@ -910,16 +932,33 @@ def collect_all(field_name):
             if val is None:
                 val = get_field_case_insensitive(row, field_name, None)
             # Always emit a row so parallel collect_all() arrays stay
-            # index-aligned. Null / empty values become 0.
+            # index-aligned. Type-aware placeholder is decided after scan.
             sub = get_field_case_insensitive(row, 'subinstrumentid', '') or ''
-            if val is None or val == '':
-                out_val = 0
-            else:
-                try:
-                    out_val = float(val)
-                except (ValueError, TypeError):
-                    out_val = str(val)
-            pairs.append((str(sub), idx, out_val))
+            pairs.append((str(sub), idx, val))
+
+    all_numeric = True
+    has_value = False
+    for _s, _i, v in pairs:
+        if v is None or v == '':
+            continue
+        has_value = True
+        try:
+            float(v)
+        except (ValueError, TypeError):
+            all_numeric = False
+            break
+    null_placeholder = 0 if (has_value and all_numeric) else ''
+
+    converted = []
+    for s, i, v in pairs:
+        if v is None or v == '':
+            converted.append((s, i, null_placeholder))
+        else:
+            try:
+                converted.append((s, i, float(v)))
+            except (ValueError, TypeError):
+                converted.append((s, i, str(v)))
+    pairs = converted
 
     def _sort_key(p):
         s = p[0]
