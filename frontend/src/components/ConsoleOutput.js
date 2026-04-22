@@ -181,7 +181,7 @@ const PeriodDisplay = ({ data }) => {
 };
 
 // Smart print output renderer
-const PrintOutputRenderer = ({ output }) => {
+export const PrintOutputRenderer = ({ output }) => {
   const parsed = tryParseJSON(output);
 
   if (parsed !== null) {

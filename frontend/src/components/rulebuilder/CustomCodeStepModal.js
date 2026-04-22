@@ -6,6 +6,7 @@ import {
 import { Code, Play, Save, X } from "lucide-react";
 import Editor from "@monaco-editor/react";
 import { API } from "../../config";
+import { PrintOutputRenderer } from "../ConsoleOutput";
 
 /**
  * CustomCodeStepModal — Full-screen modal for writing raw DSL code
@@ -16,7 +17,9 @@ const CustomCodeStepModal = ({ open, step, onClose, onSaveStep, events, dslFunct
   const [stepName, setStepName] = useState(step?.name || '');
   const [customCode, setCustomCode] = useState(step?.customCode || '');
   const [testing, setTesting] = useState(false);
-  const [output, setOutput] = useState('');
+  // Console log entries: { timestamp, type: 'print'|'error'|'success'|'info', message }
+  // Mirrors the shape used by the main ConsoleOutput so we render via the same renderer.
+  const [logs, setLogs] = useState([]);
   const completionDisposerRef = useRef(null);
   const EDITOR_HEIGHT = 400;
 
@@ -25,13 +28,18 @@ const CustomCodeStepModal = ({ open, step, onClose, onSaveStep, events, dslFunct
     if (!open) return;
     setStepName(step?.name || '');
     setCustomCode(step?.customCode || '');
-    setOutput('');
+    setLogs([]);
   }, [open, step]);
+
+  const appendLog = useCallback((type, message) => {
+    const timestamp = new Date().toLocaleTimeString();
+    setLogs(prev => [...prev, { timestamp, type, message }]);
+  }, []);
 
   const handleRun = useCallback(async () => {
     if (!customCode.trim()) return;
     setTesting(true);
-    setOutput('');
+    setLogs([]);
     try {
       const today = new Date().toISOString().split('T')[0];
       const response = await fetch(`${API}/dsl/run`, {
@@ -41,16 +49,21 @@ const CustomCodeStepModal = ({ open, step, onClose, onSaveStep, events, dslFunct
       });
       const data = await response.json();
       if (response.ok && data.success) {
-        setOutput((data.print_outputs || []).map(String).join('\n') || 'Executed successfully (no output)');
+        const prints = data.print_outputs || [];
+        if (prints.length === 0) {
+          appendLog('success', 'Executed successfully (no output)');
+        } else {
+          prints.forEach(p => appendLog('print', String(p)));
+        }
       } else {
-        setOutput('ERROR: ' + (data.error || data.detail || 'Execution failed'));
+        appendLog('error', 'ERROR: ' + (data.error || data.detail || 'Execution failed'));
       }
     } catch (e) {
-      setOutput('ERROR: ' + (e.message || 'Network error'));
+      appendLog('error', 'ERROR: ' + (e.message || 'Network error'));
     } finally {
       setTesting(false);
     }
-  }, [customCode]);
+  }, [customCode, appendLog]);
 
   const handleSave = () => {
     if (!stepName) return;
@@ -189,13 +202,13 @@ const CustomCodeStepModal = ({ open, step, onClose, onSaveStep, events, dslFunct
           />
         </Paper>
 
-        {/* Console */}
+        {/* Console — same renderer as the Code Viewer console */}
         <Box sx={{ mt: 1.5 }}>
           <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 0.5 }}>
             <Typography variant="caption" fontWeight={600} color="text.secondary">Console</Typography>
             <Box sx={{ display: 'flex', gap: 0.5 }}>
               <Button size="small" variant="outlined"
-                onClick={() => setOutput('')} disabled={!output}
+                onClick={() => setLogs([])} disabled={logs.length === 0}
                 sx={{ fontSize: '0.7rem', minHeight: 24, px: 1, py: 0, color: '#8B949E', borderColor: '#30363D', '&:hover': { borderColor: '#8B949E' } }}>
                 Clear
               </Button>
@@ -208,13 +221,28 @@ const CustomCodeStepModal = ({ open, step, onClose, onSaveStep, events, dslFunct
               </Button>
             </Box>
           </Box>
-          <Paper variant="outlined" sx={{ bgcolor: '#161B22', borderRadius: 1, height: 180, overflow: 'auto', p: 1.5 }}>
-            <Typography component="pre" variant="body2" sx={{
-              fontFamily: 'monospace', fontSize: '0.75rem', lineHeight: 1.5, whiteSpace: 'pre-wrap',
-              color: output.startsWith('ERROR:') ? '#F85149' : '#7EE787', m: 0,
-            }}>
-              {output || <span style={{ color: '#484F58' }}>Click Run to test your code...</span>}
-            </Typography>
+          <Paper variant="outlined" sx={{ bgcolor: '#0D1117', borderColor: '#30363D', borderRadius: 1, height: 220, overflow: 'auto', p: 1.5 }}>
+            <div className="space-y-1 font-mono text-xs">
+              {logs.length === 0 ? (
+                <div className="text-[#484F58]">Click Run to test your code...</div>
+              ) : (
+                logs.map((log, idx) => {
+                  if (log.type === 'print') {
+                    return <div key={idx}><PrintOutputRenderer output={log.message} /></div>;
+                  }
+                  const colorClass = log.type === 'error' ? 'text-red-400'
+                    : log.type === 'success' ? 'text-emerald-400'
+                    : log.type === 'warning' ? 'text-amber-400'
+                    : 'text-slate-400';
+                  return (
+                    <div key={idx} className="flex gap-2">
+                      <span className="text-[#484F58]">[{log.timestamp}]</span>
+                      <span className={colorClass}>{log.message}</span>
+                    </div>
+                  );
+                })
+              )}
+            </div>
           </Paper>
         </Box>
       </DialogContent>
