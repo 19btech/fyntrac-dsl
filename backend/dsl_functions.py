@@ -1648,6 +1648,32 @@ def schedule(period_def: Dict[str, Any], columns: Dict[str, str], context: Dict[
         _in_schedule_evaluation -= 1
 
 
+class _ScheduleValueList(list):
+    """A list that also carries the sub-instrument ids associated with each entry.
+
+    Returned by `schedule_sum`, `schedule_first`, `schedule_last`, `schedule_filter`
+    and `schedule_column` when the source `schedule()` produced one schedule per
+    sub-instrument.  `createTransaction` reads `.subinstrument_ids` to align each
+    amount entry with the correct sub-instrument id, eliminating ordering bugs
+    when a separate `subinstrumentid` variable is passed.
+    """
+    __slots__ = ('subinstrument_ids',)
+
+    def __init__(self, iterable=(), subinstrument_ids=None):
+        super().__init__(iterable)
+        self.subinstrument_ids = list(subinstrument_ids) if subinstrument_ids is not None else None
+
+
+def _extract_sub_ids(sched):
+    """Pull the per-schedule subinstrument_id list from a generate_schedules result.
+
+    Returns None if the schedule isn't in the per-sub-instrument shape.
+    """
+    if isinstance(sched, list) and sched and isinstance(sched[0], dict) and 'schedule' in sched[0]:
+        return [r.get('subinstrument_id') for r in sched]
+    return None
+
+
 def schedule_sum(sched: List[Dict[str, Any]], column: str) -> float:
     """Sum a column from a schedule"""
     if _in_schedule_eval():
@@ -1663,7 +1689,10 @@ def schedule_sum(sched: List[Dict[str, Any]], column: str) -> float:
 
     # generate_schedules results: list of result dicts -> return list of totals
     if isinstance(sched, list) and sched and isinstance(sched[0], dict) and 'schedule' in sched[0]:
-        return [_sum_rows(r.get('schedule', []) or []) for r in sched]
+        return _ScheduleValueList(
+            (_sum_rows(r.get('schedule', []) or []) for r in sched),
+            subinstrument_ids=_extract_sub_ids(sched),
+        )
 
     # list of schedule arrays (multiple schedules passed as list) -> return list of totals
     if isinstance(sched, list) and sched and isinstance(sched[0], list):
@@ -1693,7 +1722,10 @@ def schedule_last(sched: List[Dict[str, Any]], column: str) -> float:
 
     # generate_schedules results -> list of last values
     if isinstance(sched, list) and sched and isinstance(sched[0], dict) and 'schedule' in sched[0]:
-        return [_last_single(r.get('schedule', []) or []) for r in sched]
+        return _ScheduleValueList(
+            (_last_single(r.get('schedule', []) or []) for r in sched),
+            subinstrument_ids=_extract_sub_ids(sched),
+        )
 
     # list of schedule arrays -> list of last values
     if isinstance(sched, list) and sched and isinstance(sched[0], list):
@@ -1720,7 +1752,10 @@ def schedule_first(sched: List[Dict[str, Any]], column: str) -> float:
 
     # generate_schedules results -> list of first values
     if isinstance(sched, list) and sched and isinstance(sched[0], dict) and 'schedule' in sched[0]:
-        return [_first_single(r.get('schedule', []) or []) for r in sched]
+        return _ScheduleValueList(
+            (_first_single(r.get('schedule', []) or []) for r in sched),
+            subinstrument_ids=_extract_sub_ids(sched),
+        )
 
     # list of schedule arrays -> list of first values
     if isinstance(sched, list) and sched and isinstance(sched[0], list):
@@ -1752,7 +1787,10 @@ def schedule_column(sched: List[Dict[str, Any]], column: str) -> List[Any]:
 
     # generate_schedules results: list of dicts with 'schedule' key
     if isinstance(sched, list) and sched and isinstance(sched[0], dict) and 'schedule' in sched[0]:
-        return [_col_values(r.get('schedule', []) or []) for r in sched]
+        return _ScheduleValueList(
+            (_col_values(r.get('schedule', []) or []) for r in sched),
+            subinstrument_ids=_extract_sub_ids(sched),
+        )
 
     # list of schedule arrays -> list of lists
     if isinstance(sched, list) and sched and isinstance(sched[0], list):
@@ -1857,7 +1895,10 @@ def schedule_filter(sched: List[Dict[str, Any]], match_column: str, match_value:
 
     # generate_schedules results (each item includes schedule + context like posting_date)
     if isinstance(sched, list) and sched and isinstance(sched[0], dict) and 'schedule' in sched[0]:
-        return [_find_value(r.get('schedule', []) or [], r) for r in sched]
+        return _ScheduleValueList(
+            (_find_value(r.get('schedule', []) or [], r) for r in sched),
+            subinstrument_ids=_extract_sub_ids(sched),
+        )
 
     # list of schedule arrays
     if isinstance(sched, list) and sched and isinstance(sched[0], list):
@@ -2673,6 +2714,16 @@ def createTransaction(postingdate: Any, effectivedate: Any, transactiontype: Any
     type_list = _to_list(transactiontype)
     amount_list = _to_list(amount)
     sub_list = _to_list(subinstrumentid) or ['1.0']
+
+    # If `amount` is a schedule-derived list that carries the per-entry
+    # sub-instrument ids (e.g., from schedule_filter / schedule_sum), prefer
+    # those ids — they guarantee per-row alignment of amount → sub-instrument.
+    # The caller-supplied sub_list is overridden because passing a separately
+    # collected sub-id list (different ordering) is the most common cause of
+    # misaligned transactions.
+    embedded_sub_ids = getattr(amount, 'subinstrument_ids', None)
+    if embedded_sub_ids and isinstance(amount, list) and len(embedded_sub_ids) == len(amount):
+        sub_list = [str(s) if s is not None else '1.0' for s in embedded_sub_ids]
 
     created = []
 
