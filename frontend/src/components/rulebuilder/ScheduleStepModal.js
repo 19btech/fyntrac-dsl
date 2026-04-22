@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useCallback, useEffect } from "react";
+import React, { useState, useMemo, useCallback, useEffect, useRef } from "react";
 import {
   Box, Typography, Card, CardContent, Button, TextField, MenuItem, Chip, IconButton,
   Tooltip, Divider, Select, FormControl, InputLabel, Paper, Switch, FormControlLabel,
@@ -186,6 +186,10 @@ const ScheduleStepModal = ({ open, step, onClose, onSaveStep, events, dslFunctio
   const [savedRulesVarNames, setSavedRulesVarNames] = useState([]);
   const [savedRulesVars, setSavedRulesVars] = useState([]);
   const [priorRulesCode, setPriorRulesCode] = useState('');
+  // Latest freshPriorCode value, accessible from the saved-rules fetch effect
+  // without making it a dep (which would re-trigger the fetch).
+  const freshPriorCodeRef = useRef(freshPriorCode);
+  useEffect(() => { freshPriorCodeRef.current = freshPriorCode; }, [freshPriorCode]);
 
   useEffect(() => {
     (async () => {
@@ -228,8 +232,22 @@ const ScheduleStepModal = ({ open, step, onClose, onSaveStep, events, dslFunctio
           }
           return out.join('\n');
         };
+        // Sanitize legacy/broken `X = schedule(p, {...}, {... "X": X ...})`
+        // emitted by older versions of this modal. Without this strip, the
+        // saved code triggers a Python UnboundLocalError when re-executed.
+        const stripSelfRefSchedules = (code) => (code || '').split('\n').map(line => {
+          const m = line.match(/^(\s*)([A-Za-z_]\w*)\s*=\s*schedule\(/);
+          if (!m) return line;
+          const name = m[2];
+          const re = new RegExp(`(,\\s*)?"${name}"\\s*:\\s*${name}\\b(\\s*,)?`, 'g');
+          return line.replace(re, (match, leadingComma, trailingComma) => {
+            if (leadingComma && trailingComma) return ',';
+            return '';
+          });
+        }).join('\n');
         const priorLines = rules
           .map((r, idx) => idx === 0 ? (r.generatedCode || '') : stripDeps(r.generatedCode || ''))
+          .map(stripSelfRefSchedules)
           .filter(Boolean).join('\n\n')
           .split('\n')
           .filter(l => {
@@ -237,7 +255,14 @@ const ScheduleStepModal = ({ open, step, onClose, onSaveStep, events, dslFunctio
             return t && !t.startsWith('print(') && !t.startsWith('print (') && !t.startsWith('createTransaction(');
           })
           .join('\n');
-        setPriorRulesCode(priorLines);
+        // Only apply this fallback if the parent hasn't already given us
+        // freshly-generated (and properly filtered) prior code. Otherwise this
+        // fetch — which doesn't exclude the current rule and races the
+        // freshPriorCode effect — could overwrite the good code with a stale
+        // copy that still contains the current rule's own definitions.
+        if (freshPriorCodeRef.current == null) {
+          setPriorRulesCode(priorLines);
+        }
       } catch { /* ignore */ }
     })();
   }, []);
