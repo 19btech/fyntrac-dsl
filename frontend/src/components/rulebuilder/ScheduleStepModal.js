@@ -8,7 +8,7 @@ import {
 } from "@mui/material";
 import {
   Plus, Trash2, ArrowUp, ArrowDown, Play, Calendar, Save, X,
-  Table as TableIcon, BarChart3,
+  Table as TableIcon, BarChart3, Filter as FilterIcon, Sigma, ListOrdered, ChevronsDown, ChevronsUp,
 } from "lucide-react";
 import { API } from "../../config";
 import FormulaBar from "./FormulaBar";
@@ -19,6 +19,14 @@ const FREQUENCY_OPTIONS = [
   { value: 'S', label: 'Semi-Annual', description: '2 periods per year' },
   { value: 'A', label: 'Annual', description: '1 period per year' },
 ];
+
+// Tiny inline helper used inside Select MenuItems for the "Add Output" dropdown.
+const ListItemIconLike = ({ color, children }) => (
+  <Box sx={{ width: 26, height: 26, mr: 1.25, borderRadius: 1, flexShrink: 0,
+    bgcolor: `${color}1A`, display: 'flex', alignItems: 'center', justifyContent: 'center', color }}>
+    {children}
+  </Box>
+);
 
 // ─── Column Card (reused from ScheduleBuilder) ───────────────────────
 const ColumnCard = ({ column, index, events, variables, onUpdate, onRemove, onMoveUp, onMoveDown, isFirst, isLast, onTest }) => {
@@ -125,23 +133,41 @@ const ScheduleStepModal = ({ open, step, onClose, onSaveStep, events, dslFunctio
   const [columns, setColumns] = useState(cfg.columns?.length ? cfg.columns : [{ name: 'date', formula: 'period_date' }]);
   const [stepName, setStepName] = useState(step?.name || '');
 
-  // Output options
-  const [extractFirst, setExtractFirst] = useState(cfg.extractFirst || false);
-  const [extractLast, setExtractLast] = useState(cfg.extractLast || false);
-  const [extractColumn, setExtractColumn] = useState(cfg.extractColumn || '');
-  const [firstVarName, setFirstVarName] = useState(cfg.firstVarName || '');
-  const [lastVarName, setLastVarName] = useState(cfg.lastVarName || '');
-  const [enableSum, setEnableSum] = useState(cfg.enableSum || false);
-  const [sumColumn, setSumColumn] = useState(cfg.sumColumn || '');
-  const [sumVarName, setSumVarName] = useState(cfg.sumVarName || '');
-  const [enableCol, setEnableCol] = useState(cfg.enableCol || false);
-  const [colColumn, setColColumn] = useState(cfg.colColumn || '');
-  const [colVarName, setColVarName] = useState(cfg.colVarName || '');
-  const [enableFilter, setEnableFilter] = useState(cfg.enableFilter || false);
-  const [filterVarName, setFilterVarName] = useState(cfg.filterVarName || '');
-  const [filterMatchCol, setFilterMatchCol] = useState(cfg.filterMatchCol || '');
-  const [filterMatchValue, setFilterMatchValue] = useState(cfg.filterMatchValue || '');
-  const [filterReturnCol, setFilterReturnCol] = useState(cfg.filterReturnCol || '');
+  // Output options — unified list. Each entry has a stable id and a `type`
+  // (first|last|sum|column|filter). Users can add unlimited outputs of any type.
+  // Migration: when opening a step saved with the legacy enableSum/enableFilter/etc
+  // toggles, we synthesize one entry per enabled toggle so nothing is lost.
+  const _migrateLegacyOutputs = useCallback((c, savedOutputVars) => {
+    // Newest schema: scheduleConfig.outputs (the unified array we now persist).
+    if (Array.isArray(c.outputs) && c.outputs.length > 0) {
+      return c.outputs.map((o, i) => ({ ...o, id: o.id || `o_${Date.now()}_${i}` }));
+    }
+    // Newer schema: step.outputVars array.
+    if (Array.isArray(savedOutputVars) && savedOutputVars.length > 0) {
+      return savedOutputVars.map((o, i) => ({
+        id: `o_${Date.now()}_${i}`,
+        type: o.type === 'column' ? 'column' : o.type,
+        name: o.name || '',
+        column: o.column || '',
+        matchCol: o.matchCol || '',
+        matchValue: o.matchValue != null ? String(o.matchValue) : '',
+      }));
+    }
+    // Migrate from legacy toggle-based config.
+    const out = [];
+    let i = 0;
+    if (c.extractFirst && c.extractColumn) out.push({ id: `o_${Date.now()}_${i++}`, type: 'first', name: c.firstVarName || `first_${c.extractColumn}`, column: c.extractColumn });
+    if (c.extractLast && c.extractColumn) out.push({ id: `o_${Date.now()}_${i++}`, type: 'last', name: c.lastVarName || `last_${c.extractColumn}`, column: c.extractColumn });
+    if (c.enableSum && c.sumVarName && c.sumColumn) out.push({ id: `o_${Date.now()}_${i++}`, type: 'sum', name: c.sumVarName, column: c.sumColumn });
+    if (c.enableCol && c.colVarName && c.colColumn) out.push({ id: `o_${Date.now()}_${i++}`, type: 'column', name: c.colVarName, column: c.colColumn });
+    if (c.enableFilter && c.filterVarName) {
+      out.push({ id: `o_${Date.now()}_${i++}`, type: 'filter', name: c.filterVarName,
+        column: c.filterReturnCol || '', matchCol: c.filterMatchCol || '', matchValue: c.filterMatchValue || '' });
+    }
+    return out;
+  }, []);
+
+  const [outputs, setOutputs] = useState(() => _migrateLegacyOutputs(cfg, step?.outputVars));
 
   // Step-level options
   const [localInlineComment, setLocalInlineComment] = useState(step?.inlineComment || false);
@@ -243,22 +269,7 @@ const ScheduleStepModal = ({ open, step, onClose, onSaveStep, events, dslFunctio
     setFrequency(c.frequency || 'M');
     setConvention(c.convention || '');
     setColumns(c.columns?.length ? c.columns : [{ name: 'date', formula: 'period_date' }]);
-    setExtractFirst(c.extractFirst || false);
-    setExtractLast(c.extractLast || false);
-    setExtractColumn(c.extractColumn || '');
-    setFirstVarName(c.firstVarName || '');
-    setLastVarName(c.lastVarName || '');
-    setEnableSum(c.enableSum || false);
-    setSumColumn(c.sumColumn || '');
-    setSumVarName(c.sumVarName || '');
-    setEnableCol(c.enableCol || false);
-    setColColumn(c.colColumn || '');
-    setColVarName(c.colVarName || '');
-    setEnableFilter(c.enableFilter || false);
-    setFilterVarName(c.filterVarName || '');
-    setFilterMatchCol(c.filterMatchCol || '');
-    setFilterMatchValue(c.filterMatchValue || '');
-    setFilterReturnCol(c.filterReturnCol || '');
+    setOutputs(_migrateLegacyOutputs(c, step?.outputVars));
     setLocalInlineComment(step?.inlineComment || false);
     setLocalCommentText(step?.commentText || '');
     setLocalPrintResult(step?.printResult !== undefined ? step.printResult : true);
@@ -497,45 +508,40 @@ const ScheduleStepModal = ({ open, step, onClose, onSaveStep, events, dslFunctio
     finally { setSchedulePreviewTesting(false); }
   }, [buildScheduleCode, priorRulesCode, currentRulePreStepCode, columns]);
 
-  // Test output option
-  const testOutputOption = useCallback(async (optType) => {
-    setOutputTests(prev => ({ ...prev, [optType]: { testing: true, result: null, error: null } }));
+  // Test a single output entry by id (runs schedule + the one output's DSL line)
+  const testOutputEntry = useCallback(async (entryId) => {
+    setOutputTests(prev => ({ ...prev, [entryId]: { testing: true, result: null, error: null } }));
     const setResult = (result, error) =>
-      setOutputTests(prev => ({ ...prev, [optType]: { testing: false, result, error } }));
+      setOutputTests(prev => ({ ...prev, [entryId]: { testing: false, result, error } }));
+    const entry = outputs.find(o => o.id === entryId);
+    if (!entry) { setResult(null, 'Output not found.'); return; }
+    if (!entry.name) { setResult(null, 'Variable name is required.'); return; }
+    const extraLines = [];
     try {
-      const extraLines = [];
-      switch (optType) {
+      switch (entry.type) {
         case 'first':
-          if (!extractColumn) { setResult(null, 'Select a column first.'); return; }
-          { const vn = firstVarName || `first_${extractColumn}`;
-          extraLines.push(`${vn} = schedule_first(sched, "${extractColumn}")`);
-          extraLines.push(`print("${vn}:", ${vn})`); }
+          if (!entry.column) { setResult(null, 'Pick a column.'); return; }
+          extraLines.push(`${entry.name} = schedule_first(sched, "${entry.column}")`);
           break;
         case 'last':
-          if (!extractColumn) { setResult(null, 'Select a column first.'); return; }
-          { const vn = lastVarName || `last_${extractColumn}`;
-          extraLines.push(`${vn} = schedule_last(sched, "${extractColumn}")`);
-          extraLines.push(`print("${vn}:", ${vn})`); }
+          if (!entry.column) { setResult(null, 'Pick a column.'); return; }
+          extraLines.push(`${entry.name} = schedule_last(sched, "${entry.column}")`);
           break;
         case 'sum':
-          if (!sumVarName || !sumColumn) { setResult(null, 'Fill in variable name and column.'); return; }
-          extraLines.push(`${sumVarName} = schedule_sum(sched, "${sumColumn}")`);
-          extraLines.push(`print("${sumVarName}:", ${sumVarName})`);
+          if (!entry.column) { setResult(null, 'Pick a column.'); return; }
+          extraLines.push(`${entry.name} = schedule_sum(sched, "${entry.column}")`);
           break;
-        case 'col':
-          if (!colVarName || !colColumn) { setResult(null, 'Fill in variable name and column.'); return; }
-          extraLines.push(`${colVarName} = schedule_column(sched, "${colColumn}")`);
-          extraLines.push(`print("${colVarName}:", ${colVarName})`);
+        case 'column':
+          if (!entry.column) { setResult(null, 'Pick a column.'); return; }
+          extraLines.push(`${entry.name} = schedule_column(sched, "${entry.column}")`);
           break;
         case 'filter':
-          if (!filterVarName || !filterMatchCol || !filterMatchValue || !filterReturnCol) {
-            setResult(null, 'Fill in all filter fields.'); return;
-          }
-          extraLines.push(`${filterVarName} = schedule_filter(sched, "${filterMatchCol}", ${filterMatchValue}, "${filterReturnCol}")`);
-          extraLines.push(`print("${filterVarName}:", ${filterVarName})`);
+          if (!entry.matchCol || !entry.matchValue || !entry.column) { setResult(null, 'Fill in all filter fields.'); return; }
+          extraLines.push(`${entry.name} = schedule_filter(sched, "${entry.matchCol}", ${entry.matchValue}, "${entry.column}")`);
           break;
-        default: return;
+        default: setResult(null, 'Unknown output type.'); return;
       }
+      extraLines.push(`print("${entry.name}:", ${entry.name})`);
       const schedCode = buildScheduleCode();
       const allPriorCode = [priorRulesCode, currentRulePreStepCode].filter(Boolean).join('\n\n');
       const combinedCode = [allPriorCode, schedCode, ...extraLines].filter(Boolean).join('\n\n');
@@ -559,24 +565,22 @@ const ScheduleStepModal = ({ open, step, onClose, onSaveStep, events, dslFunctio
         setResult(null, data.error || data.detail || 'Execution failed');
       }
     } catch (err) { setResult(null, err.message); }
-  }, [priorRulesCode, buildScheduleCode, extractColumn, firstVarName, lastVarName, sumVarName, sumColumn, colVarName, colColumn,
-      filterVarName, filterMatchCol, filterMatchValue, filterReturnCol]);
+  }, [outputs, priorRulesCode, currentRulePreStepCode, buildScheduleCode]);
 
   const previewHeaders = useMemo(() => columns.filter(c => c.name).map(c => c.name), [columns]);
 
-  // Collect all output variable names
+  // Collect all output variable names — emitted to the saved step's `outputVars`
+  // array, which is what AccountingRuleBuilder.buildScheduleStepLines iterates
+  // when generating the rule's runtime DSL.
   const collectOutputVars = useCallback(() => {
-    const vars = [];
-    if (extractFirst && extractColumn) vars.push({ name: firstVarName || `first_${extractColumn}`, type: 'first', column: extractColumn });
-    if (extractLast && extractColumn) vars.push({ name: lastVarName || `last_${extractColumn}`, type: 'last', column: extractColumn });
-    if (enableSum && sumVarName && sumColumn) vars.push({ name: sumVarName, type: 'sum', column: sumColumn });
-    if (enableCol && colVarName && colColumn) vars.push({ name: colVarName, type: 'column', column: colColumn });
-    if (enableFilter && filterVarName && filterMatchCol && filterMatchValue && filterReturnCol) {
-      vars.push({ name: filterVarName, type: 'filter', column: filterReturnCol, matchCol: filterMatchCol, matchValue: filterMatchValue });
-    }
-    return vars;
-  }, [extractFirst, extractLast, extractColumn, firstVarName, lastVarName, enableSum, sumVarName, sumColumn,
-      enableCol, colVarName, colColumn, enableFilter, filterVarName, filterMatchCol, filterMatchValue, filterReturnCol]);
+    return outputs
+      .filter(o => o.name && (o.type === 'filter'
+        ? (o.matchCol && o.matchValue && o.column)
+        : !!o.column))
+      .map(o => o.type === 'filter'
+        ? { name: o.name, type: 'filter', column: o.column, matchCol: o.matchCol, matchValue: o.matchValue }
+        : { name: o.name, type: o.type, column: o.column });
+  }, [outputs]);
 
   const handleSave = () => {
     if (!stepName) return;
@@ -591,11 +595,9 @@ const ScheduleStepModal = ({ open, step, onClose, onSaveStep, events, dslFunctio
         endDate, endDateSource, endDateField, endDateFormula,
         periodCount, periodCountSource, periodCountField, periodCountFormula,
         frequency, convention, columns,
-        extractFirst, extractLast, extractColumn,
-        firstVarName, lastVarName,
-        enableSum, sumColumn, sumVarName,
-        enableCol, colColumn, colVarName,
-        enableFilter, filterVarName, filterMatchCol, filterMatchValue, filterReturnCol,
+        // Persist the unified outputs array on the config too so re-opens fully
+        // round-trip (parent only reads outputVars for code generation).
+        outputs,
         contextVars: autoDetectedVars,
       },
       outputVars: collectOutputVars(),
@@ -930,243 +932,183 @@ const ScheduleStepModal = ({ open, step, onClose, onSaveStep, events, dslFunctio
 
         <Divider sx={{ my: 2 }} />
 
-        {/* ── Output Options ── */}
-        <Typography variant="body2" fontWeight={600} sx={{ mb: 1.5 }}>
-          Output Options — variables other steps can reference
-        </Typography>
-        <Card sx={{ mb: 1 }}>
-          <CardContent sx={{ p: 1.5, '&:last-child': { pb: 1.5 } }}>
-            <Box sx={{ display: 'flex', alignItems: 'center', gap: 2, flexWrap: 'wrap', mb: (extractFirst || extractLast || enableSum || enableCol || enableFilter) ? 1 : 0 }}>
-              <FormControlLabel
-                control={<Switch checked={extractFirst} onChange={(e) => setExtractFirst(e.target.checked)} size="small" />}
-                label={<Typography variant="body2">Schedule First</Typography>} />
-              <FormControlLabel
-                control={<Switch checked={extractLast} onChange={(e) => setExtractLast(e.target.checked)} size="small" />}
-                label={<Typography variant="body2">Schedule Last</Typography>} />
-              <FormControlLabel
-                control={<Switch checked={enableSum} onChange={(e) => setEnableSum(e.target.checked)} size="small" />}
-                label={<Typography variant="body2">Schedule Sum</Typography>} />
-              <FormControlLabel
-                control={<Switch checked={enableCol} onChange={(e) => setEnableCol(e.target.checked)} size="small" />}
-                label={<Typography variant="body2">Schedule Column</Typography>} />
-              <FormControlLabel
-                control={<Switch checked={enableFilter} onChange={(e) => setEnableFilter(e.target.checked)} size="small" />}
-                label={<Typography variant="body2">Schedule Filter</Typography>} />
-            </Box>
+        {/* ── Output Options (unified, multi-add) ────────────────────────
+            Each output produces one variable usable by later rule steps.
+            Users can add unlimited outputs of any type.
+        */}
+        {(() => {
+          const OUTPUT_TYPES = [
+            { key: 'first',  label: 'First Value',   icon: ChevronsUp,    color: '#9C27B0', desc: 'First non-null value of a column', fn: 'schedule_first' },
+            { key: 'last',   label: 'Last Value',    icon: ChevronsDown,  color: '#673AB7', desc: 'Last non-null value of a column',  fn: 'schedule_last' },
+            { key: 'sum',    label: 'Sum',           icon: Sigma,         color: '#FF9800', desc: 'Total of a numeric column',         fn: 'schedule_sum' },
+            { key: 'column', label: 'Column Array',  icon: ListOrdered,   color: '#00BCD4', desc: 'All values of a column as a list',  fn: 'schedule_column' },
+            { key: 'filter', label: 'Filter Lookup', icon: FilterIcon,    color: '#2196F3', desc: 'Find a row matching a condition, return one column', fn: 'schedule_filter' },
+          ];
+          const TYPE_BY_KEY = OUTPUT_TYPES.reduce((m, t) => { m[t.key] = t; return m; }, {});
+          const COL_OPTIONS_NO_DATE = columns.filter(c => c.name && c.formula !== 'period_date' && c.formula !== 'period_number');
+          const COL_OPTIONS_ALL = columns.filter(c => c.name);
 
-            {(extractFirst || extractLast) && (
-              <FormControl size="small" fullWidth sx={{ mb: 0.75 }}>
-                <InputLabel>Column to extract (first/last)</InputLabel>
-                <Select value={extractColumn} label="Column to extract (first/last)"
-                  onChange={(e) => setExtractColumn(e.target.value)}>
-                  {columns.filter(c => c.name && c.formula !== 'period_date' && c.formula !== 'period_number').map(c => (
-                    <MenuItem key={c.name} value={c.name}>{c.name}</MenuItem>
-                  ))}
-                </Select>
-              </FormControl>
-            )}
+          const addOutput = (type) => setOutputs(prev => [...prev, {
+            id: `o_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+            type, name: '', column: '', matchCol: '', matchValue: '',
+          }]);
+          const updateOutput = (id, patch) => setOutputs(prev => prev.map(o => o.id === id ? { ...o, ...patch } : o));
+          const removeOutput = (id) => setOutputs(prev => prev.filter(o => o.id !== id));
 
-            {(extractFirst || extractLast) && extractColumn && (
-              <Box sx={{ display: 'flex', gap: 1, mb: 0.75 }}>
-                {extractFirst && (
-                  <TextField size="small" label="First Variable Name" value={firstVarName}
-                    onChange={(e) => setFirstVarName(e.target.value.replace(/[^a-zA-Z0-9_]/g, ''))}
-                    placeholder={`first_${extractColumn}`} sx={{ flex: 1 }} />
-                )}
-                {extractLast && (
-                  <TextField size="small" label="Last Variable Name" value={lastVarName}
-                    onChange={(e) => setLastVarName(e.target.value.replace(/[^a-zA-Z0-9_]/g, ''))}
-                    placeholder={`last_${extractColumn}`} sx={{ flex: 1 }} />
-                )}
-              </Box>
-            )}
-
-            {extractColumn && (extractFirst || extractLast) && (
-              <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap', mb: 1 }}>
-                {extractFirst && (
-                  <Box sx={{ flex: 1, minWidth: 160 }}>
-                    <Button size="small" variant="outlined"
-                      startIcon={outputTests.first?.testing ? <CircularProgress size={12} /> : <Play size={12} />}
-                      onClick={() => testOutputOption('first')} disabled={outputTests.first?.testing}
-                      sx={{ fontSize: '0.7rem', py: 0.25, borderColor: '#4CAF50', color: '#4CAF50' }}>
-                      Test First
-                    </Button>
-                    {outputTests.first?.result && (
-                      <Alert severity="success" sx={{ mt: 0.5, py: 0, '& .MuiAlert-message': { py: 0.5 } }}
-                        onClose={() => setOutputTests(p => ({ ...p, first: { ...p.first, result: null } }))}>
-                        <Typography variant="body2" fontFamily="monospace" fontSize="0.8125rem" sx={{ whiteSpace: 'pre-wrap', maxHeight: 60, overflow: 'auto' }}>{outputTests.first.result}</Typography>
-                      </Alert>
-                    )}
-                    {outputTests.first?.error && (
-                      <Alert severity="error" sx={{ mt: 0.5, py: 0, '& .MuiAlert-message': { py: 0.5 } }}
-                        onClose={() => setOutputTests(p => ({ ...p, first: { ...p.first, error: null } }))}>
-                        <Typography variant="body2">{outputTests.first.error}</Typography>
-                      </Alert>
-                    )}
-                  </Box>
-                )}
-                {extractLast && (
-                  <Box sx={{ flex: 1, minWidth: 160 }}>
-                    <Button size="small" variant="outlined"
-                      startIcon={outputTests.last?.testing ? <CircularProgress size={12} /> : <Play size={12} />}
-                      onClick={() => testOutputOption('last')} disabled={outputTests.last?.testing}
-                      sx={{ fontSize: '0.7rem', py: 0.25, borderColor: '#4CAF50', color: '#4CAF50' }}>
-                      Test Last
-                    </Button>
-                    {outputTests.last?.result && (
-                      <Alert severity="success" sx={{ mt: 0.5, py: 0, '& .MuiAlert-message': { py: 0.5 } }}
-                        onClose={() => setOutputTests(p => ({ ...p, last: { ...p.last, result: null } }))}>
-                        <Typography variant="body2" fontFamily="monospace" fontSize="0.8125rem" sx={{ whiteSpace: 'pre-wrap', maxHeight: 60, overflow: 'auto' }}>{outputTests.last.result}</Typography>
-                      </Alert>
-                    )}
-                    {outputTests.last?.error && (
-                      <Alert severity="error" sx={{ mt: 0.5, py: 0, '& .MuiAlert-message': { py: 0.5 } }}
-                        onClose={() => setOutputTests(p => ({ ...p, last: { ...p.last, error: null } }))}>
-                        <Typography variant="body2">{outputTests.last.error}</Typography>
-                      </Alert>
-                    )}
-                  </Box>
-                )}
-              </Box>
-            )}
-
-            {enableSum && (
-              <Box sx={{ mb: 1 }}>
-                <Box sx={{ display: 'flex', gap: 1, mb: 0.5 }}>
-                  <TextField size="small" label="Variable Name" value={sumVarName}
-                    onChange={(e) => setSumVarName(e.target.value.replace(/[^a-zA-Z0-9_]/g, ''))}
-                    placeholder="e.g., total_interest" sx={{ flex: 1 }} />
-                  <FormControl size="small" sx={{ flex: 1 }}>
-                    <InputLabel>Sum Column</InputLabel>
-                    <Select value={sumColumn} label="Sum Column" onChange={(e) => setSumColumn(e.target.value)}>
-                      {columns.filter(c => c.name && c.formula !== 'period_date' && c.formula !== 'period_number').map(c => (
-                        <MenuItem key={c.name} value={c.name}>{c.name}</MenuItem>
-                      ))}
-                    </Select>
-                  </FormControl>
-                  <Tooltip title="Run schedule and compute sum">
-                    <span>
-                      <IconButton size="small" onClick={() => testOutputOption('sum')}
-                        disabled={!sumVarName || !sumColumn || outputTests.sum?.testing}
-                        sx={{ color: '#4CAF50', mt: 0.5 }}>
-                        {outputTests.sum?.testing ? <CircularProgress size={14} /> : <Play size={14} />}
-                      </IconButton>
-                    </span>
-                  </Tooltip>
+          return (
+            <>
+              <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 1.5 }}>
+                <Box>
+                  <Typography variant="body2" fontWeight={600}>
+                    Output Variables ({outputs.length})
+                  </Typography>
+                  <Typography variant="caption" color="text.secondary">
+                    Variables extracted from this schedule that other steps & rules can reference
+                  </Typography>
                 </Box>
-                {outputTests.sum?.result && (
-                  <Alert severity="success" sx={{ py: 0, '& .MuiAlert-message': { py: 0.5 } }}
-                    onClose={() => setOutputTests(p => ({ ...p, sum: { ...p.sum, result: null } }))}>
-                    <Typography variant="body2" fontFamily="monospace" fontSize="0.8125rem">{outputTests.sum.result}</Typography>
-                  </Alert>
-                )}
-                {outputTests.sum?.error && (
-                  <Alert severity="error" sx={{ py: 0, '& .MuiAlert-message': { py: 0.5 } }}
-                    onClose={() => setOutputTests(p => ({ ...p, sum: { ...p.sum, error: null } }))}>
-                    <Typography variant="body2">{outputTests.sum.error}</Typography>
-                  </Alert>
-                )}
-              </Box>
-            )}
-
-            {enableCol && (
-              <Box sx={{ mb: 1 }}>
-                <Box sx={{ display: 'flex', gap: 1, mb: 0.5 }}>
-                  <TextField size="small" label="Variable Name" value={colVarName}
-                    onChange={(e) => setColVarName(e.target.value.replace(/[^a-zA-Z0-9_]/g, ''))}
-                    placeholder="e.g., interest_arr" sx={{ flex: 1 }} />
-                  <FormControl size="small" sx={{ flex: 1 }}>
-                    <InputLabel>Column</InputLabel>
-                    <Select value={colColumn} label="Column" onChange={(e) => setColColumn(e.target.value)}>
-                      {columns.filter(c => c.name).map(c => <MenuItem key={c.name} value={c.name}>{c.name}</MenuItem>)}
-                    </Select>
-                  </FormControl>
-                  <Tooltip title="Run schedule and extract column array">
-                    <span>
-                      <IconButton size="small" onClick={() => testOutputOption('col')}
-                        disabled={!colVarName || !colColumn || outputTests.col?.testing}
-                        sx={{ color: '#4CAF50', mt: 0.5 }}>
-                        {outputTests.col?.testing ? <CircularProgress size={14} /> : <Play size={14} />}
-                      </IconButton>
-                    </span>
-                  </Tooltip>
-                </Box>
-                {outputTests.col?.result && (
-                  <Alert severity="success" sx={{ py: 0, '& .MuiAlert-message': { py: 0.5 } }}
-                    onClose={() => setOutputTests(p => ({ ...p, col: { ...p.col, result: null } }))}>
-                    <Typography variant="body2" fontFamily="monospace" fontSize="0.8125rem" sx={{ whiteSpace: 'pre-wrap', maxHeight: 80, overflow: 'auto' }}>{outputTests.col.result}</Typography>
-                  </Alert>
-                )}
-                {outputTests.col?.error && (
-                  <Alert severity="error" sx={{ py: 0, '& .MuiAlert-message': { py: 0.5 } }}
-                    onClose={() => setOutputTests(p => ({ ...p, col: { ...p.col, error: null } }))}>
-                    <Typography variant="body2">{outputTests.col.error}</Typography>
-                  </Alert>
-                )}
-              </Box>
-            )}
-
-            {enableFilter && (
-              <Box sx={{ mb: 1 }}>
-                <Box sx={{ display: 'flex', gap: 1, mb: 0.75 }}>
-                  <TextField size="small" label="Variable Name" value={filterVarName}
-                    onChange={(e) => setFilterVarName(e.target.value.replace(/[^a-zA-Z0-9_]/g, ''))}
-                    placeholder="e.g., interest_period" sx={{ flex: '0 0 150px' }} />
-                  <FormControl size="small" sx={{ flex: 1 }}>
-                    <InputLabel>Match Column</InputLabel>
-                    <Select value={filterMatchCol} label="Match Column" onChange={(e) => setFilterMatchCol(e.target.value)}>
-                      {columns.filter(c => c.name).map(c => <MenuItem key={c.name} value={c.name}>{c.name}</MenuItem>)}
-                    </Select>
-                  </FormControl>
-                  <Autocomplete
-                    freeSolo size="small"
-                    options={filterValueOptions}
-                    groupBy={(opt) => opt.group}
-                    getOptionLabel={(opt) => (typeof opt === 'string' ? opt : opt.label)}
-                    value={filterMatchValue || ''}
-                    onChange={(_, newVal) => { setFilterMatchValue(newVal === null ? '' : (typeof newVal === 'string' ? newVal : newVal.label)); }}
-                    onInputChange={(_, val, reason) => { if (reason === 'input') setFilterMatchValue(val); }}
-                    sx={{ flex: 1 }}
-                    renderInput={(params) => (
-                      <TextField {...params} label="Match Value" placeholder="e.g., postingdate"
-                        helperText="Variable, event field, or quoted string"
-                        InputProps={{ ...params.InputProps, sx: { fontFamily: 'monospace', fontSize: '0.8125rem' } }} />
+                <FormControl size="small" sx={{ minWidth: 190 }}>
+                  <Select
+                    value=""
+                    displayEmpty
+                    onChange={(e) => { if (e.target.value) addOutput(e.target.value); }}
+                    renderValue={() => (
+                      <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75, color: '#5B5FED', fontWeight: 600 }}>
+                        <Plus size={14} /> Add Output
+                      </Box>
                     )}
-                  />
-                  <FormControl size="small" sx={{ flex: 1 }}>
-                    <InputLabel>Return Column</InputLabel>
-                    <Select value={filterReturnCol} label="Return Column" onChange={(e) => setFilterReturnCol(e.target.value)}>
-                      {columns.filter(c => c.name && c.formula !== 'period_date' && c.formula !== 'period_number').map(c => (
-                        <MenuItem key={c.name} value={c.name}>{c.name}</MenuItem>
-                      ))}
-                    </Select>
-                  </FormControl>
-                  <Tooltip title="Run schedule and apply filter">
-                    <span>
-                      <IconButton size="small" onClick={() => testOutputOption('filter')}
-                        disabled={!filterVarName || !filterMatchCol || !filterMatchValue || !filterReturnCol || outputTests.filter?.testing}
-                        sx={{ color: '#4CAF50', mt: 0.5 }}>
-                        {outputTests.filter?.testing ? <CircularProgress size={14} /> : <Play size={14} />}
-                      </IconButton>
-                    </span>
-                  </Tooltip>
-                </Box>
-                {outputTests.filter?.result && (
-                  <Alert severity="success" sx={{ mt: 0.5, py: 0, '& .MuiAlert-message': { py: 0.5 } }}
-                    onClose={() => setOutputTests(p => ({ ...p, filter: { ...p.filter, result: null } }))}>
-                    <Typography variant="body2" fontFamily="monospace" fontSize="0.8125rem">{outputTests.filter.result}</Typography>
-                  </Alert>
-                )}
-                {outputTests.filter?.error && (
-                  <Alert severity="error" sx={{ mt: 0.5, py: 0, '& .MuiAlert-message': { py: 0.5 } }}
-                    onClose={() => setOutputTests(p => ({ ...p, filter: { ...p.filter, error: null } }))}>
-                    <Typography variant="body2">{outputTests.filter.error}</Typography>
-                  </Alert>
-                )}
+                    sx={{ bgcolor: '#EEF0FE', '& .MuiOutlinedInput-notchedOutline': { borderColor: '#5B5FED' } }}
+                  >
+                    {OUTPUT_TYPES.map(t => {
+                      const Icon = t.icon;
+                      return (
+                        <MenuItem key={t.key} value={t.key}>
+                          <ListItemIconLike color={t.color}><Icon size={16} /></ListItemIconLike>
+                          <Box>
+                            <Typography variant="body2" fontWeight={600}>{t.label}</Typography>
+                            <Typography variant="caption" color="text.secondary">{t.desc}</Typography>
+                          </Box>
+                        </MenuItem>
+                      );
+                    })}
+                  </Select>
+                </FormControl>
               </Box>
-            )}
-          </CardContent>
-        </Card>
+
+              {outputs.length === 0 && (
+                <Box sx={{ p: 3, textAlign: 'center', bgcolor: '#F8F9FA', borderRadius: 1, border: '1px dashed #DEE2E6', mb: 1 }}>
+                  <Typography variant="body2" color="text.secondary" sx={{ mb: 0.5 }}>
+                    No output variables defined yet
+                  </Typography>
+                  <Typography variant="caption" color="text.secondary">
+                    Use <strong>Add Output</strong> above to extract values from the schedule (sum, filter, first/last, etc.)
+                  </Typography>
+                </Box>
+              )}
+
+              {outputs.map((o) => {
+                const meta = TYPE_BY_KEY[o.type] || OUTPUT_TYPES[0];
+                const Icon = meta.icon;
+                const test = outputTests[o.id] || {};
+                const colOpts = (o.type === 'column' || o.type === 'filter') ? COL_OPTIONS_ALL : COL_OPTIONS_NO_DATE;
+                return (
+                  <Card key={o.id} sx={{ mb: 1, borderLeft: `3px solid ${meta.color}` }}>
+                    <CardContent sx={{ p: 1.5, '&:last-child': { pb: 1.5 } }}>
+                      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1 }}>
+                        <Box sx={{ width: 28, height: 28, borderRadius: 1, bgcolor: `${meta.color}1A`, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                          <Icon size={14} color={meta.color} />
+                        </Box>
+                        <Box sx={{ flex: 1 }}>
+                          <Typography variant="body2" fontWeight={600} sx={{ color: meta.color }}>{meta.label}</Typography>
+                          <Typography variant="caption" color="text.secondary" sx={{ fontFamily: 'monospace', fontSize: '0.65rem' }}>{meta.fn}(…)</Typography>
+                        </Box>
+                        <Tooltip title="Test this output">
+                          <span>
+                            <IconButton size="small" onClick={() => testOutputEntry(o.id)} disabled={!o.name || test.testing}
+                              sx={{ color: '#4CAF50' }}>
+                              {test.testing ? <CircularProgress size={14} /> : <Play size={14} />}
+                            </IconButton>
+                          </span>
+                        </Tooltip>
+                        <Tooltip title="Remove output">
+                          <IconButton size="small" onClick={() => removeOutput(o.id)} sx={{ color: '#F44336' }}>
+                            <Trash2 size={14} />
+                          </IconButton>
+                        </Tooltip>
+                      </Box>
+
+                      {/* Fields row — varies by type */}
+                      {o.type === 'filter' ? (
+                        <Box sx={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr', gap: 1 }}>
+                          <TextField size="small" label="Variable Name *"
+                            value={o.name}
+                            onChange={(e) => updateOutput(o.id, { name: e.target.value.replace(/[^a-zA-Z0-9_]/g, '') })}
+                            placeholder="e.g., matched_revenue" />
+                          <FormControl size="small">
+                            <InputLabel>Match Column *</InputLabel>
+                            <Select value={o.matchCol || ''} label="Match Column *"
+                              onChange={(e) => updateOutput(o.id, { matchCol: e.target.value })}>
+                              {COL_OPTIONS_ALL.map(c => <MenuItem key={c.name} value={c.name}>{c.name}</MenuItem>)}
+                            </Select>
+                          </FormControl>
+                          <Autocomplete
+                            freeSolo size="small"
+                            options={filterValueOptions}
+                            groupBy={(opt) => opt.group}
+                            getOptionLabel={(opt) => (typeof opt === 'string' ? opt : opt.label)}
+                            value={o.matchValue || ''}
+                            onChange={(_, v) => updateOutput(o.id, { matchValue: v == null ? '' : (typeof v === 'string' ? v : v.label) })}
+                            onInputChange={(_, v, reason) => { if (reason === 'input') updateOutput(o.id, { matchValue: v }); }}
+                            renderInput={(params) => (
+                              <TextField {...params} label="Match Value *" placeholder="postingdate"
+                                InputProps={{ ...params.InputProps, sx: { fontFamily: 'monospace', fontSize: '0.8125rem' } }} />
+                            )}
+                          />
+                          <FormControl size="small">
+                            <InputLabel>Return Column *</InputLabel>
+                            <Select value={o.column || ''} label="Return Column *"
+                              onChange={(e) => updateOutput(o.id, { column: e.target.value })}>
+                              {COL_OPTIONS_NO_DATE.map(c => <MenuItem key={c.name} value={c.name}>{c.name}</MenuItem>)}
+                            </Select>
+                          </FormControl>
+                        </Box>
+                      ) : (
+                        <Box sx={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 1 }}>
+                          <TextField size="small" label="Variable Name *"
+                            value={o.name}
+                            onChange={(e) => updateOutput(o.id, { name: e.target.value.replace(/[^a-zA-Z0-9_]/g, '') })}
+                            placeholder={o.type === 'first' ? 'first_revenue' : o.type === 'last' ? 'last_balance' : o.type === 'sum' ? 'total_revenue' : 'revenue_array'} />
+                          <FormControl size="small">
+                            <InputLabel>Column *</InputLabel>
+                            <Select value={o.column || ''} label="Column *"
+                              onChange={(e) => updateOutput(o.id, { column: e.target.value })}>
+                              {colOpts.map(c => <MenuItem key={c.name} value={c.name}>{c.name}</MenuItem>)}
+                            </Select>
+                          </FormControl>
+                        </Box>
+                      )}
+
+                      {test.result && (
+                        <Alert severity="success" sx={{ mt: 1, py: 0, '& .MuiAlert-message': { py: 0.5 } }}
+                          onClose={() => setOutputTests(p => ({ ...p, [o.id]: { ...p[o.id], result: null } }))}>
+                          <Typography variant="body2" fontFamily="monospace" fontSize="0.8125rem"
+                            sx={{ whiteSpace: 'pre-wrap', maxHeight: 80, overflow: 'auto' }}>
+                            {test.result}
+                          </Typography>
+                        </Alert>
+                      )}
+                      {test.error && (
+                        <Alert severity="error" sx={{ mt: 1, py: 0, '& .MuiAlert-message': { py: 0.5 } }}
+                          onClose={() => setOutputTests(p => ({ ...p, [o.id]: { ...p[o.id], error: null } }))}>
+                          <Typography variant="body2">{test.error}</Typography>
+                        </Alert>
+                      )}
+                    </CardContent>
+                  </Card>
+                );
+              })}
+            </>
+          );
+        })()}
 
         {/* Step-level options */}
         <Divider sx={{ my: 2 }} />

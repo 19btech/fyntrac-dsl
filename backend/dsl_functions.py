@@ -686,20 +686,43 @@ def weighted_balance(balances: List[float], days: List[int]) -> float:
     return sum(b * d for b, d in zip(balances, days)) / total_days if total_days > 0 else 0
 
 # Arithmetic
-def add(a: float, b: float) -> float:
-    return to_number(a) + to_number(b)
+def _broadcast_binary(a, b, op_name, scalar_op):
+    """Apply ``scalar_op(x, y)`` element-wise when either input is a list/tuple.
 
-def subtract(a: float, b: float) -> float:
-    return to_number(a) - to_number(b)
+    Rules:
+    - both list-like → element-wise on the *shorter* length (avoids silent zero-padding bugs)
+    - one list-like, one scalar → broadcast the scalar over the list
+    - both scalar → return ``scalar_op(a, b)``
+    """
+    a_is_list = isinstance(a, (list, tuple))
+    b_is_list = isinstance(b, (list, tuple))
+    if not a_is_list and not b_is_list:
+        return scalar_op(to_number(a), to_number(b))
+    if a_is_list and b_is_list:
+        n = min(len(a), len(b))
+        return [scalar_op(to_number(a[i]), to_number(b[i])) for i in range(n)]
+    if a_is_list:
+        bv = to_number(b)
+        return [scalar_op(to_number(x), bv) for x in a]
+    av = to_number(a)
+    return [scalar_op(av, to_number(x)) for x in b]
 
-def multiply(a: float, b: float) -> float:
-    return to_number(a) * to_number(b)
 
-def divide(a: float, b: float) -> float:
-    denom = to_number(b)
-    if denom == 0:
-        raise ValueError("Division by zero")
-    return to_number(a) / denom
+def add(a, b):
+    return _broadcast_binary(a, b, 'add', lambda x, y: x + y)
+
+def subtract(a, b):
+    return _broadcast_binary(a, b, 'subtract', lambda x, y: x - y)
+
+def multiply(a, b):
+    return _broadcast_binary(a, b, 'multiply', lambda x, y: x * y)
+
+def divide(a, b):
+    def _div(x, y):
+        if y == 0:
+            raise ValueError("Division by zero")
+        return x / y
+    return _broadcast_binary(a, b, 'divide', _div)
 
 def power(a: float, b: float) -> float:
     try:

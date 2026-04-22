@@ -243,9 +243,21 @@ def get_field_case_insensitive(row: Dict[str, Any], field_name: str, default: An
     return default
 
 def get_latest_data_per_instrument(data_rows: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
-    """Get latest postingdate per instrumentid (case-insensitive field matching)"""
+    """Get latest postingdate per instrumentid (case-insensitive field matching).
+
+    Defensively skips any row that is not a dict (e.g. a stringified JSON object
+    that slipped through during import). Such rows are logged so the user can fix
+    the source data instead of seeing a cryptic ``'str' object has no attribute 'items'``.
+    """
     latest_data = {}
-    for row in data_rows:
+    for idx, row in enumerate(data_rows):
+        if not isinstance(row, dict):
+            logger.warning(
+                "Skipping non-dict row at index %d in event data (got %s). "
+                "Re-import the source file — each row must be a JSON object.",
+                idx, type(row).__name__,
+            )
+            continue
         instrument_id = get_field_case_insensitive(row, 'instrumentid', '')
         posting_date = get_field_case_insensitive(row, 'postingdate', '')
         
@@ -282,9 +294,16 @@ def merge_event_data_by_instrument(event_data_dict: Dict[str, List[Dict]]) -> Li
     If subInstrumentId is missing or null, it defaults to "1".
     """
     merged_data = {}
+    bad_row_events = []
     
     for event_name, data_rows in event_data_dict.items():
-        latest_data = get_latest_data_per_instrument(data_rows)
+        # Pre-flight check: ensure every row is a dict. Surface a clear error pointing
+        # at the offending event/row so the user knows where to look.
+        if isinstance(data_rows, list):
+            for idx, row in enumerate(data_rows):
+                if not isinstance(row, dict):
+                    bad_row_events.append((event_name, idx, type(row).__name__))
+        latest_data = get_latest_data_per_instrument(data_rows if isinstance(data_rows, list) else [])
         
         for instrument_id, row in latest_data.items():
             if instrument_id not in merged_data:
@@ -314,6 +333,9 @@ def merge_event_data_by_instrument(event_data_dict: Dict[str, List[Dict]]) -> Li
             
             # Add other fields with event prefix (EVENT_FIELD) for clarity
             # Also add without prefix for direct field access
+            if not isinstance(row, dict):
+                # Already logged above; skip safely.
+                continue
             for key, value in row.items():
                 key_lower = key.lower()
                 if key_lower not in ['instrumentid', 'postingdate', 'effectivedate', 'subinstrumentid']:
@@ -322,6 +344,16 @@ def merge_event_data_by_instrument(event_data_dict: Dict[str, List[Dict]]) -> Li
                     merged_data[instrument_id][prefixed_key] = value
                     # Also store the original field name for backward compatibility
                     merged_data[instrument_id][key] = value
+    
+    if bad_row_events:
+        # Raise a single descriptive error pointing at the first bad row so the user
+        # knows which event needs to be re-imported.
+        evt, idx, kind = bad_row_events[0]
+        raise ValueError(
+            f"Event '{evt}' has malformed data: row #{idx} is a {kind}, not an object. "
+            f"Re-import the source file — each row must be a JSON object "
+            f"(total bad rows: {len(bad_row_events)})."
+        )
     
     return list(merged_data.values())
 
@@ -338,9 +370,11 @@ def filter_event_data_by_posting_date(
     filtered: Dict[str, List[Dict]] = {}
     target = posting_date.strip()
     for event_name, rows in event_data_dict.items():
+        safe_rows = rows if isinstance(rows, list) else []
         filtered[event_name] = [
-            row for row in rows
-            if str(get_field_case_insensitive(row, "postingdate", "")).strip() == target
+            row for row in safe_rows
+            if isinstance(row, dict)
+            and str(get_field_case_insensitive(row, "postingdate", "")).strip() == target
         ]
     return filtered
 
@@ -714,6 +748,18 @@ def set_all_event_data(data):
 def set_raw_event_data(data):
     \"\"\"Set the raw event data (unmerged) for collect() functions\"\"\"
     global _raw_event_data
+    if not isinstance(data, dict):
+        # Refuse to corrupt global state — something upstream passed the wrong type.
+        # Reset to empty so collect_*() functions return [] instead of crashing later
+        # with the cryptic ``'str' object has no attribute 'items'``.
+        try:
+            _builtin_print(
+                f"[dsl-template warning] set_raw_event_data got {type(data).__name__}; expected dict. Resetting to empty."
+            )
+        except Exception:
+            pass
+        _raw_event_data = {}
+        return
     _raw_event_data = data
 
 def set_current_context(instrumentid, postingdate, effectivedate, subinstrumentid='1'):
@@ -1098,13 +1144,25 @@ async def execute_python_template(python_code: str, event_data: List[Dict[str, A
         # Execute the template which defines helper functions like process_event_data, get_print_outputs
         exec(compile(python_code, '<dsl_template>', 'exec'), exec_globals)
 
-        # Prefer calling process_event_data (multi-event template) and pass raw_event_data
+        # Prefer calling process_event_data (multi-event template) and pass raw_event_data.
+        # Inspect the signature explicitly so we never swallow internal TypeErrors as a
+        # "wrong signature" — that previously caused the 3-arg fallback to bind
+        # raw_event_data = override_postingdate (a string), corrupting global state and
+        # producing the cryptic "'str' object has no attribute 'items'" error from
+        # collect_by_instrument on subsequent calls.
         if 'process_event_data' in exec_globals:
+            import inspect as _inspect
+            _proc = exec_globals['process_event_data']
             try:
-                transactions = exec_globals['process_event_data'](event_data, raw_event_data, override_postingdate, override_effectivedate)
-            except TypeError:
-                # Fallback if template signature differs
-                transactions = exec_globals['process_event_data'](event_data, override_postingdate, override_effectivedate)
+                _sig = _inspect.signature(_proc)
+                _param_count = len(_sig.parameters)
+            except (TypeError, ValueError):
+                _param_count = 4
+            if _param_count >= 4:
+                transactions = _proc(event_data, raw_event_data, override_postingdate, override_effectivedate)
+            else:
+                # Older template signature without raw_event_data
+                transactions = _proc(event_data, override_postingdate, override_effectivedate)
         elif 'process_standalone' in exec_globals:
             transactions = exec_globals['process_standalone'](override_postingdate, override_effectivedate)
         else:
@@ -1134,11 +1192,19 @@ async def execute_python_template(python_code: str, event_data: List[Dict[str, A
     except HTTPException:
         raise
     except Exception as e:
+        import traceback
+        tb = traceback.format_exc()
+        # Dump the generated template so we can inspect the offending line by number
+        try:
+            with open('/tmp/last_dsl_template.py', 'w') as _f:
+                _f.write(python_code)
+        except Exception:
+            pass
         dsl_line = _extract_dsl_line_from_exception(python_code, e)
         error_msg = str(e)
         if dsl_line:
             error_msg = f"[Line {dsl_line}] {error_msg}"
-        logger.error(f"Error executing python template: {error_msg}")
+        logger.error(f"Error executing python template: {error_msg}\nFull traceback:\n{tb}")
         raise HTTPException(status_code=500, detail=error_msg)
 
 # ============= API Endpoints =============
@@ -3519,6 +3585,31 @@ async def save_rule(request: dict):
 
     return {"success": True, "id": doc["id"], "message": f"Rule \"{name}\" saved."}
 
+# NOTE: Static routes (/saved-rules/reorder) MUST be declared BEFORE the
+# parameterized routes (/saved-rules/{rule_id}) — otherwise FastAPI matches
+# "reorder" as a {rule_id} path parameter.
+@api_router.put("/saved-rules/reorder")
+async def reorder_saved_rules(request: dict):
+    """Batch-update priorities for saved rules based on drag-and-drop ordering.
+    Expects: { "order": [ { "id": "...", "priority": 1 }, ... ] }
+    """
+    order = request.get("order", [])
+    if not order:
+        raise HTTPException(status_code=400, detail="No ordering provided.")
+    try:
+        for item in order:
+            rule_id = item.get("id")
+            priority = item.get("priority")
+            if rule_id is not None and priority is not None:
+                await db.saved_rules.update_one(
+                    {"id": rule_id},
+                    {"$set": {"priority": int(priority)}},
+                )
+        return {"success": True, "message": f"Updated priorities for {len(order)} rules."}
+    except Exception as e:
+        logger.error(f"Error reordering rules: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 @api_router.delete("/saved-rules/{rule_id}")
 async def delete_saved_rule(rule_id: str):
     """Delete a saved rule by its id."""
@@ -3547,9 +3638,10 @@ async def delete_all_saved_rules():
     result = await db.saved_rules.delete_many({})
     return {"success": True, "deleted": result.deleted_count, "message": f"Deleted {result.deleted_count} rule(s)."}
 
-@api_router.put("/saved-rules/reorder")
-async def reorder_saved_rules(request: dict):
-    """Batch-update priorities for saved rules based on drag-and-drop ordering.
+
+@api_router.put("/saved-schedules/reorder")
+async def reorder_saved_schedules(request: dict):
+    """Batch-update priorities for saved schedules based on drag-and-drop ordering.
     Expects: { "order": [ { "id": "...", "priority": 1 }, ... ] }
     """
     order = request.get("order", [])
@@ -3557,16 +3649,16 @@ async def reorder_saved_rules(request: dict):
         raise HTTPException(status_code=400, detail="No ordering provided.")
     try:
         for item in order:
-            rule_id = item.get("id")
+            sched_id = item.get("id")
             priority = item.get("priority")
-            if rule_id is not None and priority is not None:
-                await db.saved_rules.update_one(
-                    {"id": rule_id},
+            if sched_id is not None and priority is not None:
+                await db.saved_schedules.update_one(
+                    {"id": sched_id},
                     {"$set": {"priority": int(priority)}},
                 )
-        return {"success": True, "message": f"Updated priorities for {len(order)} rules."}
+        return {"success": True, "message": f"Updated priorities for {len(order)} schedules."}
     except Exception as e:
-        logger.error(f"Error reordering rules: {e}")
+        logger.error(f"Error reordering schedules: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 

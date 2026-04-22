@@ -3,9 +3,11 @@ import {
   Box, Typography, Card, CardContent, Button, IconButton, Chip, TextField,
   CircularProgress, Alert, Tooltip, Divider,
   Dialog, DialogTitle, DialogContent, DialogContentText, DialogActions,
+  Menu, MenuItem, ListItemIcon, ListItemText,
 } from "@mui/material";
-import { Trash2, Edit3, Calculator, GitBranch, Repeat, Database, Clock, Play, GripVertical, BookmarkPlus, RotateCcw, Code, Calendar, Copy } from "lucide-react";
+import { Trash2, Edit3, Calculator, GitBranch, Repeat, Database, Clock, Play, GripVertical, BookmarkPlus, RotateCcw, Code, Calendar, Copy, ChevronDown, Save, FilePlus } from "lucide-react";
 import { API } from "../../config";
+import { useToast } from "./../ToastProvider";
 
 const RULE_TYPE_META = {
   simple_calc: { label: 'Calculation', color: '#5B5FED', icon: Calculator },
@@ -17,6 +19,7 @@ const RULE_TYPE_META = {
 };
 
 const SavedRules = ({ onEditRule, onEditSchedule, refreshKey, onPlayAll, onClearAll }) => {
+  const toast = useToast();
   const [rules, setRules] = useState([]);
   const [schedules, setSchedules] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -43,6 +46,8 @@ const SavedRules = ({ onEditRule, onEditSchedule, refreshKey, onPlayAll, onClear
   const [dupName, setDupName] = useState('');
   const [dupPriority, setDupPriority] = useState('');
   const [duplicating, setDuplicating] = useState(false);
+  // Anchor element for the bookmark split-button menu
+  const [bookmarkMenuAnchor, setBookmarkMenuAnchor] = useState(null);
 
   const loadRules = useCallback(async () => {
     setLoading(true);
@@ -167,23 +172,39 @@ const SavedRules = ({ onEditRule, onEditSchedule, refreshKey, onPlayAll, onClear
     const [moved] = reordered.splice(from, 1);
     reordered.splice(to, 0, moved);
 
-    // Assign new sequential priorities starting from 1
-    const order = reordered.map((r, idx) => ({ id: r.id, priority: idx + 1 }));
-
-    // Optimistically update local state
-    const updatedRules = rules.map(r => {
-      const match = order.find(o => o.id === r.id);
-      return match ? { ...r, priority: match.priority } : r;
+    // Assign new sequential priorities starting from 1, split by type
+    const rulesOrder = [];
+    const schedulesOrder = [];
+    reordered.forEach((r, idx) => {
+      const entry = { id: r.id, priority: idx + 1 };
+      if (r._isSchedule) schedulesOrder.push(entry);
+      else rulesOrder.push(entry);
     });
-    setRules(updatedRules);
 
-    // Persist to backend
+    // Optimistically update local state for both rules and schedules
+    const ruleMap = new Map(rulesOrder.map(o => [o.id, o.priority]));
+    const schedMap = new Map(schedulesOrder.map(o => [o.id, o.priority]));
+    setRules(prev => prev.map(r => ruleMap.has(r.id) ? { ...r, priority: ruleMap.get(r.id) } : r));
+    setSchedules(prev => prev.map(s => schedMap.has(s.id) ? { ...s, priority: schedMap.get(s.id) } : s));
+
+    // Persist to backend (parallel)
     try {
-      await fetch(`${API}/saved-rules/reorder`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ order }),
-      });
+      const reqs = [];
+      if (rulesOrder.length > 0) {
+        reqs.push(fetch(`${API}/saved-rules/reorder`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ order: rulesOrder }),
+        }));
+      }
+      if (schedulesOrder.length > 0) {
+        reqs.push(fetch(`${API}/saved-schedules/reorder`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ order: schedulesOrder }),
+        }));
+      }
+      await Promise.all(reqs);
       // Reload from backend to ensure consistency
       await loadRules();
     } catch (err) {
@@ -192,7 +213,7 @@ const SavedRules = ({ onEditRule, onEditSchedule, refreshKey, onPlayAll, onClear
 
     dragItem.current = null;
     dragOverItem.current = null;
-  }, [sortedRules, rules, loadRules]);
+  }, [sortedRules, loadRules]);
 
   const handlePlayAll = useCallback(async () => {
     if (!onPlayAll || sortedRules.length === 0) return;
@@ -249,6 +270,83 @@ const SavedRules = ({ onEditRule, onEditSchedule, refreshKey, onPlayAll, onClear
     }
   }, [onPlayAll, sortedRules]);
 
+  // Open the "Save as new template" modal (resets form fields).
+  const openSaveAsNewModal = useCallback(() => {
+    setBookmarkMenuAnchor(null);
+    setTemplateName(''); setTemplateDesc(''); setTemplateCategory('');
+    setTemplateResult(null);
+    setShowSaveTemplate(true);
+  }, []);
+
+  // Overwrite the currently-loaded template with the current saved rules.
+  // If the template no longer exists (404) or any other failure occurs, falls back to
+  // opening the "Save as new template" modal.
+  const overwriteCurrentTemplate = useCallback(async () => {
+    setBookmarkMenuAnchor(null);
+    const currentTemplateId = (() => {
+      try { return localStorage.getItem('savedRulesTemplateId') || null; } catch { return null; }
+    })();
+    if (!currentTemplateId) {
+      // No loaded template — fall through to the new-template modal.
+      openSaveAsNewModal();
+      return;
+    }
+    if (currentTemplateId !== savedTemplateId) { setSavedTemplateId(currentTemplateId); }
+    setSavingTemplate(true);
+    try {
+      const [fullRulesRes, codeRes] = await Promise.all([
+        fetch(`${API}/saved-rules`),
+        fetch(`${API}/combined-code`),
+      ]);
+      const fullRules = await fullRulesRes.json();
+      const codeData = await codeRes.json();
+      const combinedCode = codeData?.code || '';
+      const ruleSummaries = (Array.isArray(fullRules) ? fullRules : []).map(r => ({
+        name: r.name, priority: r.priority, ruleType: r.ruleType,
+        generatedCode: r.generatedCode, variables: r.variables || [],
+        conditions: r.conditions || [], elseFormula: r.elseFormula || '',
+        conditionResultVar: r.conditionResultVar || 'result',
+        iterations: r.iterations || [], iterConfig: r.iterConfig || {},
+        outputs: r.outputs || {}, customCode: r.customCode || '',
+        steps: r.steps || [],
+      }));
+      const res = await fetch(`${API}/user-templates/${currentTemplateId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ rules: ruleSummaries, combinedCode }),
+      });
+      if (!res.ok) {
+        try { localStorage.removeItem('savedRulesTemplateId'); } catch { /* ignore */ }
+        setSavedTemplateId(null);
+        toast.info('Saved template no longer exists — please save as a new template.');
+        openSaveAsNewModal();
+        return;
+      }
+      toast.success('Template updated.');
+    } catch (err) {
+      console.error('[SavedRules] overwrite threw:', err);
+      try { localStorage.removeItem('savedRulesTemplateId'); } catch { /* ignore */ }
+      setSavedTemplateId(null);
+      toast.error('Failed to update template — opening save dialog.');
+      openSaveAsNewModal();
+    } finally {
+      setSavingTemplate(false);
+    }
+  }, [savedTemplateId, openSaveAsNewModal, toast]);
+
+  // Default action when the bookmark icon (left part of split button) is clicked.
+  // If a template is loaded → overwrite it. Otherwise → open the new-template modal.
+  const handleBookmarkPrimary = useCallback(() => {
+    const currentTemplateId = (() => {
+      try { return localStorage.getItem('savedRulesTemplateId') || null; } catch { return null; }
+    })();
+    if (currentTemplateId) {
+      overwriteCurrentTemplate();
+    } else {
+      openSaveAsNewModal();
+    }
+  }, [overwriteCurrentTemplate, openSaveAsNewModal]);
+
   if (loading) {
     return (
       <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', p: 6 }}>
@@ -270,63 +368,61 @@ const SavedRules = ({ onEditRule, onEditSchedule, refreshKey, onPlayAll, onClear
                   {playing ? <CircularProgress size={16} /> : <Play size={16} />}
                 </IconButton>
               </Tooltip>
-              <Tooltip title={(() => { try { return localStorage.getItem('savedRulesTemplateId') || null; } catch { return null; } })() ? 'Update saved template' : 'Save all rules as a reusable template'}>
-                <IconButton size="small" onClick={async () => {
-                  // Always read localStorage fresh — state may be stale if template was deleted
-                  // while this component was mounted (e.g. user visited Templates tab and came back).
-                  const currentTemplateId = (() => {
-                    try { return localStorage.getItem('savedRulesTemplateId') || null; } catch { return null; }
-                  })();
-                  // Sync state with localStorage if they diverged
-                  if (currentTemplateId !== savedTemplateId) { setSavedTemplateId(currentTemplateId); }
-                  if (currentTemplateId) {
-                    // Overwrite existing template directly — no modal.
-                    // Fetch full rules (with generatedCode) on demand.
-                    setSavingTemplate(true);
-                    try {
-                      const [fullRulesRes, codeRes] = await Promise.all([
-                        fetch(`${API}/saved-rules`),
-                        fetch(`${API}/combined-code`),
-                      ]);
-                      const fullRules = await fullRulesRes.json();
-                      const codeData = await codeRes.json();
-                      const combinedCode = codeData?.code || '';
-                      const ruleSummaries = (Array.isArray(fullRules) ? fullRules : []).map(r => ({
-                        name: r.name, priority: r.priority, ruleType: r.ruleType,
-                        generatedCode: r.generatedCode, variables: r.variables || [],
-                        conditions: r.conditions || [], elseFormula: r.elseFormula || '',
-                        conditionResultVar: r.conditionResultVar || 'result',
-                        iterations: r.iterations || [], iterConfig: r.iterConfig || {},
-                        outputs: r.outputs || {}, customCode: r.customCode || '',
-                        steps: r.steps || [],
-                      }));
-                      const res = await fetch(`${API}/user-templates/${currentTemplateId}`, {
-                        method: 'PUT',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ rules: ruleSummaries, combinedCode }),
-                      });
-                      if (!res.ok) {
-                        // Template no longer exists (404) or any other failure — fall back to modal
-                        try { localStorage.removeItem('savedRulesTemplateId'); } catch { /* ignore */ }
-                        setSavedTemplateId(null);
-                        setShowSaveTemplate(true);
-                        setTemplateResult(null);
-                      }
-                      // Silently succeed on 2xx — no toast needed
-                    } catch {
-                      // Network / parse error — fall back to modal so user can retry
-                      try { localStorage.removeItem('savedRulesTemplateId'); } catch { /* ignore */ }
-                      setSavedTemplateId(null);
-                      setShowSaveTemplate(true);
-                      setTemplateResult(null);
-                    } finally { setSavingTemplate(false); }
-                  } else {
-                    setShowSaveTemplate(true); setTemplateResult(null);
-                  }
-                }} disabled={savingTemplate} sx={{ color: '#FF9800' }}>
-                  {savingTemplate ? <CircularProgress size={16} /> : <BookmarkPlus size={16} />}
-                </IconButton>
-              </Tooltip>
+              {/* Bookmark split button: primary action = update if loaded / save-new otherwise.
+                  Caret opens a menu with explicit "Update existing" and "Save as new" options. */}
+              {(() => {
+                const hasLoadedTemplate = !!(() => {
+                  try { return localStorage.getItem('savedRulesTemplateId') || null; } catch { return null; }
+                })();
+                return (
+                  <Box sx={{ display: 'inline-flex', alignItems: 'center' }}>
+                    <Tooltip title={hasLoadedTemplate ? 'Update saved template' : 'Save all rules as a reusable template'}>
+                      <IconButton
+                        size="small"
+                        onClick={handleBookmarkPrimary}
+                        disabled={savingTemplate}
+                        sx={{ color: '#FF9800', pr: 0.25 }}
+                      >
+                        {savingTemplate ? <CircularProgress size={16} /> : <BookmarkPlus size={16} />}
+                      </IconButton>
+                    </Tooltip>
+                    <Tooltip title="More save options">
+                      <IconButton
+                        size="small"
+                        onClick={(e) => setBookmarkMenuAnchor(e.currentTarget)}
+                        disabled={savingTemplate}
+                        sx={{ color: '#FF9800', pl: 0.25, ml: -0.5 }}
+                      >
+                        <ChevronDown size={14} />
+                      </IconButton>
+                    </Tooltip>
+                    <Menu
+                      anchorEl={bookmarkMenuAnchor}
+                      open={Boolean(bookmarkMenuAnchor)}
+                      onClose={() => setBookmarkMenuAnchor(null)}
+                      anchorOrigin={{ vertical: 'bottom', horizontal: 'right' }}
+                      transformOrigin={{ vertical: 'top', horizontal: 'right' }}
+                    >
+                      <MenuItem onClick={overwriteCurrentTemplate} disabled={!hasLoadedTemplate || savingTemplate}>
+                        <ListItemIcon><Save size={16} color="#FF9800" /></ListItemIcon>
+                        <ListItemText
+                          primary="Update existing template"
+                          secondary={hasLoadedTemplate ? 'Overwrite the currently loaded template' : 'No template loaded'}
+                          secondaryTypographyProps={{ sx: { fontSize: '0.7rem' } }}
+                        />
+                      </MenuItem>
+                      <MenuItem onClick={openSaveAsNewModal} disabled={savingTemplate}>
+                        <ListItemIcon><FilePlus size={16} color="#5B5FED" /></ListItemIcon>
+                        <ListItemText
+                          primary="Save as new template…"
+                          secondary="Open dialog to give it a new name"
+                          secondaryTypographyProps={{ sx: { fontSize: '0.7rem' } }}
+                        />
+                      </MenuItem>
+                    </Menu>
+                  </Box>
+                );
+              })()}
               <Divider orientation="vertical" flexItem sx={{ mx: 0.5 }} />
               <Tooltip title="Clear everything — editor, console, preview & rules">
                 <IconButton size="small" onClick={() => setShowClearAll(true)} sx={{ color: '#F44336' }}>
@@ -471,6 +567,10 @@ const SavedRules = ({ onEditRule, onEditSchedule, refreshKey, onPlayAll, onClear
                   ]);
                   await loadRules();
                 }
+                // After clearing, the previously-loaded template id is no longer relevant.
+                // Make sure the bookmark opens the "Save as new template" modal next time.
+                try { localStorage.removeItem('savedRulesTemplateId'); } catch { /* ignore */ }
+                setSavedTemplateId(null);
               } catch (err) {
                 console.error('Clear all failed:', err);
               } finally {

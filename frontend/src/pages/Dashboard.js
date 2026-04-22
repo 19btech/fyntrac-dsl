@@ -959,6 +959,12 @@ const Dashboard = () => {
                       try {
                         localStorage.removeItem('dslCode');
                       } catch (e) { /* ignore */ }
+                      // Also clear the saved template id — after wiping all rules, the bookmark
+                      // should open the "Save as new template" modal, not silently overwrite the
+                      // previously-loaded template with an empty rule set.
+                      try {
+                        localStorage.removeItem('savedRulesTemplateId');
+                      } catch (e) { /* ignore */ }
 
                       addConsoleLog('✓ Rules, schedules and editor cleared. Event definitions and data preserved.', 'success');
                       toast.success('Rules cleared! Event data preserved.');

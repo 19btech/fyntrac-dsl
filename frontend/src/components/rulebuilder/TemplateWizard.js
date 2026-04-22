@@ -1437,6 +1437,13 @@ const TemplateLibrary = ({ events, onLoadTemplate, onClose, inline }) => {
     try {
       await fetch(`${API}/user-templates/${id}`, { method: 'DELETE' });
       setUserTemplates(prev => prev.filter(t => t.id !== id));
+      // Clear the saved template id from localStorage so Rule Manager doesn't
+      // try to overwrite this deleted template on the next bookmark save.
+      try {
+        if (localStorage.getItem('savedRulesTemplateId') === String(id)) {
+          localStorage.removeItem('savedRulesTemplateId');
+        }
+      } catch { /* ignore */ }
     } catch { /* ignore */ }
     finally { setDeletingId(null); }
   }, []);

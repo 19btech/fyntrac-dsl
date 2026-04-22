@@ -757,15 +757,55 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
     return out.join('\n');
   }, []);
 
+  // Helper: strip the "## Create Transactions" section from a rule's generatedCode.
+  // Prior rules' createTransaction calls must NOT execute when testing a step in
+  // isolation — they would emit real transactions and (worse) trigger validation
+  // errors like "Length of 'amount' must equal number of subInstrumentIds" which
+  // mask the actual step-under-test result.
+  const _stripCreateTxnSection = useCallback((code) => {
+    const out = []; let skip = false;
+    for (const line of (code || '').split('\n')) {
+      const t = line.trim();
+      if (t === '## Create Transactions') { skip = true; continue; }
+      if (skip && t.startsWith('## ') && !t.startsWith('## ═')) { skip = false; }
+      if (skip) continue;
+      out.push(line);
+    }
+    return out.join('\n');
+  }, []);
+
   // Build full prior-rules code using savedRulesRaw (strip-deps on all but first),
   // excluding the rule currently being edited so it doesn't re-define its own vars.
+  // Only includes rules that should run BEFORE this one (priority strictly less than
+  // the current rule's priority). Including later rules pulls in dependencies that
+  // weren't yet computed and produces "variable not defined" errors when testing
+  // a step in isolation.
+  //
+  // We strip the "## Dependencies from saved rules" section from EVERY prior rule:
+  // those deps are just a preview of variables that come from OTHER rules and they
+  // can reference variables (e.g., `Schedule`) that won't be defined yet at that
+  // point in the combined script. The prior rules' own `## Steps` sections will
+  // re-define their outputs, so nothing useful is lost by stripping.
   const _buildPriorRulesCode = useCallback((excludeId) => {
-    const priorRules = (savedRulesRaw || []).filter(r => !excludeId || r.id !== excludeId);
+    const currentPriority = rulePriority === '' || rulePriority == null
+      ? Infinity
+      : Number(rulePriority);
+    const priorRules = (savedRulesRaw || [])
+      .filter(r => !excludeId || r.id !== excludeId)
+      .filter(r => {
+        const p = r.priority == null ? Infinity : Number(r.priority);
+        return p < currentPriority;
+      })
+      .sort((a, b) => {
+        const pa = a.priority == null ? Infinity : Number(a.priority);
+        const pb = b.priority == null ? Infinity : Number(b.priority);
+        return pa - pb;
+      });
     return priorRules
-      .map((r, idx) => idx === 0 ? (r.generatedCode || '') : _stripDepsSection(r.generatedCode || ''))
+      .map(r => _stripCreateTxnSection(_stripDepsSection(r.generatedCode || '')))
       .filter(Boolean)
       .join('\n\n');
-  }, [savedRulesRaw, _stripDepsSection]);
+  }, [savedRulesRaw, _stripDepsSection, _stripCreateTxnSection, rulePriority]);
 
   const testStep = useCallback(async (step, stepIndex) => {
     const lines = [];
@@ -1695,21 +1735,41 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
           dslFunctions={dslFunctions}
           definedVarNames={allDefinedVarNames}
           freshPriorCode={(() => {
-            // Build prior-rules code by concatenating saved rules' generatedCode in priority order,
-            // stripping the "## Dependencies from saved rules" section from all rules except the
-            // first (same approach as /api/combined-code endpoint) to avoid stale ordering bugs.
-            const stripDeps = (code) => {
+            // Build prior-rules code by concatenating saved rules' generatedCode in priority
+            // order. Apply the SAME rules as testStep / _buildPriorRulesCode:
+            //   1. Only include rules with priority < current rule's priority
+            //   2. Exclude the rule currently being edited (so it doesn't redefine its own vars)
+            //   3. Strip "## Dependencies from saved rules" section from EVERY rule
+            //      (those refer to vars from OTHER rules and may not be defined yet —
+            //       e.g., `Schedule` referenced by Stage1 deps when editing Stage 2's schedule)
+            //   4. Strip "## Create Transactions" section from EVERY rule (avoid emitting
+            //      transactions / triggering length-validation errors during step tests)
+            //   5. Drop print() / createTransaction() lines as a final safety net
+            const stripSection = (code, header) => {
               const out = []; let skip = false;
               for (const line of code.split('\n')) {
                 const t = line.trim();
-                if (t === '## Dependencies from saved rules') { skip = true; out.push(line); continue; }
+                if (t === header) { skip = true; continue; }
                 if (skip && t.startsWith('## ') && !t.startsWith('## \u2550')) { skip = false; }
-                if (!skip) out.push(line);
+                if (skip) continue;
+                out.push(line);
               }
               return out.join('\n');
             };
+            const currentPriority = rulePriority === '' || rulePriority == null
+              ? Infinity : Number(rulePriority);
             return savedRulesRaw
-              .map((r, idx) => idx === 0 ? (r.generatedCode || '') : stripDeps(r.generatedCode || ''))
+              .filter(r => !ruleId || r.id !== ruleId)
+              .filter(r => {
+                const p = r.priority == null ? Infinity : Number(r.priority);
+                return p < currentPriority;
+              })
+              .sort((a, b) => {
+                const pa = a.priority == null ? Infinity : Number(a.priority);
+                const pb = b.priority == null ? Infinity : Number(b.priority);
+                return pa - pb;
+              })
+              .map(r => stripSection(stripSection(r.generatedCode || '', '## Dependencies from saved rules'), '## Create Transactions'))
               .filter(Boolean).join('\n\n')
               .split('\n')
               .filter(l => { const t = l.trim(); return t && !t.startsWith('print(') && !t.startsWith('print (') && !t.startsWith('createTransaction('); })
