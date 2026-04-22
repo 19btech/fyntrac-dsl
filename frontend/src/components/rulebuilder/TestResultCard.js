@@ -166,7 +166,6 @@ function PerInstrumentTable({ rows, valueLabel }) {
             <TableRow>
               <TableCell sx={{ fontWeight: 700, bgcolor: '#F5F7FA', width: 40 }}>#</TableCell>
               <TableCell sx={{ fontWeight: 700, bgcolor: '#F5F7FA' }}>Instrument</TableCell>
-              <TableCell sx={{ fontWeight: 700, bgcolor: '#F5F7FA' }}>Sub-Instrument</TableCell>
               <TableCell sx={{ fontWeight: 700, bgcolor: '#F5F7FA' }}>{valueLabel}</TableCell>
             </TableRow>
           </TableHead>
@@ -175,7 +174,6 @@ function PerInstrumentTable({ rows, valueLabel }) {
               <TableRow key={idx} hover>
                 <TableCell sx={{ color: '#90A4AE', fontFamily: 'monospace' }}>{idx + 1}</TableCell>
                 <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.8125rem' }}>{r.instrument || '—'}</TableCell>
-                <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.8125rem' }}>{r.subInstrument || '—'}</TableCell>
                 <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.8125rem', wordBreak: 'break-word' }}>
                   {formatPreview(r.value, r.raw)}
                 </TableCell>
@@ -250,23 +248,23 @@ function RowsTable({ rows }) {
  *   sx           optional MUI sx for outer Card
  */
 export default function TestResultCard({ success, output, error, variableName, onClose, sx }) {
-  // Per-instrument rows produced by `__TEST_ROW__|inst|sub| name = value` markers.
+  // Per-instrument rows produced by `__TEST_ROW__|inst| name = value` markers.
   const perInstrumentRows = useMemo(() => {
     if (!success) return null;
     const text = String(output || '');
     if (!text.includes('__TEST_ROW__')) return null;
     const lines = text.split('\n');
-    // A marker line begins with "__TEST_ROW__|<inst>|<sub>| <name> ="; the value
+    // A marker line begins with "__TEST_ROW__|<inst>| <name> ="; the value
     // may span multiple following lines until the next marker.
     const rows = [];
     let current = null;
     for (const line of lines) {
-      const m = line.match(/^__TEST_ROW__\|([^|]*)\|([^|]*)\|\s*(.*)$/);
+      const m = line.match(/^__TEST_ROW__\|([^|]*)\|\s*(.*)$/);
       if (m) {
         if (current) rows.push(current);
-        const [, inst, sub, rest] = m;
+        const [, inst, rest] = m;
         const { label, raw } = splitLabelAndValue(rest);
-        current = { instrument: inst.trim(), subInstrument: sub.trim(), label, rawLines: [raw] };
+        current = { instrument: inst.trim(), label, rawLines: [raw] };
       } else if (current) {
         current.rawLines.push(line);
       }
@@ -276,7 +274,7 @@ export default function TestResultCard({ success, output, error, variableName, o
     return rows.map(r => {
       const raw = r.rawLines.join('\n').trim();
       const value = tryParsePythonRepr(raw);
-      return { instrument: r.instrument, subInstrument: r.subInstrument, label: r.label, raw, value };
+      return { instrument: r.instrument, label: r.label, raw, value };
     });
   }, [success, output]);
 
