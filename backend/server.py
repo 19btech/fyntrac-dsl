@@ -3069,7 +3069,10 @@ _IMPORT_FIXED_KEYS = {
 
 
 def _infer_field_datatype(values: list) -> str:
-    """Infer the best datatype for a field from a list of sample values."""
+    """Infer the best datatype for a field from a list of sample values.
+    Scans all non-null values; the first conclusive type wins (boolean > date > string > decimal).
+    Numeric strings (e.g. "1250.50", "42") are treated as decimal.
+    """
     for v in values:
         if v is None:
             continue
@@ -3080,10 +3083,14 @@ def _infer_field_datatype(values: list) -> str:
         if isinstance(v, str):
             if re.match(r"^\d{4}-\d{2}-\d{2}", v):
                 return "date"
+            # Check if the string is a numeric value (handles "1250.50", "-42", "1,234.56")
+            stripped = v.strip().lstrip('-').replace(',', '')
+            if stripped.replace('.', '', 1).isdigit():
+                return "decimal"
             return "string"
-        if isinstance(v, float) and v != int(v):
+        if isinstance(v, (int, float)):
             return "decimal"
-    return "decimal"  # int / whole float / unknown → decimal (financial default)
+    return "decimal"  # all-null or empty → decimal (financial default)
 
 
 def _parse_import_date(val) -> str:
@@ -3423,10 +3430,15 @@ async def import_and_transform_events(file: UploadFile = File(...)):
 # ── Saved Rules CRUD ────────────────────────────────────────────────────
 
 @api_router.get("/saved-rules")
-async def list_saved_rules():
-    """List all saved rule builder configurations."""
+async def list_saved_rules(summary: int = 0):
+    """List all saved rule builder configurations.
+    Pass ?summary=1 to exclude generatedCode (fast list for UI display).
+    """
     try:
-        rules = await db.saved_rules.find({}, {"_id": 0}).sort("updated_at", -1).to_list(500)
+        projection = {"_id": 0}
+        if summary:
+            projection["generatedCode"] = 0
+        rules = await db.saved_rules.find({}, projection).sort("updated_at", -1).to_list(500)
         return rules
     except Exception as e:
         logger.error(f"Error listing saved rules: {e}")
@@ -3675,10 +3687,15 @@ async def load_template_sample_data(template_id: str):
 # ── Saved Schedules CRUD ────────────────────────────────────────────────
 
 @api_router.get("/saved-schedules")
-async def list_saved_schedules():
-    """List all saved schedule builder configurations."""
+async def list_saved_schedules(summary: int = 0):
+    """List all saved schedule builder configurations.
+    Pass ?summary=1 to exclude generatedCode (fast list for UI display).
+    """
     try:
-        schedules = await db.saved_schedules.find({}, {"_id": 0}).sort("updated_at", -1).to_list(500)
+        projection = {"_id": 0}
+        if summary:
+            projection["generatedCode"] = 0
+        schedules = await db.saved_schedules.find({}, projection).sort("updated_at", -1).to_list(500)
         return schedules
     except Exception as e:
         logger.error(f"Error listing saved schedules: {e}")

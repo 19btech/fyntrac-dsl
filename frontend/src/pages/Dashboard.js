@@ -69,6 +69,7 @@ const Dashboard = () => {
   const [editingSchedule, setEditingSchedule] = useState(null);
   const [editingCustomCode, setEditingCustomCode] = useState(null);
   const [savedRulesRefreshKey, setSavedRulesRefreshKey] = useState(0);
+  const [loadedTemplateId, setLoadedTemplateId] = useState(null);
   // Execution results for LivePreview
   const [lastExecutionResult, setLastExecutionResult] = useState({ transactions: [], printOutputs: [], templateName: '' });
   // Template batch execution state
@@ -427,6 +428,12 @@ const Dashboard = () => {
     setTabValue(1);
     addConsoleLog("Logic loaded into editor from builder", "info");
     toast.success("Logic loaded into editor — click Run to execute");
+
+    // Track the source template ID so Rule Manager can overwrite it on next save
+    if (metadata?.templateId) {
+      setLoadedTemplateId(metadata.templateId);
+      try { localStorage.setItem('savedRulesTemplateId', metadata.templateId); } catch { /* ignore */ }
+    }
 
     // If template metadata includes rules or schedules, save them
     if (metadata?.rules?.length || metadata?.schedules?.length) {
@@ -913,6 +920,7 @@ const Dashboard = () => {
               {editorMode === 'savedRules' && (
                 <SavedRules
                   refreshKey={savedRulesRefreshKey}
+                  loadedTemplateId={loadedTemplateId}
                   onEditRule={(rule) => {
                     setEditingRule(rule);
                     setEditingSchedule(null);

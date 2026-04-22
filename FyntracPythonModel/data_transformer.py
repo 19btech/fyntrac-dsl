@@ -86,7 +86,10 @@ def _is_custom_event(records: list, event_id: str) -> bool:
 
 
 def _infer_field_datatype(values: list) -> str:
-    """Infer the best datatype for a field from a list of sample values."""
+    """Infer the best datatype for a field from a list of sample values.
+    Scans all non-null values; the first conclusive type wins (boolean > date > string > decimal).
+    Numeric strings (e.g. "1250.50", "42") are treated as decimal.
+    """
     for v in values:
         if v is None:
             continue
@@ -97,8 +100,12 @@ def _infer_field_datatype(values: list) -> str:
         if isinstance(v, str):
             if re.match(r"^\d{4}-\d{2}-\d{2}", v):
                 return "date"
+            # Check if the string is a numeric value (handles "1250.50", "-42", "1,234.56")
+            stripped = v.strip().lstrip('-').replace(',', '')
+            if stripped.replace('.', '', 1).isdigit():
+                return "decimal"
             return "string"
-        if isinstance(v, float) and v != int(v):
+        if isinstance(v, (int, float)):
             return "decimal"
     return "decimal"
 

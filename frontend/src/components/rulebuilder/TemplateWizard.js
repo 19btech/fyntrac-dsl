@@ -956,7 +956,7 @@ const UserTemplateWizard = ({ template, onApply, onClose }) => {
 
   const handleApplyClick = () => {
     const filteredRules = rules.filter((_, i) => selectedRules[i]);
-    onApply(combinedCode, { rules: filteredRules });
+    onApply(combinedCode, { rules: filteredRules, templateId: template.id });
   };
 
   return (

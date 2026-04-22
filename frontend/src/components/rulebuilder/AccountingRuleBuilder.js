@@ -521,7 +521,7 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
   // ── Output options ──
   const [outputs, setOutputs] = useState(
     initialData?.outputs?.printResult !== undefined ? initialData.outputs :
-    { printResult: true, createTransaction: false, transactions: [{ type: 'Calculation Result', amount: '', postingDate: '', effectiveDate: '', subInstrumentId: '' }] }
+    { printResult: true, createTransaction: false, transactions: [{ type: 'Calculation Result', amount: '', postingDate: '', effectiveDate: '', subInstrumentId: '1.0' }] }
   );
   const [inlineComment, setInlineComment] = useState(initialData?.inlineComment || false);
   const [commentText, setCommentText] = useState(initialData?.commentText || '');
@@ -614,6 +614,10 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
   // ── Per-step inline test results ──
   const [stepTestResults, setStepTestResults] = useState({});
   const [stepTesting, setStepTesting] = useState({});
+
+  // ── Per-transaction inline test results ──
+  const [txnTestResults, setTxnTestResults] = useState({});
+  const [txnTesting, setTxnTesting] = useState({});
 
   // ── Drag state ──
   const dragItem = useRef(null);
@@ -1107,7 +1111,7 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
     setRulePriority('');
     setRuleId(null);
     setSteps([]);
-    setOutputs({ printResult: true, createTransaction: false, transactions: [{ type: 'Calculation Result', amount: '', postingDate: '', effectiveDate: '', subInstrumentId: '' }] });
+    setOutputs({ printResult: true, createTransaction: false, transactions: [{ type: 'Calculation Result', amount: '', postingDate: '', effectiveDate: '', subInstrumentId: '1.0' }] });
     setInlineComment(false);
     setCommentText('');
     setShowCode(false);
@@ -1237,6 +1241,67 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
     setStepTestResults({});
   };
 
+  // ── Inline test for transactions ──
+  const handleTransactionTest = useCallback(async (txnIdx) => {
+    const txn = outputs.transactions[txnIdx];
+    if (!txn.type) return;
+    setTxnTesting(prev => ({ ...prev, [txnIdx]: true }));
+    setTxnTestResults(prev => ({ ...prev, [txnIdx]: null }));
+    try {
+      const lines = [];
+      const priorCode = _buildPriorRulesCode(ruleId || null);
+      if (priorCode) lines.push(priorCode);
+      const definedVars = [];
+      for (const s of steps) {
+        if (!s.name) continue;
+        if (s.stepType === 'calc') {
+          const line = buildCalcLine(s);
+          if (line) { lines.push(line); definedVars.push(s.name); }
+        } else if (s.stepType === 'condition') {
+          lines.push(`${s.name} = ${buildConditionExpr(s.conditions || [], s.elseFormula)}`);
+          definedVars.push(s.name);
+        } else if (s.stepType === 'iteration') {
+          const allAvailable = [...new Set([...definedVars, ...savedRulesVarNames])];
+          lines.push(...buildIterationLines(s.iterations || [], allAvailable));
+          (s.iterations || []).forEach(it => { if (it.resultVar) definedVars.push(it.resultVar); });
+        } else if (s.stepType === 'schedule') {
+          lines.push(...buildScheduleStepLines(s));
+          definedVars.push(s.name);
+          (s.outputVars || []).forEach(ov => definedVars.push(ov.name));
+        } else if (s.stepType === 'custom_code') {
+          if (s.customCode) lines.push(s.customCode);
+        }
+      }
+      const amt = txn.amount || definedVars[definedVars.length - 1] || '0';
+      const pd = txn.postingDate || 'postingdate';
+      const ed = txn.effectiveDate || pd;
+      const sid = txn.subInstrumentId || '';
+      if (sid) lines.push(`createTransaction(${pd}, ${ed}, "${txn.type}", ${amt}, ${sid})`);
+      else lines.push(`createTransaction(${pd}, ${ed}, "${txn.type}", ${amt})`);
+      const dslCode = lines.join('\n');
+      const today = new Date().toISOString().split('T')[0];
+      const response = await fetch(`${API}/dsl/run`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ dsl_code: dslCode, posting_date: today }),
+      });
+      const data = await response.json();
+      if (response.ok && data.success) {
+        const txns = data.transactions || [];
+        const out = txns.length > 0
+          ? txns.map(t => JSON.stringify(t, null, 2)).join('\n')
+          : 'No transactions created (check dates/data)';
+        setTxnTestResults(prev => ({ ...prev, [txnIdx]: { success: true, output: out } }));
+      } else {
+        setTxnTestResults(prev => ({ ...prev, [txnIdx]: { success: false, error: data.error || 'Execution failed' } }));
+      }
+    } catch (e) {
+      setTxnTestResults(prev => ({ ...prev, [txnIdx]: { success: false, error: e.message } }));
+    } finally {
+      setTxnTesting(prev => ({ ...prev, [txnIdx]: false }));
+    }
+  }, [outputs.transactions, steps, ruleId, _buildPriorRulesCode, buildScheduleStepLines, savedRulesVarNames]);
+
   // ── Inline test (play button on the step row) ──
   const handleInlineTest = useCallback(async (index) => {
     setStepTesting(prev => ({ ...prev, [index]: true }));
@@ -1272,7 +1337,7 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
 
   // ── Transaction CRUD ──
   const addTransaction = useCallback(() => {
-    setOutputs(prev => ({ ...prev, transactions: [...prev.transactions, { type: '', amount: '', postingDate: '', effectiveDate: '', subInstrumentId: '' }] }));
+    setOutputs(prev => ({ ...prev, transactions: [...prev.transactions, { type: '', amount: '', postingDate: '', effectiveDate: '', subInstrumentId: '1.0' }] }));
   }, []);
   const updateTransaction = useCallback((i, field, val) => {
     setOutputs(prev => ({ ...prev, transactions: prev.transactions.map((t, j) => j === i ? { ...t, [field]: val } : t) }));
@@ -1531,7 +1596,7 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
                             onInputChange={(_, val) => updateTransaction(idx, 'subInstrumentId', val)}
                             onChange={(_, val) => updateTransaction(idx, 'subInstrumentId', val || '')}
                             renderInput={(params) => (
-                              <TextField {...params} placeholder="default (1)" size="small"
+                              <TextField {...params} placeholder="default (1.0)" size="small"
                                 inputProps={{ ...params.inputProps, style: { fontFamily: 'monospace', fontSize: '0.8125rem' } }} />
                             )}
                             renderOption={(props, option) => (
@@ -1572,7 +1637,24 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
                             }
                           />
                         </Box>
+                        <Tooltip title="Test this transaction">
+                          <span>
+                            <IconButton size="small" onClick={() => handleTransactionTest(idx)}
+                              disabled={!!txnTesting[idx] || !txn.type} sx={{ color: '#4CAF50', alignSelf: 'flex-end', mb: 0.5 }}>
+                              {txnTesting[idx] ? <CircularProgress size={14} /> : <Play size={14} />}
+                            </IconButton>
+                          </span>
+                        </Tooltip>
                       </Box>
+                      {txnTestResults[idx] && (
+                        <Alert severity={txnTestResults[idx].success ? 'success' : 'error'}
+                          sx={{ mt: 0.5, '& .MuiAlert-message': { width: '100%' } }}
+                          onClose={() => setTxnTestResults(prev => ({ ...prev, [idx]: null }))}>
+                          <Typography variant="body2" fontFamily="monospace" fontSize="0.8125rem" sx={{ whiteSpace: 'pre-wrap' }}>
+                            {txnTestResults[idx].success ? txnTestResults[idx].output : txnTestResults[idx].error}
+                          </Typography>
+                        </Alert>
+                      )}
                     </Card>
                   );
                 })}

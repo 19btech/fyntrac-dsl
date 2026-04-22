@@ -2626,7 +2626,7 @@ def createTransaction(postingdate: Any, effectivedate: Any, transactiontype: Any
         effectivedate: Transaction effective date (YYYY-MM-DD format)
         transactiontype: Type/description of the transaction
         amount: Transaction amount
-        subinstrumentid: Sub-instrument identifier (default '1')
+        subinstrumentid: Sub-instrument identifier (default '1.0')
     
     Returns:
         The created transaction dictionary, or None if skipped due to missing dates
@@ -2649,7 +2649,7 @@ def createTransaction(postingdate: Any, effectivedate: Any, transactiontype: Any
     effective_list = _to_list(effectivedate)
     type_list = _to_list(transactiontype)
     amount_list = _to_list(amount)
-    sub_list = _to_list(subinstrumentid) or ['1']
+    sub_list = _to_list(subinstrumentid) or ['1.0']
 
     created = []
 
@@ -2734,9 +2734,9 @@ def createTransaction(postingdate: Any, effectivedate: Any, transactiontype: Any
     # Create exactly one transaction per sub-instrument (unless skipped due to missing dates)
     for i in range(N):
         sub_id_raw = sub_list[i]
-        sub_id = str(sub_id_raw).strip() if sub_id_raw is not None else '1'
+        sub_id = str(sub_id_raw).strip() if sub_id_raw is not None else '1.0'
         if not sub_id or sub_id == 'None':
-            sub_id = '1'
+            sub_id = '1.0'
 
         posting_raw = posting_map[i]
         effective_raw = effective_map[i]

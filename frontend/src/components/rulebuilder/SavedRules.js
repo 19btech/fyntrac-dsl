@@ -16,7 +16,7 @@ const RULE_TYPE_META = {
   schedule: { label: 'Schedule', color: '#2196F3', icon: Calendar },
 };
 
-const SavedRules = ({ onEditRule, onEditSchedule, refreshKey, onPlayAll, onClearAll }) => {
+const SavedRules = ({ onEditRule, onEditSchedule, refreshKey, onPlayAll, onClearAll, loadedTemplateId }) => {
   const [rules, setRules] = useState([]);
   const [schedules, setSchedules] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -30,10 +30,17 @@ const SavedRules = ({ onEditRule, onEditSchedule, refreshKey, onPlayAll, onClear
   const [templateCategory, setTemplateCategory] = useState('');
   const [savingTemplate, setSavingTemplate] = useState(false);
   const [templateResult, setTemplateResult] = useState(null);
-  // Persist the last saved template id so repeat saves overwrite without showing the modal
+  // Persist the last saved/loaded template id so repeat saves overwrite without showing the modal
   const [savedTemplateId, setSavedTemplateId] = useState(() => {
     try { return localStorage.getItem('savedRulesTemplateId') || null; } catch { return null; }
   });
+
+  // Sync loadedTemplateId prop → state whenever a user template is applied from the library
+  useEffect(() => {
+    if (loadedTemplateId && loadedTemplateId !== savedTemplateId) {
+      setSavedTemplateId(loadedTemplateId);
+    }
+  }, [loadedTemplateId]); // eslint-disable-line react-hooks/exhaustive-deps
   const [showClearAll, setShowClearAll] = useState(false);
   const [clearing, setClearing] = useState(false);
   const [duplicateTarget, setDuplicateTarget] = useState(null);
@@ -45,9 +52,11 @@ const SavedRules = ({ onEditRule, onEditSchedule, refreshKey, onPlayAll, onClear
     setLoading(true);
     setError(null);
     try {
+      // Use ?summary=1 to exclude generatedCode from list responses — significantly
+      // reduces payload size when there are many rules with large generated code.
       const [rulesRes, schedsRes] = await Promise.all([
-        fetch(`${API}/saved-rules`),
-        fetch(`${API}/saved-schedules`).catch(() => ({ ok: true, json: async () => [] })),
+        fetch(`${API}/saved-rules?summary=1`),
+        fetch(`${API}/saved-schedules?summary=1`).catch(() => ({ ok: true, json: async () => [] })),
       ]);
       const rulesData = await rulesRes.json();
       const schedsData = await schedsRes.json();
@@ -194,22 +203,15 @@ const SavedRules = ({ onEditRule, onEditSchedule, refreshKey, onPlayAll, onClear
     setPlaying(true);
     setError(null);
     try {
-      // Strip the "## Dependencies from saved rules" section from all rules after the first
-      // to avoid duplicate or out-of-order variable assignments across combined rules.
-      const stripDeps = (code) => {
-        const out = []; let skip = false;
-        for (const line of code.split('\n')) {
-          const t = line.trim();
-          if (t === '## Dependencies from saved rules') { skip = true; out.push(line); continue; }
-          if (skip && t.startsWith('## ') && !t.startsWith('## ═')) { skip = false; }
-          if (!skip) out.push(line);
-        }
-        return out.join('\n');
-      };
-      const combinedCode = sortedRules
-        .map((r, idx) => idx === 0 ? (r.generatedCode || '') : stripDeps(r.generatedCode || ''))
-        .filter(Boolean)
-        .join('\n\n');
+      // Use the /combined-code endpoint which handles dep-stripping on the server,
+      // so we don't need generatedCode in the local list state.
+      const codeRes = await fetch(`${API}/combined-code`);
+      const codeData = await codeRes.json();
+      const combinedCode = codeData?.code || '';
+      if (!combinedCode) {
+        setError('No generated code found. Save your rules first.');
+        return;
+      }
       const pdRes = await fetch(`${API}/event-data/posting-dates`);
       const pdData = await pdRes.json();
       const dates = pdData?.posting_dates || [];
@@ -275,11 +277,18 @@ const SavedRules = ({ onEditRule, onEditSchedule, refreshKey, onPlayAll, onClear
               <Tooltip title={savedTemplateId ? 'Update saved template' : 'Save all rules as a reusable template'}>
                 <IconButton size="small" onClick={async () => {
                   if (savedTemplateId) {
-                    // Overwrite existing template directly — no modal
+                    // Overwrite existing template directly — no modal.
+                    // Fetch full rules (with generatedCode) on demand.
                     setSavingTemplate(true);
                     try {
-                      const combinedCode = sortedRules.map(r => r.generatedCode || '').filter(Boolean).join('\n\n');
-                      const ruleSummaries = sortedRules.map(r => ({
+                      const [fullRulesRes, codeRes] = await Promise.all([
+                        fetch(`${API}/saved-rules`),
+                        fetch(`${API}/combined-code`),
+                      ]);
+                      const fullRules = await fullRulesRes.json();
+                      const codeData = await codeRes.json();
+                      const combinedCode = codeData?.code || '';
+                      const ruleSummaries = (Array.isArray(fullRules) ? fullRules : []).map(r => ({
                         name: r.name, priority: r.priority, ruleType: r.ruleType,
                         generatedCode: r.generatedCode, variables: r.variables || [],
                         conditions: r.conditions || [], elseFormula: r.elseFormula || '',
@@ -548,8 +557,15 @@ const SavedRules = ({ onEditRule, onEditSchedule, refreshKey, onPlayAll, onClear
               setSavingTemplate(true);
               setTemplateResult(null);
               try {
-                const combinedCode = sortedRules.map(r => r.generatedCode || '').filter(Boolean).join('\n\n');
-                const ruleSummaries = sortedRules.map(r => ({
+                // Fetch full rules (with generatedCode) and combined code on demand
+                const [fullRulesRes, codeRes] = await Promise.all([
+                  fetch(`${API}/saved-rules`),
+                  fetch(`${API}/combined-code`),
+                ]);
+                const fullRules = await fullRulesRes.json();
+                const codeData = await codeRes.json();
+                const combinedCode = codeData?.code || '';
+                const ruleSummaries = (Array.isArray(fullRules) ? fullRules : []).map(r => ({
                   name: r.name, priority: r.priority, ruleType: r.ruleType,
                   generatedCode: r.generatedCode,
                   variables: r.variables || [],
