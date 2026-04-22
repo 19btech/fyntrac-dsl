@@ -2875,6 +2875,9 @@ def createTransaction(postingdate: Any, effectivedate: Any, transactiontype: Any
         except Exception:
             amt_num = 0.0
 
+        # Round to 4 decimal places by default
+        amt_num = round(amt_num, 4)
+
         txn = {
             'postingdate': posting_str,
             'effectivedate': effective_str,
