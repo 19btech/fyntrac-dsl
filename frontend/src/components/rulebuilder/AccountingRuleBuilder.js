@@ -1893,7 +1893,7 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
                   </Typography>
                   <Chip size="small" label={meta.label}
                     sx={{ fontSize: '0.625rem', height: 18, bgcolor: `${meta.color}18`, color: meta.color, fontWeight: 600 }} />
-                  {step.stepType !== 'custom_code' && (
+                  {step.stepType !== 'custom_code' && step.stepType !== 'schedule' && (
                     <Tooltip title="Test up to this step">
                       <IconButton size="small" onClick={() => handleInlineTest(idx)}
                         disabled={!!stepTesting[idx]} sx={{ color: '#4CAF50' }}>
