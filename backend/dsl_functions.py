@@ -2731,6 +2731,11 @@ def createTransaction(postingdate: Any, effectivedate: Any, transactiontype: Any
     # (M transactions all mapped to the same sub-instrument).
     if len(sub_list) == 1 and len(amount_list) > 1:
         sub_list = sub_list * len(amount_list)
+    # If amount_list is shorter than sub_list, only create transactions for the
+    # first len(amount_list) sub-instruments. This supports the case where the
+    # variable provides amounts for a subset of sub-instruments.
+    if 1 < len(amount_list) < len(sub_list):
+        sub_list = sub_list[:len(amount_list)]
     N = len(sub_list)
 
     def _validate_and_broadcast(vals, name):
@@ -2740,6 +2745,8 @@ def createTransaction(postingdate: Any, effectivedate: Any, transactiontype: Any
             return [vals[0]] * N
         if len(vals) == N:
             return list(vals)
+        if len(vals) > N:
+            return list(vals)[:N]
         raise ValueError(f"Length of '{name}' ({len(vals)}) must be 1 or equal to number of subInstrumentIds ({N})")
 
     posting_map = _validate_and_broadcast(posting_list, 'postingdate')
@@ -2751,6 +2758,8 @@ def createTransaction(postingdate: Any, effectivedate: Any, transactiontype: Any
         amount_map = [amount_list[0]] * N
     elif len(amount_list) == N:
         amount_map = list(amount_list)
+    elif len(amount_list) > N:
+        amount_map = list(amount_list)[:N]
     else:
         raise ValueError(f"Length of 'amount' ({len(amount_list)}) must be 1 or equal to number of subInstrumentIds ({N})")
 
