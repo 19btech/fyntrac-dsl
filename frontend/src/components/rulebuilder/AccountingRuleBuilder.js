@@ -15,6 +15,50 @@ import ScheduleStepModal from "./ScheduleStepModal";
 import CustomCodeStepModal from "./CustomCodeStepModal";
 import TestResultCard from "./TestResultCard";
 
+// ─── Date-type detection helpers ───────────────────────────────────────
+// Used by the Create Transaction modal to restrict postingDate / effectiveDate
+// pickers to date-typed event fields and date-typed variables only. Nothing
+// non-date may be offered, and no system default may be applied.
+const ISO_DATE_RE = /^\s*"?\d{4}-\d{2}-\d{2}"?\s*$/;
+const DATE_RETURNING_FNS = new Set([
+  'add_days', 'add_months', 'add_years',
+  'subtract_days', 'subtract_months', 'subtract_years',
+  'start_of_month', 'end_of_month',
+  'normalize_date',
+]);
+
+const isEventFieldDate = (eventField, events) => {
+  if (!eventField) return false;
+  const [evName, fName] = String(eventField).split('.');
+  if (!evName || !fName) return false;
+  const lower = String(fName).toLowerCase();
+  if (lower === 'postingdate' || lower === 'effectivedate') return true;
+  const ev = (events || []).find(e => e.event_name === evName);
+  if (!ev) return false;
+  return (ev.fields || []).some(
+    f => f.name === fName && String(f.datatype || '').toLowerCase() === 'date'
+  );
+};
+
+const stepLikeReturnsDate = (item, events, dateVarSet) => {
+  if (!item) return false;
+  // Only single-value calc-style items can resolve to a date.
+  if (item.stepType && item.stepType !== 'calc') return false;
+  if (item._isIterResult || item._isScheduleOutput) return false;
+  const source = item.source || 'formula';
+  if (source === 'event_field') return isEventFieldDate(item.eventField, events);
+  if (source === 'value') return ISO_DATE_RE.test(String(item.value || ''));
+  if (source === 'formula') {
+    const formula = String(item.formula || '').trim();
+    if (!formula) return false;
+    const fnMatch = formula.match(/^([a-zA-Z_][a-zA-Z0-9_]*)\s*\(/);
+    if (fnMatch && DATE_RETURNING_FNS.has(fnMatch[1])) return true;
+    if (dateVarSet && dateVarSet.has(formula)) return true;
+    return false;
+  }
+  return false;
+};
+
 // Step-level testing always runs against the EARLIEST loaded posting date so
 // behaviour is deterministic across the whole UI. The /event-data/posting-dates
 // endpoint already returns dates sorted ascending, so we just take index 0.
@@ -591,19 +635,27 @@ const StepModal = ({ open, step, stepType, onClose, onSaveStep, events, definedV
 // ═══════════════════════════════════════════════════════════════════════
 const TXN_COLOR = '#0288D1';
 
-const TransactionModal = ({ open, txn, onClose, onSaveTxn, onTest, amountOptions, subIdOptions, eventFieldOptions }) => {
+const TransactionModal = ({ open, txn, onClose, onSaveTxn, onTest, amountOptions, subIdOptions, eventFieldOptions, dateOptions }) => {
   const [local, setLocal] = useState(txn || {});
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState(null);
+  const [saveError, setSaveError] = useState('');
 
   useEffect(() => {
     if (open) {
+      // Note: postingDate / effectiveDate intentionally start empty — the
+      // user MUST explicitly pick a date-typed event field or variable. No
+      // system default is applied.
       setLocal(txn || { type: '', amount: '', postingDate: '', effectiveDate: '', subInstrumentId: '1.0' });
       setTestResult(null);
+      setSaveError('');
     }
   }, [open, txn]);
 
-  const update = (field, val) => setLocal(prev => ({ ...prev, [field]: val }));
+  const update = (field, val) => {
+    setLocal(prev => ({ ...prev, [field]: val }));
+    if (saveError) setSaveError('');
+  };
 
   const handleTest = async () => {
     setTesting(true);
@@ -619,7 +671,18 @@ const TransactionModal = ({ open, txn, onClose, onSaveTxn, onTest, amountOptions
   };
 
   const handleSave = () => {
-    if (!local.type) return;
+    if (!local.type) {
+      setSaveError('Transaction Type is required.');
+      return;
+    }
+    if (!local.postingDate) {
+      setSaveError('Posting Date is required — pick a date-typed event field or variable.');
+      return;
+    }
+    if (!local.effectiveDate) {
+      setSaveError('Effective Date is required — pick a date-typed event field or variable.');
+      return;
+    }
     onSaveTxn(local);
     onClose();
   };
@@ -689,36 +752,59 @@ const TransactionModal = ({ open, txn, onClose, onSaveTxn, onTest, amountOptions
 
         {/* ── Dates ── */}
         <SectionLabel>Dates</SectionLabel>
-        <Box sx={{ display: 'flex', gap: 1.5, mb: 2 }}>
-          <FormControl size="small" fullWidth>
-            <InputLabel shrink>Posting Date</InputLabel>
-            <Select
-              label="Posting Date"
-              notched
-              value={local.postingDate || ''}
-              onChange={(e) => update('postingDate', e.target.value)}
-              displayEmpty
-              renderValue={(val) => val || <em style={{ color: '#999' }}>postingdate</em>}
-            >
-              <MenuItem value="postingdate" sx={{ fontFamily: 'monospace', fontSize: '0.8125rem' }}>postingdate</MenuItem>
-              <MenuItem value="effectivedate" sx={{ fontFamily: 'monospace', fontSize: '0.8125rem' }}>effectivedate</MenuItem>
-            </Select>
-          </FormControl>
-          <FormControl size="small" fullWidth>
-            <InputLabel shrink>Effective Date</InputLabel>
-            <Select
-              label="Effective Date"
-              notched
-              value={local.effectiveDate || ''}
-              onChange={(e) => update('effectiveDate', e.target.value)}
-              displayEmpty
-              renderValue={(val) => val || <em style={{ color: '#999' }}>same as posting</em>}
-            >
-              <MenuItem value="postingdate" sx={{ fontFamily: 'monospace', fontSize: '0.8125rem' }}>postingdate</MenuItem>
-              <MenuItem value="effectivedate" sx={{ fontFamily: 'monospace', fontSize: '0.8125rem' }}>effectivedate</MenuItem>
-            </Select>
-          </FormControl>
+        <Box sx={{ display: 'flex', gap: 1.5, mb: 1 }}>
+          <Autocomplete
+            size="small"
+            fullWidth
+            options={dateOptions || []}
+            value={local.postingDate || null}
+            onChange={(_, val) => update('postingDate', val || '')}
+            isOptionEqualToValue={(opt, val) => opt === val}
+            renderInput={(params) => (
+              <TextField {...params}
+                label="Posting Date *"
+                placeholder="Select a date field or date variable"
+                helperText="Date-typed event fields and rule variables only."
+                inputProps={{ ...params.inputProps, style: { fontFamily: 'monospace', fontSize: '0.8125rem' } }}
+              />
+            )}
+            renderOption={(props, option) => (
+              <li {...props} style={{ fontFamily: 'monospace', fontSize: '0.8125rem' }}>{option}</li>
+            )}
+            noOptionsText={
+              <Typography variant="caption" color="text.secondary">
+                No date-typed fields or variables available. Define a date variable or add a date event field first.
+              </Typography>
+            }
+          />
+          <Autocomplete
+            size="small"
+            fullWidth
+            options={dateOptions || []}
+            value={local.effectiveDate || null}
+            onChange={(_, val) => update('effectiveDate', val || '')}
+            isOptionEqualToValue={(opt, val) => opt === val}
+            renderInput={(params) => (
+              <TextField {...params}
+                label="Effective Date *"
+                placeholder="Select a date field or date variable"
+                helperText="Date-typed event fields and rule variables only."
+                inputProps={{ ...params.inputProps, style: { fontFamily: 'monospace', fontSize: '0.8125rem' } }}
+              />
+            )}
+            renderOption={(props, option) => (
+              <li {...props} style={{ fontFamily: 'monospace', fontSize: '0.8125rem' }}>{option}</li>
+            )}
+            noOptionsText={
+              <Typography variant="caption" color="text.secondary">
+                No date-typed fields or variables available. Define a date variable or add a date event field first.
+              </Typography>
+            }
+          />
         </Box>
+        {saveError && (
+          <Alert severity="error" sx={{ mb: 1.5, fontSize: '0.75rem' }}>{saveError}</Alert>
+        )}
 
         <Divider sx={{ my: 1.5 }} />
 
@@ -1431,9 +1517,12 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
       lines.push('## Create Transactions');
       for (const txn of outputs.transactions) {
         if (!txn.type) continue;
+        // postingDate / effectiveDate must be explicitly chosen by the user —
+        // never fall back to a hardcoded built-in. Skip the line if missing.
+        if (!txn.postingDate || !txn.effectiveDate) continue;
         const amt = txn.amount || definedVars[definedVars.length - 1] || '0';
-        const pd = txn.postingDate || 'postingdate';
-        const ed = txn.effectiveDate || pd;
+        const pd = txn.postingDate;
+        const ed = txn.effectiveDate;
         const sid = txn.subInstrumentId || '';
         if (sid) lines.push(`createTransaction(${pd}, ${ed}, "${txn.type}", ${amt}, ${sid})`);
         else lines.push(`createTransaction(${pd}, ${ed}, "${txn.type}", ${amt})`);
@@ -1619,9 +1708,12 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
           if (s.customCode) lines.push(s.customCode);
         }
       }
+      if (!txn.postingDate || !txn.effectiveDate) {
+        return { success: false, error: 'Posting Date and Effective Date must be explicitly chosen — pick a date-typed event field or variable.' };
+      }
       const amt = txn.amount || definedVars[definedVars.length - 1] || '0';
-      const pd = txn.postingDate || 'postingdate';
-      const ed = txn.effectiveDate || pd;
+      const pd = txn.postingDate;
+      const ed = txn.effectiveDate;
       const sid = txn.subInstrumentId || '';
       if (sid) lines.push(`createTransaction(${pd}, ${ed}, "${txn.type}", ${amt}, ${sid})`);
       else lines.push(`createTransaction(${pd}, ${ed}, "${txn.type}", ${amt})`);
@@ -1786,9 +1878,12 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
         if (s.customCode) lines.push(s.customCode);
       }
     }
+    if (!txn.postingDate || !txn.effectiveDate) {
+      return { success: false, error: 'Posting Date and Effective Date must be explicitly chosen — pick a date-typed event field or variable.' };
+    }
     const amt = txn.amount || definedVars[definedVars.length - 1] || '0';
-    const pd = txn.postingDate || 'postingdate';
-    const ed = txn.effectiveDate || pd;
+    const pd = txn.postingDate;
+    const ed = txn.effectiveDate;
     const sid = txn.subInstrumentId || '';
     if (sid) lines.push(`createTransaction(${pd}, ${ed}, "${txn.type}", ${amt}, ${sid})`);
     else lines.push(`createTransaction(${pd}, ${ed}, "${txn.type}", ${amt})`);
@@ -2246,6 +2341,37 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
             ...steps.filter(isSubIdStep).map(s => s.name),
             ...savedRulesVars.filter(isSubIdStep).map(s => s.name),
           ].filter(Boolean))];
+        })()}
+        dateOptions={(() => {
+          // Date-typed event fields (non-reference events) + date-typed
+          // variables defined in the current rule and in saved rules. No
+          // hardcoded built-ins, no system defaults — strict per spec.
+          const fieldOpts = [];
+          (events || []).forEach(ev => {
+            const evtType = (ev.eventType || ev.event_type || 'activity').toString().toLowerCase();
+            if (evtType !== 'reference') {
+              fieldOpts.push(`${ev.event_name}.postingdate`);
+              fieldOpts.push(`${ev.event_name}.effectivedate`);
+            }
+            (ev.fields || []).forEach(f => {
+              if (String(f.datatype || '').toLowerCase() === 'date') {
+                fieldOpts.push(`${ev.event_name}.${f.name}`);
+              }
+            });
+          });
+          // Two-pass over variables so a step that references another
+          // date-typed variable (e.g. via a bare formula) is still recognized.
+          const dateVars = new Set();
+          const acceptVar = (item) => {
+            if (item && item.name && stepLikeReturnsDate(item, events, dateVars)) {
+              dateVars.add(item.name);
+            }
+          };
+          for (let pass = 0; pass < 2; pass++) {
+            (savedRulesVars || []).forEach(acceptVar);
+            (steps || []).forEach(acceptVar);
+          }
+          return [...new Set([...fieldOpts, ...dateVars])];
         })()}
       />
 
