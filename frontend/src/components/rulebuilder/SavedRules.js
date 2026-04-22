@@ -8,6 +8,7 @@ import {
 import { Trash2, Edit3, Calculator, GitBranch, Repeat, Database, Clock, Play, GripVertical, BookmarkPlus, RotateCcw, Code, Calendar, Copy, ChevronDown, Save, FilePlus } from "lucide-react";
 import { API } from "../../config";
 import { useToast } from "./../ToastProvider";
+import PostingDateModal from "../PostingDateModal";
 
 const RULE_TYPE_META = {
   simple_calc: { label: 'Calculation', color: '#5B5FED', icon: Calculator },
@@ -48,6 +49,14 @@ const SavedRules = ({ onEditRule, onEditSchedule, refreshKey, onPlayAll, onClear
   const [duplicating, setDuplicating] = useState(false);
   // Anchor element for the bookmark split-button menu
   const [bookmarkMenuAnchor, setBookmarkMenuAnchor] = useState(null);
+  // Posting-date selector state for the Business Review (Play All) flow.
+  // When the user clicks Play and the loaded data spans multiple posting dates
+  // we present `PostingDateModal` to let them pick exactly one before running.
+  // `pendingPlay` carries the prepared run context (combined code + dates list)
+  // so the modal's onConfirm callback can complete the run with the chosen date.
+  const [postingDateModalOpen, setPostingDateModalOpen] = useState(false);
+  const [availablePostingDates, setAvailablePostingDates] = useState([]);
+  const pendingPlayRef = useRef(null);
 
   const loadRules = useCallback(async () => {
     setLoading(true);
@@ -215,6 +224,39 @@ const SavedRules = ({ onEditRule, onEditSchedule, refreshKey, onPlayAll, onClear
     dragOverItem.current = null;
   }, [sortedRules, loadRules]);
 
+  // Run the combined-code against ONE specific posting date (or null/no date).
+  // Always invoked from `handlePlayAll` directly when there's a single date,
+  // or from `handlePostingDateConfirm` after the user picks one in the modal.
+  const executePlayAll = useCallback(async (combinedCode, postingDate) => {
+    setPlaying(true);
+    setError(null);
+    try {
+      const payload = { dsl_code: combinedCode };
+      if (postingDate) payload.posting_date = postingDate;
+      const res = await fetch(`${API}/dsl/run`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        const allTransactions = data.transactions || [];
+        const allPrintOutputs = data.print_outputs || [];
+        if (allTransactions.length > 0 || allPrintOutputs.length > 0) {
+          const ruleNames = sortedRules.map(r => r.name).filter(Boolean);
+          const baseName = ruleNames.length > 0 ? ruleNames[0].replace(/\s*-\s*(Parameters|Schedule|Iteration|Transactions|Conditional)$/i, '') : '';
+          onPlayAll({ transactions: allTransactions, printOutputs: allPrintOutputs, templateName: baseName });
+        }
+      } else {
+        setError(data.error || data.detail || 'Execution failed');
+      }
+    } catch (err) {
+      setError(err.message || 'Execution failed');
+    } finally {
+      setPlaying(false);
+    }
+  }, [onPlayAll, sortedRules]);
+
   const handlePlayAll = useCallback(async () => {
     if (!onPlayAll || sortedRules.length === 0) return;
     setPlaying(true);
@@ -227,48 +269,46 @@ const SavedRules = ({ onEditRule, onEditSchedule, refreshKey, onPlayAll, onClear
       const combinedCode = codeData?.code || '';
       if (!combinedCode) {
         setError('No generated code found. Save your rules first.');
+        setPlaying(false);
         return;
       }
       const pdRes = await fetch(`${API}/event-data/posting-dates`);
       const pdData = await pdRes.json();
       const dates = pdData?.posting_dates || [];
-      if (dates.length === 0) dates.push(null);
-      let allTransactions = [];
-      let allPrintOutputs = [];
-      let lastError = null;
-      for (const date of dates) {
-        const payload = { dsl_code: combinedCode };
-        if (date) payload.posting_date = date;
-        const res = await fetch(`${API}/dsl/run`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload),
-        });
-        const data = await res.json();
-        if (res.ok && data.success) {
-          allTransactions = allTransactions.concat(data.transactions || []);
-          allPrintOutputs = allPrintOutputs.concat(data.print_outputs || []);
-        } else {
-          lastError = data.error || data.detail || 'Execution failed';
-        }
-      }
-      if (allTransactions.length > 0 || allPrintOutputs.length > 0) {
-        const ruleNames = sortedRules.map(r => r.name).filter(Boolean);
-        const baseName = ruleNames.length > 0 ? ruleNames[0].replace(/\s*-\s*(Parameters|Schedule|Iteration|Transactions|Conditional)$/i, '') : '';
-        onPlayAll({
-          transactions: allTransactions,
-          printOutputs: allPrintOutputs,
-          templateName: baseName,
-        });
-      } else if (lastError) {
-        setError(lastError);
+
+      // Branch on number of distinct posting dates:
+      //   0  → standalone run (no posting date sent)
+      //   1  → run directly against that date, no prompt
+      //   >1 → open modal so user picks exactly one
+      if (dates.length === 0) {
+        await executePlayAll(combinedCode, null);
+      } else if (dates.length === 1) {
+        await executePlayAll(combinedCode, dates[0]);
+      } else {
+        // Stash run context, open picker. executePlayAll runs after onConfirm.
+        pendingPlayRef.current = { combinedCode };
+        setAvailablePostingDates(dates);
+        setPostingDateModalOpen(true);
+        setPlaying(false); // stop spinner while modal is open
       }
     } catch (err) {
       setError(err.message || 'Execution failed');
-    } finally {
       setPlaying(false);
     }
-  }, [onPlayAll, sortedRules]);
+  }, [onPlayAll, sortedRules, executePlayAll]);
+
+  const handlePostingDateConfirm = useCallback(async (selectedDate) => {
+    setPostingDateModalOpen(false);
+    const ctx = pendingPlayRef.current;
+    pendingPlayRef.current = null;
+    if (!ctx) return;
+    await executePlayAll(ctx.combinedCode, selectedDate);
+  }, [executePlayAll]);
+
+  const handlePostingDateCancel = useCallback(() => {
+    setPostingDateModalOpen(false);
+    pendingPlayRef.current = null;
+  }, []);
 
   // Open the "Save as new template" modal (resets form fields).
   const openSaveAsNewModal = useCallback(() => {
@@ -535,8 +575,15 @@ const SavedRules = ({ onEditRule, onEditSchedule, refreshKey, onPlayAll, onClear
         );
       })}
 
-      {/* Clear All Confirmation Dialog */}
-      <Dialog open={showClearAll} onClose={() => setShowClearAll(false)} maxWidth="sm" fullWidth>
+      {/* Posting-date picker shown when Play All has multiple posting dates available */}
+      <PostingDateModal
+        open={postingDateModalOpen}
+        postingDates={availablePostingDates}
+        onConfirm={handlePostingDateConfirm}
+        onCancel={handlePostingDateCancel}
+      />
+
+      {/* Clear All Confirmation Dialog */}      <Dialog open={showClearAll} onClose={() => setShowClearAll(false)} maxWidth="sm" fullWidth>
         <DialogTitle sx={{ color: '#D32F2F' }}>Clear Rules & Editor</DialogTitle>
         <DialogContent>
           <DialogContentText sx={{ mb: 2 }}>

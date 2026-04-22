@@ -14,6 +14,22 @@ import FormulaBar from "./FormulaBar";
 import ScheduleStepModal from "./ScheduleStepModal";
 import CustomCodeStepModal from "./CustomCodeStepModal";
 
+// Step-level testing always runs against the EARLIEST loaded posting date so
+// behaviour is deterministic across the whole UI. The /event-data/posting-dates
+// endpoint already returns dates sorted ascending, so we just take index 0.
+// Falls back to "today" only when no event data has been loaded.
+const fetchEarliestPostingDate = async () => {
+  try {
+    const res = await fetch(`${API}/event-data/posting-dates`);
+    if (res.ok) {
+      const data = await res.json();
+      const dates = data?.posting_dates || [];
+      if (dates.length > 0) return dates[0];
+    }
+  } catch { /* ignore — fall through to today */ }
+  return new Date().toISOString().split('T')[0];
+};
+
 // ─── Step type metadata ────────────────────────────────────────────────
 const STEP_TYPE_META = {
   calc:        { label: 'Calculation', color: '#5B5FED', icon: Calculator },
@@ -857,11 +873,11 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
     }
 
     const dslCode = lines.join('\n');
-    const today = new Date().toISOString().split('T')[0];
+    const postingDate = await fetchEarliestPostingDate();
     const response = await fetch(`${API}/dsl/run`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ dsl_code: dslCode, posting_date: today }),
+      body: JSON.stringify({ dsl_code: dslCode, posting_date: postingDate }),
     });
     const data = await response.json();
     if (response.ok && data.success) {
@@ -929,11 +945,11 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
     }
 
     const dslCode = lines.join('\n');
-    const today = new Date().toISOString().split('T')[0];
+    const postingDate = await fetchEarliestPostingDate();
     const response = await fetch(`${API}/dsl/run`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ dsl_code: dslCode, posting_date: today }),
+      body: JSON.stringify({ dsl_code: dslCode, posting_date: postingDate }),
     });
     const data = await response.json();
     if (response.ok && data.success) {
@@ -1319,11 +1335,11 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
       if (sid) lines.push(`createTransaction(${pd}, ${ed}, "${txn.type}", ${amt}, ${sid})`);
       else lines.push(`createTransaction(${pd}, ${ed}, "${txn.type}", ${amt})`);
       const dslCode = lines.join('\n');
-      const today = new Date().toISOString().split('T')[0];
+      const postingDate = await fetchEarliestPostingDate();
       const response = await fetch(`${API}/dsl/run`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ dsl_code: dslCode, posting_date: today }),
+        body: JSON.stringify({ dsl_code: dslCode, posting_date: postingDate }),
       });
       const data = await response.json();
       if (response.ok && data.success) {
