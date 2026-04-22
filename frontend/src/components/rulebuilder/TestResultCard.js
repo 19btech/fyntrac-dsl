@@ -189,11 +189,28 @@ function RowsTable({ rows }) {
 export default function TestResultCard({ success, output, error, variableName, onClose, sx }) {
   const parsed = useMemo(() => {
     if (!success) return null;
-    // Use only the LAST non-empty line — earlier prints (e.g. from prior steps that
-    // somehow leaked through) should not mask the tested variable's value.
-    const lines = String(output || '').split('\n').map(l => l.trimEnd()).filter(Boolean);
-    const last = lines[lines.length - 1] ?? '';
-    const { label, raw } = splitLabelAndValue(last);
+    const text = String(output || '');
+    const allLines = text.split('\n').map(l => l.trimEnd());
+    // A single print can span many lines (Python pretty-prints lists/dicts):
+    //   product_names = [
+    //     'a', 'b'
+    //   ]
+    // Find the last line that looks like the START of a print ("name = ..." or
+    // "name: ..." with name being an identifier) and concatenate everything
+    // from there to the end. That is the value we actually want to render.
+    const isStartLine = (l) => /^[A-Za-z_][A-Za-z0-9_]*\s*(=|:)\s/.test(l);
+    let startIdx = -1;
+    for (let i = allLines.length - 1; i >= 0; i--) {
+      if (isStartLine(allLines[i])) { startIdx = i; break; }
+    }
+    let block;
+    if (startIdx >= 0) {
+      block = allLines.slice(startIdx).join('\n').trim();
+    } else {
+      // No "name = value" pattern — treat the whole thing as the raw value.
+      block = allLines.filter(Boolean).join('\n').trim();
+    }
+    const { label, raw } = splitLabelAndValue(block);
     const value = tryParsePythonRepr(raw);
     return { label, raw, value };
   }, [success, output]);
