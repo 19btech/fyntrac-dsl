@@ -152,16 +152,27 @@ class ModelRunner:
             # Compile and execute the template (defines process_event_data, etc.)
             exec(compile(python_code, '<dsl_template>', 'exec'), exec_globals)
 
-            # Call the processing function
+            # Call the processing function. Inspect the signature explicitly so
+            # we never swallow internal TypeErrors as a "wrong signature" — that
+            # would cause the 3-arg fallback to bind raw_event_data =
+            # override_postingdate (a string), corrupting global state and
+            # producing a cryptic "'str' object has no attribute 'items'" later.
             if 'process_event_data' in exec_globals:
+                import inspect as _inspect
+                _proc = exec_globals['process_event_data']
                 try:
-                    transactions = exec_globals['process_event_data'](
+                    _param_count = len(_inspect.signature(_proc).parameters)
+                except (TypeError, ValueError):
+                    _param_count = 4
+                if _param_count >= 4:
+                    transactions = _proc(
                         event_data, raw_event_data,
-                        override_postingdate, override_effectivedate
+                        override_postingdate, override_effectivedate,
                     )
-                except TypeError:
-                    transactions = exec_globals['process_event_data'](
-                        event_data, override_postingdate, override_effectivedate
+                else:
+                    # Older template signature without raw_event_data
+                    transactions = _proc(
+                        event_data, override_postingdate, override_effectivedate,
                     )
             elif 'process_standalone' in exec_globals:
                 transactions = exec_globals['process_standalone'](

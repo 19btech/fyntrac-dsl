@@ -59,8 +59,12 @@ def safe_eval_expression(expression: str, context: Dict[str, Any]):
 
     # Evaluate expression using eval with restricted globals and provided locals
     # The context variables are provided as locals so they shadow DSL functions if needed
+    # Replace 'if(' with 'iif(' because 'if' is a Python keyword and cannot be used as a
+    # function name in eval(), even though DSL_FUNCTIONS has 'iif' mapped to if_op.
+    import re as _re
+    expr_for_eval = _re.sub(r'\bif\s*\(', 'iif(', expr_str)
     try:
-        return eval(expression, safe_globals, context or {})
+        return eval(expr_for_eval, safe_globals, context or {})
     except Exception:
         # Re-raise to let callers handle/log; callers often catch and return None
         raise
@@ -682,20 +686,43 @@ def weighted_balance(balances: List[float], days: List[int]) -> float:
     return sum(b * d for b, d in zip(balances, days)) / total_days if total_days > 0 else 0
 
 # Arithmetic
-def add(a: float, b: float) -> float:
-    return to_number(a) + to_number(b)
+def _broadcast_binary(a, b, op_name, scalar_op):
+    """Apply ``scalar_op(x, y)`` element-wise when either input is a list/tuple.
 
-def subtract(a: float, b: float) -> float:
-    return to_number(a) - to_number(b)
+    Rules:
+    - both list-like → element-wise on the *shorter* length (avoids silent zero-padding bugs)
+    - one list-like, one scalar → broadcast the scalar over the list
+    - both scalar → return ``scalar_op(a, b)``
+    """
+    a_is_list = isinstance(a, (list, tuple))
+    b_is_list = isinstance(b, (list, tuple))
+    if not a_is_list and not b_is_list:
+        return scalar_op(to_number(a), to_number(b))
+    if a_is_list and b_is_list:
+        n = min(len(a), len(b))
+        return [scalar_op(to_number(a[i]), to_number(b[i])) for i in range(n)]
+    if a_is_list:
+        bv = to_number(b)
+        return [scalar_op(to_number(x), bv) for x in a]
+    av = to_number(a)
+    return [scalar_op(av, to_number(x)) for x in b]
 
-def multiply(a: float, b: float) -> float:
-    return to_number(a) * to_number(b)
 
-def divide(a: float, b: float) -> float:
-    denom = to_number(b)
-    if denom == 0:
-        raise ValueError("Division by zero")
-    return to_number(a) / denom
+def add(a, b):
+    return _broadcast_binary(a, b, 'add', lambda x, y: x + y)
+
+def subtract(a, b):
+    return _broadcast_binary(a, b, 'subtract', lambda x, y: x - y)
+
+def multiply(a, b):
+    return _broadcast_binary(a, b, 'multiply', lambda x, y: x * y)
+
+def divide(a, b):
+    def _div(x, y):
+        if y == 0:
+            raise ValueError("Division by zero")
+        return x / y
+    return _broadcast_binary(a, b, 'divide', _div)
 
 def power(a: float, b: float) -> float:
     try:
@@ -2020,13 +2047,17 @@ def generate_schedules(
         result["total_periods"] = total_periods
 
         # Skip items with zero amount only when no other context arrays exist
+        # AND at least one column formula actually references 'amount' — pure
+        # calendar/date schedules (e.g. period_date, month_end) should always
+        # generate rows even when no monetary amount is provided.
         _skip_keys = ('amounts', 'amount', 'start_dates', 'end_dates',
                       'subinstrument_ids', 'item_names', 'product_names')
         has_other_arrays = context and any(
             isinstance(v, list) and k not in _skip_keys
             for k, v in context.items()
         )
-        if not has_other_arrays and (not amount or amount == 0):
+        has_amount_col = any('amount' in str(v) for v in columns.values())
+        if not has_other_arrays and (not amount or amount == 0) and has_amount_col:
             results.append(result)
             continue
         
@@ -2618,7 +2649,7 @@ def createTransaction(postingdate: Any, effectivedate: Any, transactiontype: Any
         effectivedate: Transaction effective date (YYYY-MM-DD format)
         transactiontype: Type/description of the transaction
         amount: Transaction amount
-        subinstrumentid: Sub-instrument identifier (default '1')
+        subinstrumentid: Sub-instrument identifier (default '1.0')
     
     Returns:
         The created transaction dictionary, or None if skipped due to missing dates
@@ -2641,7 +2672,7 @@ def createTransaction(postingdate: Any, effectivedate: Any, transactiontype: Any
     effective_list = _to_list(effectivedate)
     type_list = _to_list(transactiontype)
     amount_list = _to_list(amount)
-    sub_list = _to_list(subinstrumentid) or ['1']
+    sub_list = _to_list(subinstrumentid) or ['1.0']
 
     created = []
 
@@ -2726,9 +2757,9 @@ def createTransaction(postingdate: Any, effectivedate: Any, transactiontype: Any
     # Create exactly one transaction per sub-instrument (unless skipped due to missing dates)
     for i in range(N):
         sub_id_raw = sub_list[i]
-        sub_id = str(sub_id_raw).strip() if sub_id_raw is not None else '1'
+        sub_id = str(sub_id_raw).strip() if sub_id_raw is not None else '1.0'
         if not sub_id or sub_id == 'None':
-            sub_id = '1'
+            sub_id = '1.0'
 
         posting_raw = posting_map[i]
         effective_raw = effective_map[i]

@@ -408,11 +408,14 @@ def transform(
     for ed in event_data_list:
         all_event_data[ed["event_name"]] = ed["data_rows"]
 
-    # raw_event_data includes everything (activity + reference) for collect() functions
-    raw_event_data = all_event_data
+    # raw_event_data is restricted to the requested posting date so that
+    # collect_by_instrument() / collect_all() — which otherwise span every date
+    # in the dataset — only see rows for the posting date being processed.
+    # collect() already filters by date and is unaffected.
+    scoped = filter_event_data_by_posting_date(all_event_data, posting_date)
+    raw_event_data = scoped
 
     # Merge all events by instrument, scoped to the given posting date
-    scoped = filter_event_data_by_posting_date(all_event_data, posting_date)
     merged_data = merge_event_data_by_instrument(scoped)
 
     if not merged_data:
