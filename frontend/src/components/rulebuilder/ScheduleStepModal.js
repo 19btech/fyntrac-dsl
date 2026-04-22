@@ -12,6 +12,7 @@ import {
 } from "lucide-react";
 import { API } from "../../config";
 import FormulaBar from "./FormulaBar";
+import TestResultCard from "./TestResultCard";
 
 const FREQUENCY_OPTIONS = [
   { value: 'M', label: 'Monthly', description: '12 periods per year' },
@@ -571,9 +572,18 @@ const ScheduleStepModal = ({ open, step, onClose, onSaveStep, events, dslFunctio
           break;
         default: setResult(null, 'Unknown output type.'); return;
       }
-      extraLines.push(`print("${entry.name}:", ${entry.name})`);
+      // Mirror per-step test output: tag each print with the row's instrument id
+      // (and sub-instrument for sorting only) so TestResultCard can render a
+      // per-instrument table identical to the inline step tests.
+      // Standalone DSL (no event refs) falls back to a plain print to avoid
+      // referencing instrumentid/subinstrumentid which won't be defined.
+      const _hasEventRefs = (code) => /\b[A-Z][A-Z0-9_]*\.[a-zA-Z_]\w*/.test(code || '');
       const schedCode = buildScheduleCode();
       const allPriorCode = [priorRulesCode, currentRulePreStepCode].filter(Boolean).join('\n\n');
+      const printLine = _hasEventRefs([allPriorCode, schedCode, ...extraLines].join('\n'))
+        ? `print("__TEST_ROW__|" + str(instrumentid) + "|" + str(subinstrumentid) + "| ${entry.name} =", ${entry.name})`
+        : `print("${entry.name} =", ${entry.name})`;
+      extraLines.push(printLine);
       const combinedCode = [allPriorCode, schedCode, ...extraLines].filter(Boolean).join('\n\n');
       let postingDate = new Date().toISOString().split('T')[0];
       try {
@@ -589,7 +599,9 @@ const ScheduleStepModal = ({ open, step, onClose, onSaveStep, events, dslFunctio
       const data = await response.json();
       if (response.ok && data.success) {
         const allPrints = data.print_outputs || [];
-        const out = allPrints.length > 0 ? allPrints[allPrints.length - 1] : 'Ran (no output)';
+        // Return ALL prints joined so the card can group __TEST_ROW__ markers
+        // by instrument (matches inline-step test behavior).
+        const out = allPrints.length > 0 ? allPrints.map(String).join('\n') : 'Ran (no output)';
         setResult(String(out), null);
       } else {
         setResult(null, data.error || data.detail || 'Execution failed');
@@ -1117,20 +1129,16 @@ const ScheduleStepModal = ({ open, step, onClose, onSaveStep, events, dslFunctio
                         </Box>
                       )}
 
-                      {test.result && (
-                        <Alert severity="success" sx={{ mt: 1, py: 0, '& .MuiAlert-message': { py: 0.5 } }}
-                          onClose={() => setOutputTests(p => ({ ...p, [o.id]: { ...p[o.id], result: null } }))}>
-                          <Typography variant="body2" fontFamily="monospace" fontSize="0.8125rem"
-                            sx={{ whiteSpace: 'pre-wrap', maxHeight: 80, overflow: 'auto' }}>
-                            {test.result}
-                          </Typography>
-                        </Alert>
-                      )}
-                      {test.error && (
-                        <Alert severity="error" sx={{ mt: 1, py: 0, '& .MuiAlert-message': { py: 0.5 } }}
-                          onClose={() => setOutputTests(p => ({ ...p, [o.id]: { ...p[o.id], error: null } }))}>
-                          <Typography variant="body2">{test.error}</Typography>
-                        </Alert>
+                      {(test.result || test.error) && (
+                        <Box sx={{ mt: 1 }}>
+                          <TestResultCard
+                            success={!!test.result}
+                            output={test.result}
+                            error={test.error}
+                            variableName={o.name}
+                            onClose={() => setOutputTests(p => ({ ...p, [o.id]: { ...p[o.id], result: null, error: null } }))}
+                          />
+                        </Box>
                       )}
                     </CardContent>
                   </Card>
