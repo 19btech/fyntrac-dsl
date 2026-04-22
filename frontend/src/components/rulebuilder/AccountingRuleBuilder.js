@@ -7,7 +7,7 @@ import {
 } from "@mui/material";
 import {
   Plus, Trash2, Play, Code, Save, X,
-  Calculator, GitBranch, Repeat, GripVertical, Edit3, ChevronDown, Calendar, Copy,
+  Calculator, GitBranch, Repeat, GripVertical, Edit3, ChevronDown, Calendar, Copy, Receipt,
 } from "lucide-react";
 import { API } from "../../config";
 import FormulaBar from "./FormulaBar";
@@ -523,6 +523,197 @@ const StepModal = ({ open, step, stepType, onClose, onSaveStep, events, definedV
 
 
 // ═══════════════════════════════════════════════════════════════════════
+// TransactionModal — Dialog for creating / editing a transaction
+// Groups fields into clear sections (Identity, Amount, Dates, Sub-Instrument)
+// with full-width inputs and proper labels. Test runs in-modal via TestResultCard.
+// ═══════════════════════════════════════════════════════════════════════
+const TXN_COLOR = '#0288D1';
+
+const TransactionModal = ({ open, txn, onClose, onSaveTxn, onTest, amountOptions, subIdOptions, eventFieldOptions }) => {
+  const [local, setLocal] = useState(txn || {});
+  const [testing, setTesting] = useState(false);
+  const [testResult, setTestResult] = useState(null);
+
+  useEffect(() => {
+    if (open) {
+      setLocal(txn || { type: '', amount: '', postingDate: '', effectiveDate: '', subInstrumentId: '1.0' });
+      setTestResult(null);
+    }
+  }, [open, txn]);
+
+  const update = (field, val) => setLocal(prev => ({ ...prev, [field]: val }));
+
+  const handleTest = async () => {
+    setTesting(true);
+    setTestResult(null);
+    try {
+      const result = await onTest(local);
+      setTestResult(result);
+    } catch (e) {
+      setTestResult({ success: false, error: e.message });
+    } finally {
+      setTesting(false);
+    }
+  };
+
+  const handleSave = () => {
+    if (!local.type) return;
+    onSaveTxn(local);
+    onClose();
+  };
+
+  const title = txn?.type ? `Edit Transaction: ${txn.type}` : 'Define Transaction';
+  const SectionLabel = ({ children }) => (
+    <Typography variant="caption" fontWeight={700} sx={{ color: '#5F6B7A', textTransform: 'uppercase', letterSpacing: 0.5, display: 'block', mb: 0.75 }}>
+      {children}
+    </Typography>
+  );
+
+  return (
+    <Dialog open={open} onClose={onClose} maxWidth="sm" fullWidth
+      PaperProps={{ sx: { maxHeight: '85vh' } }}>
+      <DialogTitle sx={{ pb: 1, borderBottom: '1px solid #E9ECEF' }}>
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flex: 1 }}>
+          <Receipt size={20} color={TXN_COLOR} />
+          <Typography variant="h6" sx={{ flex: 1 }}>{title}</Typography>
+          <IconButton size="small" onClick={onClose} sx={{ color: '#6C757D' }}><X size={18} /></IconButton>
+        </Box>
+      </DialogTitle>
+      <DialogContent sx={{ pt: 2, overflow: 'auto' }}>
+        {/* ── Identity ── */}
+        <SectionLabel>Transaction Identity</SectionLabel>
+        <TextField
+          size="small" fullWidth required
+          label="Transaction Type *"
+          value={local.type || ''}
+          onChange={(e) => update('type', e.target.value)}
+          placeholder="e.g., Calculation Result, Interest Accrual"
+          helperText="A short label that identifies this transaction in the ledger."
+          sx={{ mb: 2 }}
+        />
+
+        <Divider sx={{ my: 1.5 }} />
+
+        {/* ── Amount ── */}
+        <SectionLabel>Amount</SectionLabel>
+        <Autocomplete
+          size="small"
+          fullWidth
+          freeSolo
+          options={[...(amountOptions || []), ...(eventFieldOptions || [])]}
+          value={local.amount || ''}
+          onInputChange={(_, val) => update('amount', val)}
+          onChange={(_, val) => update('amount', val || '')}
+          renderInput={(params) => (
+            <TextField {...params}
+              label="Amount Variable or Expression"
+              placeholder="e.g., interest_amount"
+              helperText="Pick a variable defined by a step above, or type any expression."
+              inputProps={{ ...params.inputProps, style: { fontFamily: 'monospace', fontSize: '0.8125rem' } }}
+            />
+          )}
+          renderOption={(props, option) => (
+            <li {...props} style={{ fontFamily: 'monospace', fontSize: '0.8125rem' }}>{option}</li>
+          )}
+          noOptionsText={
+            <Typography variant="caption" color="text.secondary">
+              No variables found. Add a step above first.
+            </Typography>
+          }
+          sx={{ mb: 2 }}
+        />
+
+        <Divider sx={{ my: 1.5 }} />
+
+        {/* ── Dates ── */}
+        <SectionLabel>Dates</SectionLabel>
+        <Box sx={{ display: 'flex', gap: 1.5, mb: 2 }}>
+          <FormControl size="small" fullWidth>
+            <InputLabel shrink>Posting Date</InputLabel>
+            <Select
+              label="Posting Date"
+              notched
+              value={local.postingDate || ''}
+              onChange={(e) => update('postingDate', e.target.value)}
+              displayEmpty
+              renderValue={(val) => val || <em style={{ color: '#999' }}>postingdate</em>}
+            >
+              <MenuItem value="postingdate" sx={{ fontFamily: 'monospace', fontSize: '0.8125rem' }}>postingdate</MenuItem>
+              <MenuItem value="effectivedate" sx={{ fontFamily: 'monospace', fontSize: '0.8125rem' }}>effectivedate</MenuItem>
+            </Select>
+          </FormControl>
+          <FormControl size="small" fullWidth>
+            <InputLabel shrink>Effective Date</InputLabel>
+            <Select
+              label="Effective Date"
+              notched
+              value={local.effectiveDate || ''}
+              onChange={(e) => update('effectiveDate', e.target.value)}
+              displayEmpty
+              renderValue={(val) => val || <em style={{ color: '#999' }}>same as posting</em>}
+            >
+              <MenuItem value="postingdate" sx={{ fontFamily: 'monospace', fontSize: '0.8125rem' }}>postingdate</MenuItem>
+              <MenuItem value="effectivedate" sx={{ fontFamily: 'monospace', fontSize: '0.8125rem' }}>effectivedate</MenuItem>
+            </Select>
+          </FormControl>
+        </Box>
+
+        <Divider sx={{ my: 1.5 }} />
+
+        {/* ── Sub-Instrument ── */}
+        <SectionLabel>Sub-Instrument</SectionLabel>
+        <Autocomplete
+          size="small"
+          fullWidth
+          freeSolo
+          options={subIdOptions || []}
+          value={local.subInstrumentId || ''}
+          onInputChange={(_, val) => update('subInstrumentId', val)}
+          onChange={(_, val) => update('subInstrumentId', val || '')}
+          renderInput={(params) => (
+            <TextField {...params}
+              label="Sub-Instrument ID"
+              placeholder="default (1.0)"
+              helperText="Use a defined sub-instrument list, or leave the default."
+              inputProps={{ ...params.inputProps, style: { fontFamily: 'monospace', fontSize: '0.8125rem' } }}
+            />
+          )}
+          renderOption={(props, option) => (
+            <li {...props} style={{ fontFamily: 'monospace', fontSize: '0.8125rem' }}>{option}</li>
+          )}
+        />
+
+        {testResult && (
+          <TestResultCard
+            success={testResult.success}
+            output={testResult.output}
+            error={testResult.error}
+            variableName={testResult.variableName || (local.type ? `${local.type} transaction` : 'transaction')}
+            onClose={() => setTestResult(null)}
+            sx={{ mt: 2 }}
+          />
+        )}
+      </DialogContent>
+      <DialogActions sx={{ px: 2, py: 1.5, borderTop: '1px solid #E9ECEF' }}>
+        <Button onClick={handleTest} disabled={testing || !local.type}
+          startIcon={testing ? <CircularProgress size={14} /> : <Play size={14} />}
+          sx={{ color: '#4CAF50' }}>
+          {testing ? 'Testing…' : 'Test'}
+        </Button>
+        <Box sx={{ flex: 1 }} />
+        <Button onClick={onClose} startIcon={<X size={14} />}>Cancel</Button>
+        <Button onClick={handleSave} variant="contained" disabled={!local.type}
+          startIcon={<Save size={14} />}
+          sx={{ bgcolor: TXN_COLOR, '&:hover': { bgcolor: '#0277BD' } }}>
+          Save Transaction
+        </Button>
+      </DialogActions>
+    </Dialog>
+  );
+};
+
+
+// ═══════════════════════════════════════════════════════════════════════
 // AccountingRuleBuilder — main component
 // The main screen shows a flat list of steps. Clicking "Add Step" opens
 // a modal for calc / condition / iteration. Steps are draggable.
@@ -538,9 +729,11 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
   const [showCode, setShowCode] = useState(false);
 
   // ── Output options ──
+  // Transactions are first-class; the legacy `createTransaction` boolean is kept
+  // for backward compat only — the UI now treats `transactions.length > 0` as truth.
   const [outputs, setOutputs] = useState(
     initialData?.outputs?.printResult !== undefined ? initialData.outputs :
-    { printResult: true, createTransaction: false, transactions: [{ type: 'Calculation Result', amount: '', postingDate: '', effectiveDate: '', subInstrumentId: '1.0' }] }
+    { printResult: true, createTransaction: false, transactions: [] }
   );
   const [inlineComment, setInlineComment] = useState(initialData?.inlineComment || false);
   const [commentText, setCommentText] = useState(initialData?.commentText || '');
@@ -638,9 +831,15 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
   const [txnTestResults, setTxnTestResults] = useState({});
   const [txnTesting, setTxnTesting] = useState({});
 
-  // ── Drag state ──
+  // ── Transaction modal state ──
+  const [txnModalOpen, setTxnModalOpen] = useState(false);
+  const [editingTxnIndex, setEditingTxnIndex] = useState(null);
+
+  // ── Drag state (steps + transactions share separate refs) ──
   const dragItem = useRef(null);
   const dragOverItem = useRef(null);
+  const txnDragItem = useRef(null);
+  const txnDragOverItem = useRef(null);
 
   // ── Derived: all variable names defined so far (steps + saved rules) ──
   const allDefinedVarNames = useMemo(() => {
@@ -1170,8 +1369,8 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
       }
     }
 
-    // Transactions
-    if (outputs.createTransaction) {
+    // Transactions — emit any defined transactions (toggle removed; presence implies intent)
+    if ((outputs.transactions || []).some(t => t && t.type)) {
       lines.push('');
       lines.push('## Create Transactions');
       for (const txn of outputs.transactions) {
@@ -1203,7 +1402,7 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
     setRulePriority('');
     setRuleId(null);
     setSteps([]);
-    setOutputs({ printResult: true, createTransaction: false, transactions: [{ type: 'Calculation Result', amount: '', postingDate: '', effectiveDate: '', subInstrumentId: '1.0' }] });
+    setOutputs({ printResult: true, createTransaction: false, transactions: [] });
     setInlineComment(false);
     setCommentText('');
     setShowCode(false);
@@ -1433,16 +1632,119 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
     setStepTestResults({});
   };
 
-  // ── Transaction CRUD ──
-  const addTransaction = useCallback(() => {
-    setOutputs(prev => ({ ...prev, transactions: [...prev.transactions, { type: '', amount: '', postingDate: '', effectiveDate: '', subInstrumentId: '1.0' }] }));
+  // ── Transaction CRUD (modal-driven, step-style) ──
+  const openAddTransaction = useCallback(() => {
+    setEditingTxnIndex(null);
+    setTxnModalOpen(true);
   }, []);
-  const updateTransaction = useCallback((i, field, val) => {
-    setOutputs(prev => ({ ...prev, transactions: prev.transactions.map((t, j) => j === i ? { ...t, [field]: val } : t) }));
+  const openEditTransaction = useCallback((i) => {
+    setEditingTxnIndex(i);
+    setTxnModalOpen(true);
   }, []);
+  const saveTransactionFromModal = useCallback((txn) => {
+    setOutputs(prev => {
+      const list = [...(prev.transactions || [])];
+      if (editingTxnIndex !== null && editingTxnIndex >= 0 && editingTxnIndex < list.length) {
+        list[editingTxnIndex] = txn;
+      } else {
+        list.push(txn);
+      }
+      return { ...prev, transactions: list, createTransaction: list.length > 0 };
+    });
+    setTxnTestResults({});
+  }, [editingTxnIndex]);
   const removeTransaction = useCallback((i) => {
-    setOutputs(prev => ({ ...prev, transactions: prev.transactions.filter((_, j) => j !== i) }));
+    setOutputs(prev => {
+      const list = (prev.transactions || []).filter((_, j) => j !== i);
+      return { ...prev, transactions: list, createTransaction: list.length > 0 };
+    });
+    setTxnTestResults({});
   }, []);
+  const duplicateTransaction = useCallback((i) => {
+    setOutputs(prev => {
+      const list = [...(prev.transactions || [])];
+      if (i < 0 || i >= list.length) return prev;
+      const baseType = list[i].type || 'Transaction';
+      const existingTypes = new Set(list.map(t => t.type));
+      let newType = `${baseType} (copy)`;
+      let counter = 2;
+      while (existingTypes.has(newType)) newType = `${baseType} (copy ${counter++})`;
+      const copy = { ...JSON.parse(JSON.stringify(list[i])), type: newType };
+      list.splice(i + 1, 0, copy);
+      return { ...prev, transactions: list, createTransaction: list.length > 0 };
+    });
+    setTxnTestResults({});
+  }, []);
+
+  // ── Transaction drag & drop ──
+  const handleTxnDragStart = (idx) => { txnDragItem.current = idx; };
+  const handleTxnDragOver = (e, idx) => { e.preventDefault(); txnDragOverItem.current = idx; };
+  const handleTxnDrop = (e) => {
+    e.preventDefault();
+    const from = txnDragItem.current;
+    const to = txnDragOverItem.current;
+    if (from === null || to === null || from === to) return;
+    setOutputs(prev => {
+      const list = [...(prev.transactions || [])];
+      const [moved] = list.splice(from, 1);
+      list.splice(to, 0, moved);
+      return { ...prev, transactions: list };
+    });
+    txnDragItem.current = null;
+    txnDragOverItem.current = null;
+    setTxnTestResults({});
+  };
+
+  // ── Test a transaction passed by the modal (independent of saved index) ──
+  const testTransactionDraft = useCallback(async (txn) => {
+    if (!txn?.type) return { success: false, error: 'Transaction type is required' };
+    const lines = [];
+    const priorCode = _buildPriorRulesCode(ruleId || null);
+    if (priorCode) lines.push(priorCode);
+    const definedVars = [];
+    for (const s of steps) {
+      if (!s.name) continue;
+      if (s.stepType === 'calc') {
+        const line = buildCalcLine(s);
+        if (line) { lines.push(line); definedVars.push(s.name); }
+      } else if (s.stepType === 'condition') {
+        lines.push(`${s.name} = ${buildConditionExpr(s.conditions || [], s.elseFormula)}`);
+        definedVars.push(s.name);
+      } else if (s.stepType === 'iteration') {
+        const allAvailable = [...new Set([...definedVars, ...savedRulesVarNames])];
+        lines.push(...buildIterationLines(s.iterations || [], allAvailable));
+        (s.iterations || []).forEach(it => { if (it.resultVar) definedVars.push(it.resultVar); });
+      } else if (s.stepType === 'schedule') {
+        lines.push(...buildScheduleStepLines(s));
+        definedVars.push(s.name);
+        (s.outputVars || []).forEach(ov => definedVars.push(ov.name));
+      } else if (s.stepType === 'custom_code') {
+        if (s.customCode) lines.push(s.customCode);
+      }
+    }
+    const amt = txn.amount || definedVars[definedVars.length - 1] || '0';
+    const pd = txn.postingDate || 'postingdate';
+    const ed = txn.effectiveDate || pd;
+    const sid = txn.subInstrumentId || '';
+    if (sid) lines.push(`createTransaction(${pd}, ${ed}, "${txn.type}", ${amt}, ${sid})`);
+    else lines.push(`createTransaction(${pd}, ${ed}, "${txn.type}", ${amt})`);
+    const dslCode = lines.join('\n');
+    const postingDate = await fetchEarliestPostingDate();
+    const response = await fetch(`${API}/dsl/run`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ dsl_code: dslCode, posting_date: postingDate }),
+    });
+    const data = await response.json();
+    const variableName = `${txn.type} transaction`;
+    if (response.ok && data.success) {
+      const txns = data.transactions || [];
+      const justThis = txns.length > 0 ? [txns[txns.length - 1]] : [];
+      const out = justThis.length > 0 ? `transaction = ${JSON.stringify(justThis)}` : 'transaction = []';
+      return { success: true, output: out, variableName };
+    }
+    return { success: false, error: data.error || 'Execution failed', variableName };
+  }, [steps, ruleId, _buildPriorRulesCode, buildScheduleStepLines, savedRulesVarNames]);
 
   // ── Get step display name ──
   const getStepLabel = (s) => {
@@ -1614,155 +1916,98 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
 
         <Divider sx={{ my: 2 }} />
 
-        {/* ── Output Options ── */}
-        <Typography variant="body2" fontWeight={600} sx={{ mb: 1 }}>Output Options</Typography>
-        <Card sx={{ mb: 1 }}>
-          <CardContent sx={{ p: 1.5, '&:last-child': { pb: 1.5 } }}>
-            <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: outputs.createTransaction ? 1 : 0 }}>
-              <Typography variant="body2">Create transactions</Typography>
-              <Switch checked={outputs.createTransaction} onChange={(e) => setOutputs(p => ({ ...p, createTransaction: e.target.checked }))} size="small" />
-            </Box>
-            {outputs.createTransaction && (
-              <>
-                {outputs.transactions.map((txn, idx) => {
-                  // Build the amount variable list:
-                  // - skip schedule step primary names (the schedule object is not a scalar)
-                  // - include schedule outputVars (schedule_sum/filter/first/last results) instead
-                  // - include iteration resultVars
-                  const varNames = [];
-                  steps.forEach(s => {
-                    if (s.stepType === 'schedule') {
-                      (s.outputVars || []).forEach(ov => { if (ov.name) varNames.push(ov.name); });
-                    } else if (s.stepType === 'iteration') {
-                      (s.iterations || []).forEach(it => { if (it.resultVar) varNames.push(it.resultVar); });
-                      if (s.name) varNames.push(s.name);
-                    } else {
-                      if (s.name) varNames.push(s.name);
-                    }
-                  });
-                  const allVarNames = [...new Set([...varNames, ...savedRulesVarNames])];
-                  const eventFieldOptions = events?.flatMap(ev => [
-                    ...['postingdate', 'effectivedate'].map(sf => `${ev.event_name}.${sf}`),
-                    ...ev.fields.map(f => `${ev.event_name}.${f.name}`),
-                  ]) || [];
-
-                  // Collect defined variables that hold sub-instrument id lists
-                  const isSubIdStep = (s) => {
-                    if (!s.name) return false;
-                    if (s.source === 'collect' && s.collectType === 'collect_subinstrumentids') return true;
-                    if (s.source === 'event_field' && s.eventField?.toLowerCase().endsWith('.subinstrumentid')) return true;
-                    // collect_by_instrument on a subinstrumentid field also produces a valid sub-id list
-                    if (s.source === 'collect' && s.eventField?.toLowerCase().endsWith('.subinstrumentid')) return true;
-                    return false;
-                  };
-                  const subIdVarOptions = [
-                    ...steps.filter(isSubIdStep).map(s => s.name),
-                    ...savedRulesVars.filter(isSubIdStep).map(s => s.name),
-                  ].filter(Boolean);
-                  // Deduplicate; show defined var options only (no raw event fields)
-                  const validSubIds = [...new Set(subIdVarOptions)];
-
-                  return (
-                    <Card key={idx} variant="outlined" sx={{ p: 1, mb: 1, bgcolor: '#FAFAFA' }}>
-                      <Box sx={{ display: 'flex', gap: 1, mb: 0.5, alignItems: 'flex-end' }}>
-                        <Box sx={{ flex: 1 }}>
-                          <Typography variant="caption" fontWeight={600} color="text.secondary" sx={{ mb: 0.25, display: 'block' }}>Posting Date</Typography>
-                          <FormControl size="small" fullWidth>
-                            <Select value={txn.postingDate || ''} onChange={(e) => updateTransaction(idx, 'postingDate', e.target.value)}
-                              displayEmpty renderValue={(val) => val || <em style={{ color: '#999' }}>postingdate</em>}>
-                              <MenuItem value="postingdate" sx={{ fontFamily: 'monospace', fontSize: '0.8125rem' }}>postingdate</MenuItem>
-                              <MenuItem value="effectivedate" sx={{ fontFamily: 'monospace', fontSize: '0.8125rem' }}>effectivedate</MenuItem>
-                            </Select>
-                          </FormControl>
-                        </Box>
-                        <Box sx={{ flex: 1 }}>
-                          <Typography variant="caption" fontWeight={600} color="text.secondary" sx={{ mb: 0.25, display: 'block' }}>Effective Date</Typography>
-                          <FormControl size="small" fullWidth>
-                            <Select value={txn.effectiveDate || ''} onChange={(e) => updateTransaction(idx, 'effectiveDate', e.target.value)}
-                              displayEmpty renderValue={(val) => val || <em style={{ color: '#999' }}>same as posting</em>}>
-                              <MenuItem value="postingdate" sx={{ fontFamily: 'monospace', fontSize: '0.8125rem' }}>postingdate</MenuItem>
-                              <MenuItem value="effectivedate" sx={{ fontFamily: 'monospace', fontSize: '0.8125rem' }}>effectivedate</MenuItem>
-                            </Select>
-                          </FormControl>
-                        </Box>
-                        <Box sx={{ flex: 1 }}>
-                          <Typography variant="caption" fontWeight={600} color="text.secondary" sx={{ mb: 0.25, display: 'block' }}>Sub Instrument ID</Typography>
-                          <Autocomplete
-                            size="small"
-                            freeSolo
-                            options={validSubIds}
-                            value={txn.subInstrumentId || ''}
-                            onInputChange={(_, val) => updateTransaction(idx, 'subInstrumentId', val)}
-                            onChange={(_, val) => updateTransaction(idx, 'subInstrumentId', val || '')}
-                            renderInput={(params) => (
-                              <TextField {...params} placeholder="default (1.0)" size="small"
-                                inputProps={{ ...params.inputProps, style: { fontFamily: 'monospace', fontSize: '0.8125rem' } }} />
-                            )}
-                            renderOption={(props, option) => (
-                              <li {...props} style={{ fontFamily: 'monospace', fontSize: '0.8125rem' }}>{option}</li>
-                            )}
-                          />
-                        </Box>
-                        {outputs.transactions.length > 1 && (
-                          <IconButton size="small" onClick={() => removeTransaction(idx)} sx={{ color: '#F44336', alignSelf: 'center' }}><Trash2 size={12} /></IconButton>
-                        )}
-                      </Box>
-                      <Box sx={{ display: 'flex', gap: 1 }}>
-                        <Box sx={{ flex: 1 }}>
-                          <Typography variant="caption" fontWeight={600} color="text.secondary" sx={{ mb: 0.25, display: 'block' }}>Transaction Type</Typography>
-                          <TextField size="small" fullWidth value={txn.type} placeholder="e.g., Calculation Result"
-                            onChange={(e) => updateTransaction(idx, 'type', e.target.value)} />
-                        </Box>
-                        <Box sx={{ flex: 1 }}>
-                          <Typography variant="caption" fontWeight={600} color="text.secondary" sx={{ mb: 0.25, display: 'block' }}>Amount</Typography>
-                          <Autocomplete
-                            size="small"
-                            freeSolo
-                            options={[...allVarNames, ...eventFieldOptions]}
-                            value={txn.amount || ''}
-                            onInputChange={(_, val) => updateTransaction(idx, 'amount', val)}
-                            onChange={(_, val) => updateTransaction(idx, 'amount', val || '')}
-                            renderInput={(params) => (
-                              <TextField {...params} placeholder="Variable or expression" size="small"
-                                inputProps={{ ...params.inputProps, style: { fontFamily: 'monospace', fontSize: '0.8125rem' } }} />
-                            )}
-                            renderOption={(props, option) => (
-                              <li {...props} style={{ fontFamily: 'monospace', fontSize: '0.8125rem' }}>{option}</li>
-                            )}
-                            noOptionsText={
-                              <Typography variant="caption" color="text.secondary">
-                                No variables found. Configure Output Options inside the Schedule Step first, then Save Step.
-                              </Typography>
-                            }
-                          />
-                        </Box>
-                        <Tooltip title="Test this transaction">
-                          <span>
-                            <IconButton size="small" onClick={() => handleTransactionTest(idx)}
-                              disabled={!!txnTesting[idx] || !txn.type} sx={{ color: '#4CAF50', alignSelf: 'flex-end', mb: 0.5 }}>
-                              {txnTesting[idx] ? <CircularProgress size={14} /> : <Play size={14} />}
-                            </IconButton>
-                          </span>
-                        </Tooltip>
-                      </Box>
-                      {txnTestResults[idx] && (
-                        <TestResultCard
-                          success={txnTestResults[idx].success}
-                          output={txnTestResults[idx].output}
-                          error={txnTestResults[idx].error}
-                          variableName={txnTestResults[idx].variableName || (txn.type ? `${txn.type} transaction` : 'transaction')}
-                          onClose={() => setTxnTestResults(prev => ({ ...prev, [idx]: null }))}
-                          sx={{ mt: 0.5 }}
-                        />
-                      )}
-                    </Card>
-                  );
-                })}
-                <Button size="small" startIcon={<Plus size={14} />} onClick={addTransaction}>Add Transaction</Button>
-              </>
+        {/* ── Transactions ── (parallel to Steps) */}
+        <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 1.5 }}>
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+            <Receipt size={16} color={TXN_COLOR} />
+            <Typography variant="body2" fontWeight={600}>Transactions</Typography>
+            {(outputs.transactions || []).length > 0 && (
+              <Chip size="small" label={(outputs.transactions || []).length}
+                sx={{ height: 18, fontSize: '0.6875rem', bgcolor: `${TXN_COLOR}1A`, color: TXN_COLOR, fontWeight: 700 }} />
             )}
-          </CardContent>
-        </Card>
+          </Box>
+          <Button size="small" startIcon={<Plus size={14} />} onClick={openAddTransaction}
+            sx={{ color: TXN_COLOR }}>
+            Add Transaction
+          </Button>
+        </Box>
+
+        {(outputs.transactions || []).length === 0 && (
+          <Box sx={{ textAlign: 'center', py: 3, color: '#ADB5BD', border: '2px dashed #DEE2E6', borderRadius: 1, mb: 1.5 }}>
+            <Receipt size={32} style={{ margin: '0 auto 8px', opacity: 0.3 }} />
+            <Typography variant="body2">No transactions yet. Click <strong>+ Add Transaction</strong> to define one.</Typography>
+          </Box>
+        )}
+
+        {(outputs.transactions || []).map((txn, idx) => {
+          const tr = txnTestResults[idx];
+          const labelText = txn.type || '(unnamed)';
+          const desc = txn.amount ? `amount: ${txn.amount}` : 'no amount';
+          return (
+            <Card key={idx}
+              draggable
+              onDragStart={() => handleTxnDragStart(idx)}
+              onDragOver={(e) => handleTxnDragOver(e, idx)}
+              onDrop={handleTxnDrop}
+              sx={{
+                mb: 1, borderLeft: `3px solid ${TXN_COLOR}`,
+                transition: 'all 0.15s',
+                '&:hover': { boxShadow: `0 2px 8px ${TXN_COLOR}1F` },
+              }}>
+              <CardContent sx={{ p: 1.5, '&:last-child': { pb: 1.5 } }}>
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                  <Box sx={{ cursor: 'grab', display: 'flex', alignItems: 'center', flexShrink: 0 }}
+                    onMouseDown={(e) => e.stopPropagation()}>
+                    <GripVertical size={16} color="#ADB5BD" />
+                  </Box>
+                  <Chip size="small" label={idx + 1}
+                    sx={{ fontSize: '0.6875rem', height: 20, minWidth: 24, bgcolor: '#F0F0F0', fontWeight: 600 }} />
+                  <Receipt size={16} color={TXN_COLOR} />
+                  <Typography variant="body2" fontWeight={600} sx={{ flex: 1 }} noWrap>
+                    {labelText}
+                  </Typography>
+                  <Typography variant="caption" color="text.secondary" sx={{ mr: 1 }}>
+                    {desc}
+                  </Typography>
+                  <Chip size="small" label="Transaction"
+                    sx={{ fontSize: '0.625rem', height: 18, bgcolor: `${TXN_COLOR}18`, color: TXN_COLOR, fontWeight: 600 }} />
+                  <Tooltip title="Test this transaction">
+                    <span>
+                      <IconButton size="small" onClick={() => handleTransactionTest(idx)}
+                        disabled={!!txnTesting[idx] || !txn.type} sx={{ color: '#4CAF50' }}>
+                        {txnTesting[idx] ? <CircularProgress size={14} /> : <Play size={14} />}
+                      </IconButton>
+                    </span>
+                  </Tooltip>
+                  <Tooltip title="Duplicate transaction">
+                    <IconButton size="small" onClick={() => duplicateTransaction(idx)} sx={{ color: '#607D8B' }}>
+                      <Copy size={14} />
+                    </IconButton>
+                  </Tooltip>
+                  <Tooltip title="Edit transaction">
+                    <IconButton size="small" onClick={() => openEditTransaction(idx)} sx={{ color: TXN_COLOR }}>
+                      <Edit3 size={14} />
+                    </IconButton>
+                  </Tooltip>
+                  <Tooltip title="Delete transaction">
+                    <IconButton size="small" onClick={() => removeTransaction(idx)} sx={{ color: '#F44336' }}>
+                      <Trash2 size={14} />
+                    </IconButton>
+                  </Tooltip>
+                </Box>
+                {tr && (
+                  <TestResultCard
+                    success={tr.success}
+                    output={tr.output}
+                    error={tr.error}
+                    variableName={tr.variableName || (txn.type ? `${txn.type} transaction` : 'transaction')}
+                    onClose={() => setTxnTestResults(prev => ({ ...prev, [idx]: null }))}
+                  />
+                )}
+              </CardContent>
+            </Card>
+          );
+        })}
 
         {/* Save Result */}
         {saveResult && (
@@ -1887,6 +2132,46 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
           generatedCode={generatedCode}
         />
       )}
+
+      {/* Transaction Modal */}
+      <TransactionModal
+        open={txnModalOpen}
+        txn={editingTxnIndex !== null ? (outputs.transactions || [])[editingTxnIndex] : null}
+        onClose={() => { setTxnModalOpen(false); setEditingTxnIndex(null); }}
+        onSaveTxn={saveTransactionFromModal}
+        onTest={testTransactionDraft}
+        amountOptions={(() => {
+          const varNames = [];
+          steps.forEach(s => {
+            if (s.stepType === 'schedule') {
+              (s.outputVars || []).forEach(ov => { if (ov.name) varNames.push(ov.name); });
+            } else if (s.stepType === 'iteration') {
+              (s.iterations || []).forEach(it => { if (it.resultVar) varNames.push(it.resultVar); });
+              if (s.name) varNames.push(s.name);
+            } else if (s.name) {
+              varNames.push(s.name);
+            }
+          });
+          return [...new Set([...varNames, ...savedRulesVarNames])];
+        })()}
+        eventFieldOptions={events?.flatMap(ev => [
+          ...['postingdate', 'effectivedate'].map(sf => `${ev.event_name}.${sf}`),
+          ...ev.fields.map(f => `${ev.event_name}.${f.name}`),
+        ]) || []}
+        subIdOptions={(() => {
+          const isSubIdStep = (s) => {
+            if (!s.name) return false;
+            if (s.source === 'collect' && s.collectType === 'collect_subinstrumentids') return true;
+            if (s.source === 'event_field' && s.eventField?.toLowerCase().endsWith('.subinstrumentid')) return true;
+            if (s.source === 'collect' && s.eventField?.toLowerCase().endsWith('.subinstrumentid')) return true;
+            return false;
+          };
+          return [...new Set([
+            ...steps.filter(isSubIdStep).map(s => s.name),
+            ...savedRulesVars.filter(isSubIdStep).map(s => s.name),
+          ].filter(Boolean))];
+        })()}
+      />
 
       {/* Action Bar */}
       <Box sx={{ p: 2, borderTop: '1px solid #E9ECEF', bgcolor: 'white', display: 'flex', gap: 1, justifyContent: 'flex-end', flexShrink: 0 }}>
