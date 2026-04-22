@@ -61,20 +61,30 @@ const SavedRules = ({ onEditRule, onEditSchedule, refreshKey, onPlayAll, onClear
   const loadRules = useCallback(async () => {
     setLoading(true);
     setError(null);
+    // Guard against the backend hanging — without a timeout the spinner would
+    // spin forever and there is no way for the user to retry.
+    const ctrl = new AbortController();
+    const timeoutId = setTimeout(() => ctrl.abort(), 15000);
     try {
       // Use ?summary=1 to exclude generatedCode from list responses — significantly
       // reduces payload size when there are many rules with large generated code.
       const [rulesRes, schedsRes] = await Promise.all([
-        fetch(`${API}/saved-rules?summary=1`),
-        fetch(`${API}/saved-schedules?summary=1`).catch(() => ({ ok: true, json: async () => [] })),
+        fetch(`${API}/saved-rules?summary=1`, { signal: ctrl.signal }),
+        fetch(`${API}/saved-schedules?summary=1`, { signal: ctrl.signal })
+          .catch(() => ({ ok: true, json: async () => [] })),
       ]);
+      if (!rulesRes.ok) throw new Error(`Failed to load rules (HTTP ${rulesRes.status})`);
       const rulesData = await rulesRes.json();
       const schedsData = await schedsRes.json();
       setRules(Array.isArray(rulesData) ? rulesData : []);
       setSchedules(Array.isArray(schedsData) ? schedsData : []);
     } catch (err) {
-      setError(err.message || 'Failed to load saved rules');
+      const msg = err?.name === 'AbortError'
+        ? 'Loading rules timed out. The backend may be slow or unreachable.'
+        : (err?.message || 'Failed to load saved rules');
+      setError(msg);
     } finally {
+      clearTimeout(timeoutId);
       setLoading(false);
     }
   }, []);
@@ -389,8 +399,18 @@ const SavedRules = ({ onEditRule, onEditSchedule, refreshKey, onPlayAll, onClear
 
   if (loading) {
     return (
-      <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', p: 6 }}>
+      <Box sx={{ display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center', p: 6, gap: 2 }}>
         <CircularProgress size={32} />
+        <Button size="small" variant="text" onClick={loadRules}>Cancel & retry</Button>
+      </Box>
+    );
+  }
+
+  if (error) {
+    return (
+      <Box sx={{ display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center', p: 6, gap: 2 }}>
+        <Typography variant="body2" color="error" sx={{ textAlign: 'center' }}>{error}</Typography>
+        <Button size="small" variant="outlined" onClick={loadRules}>Retry</Button>
       </Box>
     );
   }
