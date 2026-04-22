@@ -16,7 +16,7 @@ const RULE_TYPE_META = {
   schedule: { label: 'Schedule', color: '#2196F3', icon: Calendar },
 };
 
-const SavedRules = ({ onEditRule, onEditSchedule, refreshKey, onPlayAll, onClearAll, loadedTemplateId }) => {
+const SavedRules = ({ onEditRule, onEditSchedule, refreshKey, onPlayAll, onClearAll }) => {
   const [rules, setRules] = useState([]);
   const [schedules, setSchedules] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -30,17 +30,13 @@ const SavedRules = ({ onEditRule, onEditSchedule, refreshKey, onPlayAll, onClear
   const [templateCategory, setTemplateCategory] = useState('');
   const [savingTemplate, setSavingTemplate] = useState(false);
   const [templateResult, setTemplateResult] = useState(null);
-  // Persist the last saved/loaded template id so repeat saves overwrite without showing the modal
+  // Persist the last saved/loaded template id so repeat saves overwrite without showing the modal.
+  // Initialised from localStorage so it survives tab switches (SavedRules unmounts/remounts).
+  // When a template is loaded from the library, Dashboard.js writes the id to localStorage
+  // (in handleGeneratedCode) before switching away, so this picks it up on remount.
   const [savedTemplateId, setSavedTemplateId] = useState(() => {
     try { return localStorage.getItem('savedRulesTemplateId') || null; } catch { return null; }
   });
-
-  // Sync loadedTemplateId prop → state whenever a user template is applied from the library
-  useEffect(() => {
-    if (loadedTemplateId && loadedTemplateId !== savedTemplateId) {
-      setSavedTemplateId(loadedTemplateId);
-    }
-  }, [loadedTemplateId]); // eslint-disable-line react-hooks/exhaustive-deps
   const [showClearAll, setShowClearAll] = useState(false);
   const [clearing, setClearing] = useState(false);
   const [duplicateTarget, setDuplicateTarget] = useState(null);
@@ -302,14 +298,21 @@ const SavedRules = ({ onEditRule, onEditSchedule, refreshKey, onPlayAll, onClear
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({ rules: ruleSummaries, combinedCode }),
                       });
-                      if (res.status === 404) {
-                        // Template was deleted externally — fall back to showing the modal
+                      if (!res.ok) {
+                        // Template no longer exists (404) or any other failure — fall back to modal
                         try { localStorage.removeItem('savedRulesTemplateId'); } catch { /* ignore */ }
                         setSavedTemplateId(null);
-                        setShowSaveTemplate(true); setTemplateResult(null);
+                        setShowSaveTemplate(true);
+                        setTemplateResult(null);
                       }
-                      // Silently succeed — no success toast needed
-                    } catch { /* ignore */ } finally { setSavingTemplate(false); }
+                      // Silently succeed on 2xx — no toast needed
+                    } catch {
+                      // Network / parse error — fall back to modal so user can retry
+                      try { localStorage.removeItem('savedRulesTemplateId'); } catch { /* ignore */ }
+                      setSavedTemplateId(null);
+                      setShowSaveTemplate(true);
+                      setTemplateResult(null);
+                    } finally { setSavingTemplate(false); }
                   } else {
                     setShowSaveTemplate(true); setTemplateResult(null);
                   }
