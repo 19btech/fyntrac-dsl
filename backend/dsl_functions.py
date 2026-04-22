@@ -2376,10 +2376,10 @@ def contains(s: str, substring: str) -> bool:
     return str(substring) in str(s)
 
 def eq_ignore_case(a: str, b: str) -> bool:
-    """Case-insensitive string equality"""
+    """Case-insensitive string equality (also trims surrounding whitespace)."""
     if a is None or b is None:
         return a is None and b is None
-    return str(a).lower() == str(b).lower()
+    return str(a).strip().lower() == str(b).strip().lower()
 
 def starts_with(s: str, prefix: str) -> bool:
     """Check if string starts with prefix"""
