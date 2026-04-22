@@ -339,16 +339,22 @@ const LivePreview = ({ consoleOutput = [], transactions = [], schedules = [], wa
   }, [transactions, resolvedInstrument, resolvedPostingDate]);
 
   // Apply both filters to schedules: a schedule is shown only if at least one
-  // tagged row matches both. Untagged rows (legacy artifacts) are treated as matches.
+  // tagged row matches BOTH selected filters. Strict semantics — untagged rows
+  // never satisfy an active filter, so legacy/uncategorized schedules are
+  // hidden once a selection is made.
   const filteredSchedules = useMemo(() => {
     if (!resolvedInstrument && !resolvedPostingDate) return extractedSchedules;
     return extractedSchedules.filter(sched => {
       if (!Array.isArray(sched) || sched.length === 0) return false;
       return sched.some(row => {
-        const rowInst = row?._instrumentid !== undefined ? String(row._instrumentid) : null;
-        const rowDate = row?._postingdate !== undefined ? String(row._postingdate) : null;
-        if (resolvedInstrument && rowInst !== null && rowInst !== resolvedInstrument) return false;
-        if (resolvedPostingDate && rowDate !== null && rowDate !== resolvedPostingDate) return false;
+        if (resolvedInstrument) {
+          if (row?._instrumentid === undefined) return false;
+          if (String(row._instrumentid) !== resolvedInstrument) return false;
+        }
+        if (resolvedPostingDate) {
+          if (row?._postingdate === undefined) return false;
+          if (String(row._postingdate) !== resolvedPostingDate) return false;
+        }
         return true;
       });
     });
