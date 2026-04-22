@@ -13,6 +13,7 @@ import { API } from "../../config";
 import FormulaBar from "./FormulaBar";
 import ScheduleStepModal from "./ScheduleStepModal";
 import CustomCodeStepModal from "./CustomCodeStepModal";
+import TestResultCard from "./TestResultCard";
 
 // Step-level testing always runs against the EARLIEST loaded posting date so
 // behaviour is deterministic across the whole UI. The /event-data/posting-dates
@@ -465,12 +466,14 @@ const StepModal = ({ open, step, stepType, onClose, onSaveStep, events, definedV
         )}
 
         {testResult && (
-          <Alert severity={testResult.success ? 'success' : 'error'} sx={{ mt: 2 }}
-            onClose={() => setTestResult(null)}>
-            <Typography variant="body2" fontFamily="monospace" fontSize="0.8125rem" sx={{ whiteSpace: 'pre-wrap' }}>
-              {testResult.success ? testResult.output : testResult.error}
-            </Typography>
-          </Alert>
+          <TestResultCard
+            success={testResult.success}
+            output={testResult.output}
+            error={testResult.error}
+            variableName={testResult.variableName || local?.name}
+            onClose={() => setTestResult(null)}
+            sx={{ mt: 2 }}
+          />
         )}
 
         {/* Step-level options */}
@@ -820,7 +823,16 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
     return priorRules
       .map(r => _stripCreateTxnSection(_stripDepsSection(r.generatedCode || '')))
       .filter(Boolean)
-      .join('\n\n');
+      .join('\n\n')
+      // Drop any print() lines from prior rules so their output never leaks into
+      // print_outputs — the tested step's own print is the only thing that should
+      // appear in the result panel.
+      .split('\n')
+      .filter(l => {
+        const t = l.trim();
+        return !(t.startsWith('print(') || t.startsWith('print ('));
+      })
+      .join('\n');
   }, [savedRulesRaw, _stripDepsSection, _stripCreateTxnSection, rulePriority]);
 
   const testStep = useCallback(async (step, stepIndex) => {
@@ -858,16 +870,23 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
     }
 
     const targetStep = stepIndex !== undefined ? steps[stepIndex] : step;
+    let variableName = '';
     if (targetStep) {
       if (targetStep.stepType === 'iteration') {
         const lastIter = (targetStep.iterations || [])[(targetStep.iterations || []).length - 1];
-        if (lastIter?.resultVar) lines.push(`print("${lastIter.resultVar} =", ${lastIter.resultVar})`);
+        if (lastIter?.resultVar) {
+          variableName = lastIter.resultVar;
+          lines.push(`print("${lastIter.resultVar} =", ${lastIter.resultVar})`);
+        }
       } else if (targetStep.stepType === 'schedule') {
+        // Per-step play tests the schedule itself only — outputVars (sum/filter/etc.)
+        // are tested individually from inside the Schedule modal.
+        variableName = targetStep.name;
         lines.push(`print("${targetStep.name} =", ${targetStep.name})`);
-        (targetStep.outputVars || []).forEach(ov => lines.push(`print("${ov.name} =", ${ov.name})`));
       } else if (targetStep.stepType === 'custom_code') {
         // custom code runs as-is, no extra print needed
       } else if (targetStep.name) {
+        variableName = targetStep.name;
         lines.push(`print("${targetStep.name} =", ${targetStep.name})`);
       }
     }
@@ -881,10 +900,13 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
     });
     const data = await response.json();
     if (response.ok && data.success) {
-      const out = (data.print_outputs || []).map(p => String(p)).join('\n') || 'Executed successfully (no output)';
-      return { success: true, output: out };
+      const prints = data.print_outputs || [];
+      // Only the LAST print is the tested variable's value (prior prints, if any
+      // leaked, are ignored by TestResultCard but we trim here too for cleanliness).
+      const out = prints.length > 0 ? String(prints[prints.length - 1]) : '';
+      return { success: true, output: out, variableName };
     } else {
-      return { success: false, error: data.error || (typeof data.detail === 'string' ? data.detail : JSON.stringify(data.detail)) || 'Execution failed' };
+      return { success: false, error: data.error || (typeof data.detail === 'string' ? data.detail : JSON.stringify(data.detail)) || 'Execution failed', variableName };
     }
   }, [steps, savedRulesVarNames, ruleId, _buildPriorRulesCode, buildScheduleStepLines]);
 
@@ -923,23 +945,35 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
     }
 
     // Now emit the step being tested
+    let variableName = '';
     if (localStep.stepType === 'calc') {
       const line = buildCalcLine(localStep);
       if (line) lines.push(line);
-      if (localStep.name) lines.push(`print("${localStep.name} =", ${localStep.name})`);
+      if (localStep.name) {
+        variableName = localStep.name;
+        lines.push(`print("${localStep.name} =", ${localStep.name})`);
+      }
     } else if (localStep.stepType === 'condition') {
       const expr = buildConditionExpr(localStep.conditions || [], localStep.elseFormula);
       lines.push(`${localStep.name} = ${expr}`);
-      if (localStep.name) lines.push(`print("${localStep.name} =", ${localStep.name})`);
+      if (localStep.name) {
+        variableName = localStep.name;
+        lines.push(`print("${localStep.name} =", ${localStep.name})`);
+      }
     } else if (localStep.stepType === 'iteration') {
       const allAvailable = [...new Set([...definedVars, ...savedRulesVarNames])];
       lines.push(...buildIterationLines(localStep.iterations || [], allAvailable));
       const lastIter = (localStep.iterations || [])[(localStep.iterations || []).length - 1];
-      if (lastIter?.resultVar) lines.push(`print("${lastIter.resultVar} =", ${lastIter.resultVar})`);
+      if (lastIter?.resultVar) {
+        variableName = lastIter.resultVar;
+        lines.push(`print("${lastIter.resultVar} =", ${lastIter.resultVar})`);
+      }
     } else if (localStep.stepType === 'schedule') {
       lines.push(...buildScheduleStepLines(localStep));
+      // Only print the schedule itself (single tested variable). Output variables
+      // (sum/filter/etc.) have their own play buttons inside the modal.
+      variableName = localStep.name;
       lines.push(`print("${localStep.name} =", ${localStep.name})`);
-      (localStep.outputVars || []).forEach(ov => lines.push(`print("${ov.name} =", ${ov.name})`));
     } else if (localStep.stepType === 'custom_code') {
       if (localStep.customCode) lines.push(localStep.customCode);
     }
@@ -953,9 +987,11 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
     });
     const data = await response.json();
     if (response.ok && data.success) {
-      return { success: true, output: (data.print_outputs || []).map(String).join('\n') || 'OK' };
+      const prints = data.print_outputs || [];
+      const out = prints.length > 0 ? String(prints[prints.length - 1]) : '';
+      return { success: true, output: out, variableName };
     } else {
-      return { success: false, error: data.error || data.detail || 'Failed' };
+      return { success: false, error: data.error || data.detail || 'Failed', variableName };
     }
   }, [steps, savedRulesVarNames, editingStepIndex, ruleId, _buildPriorRulesCode, buildScheduleStepLines]);
 
@@ -1344,15 +1380,21 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
       const data = await response.json();
       if (response.ok && data.success) {
         const txns = data.transactions || [];
-        const out = txns.length > 0
-          ? txns.map(t => JSON.stringify(t, null, 2)).join('\n')
-          : 'No transactions created (check dates/data)';
-        setTxnTestResults(prev => ({ ...prev, [txnIdx]: { success: true, output: out } }));
+        // Only the LAST transaction is the one we just emitted (prior rules'
+        // createTransaction sections are stripped, but defensive slicing here too).
+        const justThis = txns.length > 0 ? [txns[txns.length - 1]] : [];
+        // Render a compact one-row table by serialising as a Python-style list of dicts;
+        // TestResultCard will parse and table-ify it.
+        const out = justThis.length > 0
+          ? `transaction = ${JSON.stringify(justThis)}`
+          : 'transaction = []';
+        const variableName = txn.type ? `${txn.type} transaction` : 'transaction';
+        setTxnTestResults(prev => ({ ...prev, [txnIdx]: { success: true, output: out, variableName } }));
       } else {
-        setTxnTestResults(prev => ({ ...prev, [txnIdx]: { success: false, error: data.error || 'Execution failed' } }));
+        setTxnTestResults(prev => ({ ...prev, [txnIdx]: { success: false, error: data.error || 'Execution failed', variableName: txn.type ? `${txn.type} transaction` : 'transaction' } }));
       }
     } catch (e) {
-      setTxnTestResults(prev => ({ ...prev, [txnIdx]: { success: false, error: e.message } }));
+      setTxnTestResults(prev => ({ ...prev, [txnIdx]: { success: false, error: e.message, variableName: txn.type ? `${txn.type} transaction` : 'transaction' } }));
     } finally {
       setTxnTesting(prev => ({ ...prev, [txnIdx]: false }));
     }
@@ -1557,12 +1599,13 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
                   </Tooltip>
                 </Box>
                 {tr && (
-                  <Alert severity={tr.success ? 'success' : 'error'} sx={{ mt: 1, '& .MuiAlert-message': { width: '100%' } }}
-                    onClose={() => setStepTestResults(prev => ({ ...prev, [idx]: null }))}>
-                    <Typography variant="body2" fontFamily="monospace" fontSize="0.8125rem" sx={{ whiteSpace: 'pre-wrap' }}>
-                      {tr.success ? tr.output : tr.error}
-                    </Typography>
-                  </Alert>
+                  <TestResultCard
+                    success={tr.success}
+                    output={tr.output}
+                    error={tr.error}
+                    variableName={tr.variableName || step?.name}
+                    onClose={() => setStepTestResults(prev => ({ ...prev, [idx]: null }))}
+                  />
                 )}
               </CardContent>
             </Card>
@@ -1703,13 +1746,14 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
                         </Tooltip>
                       </Box>
                       {txnTestResults[idx] && (
-                        <Alert severity={txnTestResults[idx].success ? 'success' : 'error'}
-                          sx={{ mt: 0.5, '& .MuiAlert-message': { width: '100%' } }}
-                          onClose={() => setTxnTestResults(prev => ({ ...prev, [idx]: null }))}>
-                          <Typography variant="body2" fontFamily="monospace" fontSize="0.8125rem" sx={{ whiteSpace: 'pre-wrap' }}>
-                            {txnTestResults[idx].success ? txnTestResults[idx].output : txnTestResults[idx].error}
-                          </Typography>
-                        </Alert>
+                        <TestResultCard
+                          success={txnTestResults[idx].success}
+                          output={txnTestResults[idx].output}
+                          error={txnTestResults[idx].error}
+                          variableName={txnTestResults[idx].variableName || (txn.type ? `${txn.type} transaction` : 'transaction')}
+                          onClose={() => setTxnTestResults(prev => ({ ...prev, [idx]: null }))}
+                          sx={{ mt: 0.5 }}
+                        />
                       )}
                     </Card>
                   );
