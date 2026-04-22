@@ -903,7 +903,13 @@ def collect_by_instrument(field_name):
             return (1, s)
 
     pairs.sort(key=_sort_key)
-    return [v for _s, v in pairs]
+    sub_ids = [s for s, _v in pairs]
+    values = [v for _s, v in pairs]
+    try:
+        from dsl_functions import _ScheduleValueList
+        return _ScheduleValueList(values, subinstrument_ids=sub_ids)
+    except Exception:
+        return values
 
 def collect_all(field_name):
     \"\"\"

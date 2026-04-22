@@ -1095,13 +1095,20 @@ def period(start: str, end: str, freq: str = "M", convention: str = "ACT/360") -
     if isinstance(start, list) and isinstance(end, list):
         if len(start) != len(end):
             raise ValueError("start and end arrays must have the same length")
-        return {
+        # Carry subinstrument_ids through if either array is an _ScheduleValueList
+        # so downstream schedule() can map results back to the right sub-instruments
+        # without relying on a separate collect_subinstrumentids() step.
+        sub_ids = getattr(start, 'subinstrument_ids', None) or getattr(end, 'subinstrument_ids', None)
+        out = {
             "type": "period_array",
             "start_dates": start,
             "end_dates": end,
             "freq": freq,
             "convention": convention,
         }
+        if sub_ids:
+            out["subinstrument_ids"] = list(sub_ids)
+        return out
 
     # If either date is empty or invalid, return an empty period (no dates)
     if not start or not end:
@@ -1281,6 +1288,11 @@ def schedule(period_def: Dict[str, Any], columns: Dict[str, str], context: Dict[
         else:
             item_names = None
             subinstrument_ids = None
+
+        # Fall back to ids carried on the period descriptor (propagated from
+        # collect_by_instrument via period(start_dates, end_dates, ...))
+        if not subinstrument_ids:
+            subinstrument_ids = period_def.get('subinstrument_ids')
 
         # Normalize amounts into a list matching start_dates length
         if amounts is None:
