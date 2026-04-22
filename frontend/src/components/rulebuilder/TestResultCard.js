@@ -156,6 +156,25 @@ function ScalarValue({ value }) {
   );
 }
 
+function _formatFullArrayValue(value, raw) {
+  // For per-instrument table cells we want the COMPLETE array value (not the
+  // compact "+N more" preview). Render as a single line that wraps; arrays of
+  // strings keep quotes so users can spot whitespace/casing issues.
+  if (Array.isArray(value)) {
+    if (value.length === 0) return '[ ]';
+    const parts = value.map(v => {
+      if (v === null || v === undefined) return 'null';
+      if (typeof v === 'string') return JSON.stringify(v);
+      if (typeof v === 'object') return JSON.stringify(v);
+      return formatScalar(v);
+    });
+    return '[' + parts.join(', ') + ']';
+  }
+  if (value && typeof value === 'object') return JSON.stringify(value);
+  if (value === undefined || value === null) return (raw || '').trim() || '—';
+  return formatScalar(value);
+}
+
 function PerInstrumentTable({ rows, valueLabel }) {
   const visible = rows.slice(0, 100);
   return (
@@ -172,10 +191,10 @@ function PerInstrumentTable({ rows, valueLabel }) {
           <TableBody>
             {visible.map((r, idx) => (
               <TableRow key={idx} hover>
-                <TableCell sx={{ color: '#90A4AE', fontFamily: 'monospace' }}>{idx + 1}</TableCell>
-                <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.8125rem' }}>{r.instrument || '—'}</TableCell>
-                <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.8125rem', wordBreak: 'break-word' }}>
-                  {formatPreview(r.value, r.raw)}
+                <TableCell sx={{ color: '#90A4AE', fontFamily: 'monospace', verticalAlign: 'top' }}>{idx + 1}</TableCell>
+                <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.8125rem', verticalAlign: 'top' }}>{r.instrument || '—'}</TableCell>
+                <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.8125rem', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+                  {_formatFullArrayValue(r.value, r.raw)}
                 </TableCell>
               </TableRow>
             ))}
