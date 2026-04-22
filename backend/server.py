@@ -4007,9 +4007,7 @@ async def get_combined_code():
 
         items.sort(key=lambda x: (x["priority"], x["name"]))
 
-        # For all rules after the first, strip the "## Dependencies from saved rules"
-        # section so that prior-rule variables are not redefined in (potentially wrong) order.
-        _assign_re = _re.compile(r'^([A-Za-z_][A-Za-z0-9_]*)\s*=')
+        _assign_re = _re.compile(r'^([A-Za-z_][A-Za-z0-9_]*)\s*=(?!=)')
 
         def strip_dependencies_section(code: str) -> str:
             """Remove lines between '## Dependencies from saved rules' and the next '##' heading."""
@@ -4019,33 +4017,90 @@ async def get_combined_code():
                 stripped = line.strip()
                 if stripped == '## Dependencies from saved rules':
                     in_deps = True
-                    # Keep the comment itself so the viewer stays readable
                     out.append(line)
                     continue
                 if in_deps:
-                    # End of deps section: another ## comment (but not ## ═ which is the
-                    # rule header) or a non-empty line that looks like a section marker
                     if stripped.startswith('## ') and not stripped.startswith('## ═'):
                         in_deps = False
                         out.append(line)
-                    # else: skip dependency assignment lines
                     continue
                 out.append(line)
             return '\n'.join(out)
 
-        code_blocks = []
-        for idx, item in enumerate(items):
-            code = item.get("code", "")
-            if not code:
-                continue
-            if idx == 0:
-                # First rule: emit as-is; record all variables it defines
-                code_blocks.append(code)
-            else:
-                # Later rules: strip their dependencies section to avoid redefining
-                # prior-rule variables with stale/wrong ordering
-                code_blocks.append(strip_dependencies_section(code))
+        # Strip deps sections from EVERY rule first. The deps section is a
+        # snapshot meant for standalone execution; in combined execution every
+        # rule runs anyway, and keeping deps creates phantom cross-rule
+        # dependencies (e.g. Stage 1's deps referring to a Schedule defined by
+        # Stage 2) that lead to NameError at runtime.
+        for it in items:
+            it['code'] = strip_dependencies_section(it.get('code', ''))
 
+        # ── Topological reorder: if rule A's body references a symbol that
+        # rule B defines, B must come before A — even if A has a lower priority
+        # number. This prevents "cannot access local variable 'X'" errors when
+        # a high-priority rule references something defined by a lower-priority
+        # rule (e.g., a Schedule defined later).
+        _ident_re = _re.compile(r'\b([A-Za-z_][A-Za-z0-9_]*)\b')
+
+        def _parse_defines(code: str) -> set:
+            defines = set()
+            for line in code.split('\n'):
+                m = _assign_re.match(line.lstrip())
+                if m:
+                    defines.add(m.group(1))
+            return defines
+
+        def _parse_uses(code: str) -> set:
+            names = set()
+            for line in code.split('\n'):
+                s = line.strip()
+                if not s or s.startswith('#'):
+                    continue
+                if '=' in line and not line.lstrip().startswith('=='):
+                    rhs = line.split('=', 1)[1]
+                else:
+                    rhs = line
+                names.update(_ident_re.findall(rhs))
+            return names
+
+        for it in items:
+            it['_defs'] = _parse_defines(it['code'])
+            it['_uses'] = _parse_uses(it['code'])
+
+        n = len(items)
+        indeg = [0] * n
+        edges = [[] for _ in range(n)]
+        for j in range(n):
+            needed = items[j]['_uses'] - items[j]['_defs']
+            for i in range(n):
+                if i == j:
+                    continue
+                if items[i]['_defs'] & needed:
+                    edges[i].append(j)
+                    indeg[j] += 1
+
+        import heapq as _heapq
+        heap = [(items[i]['priority'], items[i]['name'], i) for i in range(n) if indeg[i] == 0]
+        _heapq.heapify(heap)
+        ordered_idx = []
+        local_indeg = list(indeg)
+        while heap:
+            _, _, i = _heapq.heappop(heap)
+            ordered_idx.append(i)
+            for j in edges[i]:
+                local_indeg[j] -= 1
+                if local_indeg[j] == 0:
+                    _heapq.heappush(heap, (items[j]['priority'], items[j]['name'], j))
+
+        if len(ordered_idx) == n:
+            items = [items[i] for i in ordered_idx]
+        # else: cycle — fall back to the priority order already in place
+
+        for it in items:
+            it.pop('_defs', None)
+            it.pop('_uses', None)
+
+        code_blocks = [it['code'] for it in items if it.get('code')]
         combined = "\n\n".join(code_blocks)
         return {"success": True, "code": combined, "count": len(code_blocks)}
     except Exception as e:
