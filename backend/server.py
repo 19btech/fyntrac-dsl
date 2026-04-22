@@ -53,6 +53,51 @@ def _normalize_ingest_date_value(value):
         return normalize_date(s)
     except Exception:
         return ''
+
+
+def _sort_activity_rows(rows):
+    """Enforce canonical activity-data ordering:
+        instrumentid ASC, postingdate ASC, effectivedate ASC, subinstrumentid ASC
+
+    Applied at every ingestion entry point (direct upload + JSON import
+    transform) and again at rule-step execution, so every step inside a rule
+    (Schedule, Condition, Iteration, Calculation, Custom Code, Create
+    Transaction) sees the same deterministic order.
+
+    NOTE: must only be called for ACTIVITY data. Reference / custom / static
+    data has no instrumentid/postingdate/effectivedate/subinstrumentid and
+    must be passed through untouched.
+    """
+    if not isinstance(rows, list) or len(rows) <= 1:
+        return rows
+
+    def _ci(row, name):
+        if not isinstance(row, dict):
+            return ''
+        if name in row:
+            v = row[name]
+        else:
+            lname = name.lower()
+            v = ''
+            for k, val in row.items():
+                if str(k).lower() == lname:
+                    v = val
+                    break
+        if v is None:
+            return ''
+        return str(v)
+
+    try:
+        rows.sort(key=lambda r: (
+            _ci(r, 'instrumentid'),
+            _ci(r, 'postingdate'),
+            _ci(r, 'effectivedate'),
+            _ci(r, 'subinstrumentid') or '1',
+        ))
+    except Exception:
+        # Never let sorting mask an ingestion / execution error.
+        pass
+    return rows
 # AI provider abstraction layer
 try:
     from backend.ai_providers import (
@@ -1187,6 +1232,23 @@ def process_event_data(event_data, raw_event_data=None, override_postingdate=Non
 
     # Set global event data for collect() function
     set_all_event_data(event_data)
+
+    # Activity-data ordering guarantee: enforce
+    #   instrumentid ASC, postingdate ASC, effectivedate ASC, subinstrumentid ASC
+    # so every step inside this rule (Schedule, Condition, Iteration,
+    # Calculation, Custom Code, Create Transaction) sees rows in the same
+    # canonical order. event_data here is the merged ACTIVITY dataset only;
+    # reference/custom rows live in raw_event_data and are not touched.
+    try:
+        if isinstance(event_data, list) and len(event_data) > 1:
+            event_data.sort(key=lambda _r: (
+                str(get_field_case_insensitive(_r, 'instrumentid', '') or ''),
+                str(get_field_case_insensitive(_r, 'postingdate', '') or ''),
+                str(get_field_case_insensitive(_r, 'effectivedate', '') or ''),
+                str(get_field_case_insensitive(_r, 'subinstrumentid', '1') or '1'),
+            ))
+    except Exception:
+        pass
     
     for row in event_data:
         # Extract standard fields (case-insensitive)
@@ -2035,6 +2097,12 @@ async def upload_event_data_excel(file: UploadFile = File(...)):
                     for dkey in list(cleaned_row.keys()):
                         if str(dkey).lower() in ('postingdate', 'effectivedate', 'posting_date', 'effective_date'):
                             cleaned_row[dkey] = _normalize_ingest_date_value(cleaned_row.get(dkey))
+
+                # Activity-data only: enforce canonical sort
+                # (instrumentid ASC, postingdate ASC, effectivedate ASC, subinstrumentid ASC)
+                # before the rows are persisted. Reference/custom event data is
+                # intentionally skipped — it has no instrument/date axis.
+                _sort_activity_rows(cleaned_rows)
 
             # Store event data
             event_data = EventData(event_name=event['event_name'], data_rows=cleaned_rows)
@@ -3466,6 +3534,13 @@ def _build_event_data_from_import(records: list, allowed_instruments: set | None
             event_rows[event_id].append(row)
 
     ts = datetime.now(timezone.utc).isoformat()
+    # Activity-data only: enforce canonical sort
+    # (instrumentid ASC, postingdate ASC, effectivedate ASC, subinstrumentid ASC)
+    # for every non-custom event. Custom/reference events are left untouched —
+    # they have no instrumentid/postingdate/effectivedate/subinstrumentid axis.
+    for _eid, _rows in event_rows.items():
+        if _eid not in custom_events:
+            _sort_activity_rows(_rows)
     return [
         {"id": str(uuid.uuid4()), "event_name": eid, "data_rows": rows, "created_at": ts}
         for eid, rows in event_rows.items()
@@ -3790,6 +3865,7 @@ async def save_user_template(request: dict):
     description = (request.get("description") or "").strip()
     category = (request.get("category") or "User Created").strip()
     rules = request.get("rules", [])
+    schedules = request.get("schedules", [])
     combined_code = request.get("combinedCode", "")
 
     # Check name uniqueness
@@ -3807,6 +3883,7 @@ async def save_user_template(request: dict):
         "description": description,
         "category": category,
         "rules": rules,
+        "schedules": schedules,
         "combinedCode": combined_code,
         "created_at": now,
         "updated_at": now,
@@ -3832,6 +3909,8 @@ async def update_user_template(template_id: str, request: dict):
     update_fields = {"updated_at": now}
     if "rules" in request:
         update_fields["rules"] = request["rules"]
+    if "schedules" in request:
+        update_fields["schedules"] = request["schedules"]
     if "combinedCode" in request:
         update_fields["combinedCode"] = request["combinedCode"]
     # Allow optional metadata updates

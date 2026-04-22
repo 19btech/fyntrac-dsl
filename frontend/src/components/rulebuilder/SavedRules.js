@@ -19,7 +19,7 @@ const RULE_TYPE_META = {
   schedule: { label: 'Schedule', color: '#2196F3', icon: Calendar },
 };
 
-const SavedRules = ({ onEditRule, onEditSchedule, refreshKey, onPlayAll, onClearAll }) => {
+const SavedRules = ({ onEditRule, onEditSchedule, refreshKey, onPlayAll, onClearAll, onReorder }) => {
   const toast = useToast();
   const [rules, setRules] = useState([]);
   const [schedules, setSchedules] = useState([]);
@@ -226,13 +226,20 @@ const SavedRules = ({ onEditRule, onEditSchedule, refreshKey, onPlayAll, onClear
       await Promise.all(reqs);
       // Reload from backend to ensure consistency
       await loadRules();
+      // Notify the host so the code viewer (and anything else derived from
+      // the combined-code endpoint) can refresh to match the new priority
+      // order. The combined-code endpoint serialises rules by priority, so
+      // a reorder must trigger a re-fetch.
+      if (typeof onReorder === 'function') {
+        try { onReorder(); } catch { /* ignore */ }
+      }
     } catch (err) {
       setError('Failed to save new order: ' + (err.message || ''));
     }
 
     dragItem.current = null;
     dragOverItem.current = null;
-  }, [sortedRules, loadRules]);
+  }, [sortedRules, loadRules, onReorder]);
 
   // Run the combined-code against ONE specific posting date (or null/no date).
   // Always invoked from `handlePlayAll` directly when there's a single date,
@@ -344,11 +351,13 @@ const SavedRules = ({ onEditRule, onEditSchedule, refreshKey, onPlayAll, onClear
     if (currentTemplateId !== savedTemplateId) { setSavedTemplateId(currentTemplateId); }
     setSavingTemplate(true);
     try {
-      const [fullRulesRes, codeRes] = await Promise.all([
+      const [fullRulesRes, fullSchedulesRes, codeRes] = await Promise.all([
         fetch(`${API}/saved-rules`),
+        fetch(`${API}/saved-schedules`).catch(() => ({ ok: false, json: async () => [] })),
         fetch(`${API}/combined-code`),
       ]);
       const fullRules = await fullRulesRes.json();
+      const fullSchedules = fullSchedulesRes.ok ? await fullSchedulesRes.json() : [];
       const codeData = await codeRes.json();
       const combinedCode = codeData?.code || '';
       const ruleSummaries = (Array.isArray(fullRules) ? fullRules : []).map(r => ({
@@ -360,10 +369,15 @@ const SavedRules = ({ onEditRule, onEditSchedule, refreshKey, onPlayAll, onClear
         outputs: r.outputs || {}, customCode: r.customCode || '',
         steps: r.steps || [],
       }));
+      const scheduleSummaries = (Array.isArray(fullSchedules) ? fullSchedules : []).map(s => ({
+        name: s.name, priority: s.priority,
+        generatedCode: s.generatedCode || '',
+        config: s.config || {},
+      }));
       const res = await fetch(`${API}/user-templates/${currentTemplateId}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ rules: ruleSummaries, combinedCode }),
+        body: JSON.stringify({ rules: ruleSummaries, schedules: scheduleSummaries, combinedCode }),
       });
       if (!res.ok) {
         try { localStorage.removeItem('savedRulesTemplateId'); } catch { /* ignore */ }
@@ -734,12 +748,14 @@ const SavedRules = ({ onEditRule, onEditSchedule, refreshKey, onPlayAll, onClear
               setSavingTemplate(true);
               setTemplateResult(null);
               try {
-                // Fetch full rules (with generatedCode) and combined code on demand
-                const [fullRulesRes, codeRes] = await Promise.all([
+                // Fetch full rules (with generatedCode), schedules and combined code on demand
+                const [fullRulesRes, fullSchedulesRes, codeRes] = await Promise.all([
                   fetch(`${API}/saved-rules`),
+                  fetch(`${API}/saved-schedules`).catch(() => ({ ok: false, json: async () => [] })),
                   fetch(`${API}/combined-code`),
                 ]);
                 const fullRules = await fullRulesRes.json();
+                const fullSchedules = fullSchedulesRes.ok ? await fullSchedulesRes.json() : [];
                 const codeData = await codeRes.json();
                 const combinedCode = codeData?.code || '';
                 const ruleSummaries = (Array.isArray(fullRules) ? fullRules : []).map(r => ({
@@ -755,6 +771,11 @@ const SavedRules = ({ onEditRule, onEditSchedule, refreshKey, onPlayAll, onClear
                   customCode: r.customCode || '',
                   steps: r.steps || [],
                 }));
+                const scheduleSummaries = (Array.isArray(fullSchedules) ? fullSchedules : []).map(s => ({
+                  name: s.name, priority: s.priority,
+                  generatedCode: s.generatedCode || '',
+                  config: s.config || {},
+                }));
                 const res = await fetch(`${API}/user-templates`, {
                   method: 'POST',
                   headers: { 'Content-Type': 'application/json' },
@@ -763,6 +784,7 @@ const SavedRules = ({ onEditRule, onEditSchedule, refreshKey, onPlayAll, onClear
                     description: templateDesc.trim(),
                     category: templateCategory.trim() || 'User Created',
                     rules: ruleSummaries,
+                    schedules: scheduleSummaries,
                     combinedCode,
                   }),
                 });

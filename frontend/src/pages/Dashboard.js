@@ -443,11 +443,29 @@ const Dashboard = () => {
         ]);
         const existingRules = Array.isArray(rulesRes.data) ? rulesRes.data : [];
         const existingSchedules = Array.isArray(schedulesRes.data) ? schedulesRes.data : [];
-        let maxPriority = Math.max(
-          ...existingRules.map(r => r.priority || 0),
-          ...existingSchedules.map(s => s.priority || 0),
-          0
-        );
+        // Track every priority that's already taken so we can preserve the
+        // template's original priorities when free, and only allocate a new
+        // (max+1) priority when there's a genuine collision. This is what
+        // makes round-trip Save → Download .fyn → Re-upload preserve order.
+        const usedPriorities = new Set([
+          ...existingRules.map(r => Number(r.priority)).filter(Number.isFinite),
+          ...existingSchedules.map(s => Number(s.priority)).filter(Number.isFinite),
+        ]);
+        let maxPriority = usedPriorities.size
+          ? Math.max(...usedPriorities)
+          : 0;
+        const nextFreePriority = (preferred) => {
+          const p = Number(preferred);
+          if (Number.isFinite(p) && p > 0 && !usedPriorities.has(p)) {
+            usedPriorities.add(p);
+            if (p > maxPriority) maxPriority = p;
+            return p;
+          }
+          maxPriority += 1;
+          while (usedPriorities.has(maxPriority)) maxPriority += 1;
+          usedPriorities.add(maxPriority);
+          return maxPriority;
+        };
         const existingNames = new Set([
           ...existingRules.map(r => (r.name || '').toLowerCase()),
           ...existingSchedules.map(s => (s.name || '').toLowerCase()),
@@ -455,9 +473,19 @@ const Dashboard = () => {
 
         let created = 0;
 
+        // Process rules + schedules in their original priority order so that,
+        // when the template is imported into a fresh workspace, the resulting
+        // rule list matches the saved file exactly.
+        const sortByPriority = (a, b) => {
+          const pa = Number.isFinite(Number(a.priority)) ? Number(a.priority) : Infinity;
+          const pb = Number.isFinite(Number(b.priority)) ? Number(b.priority) : Infinity;
+          return pa - pb;
+        };
+        const incomingRules = [...(metadata.rules || [])].sort(sortByPriority);
+        const incomingSchedules = [...(metadata.schedules || [])].sort(sortByPriority);
+
         // Create saved-rules
-        for (const rule of (metadata.rules || [])) {
-          maxPriority += 1;
+        for (const rule of incomingRules) {
           let name = rule.name;
           let baseName = name;
           let suffix = 1;
@@ -466,10 +494,11 @@ const Dashboard = () => {
             suffix++;
           }
           existingNames.add(name.toLowerCase());
+          const priority = nextFreePriority(rule.priority);
           try {
             await axios.post(`${API}/saved-rules`, {
               name,
-              priority: maxPriority,
+              priority,
               ruleType: rule.ruleType || 'simple_calc',
               variables: rule.variables || [],
               conditions: rule.conditions || [],
@@ -489,8 +518,7 @@ const Dashboard = () => {
         }
 
         // Create saved-schedules
-        for (const sched of (metadata.schedules || [])) {
-          maxPriority += 1;
+        for (const sched of incomingSchedules) {
           let name = sched.name;
           let baseName = name;
           let suffix = 1;
@@ -499,10 +527,11 @@ const Dashboard = () => {
             suffix++;
           }
           existingNames.add(name.toLowerCase());
+          const priority = nextFreePriority(sched.priority);
           try {
             await axios.post(`${API}/saved-schedules`, {
               name,
-              priority: maxPriority,
+              priority,
               generatedCode: sched.generatedCode || '',
               config: sched.config || {},
             });
@@ -711,7 +740,15 @@ const Dashboard = () => {
                 <ToggleButtonGroup
                   value={editorMode}
                   exclusive
-                  onChange={(e, val) => { if (val) { setEditorMode(val); } }}
+                  onChange={(e, val) => {
+                    if (!val) return;
+                    setEditorMode(val);
+                    // Code Viewer must always reflect the current rule set,
+                    // including any priority/order changes made via drag-drop
+                    // in Rule Manager. Refresh from /combined-code on every
+                    // entry so it stays in sync.
+                    if (val === 'code') { loadCombinedCode(); }
+                  }}
                   size="small"
                   sx={{ '& .MuiToggleButton-root': { textTransform: 'none', fontSize: '0.75rem', px: 1.5, py: 0.5 } }}
                 >
@@ -919,6 +956,7 @@ const Dashboard = () => {
               {editorMode === 'savedRules' && (
                 <SavedRules
                   refreshKey={savedRulesRefreshKey}
+                  onReorder={() => { loadCombinedCode(); }}
                   onEditRule={(rule) => {
                     setEditingRule(rule);
                     setEditingSchedule(null);

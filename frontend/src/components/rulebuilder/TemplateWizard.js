@@ -956,7 +956,15 @@ const UserTemplateWizard = ({ template, onApply, onClose }) => {
 
   const handleApplyClick = () => {
     const filteredRules = rules.filter((_, i) => selectedRules[i]);
-    onApply(combinedCode, { rules: filteredRules, templateId: template.id });
+    // Schedules saved in the template are always applied — they have no
+    // toggle in this wizard. Forwarding them is what lets the load path
+    // recreate them in Rule Manager with their original priorities.
+    const filteredSchedules = template.schedules || [];
+    onApply(combinedCode, {
+      rules: filteredRules,
+      schedules: filteredSchedules,
+      templateId: template.id,
+    });
   };
 
   return (
@@ -1088,6 +1096,7 @@ function exportUserTemplateAsFyn(template) {
       description: template.description || '',
       category: template.category || 'User Created',
       rules: template.rules || [],
+      schedules: template.schedules || [],
       combinedCode: template.combinedCode || '',
       created_at: template.created_at,
       updated_at: template.updated_at,
@@ -1214,6 +1223,7 @@ const ImportFynModal = ({ open, onClose, onImported }) => {
       description: parsed.template.description || '',
       category: parsed.template.category || 'User Created',
       rules: parsed.template.rules || [],
+      schedules: parsed.template.schedules || [],
       combinedCode: parsed.template.combinedCode || '',
     };
 
