@@ -2078,9 +2078,15 @@ def generate_schedules(
                 if k not in result:
                     result[k] = v
         
-        # If start or end date missing for this item, raise a clear DSL-level error
+        # If start or end date missing for this item, skip schedule generation
+        # for this sub-instrument but emit an empty placeholder row. This keeps
+        # downstream arrays (schedule_filter, schedule_sum, etc.) index-aligned
+        # with parallel collect_by_instrument() arrays so the
+        # subinstrument↔value relationship is preserved across all steps.
         if not start or not end:
-            raise ValueError(f"Schedule could not be created for subInstrumentId {subinstrument} — start_date or end_date is missing")
+            result["_skipped_reason"] = "missing start_date or end_date"
+            results.append(result)
+            continue
 
         # Generate period definition
         period_def = period(start, end, freq)
