@@ -359,18 +359,29 @@ def merge_event_data_by_instrument(event_data_dict: Dict[str, List[Dict]]) -> Li
 
 
 def filter_event_data_by_posting_date(
-    event_data_dict: Dict[str, List[Dict]], posting_date: str
+    event_data_dict: Dict[str, List[Dict]],
+    posting_date: str,
+    event_metadata: Optional[Dict[str, Dict]] = None,
 ) -> Dict[str, List[Dict]]:
     """
     Return a copy of event_data_dict where each event's rows are restricted to those
     whose postingdate (case-insensitive) matches the requested posting_date string.
     Events with no matching rows keep an empty list (not removed, so callers can log
     a warning instead of crashing).
+
+    Reference events (custom tables without postingdate) are passed through unchanged
+    when their metadata says eventType == 'reference'. Without this, every CATALOG
+    row would be filtered out and `collect_all(CATALOG.field)` would return [].
     """
     filtered: Dict[str, List[Dict]] = {}
     target = posting_date.strip()
     for event_name, rows in event_data_dict.items():
         safe_rows = rows if isinstance(rows, list) else []
+        meta = (event_metadata or {}).get(event_name) or {}
+        if str(meta.get('eventType', 'activity')).lower() == 'reference':
+            # Reference tables have no postingdate — keep all rows.
+            filtered[event_name] = list(safe_rows)
+            continue
         filtered[event_name] = [
             row for row in safe_rows
             if isinstance(row, dict)
@@ -2247,8 +2258,9 @@ async def run_dsl_code(request: DSLRunRequest):
         # date), also restrict the raw event data so collect_by_instrument() and
         # collect_all() — which normally span all dates — only see rows for that
         # date. collect() already filters by date, but the broader variants do not.
+        # Reference events are passed through unchanged (they have no postingdate).
         raw_for_collect = (
-            filter_event_data_by_posting_date(event_data_dict, request.posting_date)
+            filter_event_data_by_posting_date(event_data_dict, request.posting_date, all_event_fields)
             if request.posting_date
             else event_data_dict
         )
