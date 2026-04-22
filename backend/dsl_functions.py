@@ -1654,6 +1654,20 @@ def schedule(period_def: Dict[str, Any], columns: Dict[str, str], context: Dict[
                 if not (isinstance(value, str) and str(value).startswith("ERROR")):
                     eval_context[col_name] = value
 
+            # Tag the row with the current (instrument, posting date) at the
+            # moment of generation so the Business Preview can strictly scope
+            # schedule display. We tag here (not at print time) because users
+            # may print schedules via plain print(), bypassing print_schedule.
+            try:
+                _iid = _get_current_instrumentid()
+                if _iid not in (None, "") and '_instrumentid' not in row:
+                    row['_instrumentid'] = _iid
+                _pd = _get_current_postingdate()
+                if _pd not in (None, "") and '_postingdate' not in row:
+                    row['_postingdate'] = _pd
+            except Exception:
+                pass
+
             result.append(row)
         return result
     finally:
