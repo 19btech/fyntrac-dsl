@@ -833,65 +833,98 @@ def collect_by_instrument(field_name):
     Collect all values of a field for the current instrumentid only (ignores dates).
     Useful for time-series data across multiple periods for same instrument.
     Returns numeric values as floats, non-numeric (dates, strings) as strings.
+
+    Results are sorted by subinstrumentid (numeric-aware) so arrays produced
+    by separate collect_by_instrument() calls in the same rule line up index
+    for index across instruments. Without this sort, collect_by_instrument(REV.x)
+    and collect_by_instrument(REV.y) could end up in different orders for
+    different instruments and break index-based joins.
     \"\"\"
-    values = []
+    pairs = []
     current_instrument = _current_context.get('instrumentid', '')
-    
+
     # Parse field_name
     parts = field_name.split('_', 1)
     if len(parts) == 2:
         event_name, actual_field = parts[0], parts[1]
     else:
         event_name, actual_field = None, field_name
-    
+
     for evt_name, rows in _raw_event_data.items():
         if event_name and evt_name.upper() != event_name.upper():
             continue
-            
+
         for row in rows:
             row_instrument = get_field_case_insensitive(row, 'instrumentid', '')
-            
+
             if row_instrument == current_instrument:
                 val = get_field_case_insensitive(row, actual_field, None)
                 if val is None:
                     val = get_field_case_insensitive(row, field_name, None)
                 if val is not None and val != '':
+                    sub = get_field_case_insensitive(row, 'subinstrumentid', '') or ''
                     try:
-                        values.append(float(val))
+                        out_val = float(val)
                     except (ValueError, TypeError):
-                        # Keep string values (dates, etc.)
-                        values.append(str(val))
-    return values
+                        out_val = str(val)
+                    pairs.append((str(sub), out_val))
+
+    def _sort_key(p):
+        s = p[0]
+        try:
+            return (0, float(s))
+        except (ValueError, TypeError):
+            return (1, s)
+
+    pairs.sort(key=_sort_key)
+    return [v for _s, v in pairs]
 
 def collect_all(field_name):
     \"\"\"
     Collect ALL values of a field across all data rows (no filtering).
     Returns numeric values as floats, non-numeric (dates, strings) as strings.
+
+    Results are sorted by subinstrumentid (numeric-aware) where present so
+    parallel collect_all() arrays stay aligned by index. Reference tables
+    without subinstrumentid keep their natural row order.
     \"\"\"
-    values = []
-    
+    pairs = []
+
     # Parse field_name
     parts = field_name.split('_', 1)
     if len(parts) == 2:
         event_name, actual_field = parts[0], parts[1]
     else:
         event_name, actual_field = None, field_name
-    
+
     for evt_name, rows in _raw_event_data.items():
         if event_name and evt_name.upper() != event_name.upper():
             continue
-            
-        for row in rows:
+
+        for idx, row in enumerate(rows):
             val = get_field_case_insensitive(row, actual_field, None)
             if val is None:
                 val = get_field_case_insensitive(row, field_name, None)
             if val is not None and val != '':
+                sub = get_field_case_insensitive(row, 'subinstrumentid', '') or ''
                 try:
-                    values.append(float(val))
+                    out_val = float(val)
                 except (ValueError, TypeError):
-                    # Keep string values (dates, etc.)
-                    values.append(str(val))
-    return values
+                    out_val = str(val)
+                pairs.append((str(sub), idx, out_val))
+
+    def _sort_key(p):
+        s = p[0]
+        if s == '':
+            # Reference/no-sub rows keep insertion order via the idx tiebreaker.
+            return (2, p[1])
+        try:
+            return (0, float(s), p[1])
+        except (ValueError, TypeError):
+            return (1, s, p[1])
+
+    pairs.sort(key=_sort_key)
+    return [v for _s, _i, v in pairs]
 
 def collect_by_subinstrument(field_name):
     \"\"\"
