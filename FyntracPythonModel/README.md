@@ -13,7 +13,7 @@ calculation models that were built and tested in the DSL Studio playground.
 
 | File                 | What It Does                                                         |
 |----------------------|----------------------------------------------------------------------|
-| `dsl_functions.py`   | All 145+ financial functions (like `pv`, `compound_interest`, `schedule`, etc.). The generated Python code calls these functions. This is a copy of the same file from the playground. |
+| `dsl_functions.py`   | All 152 financial functions (like `pv`, `compound_interest`, `schedule`, etc.). The generated Python code calls these functions. This is a copy of the same file from the playground. |
 | `data_transformer.py`| Takes the raw event JSON (same format your main app already produces) and cleans it up into the shape the model needs. |
 | `model_runner.py`    | Runs the model: takes the generated Python code + the cleaned-up data, loops through every instrument, and gives back the transactions. |
 | `__init__.py`        | Empty file that tells Python this folder is a package (required for imports to work). |
@@ -45,7 +45,12 @@ import from it.
 ### Step 2: Set up the MongoDB collection
 
 You need **one collection** called `dsl_template_artifacts`. This is where
-the playground saves the generated Python code every time you save a template.
+the playground saves the generated Python code when you **deploy** a user
+template (by clicking the 🚀 Rocket button on the template card in the
+Template Library, which calls `POST /api/user-templates/{template_id}/deploy`).
+
+Saving or editing a user template no longer writes to this collection —
+deployment is now an explicit, opt-in action.
 
 **If your main app and the playground share the same MongoDB database,
 this collection already exists — you don't need to create it.**
@@ -77,7 +82,7 @@ Your main app needs to know how to connect to the database:
 | Variable    | What It Is                                                   | Example                                    |
 |-------------|--------------------------------------------------------------|--------------------------------------------|
 | `MONGO_URL` | The MongoDB connection string (same database as the playground) | `mongodb://localhost:27017`              |
-| `DB_NAME`   | The name of the database                                     | `fyntrac_dsl`                              |
+| `DB_NAME`   | The name of the database (the backend defaults to `dsl_db`) | `dsl_db`                                  |
 
 That's it. No other config needed.
 
@@ -99,7 +104,7 @@ from FyntracPythonModel.model_runner import ModelRunner
 
 # Connect to MongoDB
 client = MongoClient("mongodb://localhost:27017")
-db = client["fyntrac_dsl"]
+db = client["dsl_db"]
 
 # Get the model (the generated Python code) from the database
 artifact = db.dsl_template_artifacts.find_one(
@@ -342,12 +347,14 @@ Everything is packaged into the result dictionary and returned to your code.
 | When This Happens in the Playground        | What You Need to Do                            |
 |--------------------------------------------|------------------------------------------------|
 | You add or change a DSL function           | Copy `backend/dsl_functions.py` from the playground into this folder, replacing the old one. |
-| You save a new template or update one      | **Nothing.** The new template is automatically saved to MongoDB. The next time your main app reads from the database, it gets the latest version. |
+| You save or edit a user template           | **Nothing in this folder.** Saving only updates the editable `user_templates` collection — it does not change what the main app sees. |
+| You **deploy** a user template (🚀 Rocket button) | **Nothing.** The playground compiles the template and writes a new versioned document to `dsl_template_artifacts`. The next time your main app reads from the database, it gets the latest deployed version. |
 | The Import transformation logic changes    | Update `data_transformer.py` in this folder to match the new logic. This is rare. |
 | The template execution logic changes       | Update `model_runner.py` in this folder to match. This is very rare. |
 
 **The most common thing you'll do:** re-copy `dsl_functions.py` when you add
-new functions in the playground. Everything else is automatic or very rare.
+new functions in the playground. Everything else is automatic (after deploy)
+or very rare.
 
 ---
 
