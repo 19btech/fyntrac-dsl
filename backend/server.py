@@ -2476,43 +2476,9 @@ async def save_template(request: SaveTemplateRequest):
             USE_IN_MEMORY = True
             in_memory_data.setdefault('templates', []).append(doc)
 
-        # Persist Python artifact in dedicated collection for external execution
-        try:
-            # Determine next version
-            keep_versions = os.environ.get('KEEP_TEMPLATE_ARTIFACT_VERSIONS', 'false').lower() in ('1','true','yes')
-            existing_art = await db.dsl_template_artifacts.find_one({"template_id": template.id}, {"_id": 0, "version": 1})
-            next_version = 1
-            if existing_art and isinstance(existing_art.get('version'), int):
-                next_version = existing_art['version'] + 1
-
-            artifact_doc = {
-                "template_id": template.id,
-                "template_name": request.name,
-                "version": next_version,
-                "python_code": python_code,
-                "created_at": datetime.now(timezone.utc).isoformat(),
-                "read_only": True
-            }
-            # Insert new artifact
-            await db.dsl_template_artifacts.insert_one(artifact_doc)
-
-            # If not keeping history, delete older artifacts for this template
-            if not keep_versions:
-                await db.dsl_template_artifacts.delete_many({"template_id": template.id, "version": {"$lt": next_version}})
-        except Exception as e:
-            # DB unavailable - persist artifact in-memory
-            logger.warning(f"Could not persist template artifact for {template.id}: {str(e)} - saving in memory")
-            # USE_IN_MEMORY already declared global above in this function
-            USE_IN_MEMORY = True
-            artifact_doc = {
-                "template_id": template.id,
-                "template_name": request.name,
-                "version": 1,
-                "python_code": python_code,
-                "created_at": datetime.now(timezone.utc).isoformat(),
-                "read_only": True
-            }
-            in_memory_data.setdefault('template_artifacts', []).append(artifact_doc)
+        # Note: dsl_template_artifacts is intentionally NOT written here.
+        # The runtime artifact collection is populated only by the explicit
+        # Deploy action (POST /user-templates/{id}/deploy).
 
         return {"message": "Template saved successfully", "template_id": template.id, "replaced": existing is not None}
     except HTTPException:
@@ -3937,7 +3903,8 @@ async def save_user_template(request: dict):
         "updated_at": now,
     }
     await db.user_templates.insert_one(doc)
-    await _mirror_user_template_to_dsl(name, combined_code, rules)
+    # Note: dsl_templates / dsl_template_artifacts are populated only when the
+    # user explicitly clicks Deploy (POST /user-templates/{id}/deploy).
     return {"success": True, "id": doc["id"], "message": f"Template \"{name}\" created."}
 
 @api_router.delete("/user-templates/{template_id}")
@@ -3984,14 +3951,60 @@ async def update_user_template(template_id: str, request: dict):
     if "category" in request:
         update_fields["category"] = request["category"]
     await db.user_templates.update_one({"id": template_id}, {"$set": update_fields})
-    # Mirror the latest snapshot into dsl_templates / dsl_template_artifacts.
-    merged = {**existing, **update_fields}
-    await _mirror_user_template_to_dsl(
-        merged.get("name", ""),
-        merged.get("combinedCode", ""),
-        merged.get("rules", []),
-    )
+    # Note: dsl_templates / dsl_template_artifacts are NOT auto-updated here.
+    # The user must click Deploy (POST /user-templates/{id}/deploy) to push
+    # changes to the runtime.
     return {"success": True, "id": template_id, "message": f"Template \"{existing['name']}\" updated."}
+
+
+@api_router.post("/user-templates/{template_id}/deploy")
+async def deploy_user_template(template_id: str):
+    """
+    Deploy a single user template to the runtime.
+
+    Compiles the user_template's DSL using the *current* event_definitions
+    schema and writes:
+      - dsl_templates: one document keyed by template name (DSL + ready-to-run
+        Python in `python_code`).
+      - dsl_template_artifacts: a new versioned snapshot scoped to this
+        template's id (older versions of the same template are pruned unless
+        KEEP_TEMPLATE_ARTIFACT_VERSIONS=true).
+
+    Only the named template's documents are touched; all other templates and
+    their artifacts are left untouched.
+    """
+    existing = await db.user_templates.find_one({"id": template_id}, {"_id": 0})
+    if not existing:
+        raise HTTPException(status_code=404, detail="Template not found.")
+
+    name = existing.get("name") or ""
+    if not name:
+        raise HTTPException(status_code=400, detail="Template has no name; cannot deploy.")
+
+    combined_code = existing.get("combinedCode") or ""
+    rules = existing.get("rules") or []
+
+    await _mirror_user_template_to_dsl(name, combined_code, rules)
+
+    # Read back the freshly-written rows so the caller gets confirmation of
+    # what the runtime will see.
+    dsl_doc = await db.dsl_templates.find_one(
+        {"name": name},
+        {"_id": 0, "id": 1, "updated_at": 1},
+    ) or {}
+    artifact = await db.dsl_template_artifacts.find_one(
+        {"template_id": dsl_doc.get("id")},
+        {"_id": 0, "id": 1, "version": 1, "created_at": 1, "compile_error": 1},
+        sort=[("version", -1)],
+    ) or {}
+
+    return {
+        "success": True,
+        "message": f"Template \"{name}\" deployed.",
+        "template": {"id": dsl_doc.get("id"), "name": name, "updated_at": dsl_doc.get("updated_at")},
+        "artifact": artifact,
+    }
+
 
 # ── Template Sample Data ────────────────────────────────────────────────
 

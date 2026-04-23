@@ -9,10 +9,11 @@ import {
   BookOpen, Search, ArrowRight, ArrowLeft, Play, Code, Eye, CheckCircle2,
   TrendingUp, TrendingDown, DollarSign, Percent, Receipt, Calculator, Building,
   Sparkles, Copy, Settings2, X, Trash2, FileText, Users, GitBranch, Repeat, Database,
-  Download, Upload, AlertCircle,
+  Download, Upload, AlertCircle, Rocket,
 } from "lucide-react";
 import ACCOUNTING_TEMPLATES from "./AccountingTemplates";
 import { API } from "../../config";
+import { useToast } from "../ToastProvider";
 
 /**
  * Parse generated DSL code into multiple Rule Builder-compatible rules.
@@ -1388,6 +1389,8 @@ const TemplateLibrary = ({ events, onLoadTemplate, onClose, inline }) => {
   const [userTemplates, setUserTemplates] = useState([]);
   const [loadingUser, setLoadingUser] = useState(true);
   const [deletingId, setDeletingId] = useState(null);
+  const [deployingId, setDeployingId] = useState(null);
+  const toast = useToast();
   const [section, setSection] = useState('standard'); // 'standard' | 'user'
   const [showImport, setShowImport] = useState(false);
 
@@ -1457,6 +1460,29 @@ const TemplateLibrary = ({ events, onLoadTemplate, onClose, inline }) => {
     } catch { /* ignore */ }
     finally { setDeletingId(null); }
   }, []);
+
+  const handleDeployUserTemplate = useCallback(async (template) => {
+    setDeployingId(template.id);
+    try {
+      const res = await fetch(`${API}/user-templates/${template.id}/deploy`, { method: 'POST' });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || data.success === false) {
+        toast.error(data.detail || data.message || `Failed to deploy "${template.name}".`);
+        return;
+      }
+      const v = data?.artifact?.version;
+      const compileErr = data?.artifact?.compile_error;
+      if (compileErr) {
+        toast.error(`Deployed "${template.name}" v${v ?? '?'} with compile errors: ${compileErr}`);
+      } else {
+        toast.success(`Deployed "${template.name}"${v ? ` (v${v})` : ''} to runtime.`);
+      }
+    } catch (e) {
+      toast.error(`Deploy failed: ${e?.message || e}`);
+    } finally {
+      setDeployingId(null);
+    }
+  }, [toast]);
 
   if (activeUserTemplate) {
     return (
@@ -1631,6 +1657,14 @@ const TemplateLibrary = ({ events, onLoadTemplate, onClose, inline }) => {
                               {template.description || 'No description'}
                             </Typography>
                           </Box>
+                          <Tooltip title="Deploy to runtime (dsl_templates + dsl_template_artifacts)">
+                            <IconButton size="small"
+                              onClick={(e) => { e.stopPropagation(); handleDeployUserTemplate(template); }}
+                              disabled={deployingId === template.id}
+                              sx={{ color: '#FF6F00', flexShrink: 0 }}>
+                              {deployingId === template.id ? <CircularProgress size={14} /> : <Rocket size={16} />}
+                            </IconButton>
+                          </Tooltip>
                           <Tooltip title="Export as .fyn file">
                             <IconButton size="small"
                               onClick={(e) => { e.stopPropagation(); exportUserTemplateAsFyn(template); }}
