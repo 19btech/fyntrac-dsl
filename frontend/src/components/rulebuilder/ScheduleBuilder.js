@@ -290,7 +290,11 @@ const ScheduleBuilder = ({ events, dslFunctions, onClose, onSave, initialData })
     for (const col of columns) {
       if (!col.formula) continue;
       const identifiers = col.formula.match(/[a-zA-Z_][a-zA-Z0-9_]*/g) || [];
-      for (const id of identifiers) {
+      for (const rawId of identifiers) {
+        // Schedule engine auto-exposes context arrays as `<name>_full`; resolve
+        // back to the base name so we pass the underlying array into context.
+        const id = rawId.endsWith('_full') ? rawId.slice(0, -5) : rawId;
+        if (!id) continue;
         if (SCHEDULE_BUILTINS.has(id)) continue;
         // Always include if it's a known saved-rules variable, even if same name as column
         if (savedVarNameSet.has(id)) { externalRefs.add(id); continue; }

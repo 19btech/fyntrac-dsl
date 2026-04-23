@@ -344,7 +344,13 @@ const ScheduleStepModal = ({ open, step, onClose, onSaveStep, events, dslFunctio
     for (const col of columns) {
       if (!col.formula) continue;
       const identifiers = col.formula.match(/[a-zA-Z_][a-zA-Z0-9_]*/g) || [];
-      for (const id of identifiers) {
+      for (const rawId of identifiers) {
+        // The schedule engine auto-exposes every context array as `<name>_full`
+        // inside column expressions. Resolve to the base name so we pass the
+        // underlying array (e.g. ExpectedCF) into context, not the synthesized
+        // alias (which doesn't exist in the outer scope).
+        const id = rawId.endsWith('_full') ? rawId.slice(0, -5) : rawId;
+        if (!id) continue;
         if (SCHEDULE_BUILTINS.has(id)) continue;
         if (savedVarNameSet.has(id)) { externalRefs.add(id); continue; }
         if (colNames.has(id)) continue;

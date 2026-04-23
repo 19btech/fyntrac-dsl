@@ -1922,12 +1922,9 @@ async def upload_event_data_excel(file: UploadFile = File(...)):
                         date_str = str(pd_val).strip().split(' ')[0]  # Handle datetime strings
                         all_posting_dates.add(date_str)
         
-        # Validate single postingdate across all events
-        if len(all_posting_dates) > 1:
-            raise HTTPException(
-                status_code=400, 
-                detail=f"Multiple posting dates found across events: {sorted(all_posting_dates)}. All events must have the same postingdate."
-            )
+        # Multiple posting dates are allowed: users often upload a file spanning
+        # several periods at once (e.g. month-end snapshots). Downstream, each
+        # posting date is processed independently via filter_event_data_by_posting_date.
 
         # Enforce maximum rows per sheet: do not proceed if any sheet exceeds the limit
         MAX_ROWS_PER_SHEET = 500
@@ -2071,7 +2068,11 @@ async def upload_event_data_excel(file: UploadFile = File(...)):
                 "coercions": coercions if coercions else None
             })
         
-        posting_date_info = list(all_posting_dates)[0] if all_posting_dates else "No posting dates found"
+        if not all_posting_dates:
+            posting_date_info = "No posting dates found"
+        else:
+            sorted_dates = sorted(all_posting_dates)
+            posting_date_info = sorted_dates[0] if len(sorted_dates) == 1 else sorted_dates
 
         summary = {
             "message": f"Processed {len(sheet_names)} sheets",

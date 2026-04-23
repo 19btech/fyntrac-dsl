@@ -185,7 +185,16 @@ def normalize_date(date_value: Any) -> str:
     """
     if date_value is None:
         return ''
-    
+
+    # Unwrap hybrid context-array (used inside schedule() column expressions)
+    # to its current-row scalar so downstream date parsing sees a string/date,
+    # not the list repr.
+    _RAA = globals().get('_RowAwareArray')
+    if _RAA is not None and isinstance(date_value, _RAA):
+        date_value = date_value._row if date_value._row is not None else ''
+        if date_value is None:
+            return ''
+
     # If already a string, try to parse and reformat
     if isinstance(date_value, str):
         date_str = date_value.strip()
@@ -693,7 +702,19 @@ def _broadcast_binary(a, b, op_name, scalar_op):
     - both list-like → element-wise on the *shorter* length (avoids silent zero-padding bugs)
     - one list-like, one scalar → broadcast the scalar over the list
     - both scalar → return ``scalar_op(a, b)``
+
+    Note: `_RowAwareArray` (the hybrid context-array type used inside
+    schedule() column expressions) is treated as a scalar so a context array
+    referenced bare (e.g. `multiply(openingBalance, Monthly_Rate)`) operates
+    on the current row's value, not the whole array.
     """
+    # Defer import to avoid forward-reference issues; class is defined below.
+    _RAA = globals().get('_RowAwareArray')
+    if _RAA is not None:
+        if isinstance(a, _RAA):
+            a = a._row if a._row is not None else 0
+        if isinstance(b, _RAA):
+            b = b._row if b._row is not None else 0
     a_is_list = isinstance(a, (list, tuple))
     b_is_list = isinstance(b, (list, tuple))
     if not a_is_list and not b_is_list:
@@ -747,6 +768,10 @@ def to_number(x: Any) -> float:
     """
     if x is None:
         return 0
+    # Unwrap hybrid context-array to its current-row scalar.
+    _RAA = globals().get('_RowAwareArray')
+    if _RAA is not None and isinstance(x, _RAA):
+        x = x._row if x._row is not None else 0
     if isinstance(x, (int, float)):
         return x
     # Strings: empty or 'None' -> 0, else try float conversion
@@ -1536,14 +1561,22 @@ def schedule(period_def: Dict[str, Any], columns: Dict[str, str], context: Dict[
             eval_context = {}
             eval_context.update(dsl_funcs)
 
-            # Inject normalized per-row context values and expose full arrays as `<name>_full`
+            # Inject context arrays as a hybrid object that behaves as both:
+            #   - the full array (for lookup/iteration/indexing/len)
+            #   - the current row's scalar (for arithmetic/eq/compare)
+            # This means a context array `ExpectedCF` can be used in
+            # `lookup(ExpectedCF, StartDate, month_end)` AND in
+            # `multiply(ExpectedCF, rate)` from the same column expression
+            # without needing a `_full` suffix. The `_full` alias is still
+            # exposed for backward compatibility.
             if normalized_arrays:
                 for k, arr in normalized_arrays.items():
+                    row_val = arr[idx] if idx < len(arr) else 0
                     try:
                         eval_context[f"{k}_full"] = arr
                     except Exception:
                         eval_context[f"{k}_full"] = list(arr)
-                    eval_context[k] = arr[idx] if idx < len(arr) else 0
+                    eval_context[k] = _RowAwareArray(arr, row_value=row_val)
 
             # Now add/override with schedule-specific context
             eval_context.update({
@@ -1638,6 +1671,12 @@ def schedule(period_def: Dict[str, Any], columns: Dict[str, str], context: Dict[
                         # Guard: DSL functions must not return None inside schedule - replace None with 0 or []
                         if value is None:
                             value = 0
+                        # If a column expression returned the hybrid context-array
+                        # object directly (e.g. `UPB` referenced bare), unwrap it
+                        # to the current row's scalar so the cell stores a single
+                        # value instead of the full array's repr.
+                        if isinstance(value, _RowAwareArray):
+                            value = value._row if value._row is not None else 0
                     except Exception as e:
                         value = f"ERROR: {str(e)}"
 
@@ -1688,6 +1727,143 @@ class _ScheduleValueList(list):
     def __init__(self, iterable=(), subinstrument_ids=None):
         super().__init__(iterable)
         self.subinstrument_ids = list(subinstrument_ids) if subinstrument_ids is not None else None
+
+
+class _RowAwareArray(list):
+    """A list that ALSO behaves as the current-row scalar in arithmetic/comparisons.
+
+    Used inside schedule() column expressions so a context array (e.g. ExpectedCF)
+    can be referenced by its bare name and work both as:
+      - a full array (lookup, len, iteration, indexing) - default list behavior
+      - the current row's value (multiply, add, eq, comparisons) - via _row
+
+    The per-row scalar is stored on `_row`; numeric/comparison dunders fall
+    through to `_row` so `multiply(openingBalance, Monthly_Rate)` keeps working
+    when `Monthly_Rate` is a context array but the formula expects a scalar.
+    """
+    __slots__ = ('_row',)
+
+    def __new__(cls, iterable=(), row_value=None):
+        return super().__new__(cls, iterable)
+
+    def __init__(self, iterable=(), row_value=None):
+        super().__init__(iterable)
+        self._row = row_value
+
+    # Numeric scalar coercion
+    def __float__(self):
+        try:
+            return float(self._row) if self._row is not None else 0.0
+        except (TypeError, ValueError):
+            return 0.0
+
+    def __int__(self):
+        try:
+            return int(self._row) if self._row is not None else 0
+        except (TypeError, ValueError):
+            return 0
+
+    def __bool__(self):
+        return bool(self._row) if self._row is not None else len(self) > 0
+
+    # Arithmetic - delegate to per-row scalar
+    def _r(self):
+        return self._row if self._row is not None else 0
+
+    def __add__(self, other):
+        if isinstance(other, list) and not isinstance(other, _RowAwareArray):
+            return list.__add__(self, other)
+        return self._r() + other
+
+    def __radd__(self, other):
+        return other + self._r()
+
+    def __sub__(self, other):
+        return self._r() - other
+
+    def __rsub__(self, other):
+        return other - self._r()
+
+    def __mul__(self, other):
+        if isinstance(other, int) and not isinstance(other, bool) and self._row is None:
+            return list.__mul__(self, other)
+        return self._r() * other
+
+    def __rmul__(self, other):
+        return other * self._r()
+
+    def __truediv__(self, other):
+        return self._r() / other
+
+    def __rtruediv__(self, other):
+        return other / self._r()
+
+    def __floordiv__(self, other):
+        return self._r() // other
+
+    def __rfloordiv__(self, other):
+        return other // self._r()
+
+    def __mod__(self, other):
+        return self._r() % other
+
+    def __rmod__(self, other):
+        return other % self._r()
+
+    def __pow__(self, other):
+        return self._r() ** other
+
+    def __rpow__(self, other):
+        return other ** self._r()
+
+    def __neg__(self):
+        return -self._r()
+
+    def __pos__(self):
+        return +self._r()
+
+    def __abs__(self):
+        return abs(self._r())
+
+    # Comparisons - default list compares lexicographically; we want scalar
+    # semantics when the other side is a scalar (number/str/date), and list
+    # semantics when comparing to another list.
+    def _cmp(self, other, op):
+        if isinstance(other, list) and not isinstance(other, _RowAwareArray):
+            return op(list(self), other)
+        return op(self._r(), other)
+
+    def __eq__(self, other):
+        import operator
+        return self._cmp(other, operator.eq)
+
+    def __ne__(self, other):
+        import operator
+        return self._cmp(other, operator.ne)
+
+    def __lt__(self, other):
+        import operator
+        return self._cmp(other, operator.lt)
+
+    def __le__(self, other):
+        import operator
+        return self._cmp(other, operator.le)
+
+    def __gt__(self, other):
+        import operator
+        return self._cmp(other, operator.gt)
+
+    def __ge__(self, other):
+        import operator
+        return self._cmp(other, operator.ge)
+
+    def __hash__(self):
+        # Required because __eq__ is overridden; hash by row scalar so it can
+        # appear in dict keys / sets when scalar-like.
+        try:
+            return hash(self._row)
+        except TypeError:
+            return id(self)
 
 
 def _extract_sub_ids(sched):
