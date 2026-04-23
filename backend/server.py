@@ -3797,6 +3797,103 @@ async def reorder_saved_schedules(request: dict):
 
 # ── User Templates CRUD ─────────────────────────────────────────────────
 
+async def _mirror_user_template_to_dsl(name: str, combined_code: str, rules: list) -> None:
+    """Mirror a user_template into dsl_templates (upsert by name) and append a
+    versioned artifact in dsl_template_artifacts.
+
+    `combined_code` from the rule builder is *DSL* source (not Python). To make
+    the artifact directly executable by FyntracPythonModel.ModelRunner, we
+    compile it through the same path the playground uses
+    (`dsl_to_python_multi_event` / `dsl_to_python_standalone`). The compiled
+    Python defines `process_event_data(...)` (or `process_standalone(...)`),
+    which is the entry point ModelRunner expects.
+    """
+    if not name:
+        return
+    try:
+        now_iso = datetime.now(timezone.utc).isoformat()
+
+        # Compile DSL → Python so the artifact is runnable by ModelRunner.
+        python_code = ""
+        compile_error = None
+        try:
+            referenced_events = extract_event_names_from_dsl(combined_code or "")
+            all_event_fields: Dict[str, Dict[str, Any]] = {}
+            for evt_name in referenced_events:
+                evt = await db.event_definitions.find_one(
+                    {"event_name": evt_name}, {"_id": 0}
+                )
+                if evt:
+                    all_event_fields[evt_name] = {
+                        "fields": evt.get("fields", []),
+                        "eventType": evt.get("eventType", "activity"),
+                    }
+            if all_event_fields:
+                python_code = dsl_to_python_multi_event(
+                    combined_code or "", all_event_fields
+                )
+            else:
+                python_code = dsl_to_python_standalone(combined_code or "")
+        except Exception as e:
+            compile_error = str(e)
+            logger.warning(
+                f"DSL→Python compile failed for user template '{name}': {e}"
+            )
+
+        # Upsert dsl_templates by name. Preserve existing id when updating so
+        # the artifact's template_id remains stable across edits.
+        existing = await db.dsl_templates.find_one({"name": name}, {"_id": 0, "id": 1})
+        template_id = (existing or {}).get("id") or str(uuid.uuid4())
+        dsl_doc = {
+            "id": template_id,
+            "name": name,
+            "dsl_code": combined_code or "",
+            "python_code": python_code,
+            "updated_at": now_iso,
+        }
+        if not existing:
+            dsl_doc["created_at"] = now_iso
+        await db.dsl_templates.update_one(
+            {"name": name},
+            {"$set": dsl_doc, "$setOnInsert": {"source": "user_template"}},
+            upsert=True,
+        )
+
+        # Determine next artifact version for this template.
+        latest = await db.dsl_template_artifacts.find_one(
+            {"template_id": template_id},
+            {"_id": 0, "version": 1},
+            sort=[("version", -1)],
+        )
+        next_version = 1
+        if latest and isinstance(latest.get("version"), int):
+            next_version = latest["version"] + 1
+
+        artifact_doc = {
+            "id": str(uuid.uuid4()),
+            "template_id": template_id,
+            "template_name": name,
+            "version": next_version,
+            "python_code": python_code,
+            "rules_count": len(rules or []),
+            "created_at": now_iso,
+            "read_only": True,
+        }
+        if compile_error:
+            artifact_doc["compile_error"] = compile_error
+        await db.dsl_template_artifacts.insert_one(artifact_doc)
+
+        keep_versions = os.environ.get(
+            "KEEP_TEMPLATE_ARTIFACT_VERSIONS", "false"
+        ).lower() in ("1", "true", "yes")
+        if not keep_versions:
+            await db.dsl_template_artifacts.delete_many(
+                {"template_id": template_id, "version": {"$lt": next_version}}
+            )
+    except Exception as e:
+        logger.warning(f"Failed to mirror user template '{name}' to dsl_templates: {e}")
+
+
 @api_router.get("/user-templates")
 async def list_user_templates():
     """List all user-created templates."""
@@ -3840,14 +3937,31 @@ async def save_user_template(request: dict):
         "updated_at": now,
     }
     await db.user_templates.insert_one(doc)
+    await _mirror_user_template_to_dsl(name, combined_code, rules)
     return {"success": True, "id": doc["id"], "message": f"Template \"{name}\" created."}
 
 @api_router.delete("/user-templates/{template_id}")
 async def delete_user_template(template_id: str):
     """Delete a user template by id."""
+    existing = await db.user_templates.find_one({"id": template_id}, {"_id": 0, "name": 1})
     result = await db.user_templates.delete_one({"id": template_id})
     if result.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Template not found.")
+    # Cascade delete the mirrored dsl_template + its artifacts.
+    if existing and existing.get("name"):
+        try:
+            mirrored = await db.dsl_templates.find_one(
+                {"name": existing["name"]}, {"_id": 0, "id": 1}
+            )
+            await db.dsl_templates.delete_one({"name": existing["name"]})
+            if mirrored and mirrored.get("id"):
+                await db.dsl_template_artifacts.delete_many(
+                    {"template_id": mirrored["id"]}
+                )
+        except Exception as e:
+            logger.warning(
+                f"Failed to cascade-delete dsl_template mirror for '{existing['name']}': {e}"
+            )
     return {"success": True, "message": "Template deleted."}
 
 @api_router.put("/user-templates/{template_id}")
@@ -3870,6 +3984,13 @@ async def update_user_template(template_id: str, request: dict):
     if "category" in request:
         update_fields["category"] = request["category"]
     await db.user_templates.update_one({"id": template_id}, {"$set": update_fields})
+    # Mirror the latest snapshot into dsl_templates / dsl_template_artifacts.
+    merged = {**existing, **update_fields}
+    await _mirror_user_template_to_dsl(
+        merged.get("name", ""),
+        merged.get("combinedCode", ""),
+        merged.get("rules", []),
+    )
     return {"success": True, "id": template_id, "message": f"Template \"{existing['name']}\" updated."}
 
 # ── Template Sample Data ────────────────────────────────────────────────
