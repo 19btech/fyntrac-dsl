@@ -112,7 +112,7 @@ const ColumnCard = ({ column, index, events, variables, onUpdate, onRemove, onMo
  * inside the Rule Builder. Shows Time Period config, schedule columns,
  * preview, and output options (no rule name/priority/createTransaction).
  */
-const ScheduleStepModal = ({ open, step, onClose, onSaveStep, events, dslFunctions, definedVarNames, currentRulePreStepCode, freshPriorCode }) => {
+const ScheduleStepModal = ({ open, step, onClose, onSaveStep, events, dslFunctions, definedVarNames, currentRulePreStepCode, freshPriorCode, testPostingDate }) => {
   const cfg = step?.scheduleConfig || {};
 
   // Period config
@@ -466,12 +466,14 @@ const ScheduleStepModal = ({ open, step, onClose, onSaveStep, events, dslFunctio
     schedLines.push('print(sched)');
     const allPriorCode = [priorRulesCode, currentRulePreStepCode].filter(Boolean).join('\n\n');
     const combinedCode = [allPriorCode, ...schedLines].filter(Boolean).join('\n');
-    let postingDate = new Date().toISOString().split('T')[0];
-    try {
-      const pdRes = await fetch(`${API}/event-data/posting-dates`);
-      const pdData = await pdRes.json();
-      if (pdData?.posting_dates?.length) postingDate = pdData.posting_dates[0];
-    } catch { /* ignore */ }
+    let postingDate = testPostingDate || new Date().toISOString().split('T')[0];
+    if (!testPostingDate) {
+      try {
+        const pdRes = await fetch(`${API}/event-data/posting-dates`);
+        const pdData = await pdRes.json();
+        if (pdData?.posting_dates?.length) postingDate = pdData.posting_dates[0];
+      } catch { /* ignore */ }
+    }
     const response = await fetch(`${API}/dsl/run`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -484,7 +486,7 @@ const ScheduleStepModal = ({ open, step, onClose, onSaveStep, events, dslFunctio
     return { success: false, error: data.error || data.detail || 'Execution failed' };
   }, [columns, autoDetectedVars, priorRulesCode, currentRulePreStepCode, periodType, periodCount, periodCountSource, periodCountField, periodCountFormula,
       startDateSource, startDateField, startDateFormula, startDate,
-      endDateSource, endDateField, endDateFormula, endDate, frequency, convention]);
+      endDateSource, endDateField, endDateFormula, endDate, frequency, convention, testPostingDate]);
 
   // Test schedule preview
   const testSchedulePreview = useCallback(async () => {
@@ -497,17 +499,20 @@ const ScheduleStepModal = ({ open, step, onClose, onSaveStep, events, dslFunctio
       const schedCode = buildScheduleCode();
       const allPriorCode = [priorRulesCode, currentRulePreStepCode].filter(Boolean).join('\n\n');
       const combinedCode = allPriorCode ? (allPriorCode + '\n\n' + schedCode) : schedCode;
-      let dates = [];
-      try {
-        const pdRes = await fetch(`${API}/event-data/posting-dates`);
-        const pdData = await pdRes.json();
-        dates = pdData?.posting_dates || [];
-      } catch { /* ignore */ }
-      if (dates.length === 0) dates.push(new Date().toISOString().split('T')[0]);
+      let postingDate = testPostingDate;
+      if (!postingDate) {
+        let dates = [];
+        try {
+          const pdRes = await fetch(`${API}/event-data/posting-dates`);
+          const pdData = await pdRes.json();
+          dates = pdData?.posting_dates || [];
+        } catch { /* ignore */ }
+        postingDate = dates[0] || new Date().toISOString().split('T')[0];
+      }
       const response = await fetch(`${API}/dsl/run`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ dsl_code: combinedCode, posting_date: dates[0] }),
+        body: JSON.stringify({ dsl_code: combinedCode, posting_date: postingDate }),
       });
       const data = await response.json();
       if (response.ok && data.success && data.print_outputs?.length > 0) {
@@ -543,7 +548,7 @@ const ScheduleStepModal = ({ open, step, onClose, onSaveStep, events, dslFunctio
       }
     } catch (err) { setSchedulePreviewError(err.message || 'Network error'); }
     finally { setSchedulePreviewTesting(false); }
-  }, [buildScheduleCode, priorRulesCode, currentRulePreStepCode, columns]);
+  }, [buildScheduleCode, priorRulesCode, currentRulePreStepCode, columns, testPostingDate]);
 
   // Test a single output entry by id (runs schedule + the one output's DSL line)
   const testOutputEntry = useCallback(async (entryId) => {
@@ -597,12 +602,14 @@ const ScheduleStepModal = ({ open, step, onClose, onSaveStep, events, dslFunctio
         : `print("${entry.name} =", ${entry.name})`;
       extraLines.push(printLine);
       const combinedCode = [allPriorCode, schedCode, ...extraLines].filter(Boolean).join('\n\n');
-      let postingDate = new Date().toISOString().split('T')[0];
-      try {
-        const pdRes = await fetch(`${API}/event-data/posting-dates`);
-        const pdData = await pdRes.json();
-        if (pdData?.posting_dates?.length) postingDate = pdData.posting_dates[0];
-      } catch { /* ignore */ }
+      let postingDate = testPostingDate || new Date().toISOString().split('T')[0];
+      if (!testPostingDate) {
+        try {
+          const pdRes = await fetch(`${API}/event-data/posting-dates`);
+          const pdData = await pdRes.json();
+          if (pdData?.posting_dates?.length) postingDate = pdData.posting_dates[0];
+        } catch { /* ignore */ }
+      }
       const response = await fetch(`${API}/dsl/run`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -619,7 +626,7 @@ const ScheduleStepModal = ({ open, step, onClose, onSaveStep, events, dslFunctio
         setResult(null, data.error || data.detail || 'Execution failed');
       }
     } catch (err) { setResult(null, err.message); }
-  }, [outputs, priorRulesCode, currentRulePreStepCode, buildScheduleCode]);
+  }, [outputs, priorRulesCode, currentRulePreStepCode, buildScheduleCode, testPostingDate]);
 
   const previewHeaders = useMemo(() => columns.filter(c => c.name).map(c => c.name), [columns]);
 

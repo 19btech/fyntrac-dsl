@@ -866,6 +866,37 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
   const [validationMsg, setValidationMsg] = useState('');
   const [showCode, setShowCode] = useState(false);
 
+  // ── Test Posting Date (drives all per-step Test buttons in this builder) ──
+  // Loaded from /event-data/posting-dates (already filtered to activity events,
+  // sorted ascending). Default selection is the earliest date — preserves the
+  // historical behaviour of fetchEarliestPostingDate().
+  const [testPostingDate, setTestPostingDate] = useState('');
+  const [availablePostingDates, setAvailablePostingDates] = useState([]);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await _fetchWithTimeout(`${API}/event-data/posting-dates`, {}, 8000);
+        if (!res.ok) return;
+        const data = await res.json();
+        const dates = Array.isArray(data?.posting_dates) ? data.posting_dates : [];
+        if (cancelled) return;
+        setAvailablePostingDates(dates);
+        // Default to earliest; clamp if previous selection no longer exists.
+        setTestPostingDate(prev => (prev && dates.includes(prev)) ? prev : (dates[0] || ''));
+      } catch { /* ignore — falls back to today via resolveTestPostingDate */ }
+    })();
+    return () => { cancelled = true; };
+  }, [events]);
+
+  // Resolve the posting date a per-step Test button should use:
+  // 1) explicit dropdown selection, 2) earliest loaded date, 3) today.
+  const resolveTestPostingDate = useCallback(async () => {
+    if (testPostingDate) return testPostingDate;
+    return await fetchEarliestPostingDate();
+  }, [testPostingDate]);
+
   // ── Output options ──
   // Transactions are first-class; the legacy `createTransaction` boolean is kept
   // for backward compat only — the UI now treats `transactions.length > 0` as truth.
@@ -1254,9 +1285,9 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
     }
 
     const dslCode = lines.join('\n');
-    const postingDate = await fetchEarliestPostingDate();
+    const postingDate = await resolveTestPostingDate();
     return _runDslWithTimeout(dslCode, postingDate, variableName);
-  }, [steps, savedRulesVarNames, ruleId, _buildPriorRulesCode, buildScheduleStepLines]);
+  }, [steps, savedRulesVarNames, ruleId, _buildPriorRulesCode, buildScheduleStepLines, resolveTestPostingDate]);
 
   // Test for modal (builds code up to end + this new step)
   const testStepFromModal = useCallback(async (localStep) => {
@@ -1328,9 +1359,9 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
     }
 
     const dslCode = lines.join('\n');
-    const postingDate = await fetchEarliestPostingDate();
+    const postingDate = await resolveTestPostingDate();
     return _runDslWithTimeout(dslCode, postingDate, variableName);
-  }, [steps, savedRulesVarNames, editingStepIndex, ruleId, _buildPriorRulesCode, buildScheduleStepLines]);
+  }, [steps, savedRulesVarNames, editingStepIndex, ruleId, _buildPriorRulesCode, buildScheduleStepLines, resolveTestPostingDate]);
 
   // ── Generated code ──
   const generatedCode = useMemo(() => {
@@ -1714,7 +1745,7 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
       if (sid) lines.push(`createTransaction(${pd}, ${ed}, "${txn.type}", ${amt}, ${sid})`);
       else lines.push(`createTransaction(${pd}, ${ed}, "${txn.type}", ${amt})`);
       const dslCode = lines.join('\n');
-      const postingDate = await fetchEarliestPostingDate();
+      const postingDate = await resolveTestPostingDate();
       const variableName = txn.type ? `${txn.type} transaction` : 'transaction';
       try {
         const response = await _fetchWithTimeout(`${API}/dsl/run`, {
@@ -1749,7 +1780,7 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
     } finally {
       setTxnTesting(prev => ({ ...prev, [txnIdx]: false }));
     }
-  }, [outputs.transactions, steps, ruleId, _buildPriorRulesCode, buildScheduleStepLines, savedRulesVarNames]);
+  }, [outputs.transactions, steps, ruleId, _buildPriorRulesCode, buildScheduleStepLines, savedRulesVarNames, resolveTestPostingDate]);
 
   // ── Inline test (play button on the step row) ──
   const handleInlineTest = useCallback(async (index) => {
@@ -1884,7 +1915,7 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
     if (sid) lines.push(`createTransaction(${pd}, ${ed}, "${txn.type}", ${amt}, ${sid})`);
     else lines.push(`createTransaction(${pd}, ${ed}, "${txn.type}", ${amt})`);
     const dslCode = lines.join('\n');
-    const postingDate = await fetchEarliestPostingDate();
+    const postingDate = await resolveTestPostingDate();
     const variableName = `${txn.type} transaction`;
     try {
       const response = await _fetchWithTimeout(`${API}/dsl/run`, {
@@ -1909,7 +1940,7 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
         variableName,
       };
     }
-  }, [steps, ruleId, _buildPriorRulesCode, buildScheduleStepLines, savedRulesVarNames]);
+  }, [steps, ruleId, _buildPriorRulesCode, buildScheduleStepLines, savedRulesVarNames, resolveTestPostingDate]);
 
   // ── Get step display name ──
   const getStepLabel = (s) => {
@@ -1966,7 +1997,7 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
       </Box>
 
       <Box sx={{ flex: 1, overflow: 'auto', p: 2 }}>
-        {/* Rule Name & Priority */}
+        {/* Rule Name & Priority & Test Posting Date */}
         <Box sx={{ display: 'flex', gap: 1.5, mb: 2 }}>
           <TextField size="small" label="Rule Name *" value={ruleName}
             onChange={(e) => setRuleName(e.target.value)}
@@ -1974,6 +2005,21 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
           <TextField size="small" label="Priority *" value={rulePriority}
             onChange={(e) => { const v = e.target.value; if (v === '' || /^\d+$/.test(v)) setRulePriority(v === '' ? '' : Number(v)); }}
             placeholder="e.g., 1" type="number" inputProps={{ min: 0, step: 1 }} sx={{ width: 140 }} />
+          {availablePostingDates.length > 0 && (
+            <FormControl size="small" sx={{ width: 200 }}>
+              <InputLabel id="test-posting-date-label">Test Posting Date</InputLabel>
+              <Select
+                labelId="test-posting-date-label"
+                label="Test Posting Date"
+                value={testPostingDate}
+                onChange={(e) => setTestPostingDate(e.target.value)}
+              >
+                {availablePostingDates.map(d => (
+                  <MenuItem key={d} value={d}>{d}</MenuItem>
+                ))}
+              </Select>
+            </FormControl>
+          )}
         </Box>
 
         {/* ── Steps List ── */}
@@ -2206,6 +2252,7 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
           events={events}
           dslFunctions={dslFunctions}
           definedVarNames={allDefinedVarNames}
+          testPostingDate={testPostingDate}
           freshPriorCode={(() => {
             // Build prior-rules code by concatenating saved rules' generatedCode in priority
             // order. Apply the SAME rules as testStep / _buildPriorRulesCode:
