@@ -2657,7 +2657,10 @@ def median(col: List[float]) -> float:
 
 
 def std_dev(col: List[float]) -> float:
-    return math.sqrt(variance(col))
+    if not col:
+        return 0
+    mean = sum(col) / len(col)
+    return math.sqrt(sum((x - mean) ** 2 for x in col) / len(col))
 
 
 def range_val(col: List[float]) -> float:

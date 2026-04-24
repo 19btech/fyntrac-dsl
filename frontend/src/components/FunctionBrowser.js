@@ -197,7 +197,7 @@ const FunctionBrowser = ({ dslFunctions, onClose, onAskAI }) => {
                             `- One-sentence description of what \`${func.name}()\` does.\n` +
                             `- A bold **Example:** label followed by the inline call above (single backticks only).\n` +
                             `- A bold **Computation:** label followed by a bullet list: each argument value with a short meaning, the formula substitution in plain English, and the resulting value as inline code.\n` +
-                            `- A bold **When to use it in the Rule Builder:** label followed by one short tip referencing the right step (Parameters / Schedule / Iteration / Conditional / Journal Entry).\n\n` +
+                            `- A bold **When to use it in the Rule Builder:** label followed by one short tip referencing the right step (Parameters / Schedule / Iteration / Conditional / Transaction).\n\n` +
                             `HARD RULES:\n` +
                             `- NEVER use a fenced code block (no \`\`\`dsl, no \`\`\`python, no \`\`\` of any kind).\n` +
                             `- NEVER include \`print(...)\`, \`result = ...\`, or \`##\` comment lines.\n` +

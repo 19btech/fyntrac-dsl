@@ -182,6 +182,23 @@ TEST_CASES = [
     {"name": "array_append",     "cat": "Array Utilities","dsl": "print(array_append([1, 2, 3], 4))"},
     {"name": "array_extend",     "cat": "Array Utilities","dsl": "print(array_extend([1, 2], [3, 4, 5]))"},
 
+    # ── Operator wrappers (10) ────────────────────────────────────
+    {"name": "op_add",           "cat": "Operator",      "dsl": "print(op_add(10, 5))"},
+    {"name": "op_sub",           "cat": "Operator",      "dsl": "print(op_sub(10, 5))"},
+    {"name": "op_mul",           "cat": "Operator",      "dsl": "print(op_mul(10, 5))"},
+    {"name": "op_div",           "cat": "Operator",      "dsl": "print(op_div(10, 5))"},
+    {"name": "op_eq",            "cat": "Operator",      "dsl": "print(op_eq(5, 5))"},
+    {"name": "op_neq",           "cat": "Operator",      "dsl": "print(op_neq(5, 6))"},
+    {"name": "op_gt",            "cat": "Operator",      "dsl": "print(op_gt(10, 5))"},
+    {"name": "op_gte",           "cat": "Operator",      "dsl": "print(op_gte(5, 5))"},
+    {"name": "op_lt",            "cat": "Operator",      "dsl": "print(op_lt(5, 10))"},
+    {"name": "op_lte",           "cat": "Operator",      "dsl": "print(op_lte(5, 5))"},
+
+    # ── Misc additional (3) ───────────────────────────────────────
+    {"name": "apply_each",       "cat": "Iteration",     "dsl": 'print(apply_each([10, 20, 30], "multiply(each, 2)"))'},
+    {"name": "if",               "cat": "Logical",       "dsl": 'print(iif(True, "a", "b"))'},  # 'if' is a Python keyword; aliased to iif in registry
+    {"name": "print",            "cat": "IO",            "dsl": 'print("hello")'},
+
     # ── Transaction (1) ───────────────────────────────────────────
     {"name": "createTransaction","cat": "Transaction",   "dsl": 'print(createTransaction("2024-01-15", "2024-01-15", "PAYMENT", 5000))'},
 

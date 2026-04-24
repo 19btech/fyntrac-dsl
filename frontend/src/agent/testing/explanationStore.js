@@ -20,7 +20,7 @@ const UI_CONCEPTS = [
     key: 'rule builder',
     aliases: ['accounting rule builder', 'rulebuilder'],
     title: 'Accounting Rule Builder',
-    body: 'A visual editor where you compose a rule step-by-step: Parameters, Schedule, Iteration, Conditional, Custom Code, and Journal Entry. Each saved rule is mirrored to DSL behind the scenes and shows up under **Saved Rules**. Use it when you want to model an accounting policy without writing DSL by hand.',
+    body: 'A visual editor where you compose a rule step-by-step: Parameters, Schedule, Iteration, Conditional, Custom Code, and Transaction (the "Define Transaction" / "Create Transaction" step). Each saved rule is mirrored to DSL behind the scenes and shows up under **Saved Rules**. Use it when you want to model an accounting policy without writing DSL by hand. Note: this system has no concept of a "journal entry" — the unit of output is a transaction.',
   },
   {
     key: 'schedule builder',

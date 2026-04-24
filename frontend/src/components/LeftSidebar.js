@@ -1,6 +1,6 @@
 import React from "react";
-import { Box, Button, Card, Collapse, List, ListItemButton, ListItemIcon, ListItemText } from '@mui/material';
-import { FileText, RefreshCw, ChevronDown, ChevronRight, Upload } from "lucide-react";
+import { Box, Button, Card, Collapse, List, ListItemButton, ListItemIcon, ListItemText, Tooltip, IconButton } from '@mui/material';
+import { FileText, RefreshCw, ChevronDown, ChevronRight, Upload, Eye } from "lucide-react";
 import { useToast } from "./ToastProvider";
 import ImportEventsModal from "./ImportEventsModal";
 
@@ -11,7 +11,7 @@ const formatDataType = (dt) => {
 const formatEventTable = (t) => t;
 const formatEventType = (t) => t;
 
-const LeftSidebar = ({ events, selectedEvent, onEventSelect, onDownloadEvents, onImportSuccess }) => {
+const LeftSidebar = ({ events, selectedEvent, onEventSelect, onDownloadEvents, onImportSuccess, onViewEventData }) => {
   const [expandedEvent, setExpandedEvent] = React.useState(null);
   const [importModalOpen, setImportModalOpen] = React.useState(false);
   const toast = useToast();
@@ -85,7 +85,19 @@ const LeftSidebar = ({ events, selectedEvent, onEventSelect, onDownloadEvents, o
         <Box>
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1.5, px: 1 }}>
             <FileText size={16} color="#5B5FED" />
-            <Box component="span" sx={{ fontSize: '0.8125rem', fontWeight: 600, color: '#495057' }}>Events</Box>
+            <Box component="span" sx={{ fontSize: '0.8125rem', fontWeight: 600, color: '#495057', flex: 1 }}>Events</Box>
+            {events.length > 0 && onViewEventData && (
+              <Tooltip title="View event data" arrow>
+                <IconButton
+                  size="small"
+                  onClick={onViewEventData}
+                  data-testid="view-event-data-button"
+                  sx={{ p: 0.25, color: '#5B5FED', '&:hover': { bgcolor: 'rgba(91, 95, 237, 0.08)' } }}
+                >
+                  <Eye size={14} />
+                </IconButton>
+              </Tooltip>
+            )}
           </Box>
           {events.length === 0 ? (
             <Box sx={{ px: 1, py: 2 }}>

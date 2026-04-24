@@ -575,6 +575,7 @@ const Dashboard = () => {
           selectedEvent={selectedEvent}
           onEventSelect={setSelectedEvent}
           onDownloadEvents={handleDownloadEvents}
+          onViewEventData={() => setShowEventDataViewer(true)}
           onImportSuccess={() => {
             loadEvents();
             window.dispatchEvent(new CustomEvent('dsl-event-data-refresh'));
@@ -928,7 +929,7 @@ const Dashboard = () => {
               {/* Rule Builder Mode — always mounted to preserve form state across tab switches */}
               <Box sx={{ display: editorMode === 'ruleBuilder' ? 'flex' : 'none', flexDirection: 'column', flex: 1, overflow: 'auto' }}>
                 <AccountingRuleBuilder
-                  key={editingRule ? `${editingRule.id}-p${editingRule.priority ?? 0}` : 'new'}
+                  key={editingRule ? `${editingRule.id}-p${editingRule.priority ?? 0}-u${editingRule.updated_at || ''}` : 'new'}
                   events={events}
                   dslFunctions={dslFunctions}
                   onGenerate={handleGeneratedCode}
