@@ -4,7 +4,7 @@ import { Search, BookOpen, Copy, X, Sparkles } from "lucide-react";
 import { useToast } from "./ToastProvider";
 import { getExplanation } from "../agent/testing/explanationStore";
 
-const FunctionBrowser = ({ dslFunctions, onInsertFunction, onClose, onAskAI }) => {
+const FunctionBrowser = ({ dslFunctions, onClose, onAskAI }) => {
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedCategory, setSelectedCategory] = useState("All");
   const toast = useToast();
@@ -174,40 +174,36 @@ const FunctionBrowser = ({ dslFunctions, onInsertFunction, onClose, onAskAI }) =
                   </Typography>
                   
                   <Box sx={{ display: 'flex', gap: 1 }}>
-                    <Button
-                      variant="outlined"
-                      size="small"
-                      sx={{ flex: 1 }}
-                      onClick={() => {
-                        onInsertFunction(`${func.name}(${func.params})`);
-                        toast.success(`Added: ${func.name}()`);
-                      }}
-                      data-testid={`insert-${func.name}`}
-                    >
-                      Add to Calculation
-                    </Button>
                     {onAskAI && (
                       <Button
                         variant="contained"
                         size="small"
+                        fullWidth
                         onClick={() => {
                           const explanation = getExplanation(func.name);
-                          const exampleCode = explanation?.dslExample
-                            ? explanation.dslExample
-                            : `## ${func.name} example\nresult = ${func.name}(${func.params})\nprint(result)`;
+                          // Build a single inline call expression — no fenced code, no print(), no result =
+                          const inlineCall = explanation?.inlineExample
+                            || `${func.name}(${func.params})`;
                           const outputHint = explanation?.tested && explanation?.sampleOutput
-                            ? `\nExpected output: ${explanation.sampleOutput}`
+                            ? ` Verified result: \`${explanation.sampleOutput}\`.`
                             : '';
                           onAskAI(
                             func.name,
-                            `Show me a working example of the ${func.name}() DSL function.\n` +
+                            `Explain the \`${func.name}()\` DSL function in plain English using the FUNCTION-DEMO TEMPLATE.\n\n` +
                             `Parameters: ${func.params}\n` +
-                            `Description: ${func.description}\n\n` +
-                            `Here is a verified working example (standalone mode, no event fields):\n` +
-                            `\`\`\`dsl\n${exampleCode}\n\`\`\`${outputHint}\n\n` +
-                            `Please explain what this code does and generate a clear standalone DSL example ` +
-                            `using only literal values (no EVENT.field references). ` +
-                            `Use print() to display the result.`
+                            `Description: ${func.description}\n` +
+                            `Use this exact inline example (do NOT change it, do NOT wrap it in a fenced code block): \`${inlineCall}\`.${outputHint}\n\n` +
+                            `Required reply structure:\n` +
+                            `- One-sentence description of what \`${func.name}()\` does.\n` +
+                            `- A bold **Example:** label followed by the inline call above (single backticks only).\n` +
+                            `- A bold **Computation:** label followed by a bullet list: each argument value with a short meaning, the formula substitution in plain English, and the resulting value as inline code.\n` +
+                            `- A bold **When to use it in the Rule Builder:** label followed by one short tip referencing the right step (Parameters / Schedule / Iteration / Conditional / Journal Entry).\n\n` +
+                            `HARD RULES:\n` +
+                            `- NEVER use a fenced code block (no \`\`\`dsl, no \`\`\`python, no \`\`\` of any kind).\n` +
+                            `- NEVER include \`print(...)\`, \`result = ...\`, or \`##\` comment lines.\n` +
+                            `- NEVER write a custom multi-step DSL rule.\n` +
+                            `- NEVER call \`createTransaction()\`.\n` +
+                            `- NEVER tell the user to paste DSL into the editor.`
                           );
                           onClose();
                         }}

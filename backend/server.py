@@ -248,22 +248,7 @@ SAMPLE_EVENTS = [
     }
 ]
 
-SAMPLE_TEMPLATES = [
-    {
-        "id": "tpl1",
-        "name": "Compound Interest Calculator",
-        "dsl_code": "interest = compound_interest(principal, rate, term)\ntransactiontype = \"Compound Interest\"\namount = interest",
-        "python_code": "def calculate(principal, rate, term):\n    return principal * ((1 + rate) ** term - 1)",
-        "created_at": datetime.now(timezone.utc)
-    },
-    {
-        "id": "tpl2",
-        "name": "Compound Interest Calculator",
-        "dsl_code": "interest = compound_interest(principal, rate, term)\nnew_balance = capitalization(interest, principal)\ntransactiontype = \"Compound Interest\"\namount = interest",
-        "python_code": "def calculate(principal, rate, term):\n    return principal * ((1 + rate) ** term - 1)",
-        "created_at": datetime.now(timezone.utc)
-    }
-]
+SAMPLE_TEMPLATES = []
 
 # ============= Helper Functions =============
 
@@ -1018,23 +1003,6 @@ def collect_by_subinstrument(field_name):
                         values.append(val)
     return values
 
-def collect_subinstrumentids():
-    \"\"\"
-    Collect all unique subInstrumentIds for the current instrumentId.
-    Returns list of subInstrumentId values.
-    \"\"\"
-    current_instrument = _current_context.get('instrumentid', '')
-    subinstrument_ids = set()
-    
-    for evt_name, rows in _raw_event_data.items():
-        for row in rows:
-            row_instrument = get_field_case_insensitive(row, 'instrumentid', '')
-            if row_instrument == current_instrument:
-                subinstrument = get_field_case_insensitive(row, 'subinstrumentid', '1') or '1'
-                subinstrument_ids.add(subinstrument)
-    
-    return sorted(list(subinstrument_ids))
-
 def collect_effectivedates_for_subinstrument(subinstrument_id=None):
     \"\"\"
     Collect all unique effectiveDates for a specific subInstrumentId within current instrumentId.
@@ -1513,7 +1481,7 @@ is_valid = and(gte(principal, min_p), lte(principal, max_p))
 
 ## Calculate fee using percentage from ProductConfig
 fee_pct = ProductConfig.fee_percent or 0.01
-loan_fee = iif(is_valid, multiply(principal, fee_pct), 0)
+loan_fee = if(is_valid, multiply(principal, fee_pct), 0)
 print(concat("Calculated Loan Fee: ", loan_fee))
 
 ## 2. Loan Payment Calculation
@@ -1540,7 +1508,7 @@ print(concat("Projected Investment Value: ", future_val))
 ## Use global postingdate and effectivedate (no prefixes needed)
 
 ## Only create fee transaction if the amount is greater than 0
-iif(gt(loan_fee, 0), createTransaction(postingdate, effectivedate, "Loan Processing Fee", loan_fee), 0)
+if(gt(loan_fee, 0), createTransaction(postingdate, effectivedate, "Loan Processing Fee", loan_fee), 0)
 
 ## Record the monthly interest accrual
 monthly_interest = multiply(principal, monthly_rate)
@@ -1586,7 +1554,7 @@ is_valid = and(gte(principal, min_p), lte(principal, max_p))
 
 ## Calculate fee using percentage from ProductConfig
 fee_pct = ProductConfig.fee_percent or 0.01
-loan_fee = iif(is_valid, multiply(principal, fee_pct), 0)
+loan_fee = if(is_valid, multiply(principal, fee_pct), 0)
 print(concat("Calculated Loan Fee: ", loan_fee))
 
 ## 2. Loan Payment Calculation
@@ -1613,7 +1581,7 @@ print(concat("Projected Investment Value: ", future_val))
 ## Use global postingdate and effectivedate (no prefixes needed)
 
 ## Only create fee transaction if the amount is greater than 0
-iif(gt(loan_fee, 0), createTransaction(postingdate, effectivedate, "Loan Processing Fee", loan_fee), 0)
+if(gt(loan_fee, 0), createTransaction(postingdate, effectivedate, "Loan Processing Fee", loan_fee), 0)
 
 ## Record the monthly interest accrual
 monthly_interest = multiply(principal, monthly_rate)
@@ -2900,6 +2868,7 @@ async def chat_with_assistant(message: ChatMessage):
         editor_cursor = message.context.get('editor_cursor') if message.context else None
         editor_selection = message.context.get('editor_selection') if message.context else None
         editor_syntax_errors = message.context.get('editor_syntax_errors') if message.context else None
+        ui_mode = message.context.get('ui_mode') if message.context else None
 
         # --- Build system prompt via two-tier context engine ---
         system_prompt = build_agent_context(
@@ -2911,6 +2880,7 @@ async def chat_with_assistant(message: ChatMessage):
             editor_syntax_errors=editor_syntax_errors,
             console_output=console_output,
             conversation_history=message.history,
+            ui_mode=ui_mode,
         )
 
         # --- Call the AI provider ---
@@ -2978,7 +2948,7 @@ async def chat_with_assistant(message: ChatMessage):
                             allowed_funcs.add(name)
                 except Exception:
                     pass
-                extra_allowed = {'print', 'iif', 'collect_by_instrument', 'collect_all', 'collect_by_subinstrument', 'collect_subinstrumentids', 'collect_effectivedates_for_subinstrument', 'npv', 'irr', 'sum_field', 'sum', 'len', 'min', 'max', 'abs', 'round', 'lag'}
+                extra_allowed = {'print', 'iif', 'collect_by_instrument', 'collect_all', 'collect_by_subinstrument', 'collect_effectivedates_for_subinstrument', 'npv', 'irr', 'sum_field', 'sum', 'len', 'min', 'max', 'abs', 'round', 'lag'}
                 allowed_funcs.update(extra_allowed)
 
                 lines = code.splitlines()
@@ -3134,6 +3104,7 @@ async def chat_stream(message: ChatMessage):
             editor_cursor = message.context.get('editor_cursor') if message.context else None
             editor_selection = message.context.get('editor_selection') if message.context else None
             editor_syntax_errors = message.context.get('editor_syntax_errors') if message.context else None
+            ui_mode = message.context.get('ui_mode') if message.context else None
 
             # Build system prompt via two-tier context engine
             system_prompt = build_agent_context(
@@ -3145,6 +3116,7 @@ async def chat_stream(message: ChatMessage):
                 editor_syntax_errors=editor_syntax_errors,
                 console_output=console_output,
                 conversation_history=message.history,
+                ui_mode=ui_mode,
             )
 
             # Emit context-ready event with summary for the UI

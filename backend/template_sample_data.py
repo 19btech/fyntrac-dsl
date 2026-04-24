@@ -49,46 +49,6 @@ TEMPLATE_SAMPLE_DATA = {
     },
 
     # ─── Straight-Line Depreciation ───────────────────────────────────
-    "straight_line_depreciation": {
-        "events": [
-            {
-                "event_name": "AssetEvent",
-                "fields": [
-                    {"name": "asset_cost", "datatype": "decimal"},
-                    {"name": "salvage_value", "datatype": "decimal"},
-                    {"name": "useful_life", "datatype": "decimal"},
-                    {"name": "start_date", "datatype": "date"},
-                ],
-                "eventType": "activity",
-                "eventTable": "standard",
-            }
-        ],
-        "event_data": [
-            {
-                "event_name": "AssetEvent",
-                "data_rows": [
-                    {
-                        "postingdate": "2026-01-01",
-                        "effectivedate": "2026-01-01",
-                        "instrumentid": "ASSET-001",
-                        "asset_cost": "50000",
-                        "salvage_value": "5000",
-                        "useful_life": "5",
-                        "start_date": "2026-01-01",
-                    },
-                    {
-                        "postingdate": "2026-03-15",
-                        "effectivedate": "2026-03-15",
-                        "instrumentid": "ASSET-002",
-                        "asset_cost": "120000",
-                        "salvage_value": "10000",
-                        "useful_life": "10",
-                        "start_date": "2026-03-15",
-                    },
-                ],
-            }
-        ],
-    },
 
     # ─── Revenue Recognition (ASC 606) ────────────────────────────────
     "revenue_recognition": {
@@ -229,46 +189,6 @@ TEMPLATE_SAMPLE_DATA = {
     },
 
     # ─── Double Declining Balance Depreciation ────────────────────────
-    "double_declining_depreciation": {
-        "events": [
-            {
-                "event_name": "DDBAssetEvent",
-                "fields": [
-                    {"name": "asset_cost", "datatype": "decimal"},
-                    {"name": "salvage_value", "datatype": "decimal"},
-                    {"name": "useful_life", "datatype": "decimal"},
-                    {"name": "start_date", "datatype": "date"},
-                ],
-                "eventType": "activity",
-                "eventTable": "standard",
-            }
-        ],
-        "event_data": [
-            {
-                "event_name": "DDBAssetEvent",
-                "data_rows": [
-                    {
-                        "postingdate": "2026-01-01",
-                        "effectivedate": "2026-01-01",
-                        "instrumentid": "ASSET-DDB-001",
-                        "asset_cost": "50000",
-                        "salvage_value": "5000",
-                        "useful_life": "5",
-                        "start_date": "2026-01-01",
-                    },
-                    {
-                        "postingdate": "2026-06-01",
-                        "effectivedate": "2026-06-01",
-                        "instrumentid": "ASSET-DDB-002",
-                        "asset_cost": "80000",
-                        "salvage_value": "8000",
-                        "useful_life": "7",
-                        "start_date": "2026-06-01",
-                    },
-                ],
-            }
-        ],
-    },
 
     # ─── NPV Analysis ─────────────────────────────────────────────────
     "npv_analysis": {

@@ -21,7 +21,8 @@ export function generateMessageId() {
  * @param {string[]} opts.events        - event definitions
  * @param {string}   opts.editorCode    - current editor content
  * @param {object[]} opts.consoleOutput - console log entries
- * @param {object[]} opts.dslFunctions  - available DSL functions
+ * @param {object[]} opts.dslFunctions  - available DSL functions (used locally for hints; not sent to server)
+ * @param {object}   opts.uiContext     - { mode, editingRule, editingSchedule, editingCustomCode, activeTemplate, lastExecutionSummary }
  * @param {string}   opts.selectedModel - model id
  * @param {string}   opts.sessionId     - chat session id
  * @param {object[]} opts.history       - conversation history
@@ -39,6 +40,7 @@ export async function runAgentPipeline(userMessage, opts = {}) {
     selectedModel,
     sessionId,
     history = [],
+    uiContext = null,
   } = opts;
 
   try {
@@ -144,6 +146,7 @@ export async function runAgentPipeline(userMessage, opts = {}) {
       editor_selection: editorSelection,
       editor_syntax_errors: editorSyntaxErrors,
       console_output: consoleOutput || [],
+      ui_mode: uiContext || undefined,
     };
 
     const body = {

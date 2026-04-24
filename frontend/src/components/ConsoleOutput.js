@@ -301,7 +301,6 @@ const ConsoleOutput = ({ output, onClear, dslCode, addConsoleLog, onCodeChange, 
       // Section 2: Collected Arrays (for multi-row scenarios)
       lines.push(`## ─── ${eventName} Collected Arrays (all rows for instrument) ───`);
       lines.push(`${eventName}_effectivedates_arr = collect_by_instrument(${eventName}.effectivedate)`);
-      lines.push(`${eventName}_subinstrumentids_arr = collect_subinstrumentids()`);
       
       // Only add array collection for decimal fields (most common for iteration)
       event.fields.forEach((field) => {

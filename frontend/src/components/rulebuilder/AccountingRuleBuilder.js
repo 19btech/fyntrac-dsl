@@ -181,8 +181,6 @@ const buildIterationLines = (iters, availableVarNames) => {
       lines.push(`${iter.resultVar} = apply_each(${iter.sourceArray}, "${iter.expression}"${ctxStr})`);
     } else if (iter.type === 'apply_each_paired') {
       lines.push(`${iter.resultVar} = apply_each(${iter.sourceArray}, ${iter.secondArray || '[]'}, "${iter.expression}"${ctxStr})`);
-    } else if (iter.type === 'map_array') {
-      lines.push(`${iter.resultVar} = map_array(${iter.sourceArray}, "${iter.varName}", "${iter.expression}"${ctxStr})`);
     } else {
       lines.push(`${iter.resultVar} = for_each(${iter.sourceArray}, ${iter.secondArray || '[]'}, "${iter.varName}", "${iter.secondVar}", "${iter.expression}")`);
     }
@@ -253,7 +251,6 @@ const CalcForm = ({ step, onChange, events, definedVarNames }) => {
               <MenuItem value="collect_by_instrument">collect_by_instrument</MenuItem>
               <MenuItem value="collect_all">collect_all</MenuItem>
               <MenuItem value="collect_by_subinstrument">collect_by_subinstrument</MenuItem>
-              <MenuItem value="collect_subinstrumentids">collect_subinstrumentids</MenuItem>
             </Select>
           </FormControl>
           <FormControl fullWidth size="small">
@@ -2331,7 +2328,6 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
         subIdOptions={(() => {
           const isSubIdStep = (s) => {
             if (!s.name) return false;
-            if (s.source === 'collect' && s.collectType === 'collect_subinstrumentids') return true;
             if (s.source === 'event_field' && s.eventField?.toLowerCase().endsWith('.subinstrumentid')) return true;
             if (s.source === 'collect' && s.eventField?.toLowerCase().endsWith('.subinstrumentid')) return true;
             return false;

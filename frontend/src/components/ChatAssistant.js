@@ -4,10 +4,10 @@ import { Send, RotateCcw, AlertTriangle, Square, Sparkles } from "lucide-react";
 import ModelSelector from "./ModelSelector";
 import AgentMessage from "./agent/AgentMessage";
 import { runAgentPipeline, generateMessageId } from "../agent/agentPipeline";
-import { detectFunctionMention, getExplanation, formatForChat } from "../agent/testing/explanationStore";
+import { detectFunctionMention, getExplanation, formatForChat, detectConceptMention, getConcept, formatConceptForChat } from "../agent/testing/explanationStore";
 import "./ChatAssistant.css";
 
-const ChatAssistantComponent = ({ dslFunctions, events, onInsertCode, onOverwriteCode, editorCode, consoleOutput, editorRef, monacoRef, providerRefreshKey }, ref) => {
+const ChatAssistantComponent = ({ dslFunctions, events, onInsertCode, onOverwriteCode, editorCode, consoleOutput, editorRef, monacoRef, providerRefreshKey, uiContext }, ref) => {
   const toast = useToast();
 
   const [messages, setMessages] = useState(() => {
@@ -73,6 +73,7 @@ const ChatAssistantComponent = ({ dslFunctions, events, onInsertCode, onOverwrit
         monacoRef,
         selectedModel: selectedModel || undefined,
         sessionId,
+        uiContext: uiContext || null,
         history: messages
           .filter(m => m.role === 'user' || (m.role === 'assistant' && m.content))
           .slice(-10)
@@ -133,6 +134,14 @@ const ChatAssistantComponent = ({ dslFunctions, events, onInsertCode, onOverwrit
       setMessages(prev => [...prev, { role: 'assistant', content: formatted }]);
     }
 
+    // Same idea for UI concepts (Rule Builder, Saved Rules, Live Preview, etc.).
+    const conceptKey = detectConceptMention(userMessage);
+    const concept = conceptKey ? getConcept(conceptKey) : null;
+    if (concept) {
+      const formattedConcept = formatConceptForChat(concept);
+      setMessages(prev => [...prev, { role: 'assistant', content: formattedConcept }]);
+    }
+
     const messageId = generateMessageId();
     setMessages(prev => [...prev, { role: 'agent', messageId }]);
 
@@ -147,6 +156,7 @@ const ChatAssistantComponent = ({ dslFunctions, events, onInsertCode, onOverwrit
         monacoRef,
         selectedModel: selectedModel || undefined,
         sessionId,
+        uiContext: uiContext || null,
         history: messages
           .filter(m => m.role === 'user' || (m.role === 'assistant' && m.content))
           .slice(-10)
@@ -219,13 +229,13 @@ const ChatAssistantComponent = ({ dslFunctions, events, onInsertCode, onOverwrit
           <div className="vsc-empty-state">
             <p className="vsc-empty-title">How can I help with your calculations?</p>
             <p className="vsc-empty-subtitle">
-              Ask me to write formulas, troubleshoot errors, explain calculations, or build financial rules.
+              I explain DSL functions with worked examples and walk you through the Rule Builder step by step. For full code generation, use the AI Rule Generator inside the Rule Builder.
             </p>
             <div className="vsc-suggestions">
               {[
-                "How do I create a simple interest calculation?",
-                "Show me a loan amortization schedule",
-                "What date formulas are available?",
+                "What does pmt() do? Show me with sample numbers.",
+                "Walk me through building a loan amortization rule",
+                "How do I add a Schedule step in the Rule Builder?",
               ].map((q, i) => (
                 <button key={i} className="vsc-suggestion-btn" onClick={() => setInput(q)}>
                   {q}

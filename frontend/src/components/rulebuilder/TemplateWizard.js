@@ -372,7 +372,7 @@ function classifyAssignment(name, rhs) {
     return { type: 'conditional' };
   }
   // Iteration
-  if (/^(map_array|for_each|apply_each)\s*\(/.test(rhs)) {
+  if (/^(for_each|apply_each)\s*\(/.test(rhs)) {
     return { type: 'iteration' };
   }
   return { type: 'variable' };
@@ -384,7 +384,7 @@ function classifyToVariable(stmt) {
   const base = { name: stmt.name, value: '', formula: '', eventField: '', collectType: 'collect_by_instrument' };
 
   // Collect functions
-  const collectMatch = rhs.match(/^(collect_by_instrument|collect_all|collect_by_subinstrument|collect_subinstrumentids)\(([^)]*)\)$/);
+  const collectMatch = rhs.match(/^(collect_by_instrument|collect_all|collect_by_subinstrument)\(([^)]*)\)$/);
   if (collectMatch) return { ...base, source: 'collect', collectType: collectMatch[1], eventField: collectMatch[2] || '' };
 
   // Plain number
@@ -424,7 +424,7 @@ function parseIif(rhs) {
   return { conditions: conditions.length ? conditions : [{ condition: '', thenFormula: '' }], elseFormula: current };
 }
 
-/** Parse map_array/for_each/apply_each into iterConfig */
+/** Parse for_each/apply_each into iterConfig */
 function parseIterConfig(rhs, resultVar) {
   // apply_each: single or paired mode
   const aeMatch = rhs.match(/^apply_each\s*\((.*)\)$/s);
@@ -453,18 +453,6 @@ function parseIterConfig(rhs, resultVar) {
         secondArray: secondArg, secondVar: 'second',
       };
     }
-  }
-  const mapMatch = rhs.match(/^map_array\s*\((.*)\)$/s);
-  if (mapMatch) {
-    const args = splitArgs(mapMatch[1]);
-    return {
-      type: 'map_array',
-      sourceArray: args[0] || '',
-      varName: (args[1] || '').replace(/^"|"$/g, ''),
-      expression: (args[2] || '').replace(/^"|"$/g, ''),
-      resultVar: resultVar || 'mapped_result',
-      secondArray: '', secondVar: 'amount',
-    };
   }
   const feMatch = rhs.match(/^for_each\s*\((.*)\)$/s);
   if (feMatch) {

@@ -17,17 +17,13 @@ const FORMULA_CATALOG = [
   { name: 'MULTIPLY', dsl: 'multiply', args: ['a', 'b'], desc: 'Multiply two values', category: 'Math', example: 'MULTIPLY(price, quantity)' },
   { name: 'DIVIDE', dsl: 'divide', args: ['a', 'b'], desc: 'Divide a by b (safe)', category: 'Math', example: 'DIVIDE(total, 12)' },
   { name: 'POWER', dsl: 'power', args: ['base', 'exp'], desc: 'Raise to power', category: 'Math', example: 'POWER(1.05, 12)' },
-  { name: 'SQRT', dsl: 'sqrt', args: ['value'], desc: 'Square root', category: 'Math', example: 'SQRT(144)' },
   { name: 'ABS', dsl: 'abs', args: ['value'], desc: 'Absolute value', category: 'Math', example: 'ABS(-500)' },
   { name: 'SIGN', dsl: 'sign', args: ['value'], desc: 'Sign of value (-1, 0, 1)', category: 'Math', example: 'SIGN(-42)' },
   { name: 'ROUND', dsl: 'round', args: ['value', 'decimals'], desc: 'Round to N decimal places', category: 'Math', example: 'ROUND(3.14159, 2)' },
   { name: 'FLOOR', dsl: 'floor', args: ['value'], desc: 'Round down to integer', category: 'Math', example: 'FLOOR(3.7)' },
   { name: 'CEIL', dsl: 'ceil', args: ['value'], desc: 'Round up to integer', category: 'Math', example: 'CEIL(3.2)' },
-  { name: 'MOD', dsl: 'mod', args: ['a', 'b'], desc: 'Modulus (remainder)', category: 'Math', example: 'MOD(10, 3)' },
   { name: 'TRUNCATE', dsl: 'truncate', args: ['value', 'decimals'], desc: 'Truncate decimal places', category: 'Math', example: 'TRUNCATE(3.789, 1)' },
   { name: 'PCT', dsl: 'percentage', args: ['value', 'total'], desc: 'Value as percentage of total', category: 'Math', example: 'PCT(25, 200)' },
-  { name: 'CHANGE_PCT', dsl: 'change_pct', args: ['old_val', 'new_val'], desc: 'Percentage change between values', category: 'Math', example: 'CHANGE_PCT(100, 120)' },
-  { name: 'PCT_OF', dsl: 'percentage_of', args: ['amount', 'pct'], desc: 'Percentage of an amount', category: 'Math', example: 'PCT_OF(10000, 5)' },
   { name: 'MIN', dsl: 'min', args: ['a', 'b'], desc: 'Minimum of two values', category: 'Math', example: 'MIN(a, b)' },
   { name: 'MAX', dsl: 'max', args: ['a', 'b'], desc: 'Maximum of two values', category: 'Math', example: 'MAX(a, b)' },
 
@@ -46,28 +42,12 @@ const FORMULA_CATALOG = [
   { name: 'EFF_RATE', dsl: 'effective_rate', args: ['nominal', 'periods'], desc: 'Effective annual rate', category: 'Financial', example: 'EFF_RATE(0.06, 12)' },
   { name: 'NOM_RATE', dsl: 'nominal_rate', args: ['effective', 'periods'], desc: 'Nominal rate from effective', category: 'Financial', example: 'NOM_RATE(0.0617, 12)' },
   { name: 'YTM', dsl: 'yield_to_maturity', args: ['price', 'par', 'coupon', 'periods'], desc: 'Yield to maturity', category: 'Financial', example: 'YTM(950, 1000, 50, 10)' },
-  { name: 'COMPOUND', dsl: 'compound_interest', args: ['principal', 'rate', 'periods'], desc: 'Compound interest', category: 'Financial', example: 'COMPOUND(10000, 0.05, 12)' },
-  { name: 'INT_ON_BAL', dsl: 'interest_on_balance', args: ['balance', 'rate', 'days', 'year_days'], desc: 'Interest on balance for period', category: 'Financial', example: 'INT_ON_BAL(100000, 0.05, 30, 360)' },
-  { name: 'CAPITALIZE', dsl: 'capitalization', args: ['principal', 'interest'], desc: 'Add interest to principal', category: 'Financial', example: 'CAPITALIZE(100000, 500)' },
-  { name: 'AMORT_COST', dsl: 'amortized_cost', args: ['face', 'premium', 'periods', 'current'], desc: 'Amortized cost at period', category: 'Financial', example: 'AMORT_COST(1000, 50, 10, 3)' },
 
   // ── Depreciation (5) ────────────────────────────────────────────────
-  { name: 'SLN', dsl: 'straight_line', args: ['cost', 'salvage', 'life'], desc: 'Straight-line depreciation', category: 'Depreciation', example: 'SLN(50000, 5000, 10)' },
-  { name: 'DDB', dsl: 'double_declining', args: ['cost', 'salvage', 'life', 'period'], desc: 'Double declining balance', category: 'Depreciation', example: 'DDB(50000, 5000, 10, 1)' },
-  { name: 'RDB', dsl: 'reducing_balance', args: ['cost', 'salvage', 'life', 'period'], desc: 'Reducing balance method', category: 'Depreciation', example: 'RDB(50000, 5000, 10, 1)' },
-  { name: 'SYD', dsl: 'sum_of_years', args: ['cost', 'salvage', 'life', 'period'], desc: 'Sum-of-years digits', category: 'Depreciation', example: 'SYD(50000, 5000, 10, 1)' },
-  { name: 'UOP', dsl: 'units_of_production', args: ['cost', 'salvage', 'total_units', 'used_units'], desc: 'Units of production', category: 'Depreciation', example: 'UOP(50000, 5000, 100000, 15000)' },
 
   // ── Allocation (5) ──────────────────────────────────────────────────
-  { name: 'PRORATE', dsl: 'prorate', args: ['amount', 'days', 'total_days'], desc: 'Prorate amount over period', category: 'Allocation', example: 'PRORATE(1200, 15, 30)' },
-  { name: 'ALLOCATE', dsl: 'allocate', args: ['amount', 'weights'], desc: 'Allocate proportionally', category: 'Allocation', example: 'ALLOCATE(1000, [0.5, 0.3, 0.2])' },
-  { name: 'SPLIT', dsl: 'split', args: ['amount', 'parts'], desc: 'Split into equal parts', category: 'Allocation', example: 'SPLIT(1000, 3)' },
-  { name: 'RATIO', dsl: 'ratio_split', args: ['amount', 'ratios'], desc: 'Split by ratio', category: 'Allocation', example: 'RATIO(1000, [3, 2, 1])' },
 
   // ── Balance (3) ──────────────────────────────────────────────────────
-  { name: 'ROLL_BAL', dsl: 'rolling_balance', args: ['opening', 'debits', 'credits'], desc: 'Rolling balance calculation', category: 'Balance', example: 'ROLL_BAL(10000, 500, 200)' },
-  { name: 'AVG_BAL', dsl: 'average_balance', args: ['balances'], desc: 'Average of balance array', category: 'Balance', example: 'AVG_BAL([10000, 9500, 9800])' },
-  { name: 'WT_BAL', dsl: 'weighted_balance', args: ['balances', 'days'], desc: 'Time-weighted balance', category: 'Balance', example: 'WT_BAL([10000, 9500], [15, 15])' },
 
   // ── Date (19) ────────────────────────────────────────────────────────
   { name: 'DAYS', dsl: 'days_between', args: ['date1', 'date2'], desc: 'Days between two dates', category: 'Date', example: 'DAYS("2025-01-01", "2025-12-31")' },
@@ -98,19 +78,15 @@ const FORMULA_CATALOG = [
   { name: 'LTE', dsl: 'lte', args: ['a', 'b'], desc: 'Less than or equal', category: 'Comparison', example: 'LTE(periods, max_periods)' },
   { name: 'BETWEEN', dsl: 'between', args: ['val', 'low', 'high'], desc: 'Value within range', category: 'Comparison', example: 'BETWEEN(rate, 0, 0.5)' },
   { name: 'IS_NULL', dsl: 'is_null', args: ['value'], desc: 'Check if null/None', category: 'Comparison', example: 'IS_NULL(override_rate)' },
-  { name: 'IS_POS', dsl: 'is_positive', args: ['value'], desc: 'Check if positive', category: 'Comparison', example: 'IS_POS(balance)' },
-  { name: 'IS_NEG', dsl: 'is_negative', args: ['value'], desc: 'Check if negative', category: 'Comparison', example: 'IS_NEG(pnl)' },
 
   // ── Logic (10) ───────────────────────────────────────────────────────
   { name: 'IF', dsl: 'if', args: ['condition', 'true_val', 'false_val'], desc: 'If/then/else', category: 'Logic', example: 'IF(gt(bal, 0), interest, 0)' },
-  { name: 'AND', dsl: 'and', args: ['a', 'b'], desc: 'Logical AND', category: 'Logic', example: 'AND(is_positive(bal), lt(rate, 1))' },
+  { name: 'AND', dsl: 'and', args: ['a', 'b'], desc: 'Logical AND', category: 'Logic', example: 'AND(gt(bal, 0), lt(rate, 1))' },
   { name: 'OR', dsl: 'or', args: ['a', 'b'], desc: 'Logical OR', category: 'Logic', example: 'OR(eq(type, "A"), eq(type, "B"))' },
   { name: 'NOT', dsl: 'not', args: ['value'], desc: 'Logical NOT', category: 'Logic', example: 'NOT(is_null(amount))' },
-  { name: 'XOR', dsl: 'xor', args: ['a', 'b'], desc: 'Exclusive OR', category: 'Logic', example: 'XOR(flag_a, flag_b)' },
   { name: 'ALL', dsl: 'all', args: ['array'], desc: 'All values truthy', category: 'Logic', example: 'ALL([cond1, cond2])' },
   { name: 'ANY', dsl: 'any', args: ['array'], desc: 'Any value truthy', category: 'Logic', example: 'ANY([cond1, cond2])' },
   { name: 'COALESCE', dsl: 'coalesce', args: ['val1', 'val2'], desc: 'First non-null value', category: 'Logic', example: 'COALESCE(override, default)' },
-  { name: 'CLAMP', dsl: 'clamp', args: ['value', 'min', 'max'], desc: 'Constrain to range', category: 'Logic', example: 'CLAMP(rate, 0, 0.5)' },
   { name: 'SWITCH', dsl: 'switch', args: ['value', 'cases', 'default'], desc: 'Multi-case matching', category: 'Logic', example: 'SWITCH(type, {"A": 1, "B": 2}, 0)' },
 
   // ── Aggregation (13) ─────────────────────────────────────────────────
@@ -123,31 +99,17 @@ const FORMULA_CATALOG = [
   { name: 'WT_AVG', dsl: 'weighted_avg', args: ['values', 'weights'], desc: 'Weighted average', category: 'Aggregation', example: 'WT_AVG([10, 20], [0.6, 0.4])' },
   { name: 'CUM_SUM', dsl: 'cumulative_sum', args: ['array'], desc: 'Running total array', category: 'Aggregation', example: 'CUM_SUM([10, 20, 30])' },
   { name: 'MEDIAN', dsl: 'median', args: ['array'], desc: 'Median value', category: 'Aggregation', example: 'MEDIAN([10, 20, 30])' },
-  { name: 'VARIANCE', dsl: 'variance', args: ['array'], desc: 'Variance', category: 'Aggregation', example: 'VARIANCE([10, 20, 30])' },
   { name: 'STD_DEV', dsl: 'std_dev', args: ['array'], desc: 'Standard deviation', category: 'Aggregation', example: 'STD_DEV([10, 20, 30])' },
-  { name: 'PCTILE', dsl: 'percentile', args: ['array', 'pct'], desc: 'Percentile value', category: 'Aggregation', example: 'PCTILE([10, 20, 30, 40], 0.75)' },
-  { name: 'RANGE', dsl: 'range', args: ['array'], desc: 'Max minus min', category: 'Aggregation', example: 'RANGE([10, 20, 30])' },
 
   // ── Conversion (6) ──────────────────────────────────────────────────
-  { name: 'FX', dsl: 'fx_convert', args: ['amount', 'rate'], desc: 'Currency conversion', category: 'Conversion', example: 'FX(1000, 1.25)' },
-  { name: 'NORMALIZE', dsl: 'normalize', args: ['value', 'min', 'max'], desc: 'Normalize to 0-1 range', category: 'Conversion', example: 'NORMALIZE(75, 0, 100)' },
-  { name: 'BPS', dsl: 'basis_points', args: ['value'], desc: 'Convert to basis points', category: 'Conversion', example: 'BPS(0.0025)' },
-  { name: 'FROM_BPS', dsl: 'from_bps', args: ['bps'], desc: 'Basis points to decimal', category: 'Conversion', example: 'FROM_BPS(25)' },
-  { name: 'TO_PCT', dsl: 'to_percentage', args: ['decimal'], desc: 'Decimal to percentage', category: 'Conversion', example: 'TO_PCT(0.05)' },
-  { name: 'FROM_PCT', dsl: 'from_percentage', args: ['pct'], desc: 'Percentage to decimal', category: 'Conversion', example: 'FROM_PCT(5)' },
 
   // ── Statistical (3) ──────────────────────────────────────────────────
-  { name: 'CORREL', dsl: 'correlation', args: ['array_x', 'array_y'], desc: 'Correlation coefficient', category: 'Statistical', example: 'CORREL([1,2,3], [2,4,6])' },
-  { name: 'COVAR', dsl: 'covariance', args: ['array_x', 'array_y'], desc: 'Covariance', category: 'Statistical', example: 'COVAR([1,2,3], [2,4,6])' },
-  { name: 'ZSCORE', dsl: 'zscore', args: ['value', 'mean', 'std_dev'], desc: 'Z-score', category: 'Statistical', example: 'ZSCORE(85, 70, 10)' },
 
   // ── String (9) ───────────────────────────────────────────────────────
   { name: 'LOWER', dsl: 'lower', args: ['text'], desc: 'Convert to lowercase', category: 'String', example: 'LOWER("HELLO")' },
   { name: 'UPPER', dsl: 'upper', args: ['text'], desc: 'Convert to uppercase', category: 'String', example: 'UPPER("hello")' },
   { name: 'CONCAT', dsl: 'concat', args: ['a', 'b'], desc: 'Join text values', category: 'String', example: 'CONCAT("rate: ", rate)' },
   { name: 'CONTAINS', dsl: 'contains', args: ['text', 'search'], desc: 'Check if text contains', category: 'String', example: 'CONTAINS(name, "loan")' },
-  { name: 'STARTS', dsl: 'starts_with', args: ['text', 'prefix'], desc: 'Starts with prefix', category: 'String', example: 'STARTS(code, "ASC")' },
-  { name: 'ENDS', dsl: 'ends_with', args: ['text', 'suffix'], desc: 'Ends with suffix', category: 'String', example: 'ENDS(file, ".csv")' },
   { name: 'TRIM', dsl: 'trim', args: ['text'], desc: 'Remove whitespace', category: 'String', example: 'TRIM("  hello  ")' },
   { name: 'STR_LEN', dsl: 'str_length', args: ['text'], desc: 'String length', category: 'String', example: 'STR_LEN("hello")' },
   { name: 'EQ_CI', dsl: 'eq_ignore_case', args: ['a', 'b'], desc: 'Case-insensitive equality', category: 'String', example: 'EQ_CI("Hello", "hello")' },
@@ -165,8 +127,6 @@ const FORMULA_CATALOG = [
   // ── Array Operations (13) ────────────────────────────────────────────
   { name: 'FOR_EACH', dsl: 'for_each', args: ['dates', 'amounts', 'date_var', 'amount_var', 'expr'], desc: 'Iterate paired arrays', category: 'Array', example: 'FOR_EACH(dates, amts, "d", "a", "expr")' },
   { name: 'FOR_IDX', dsl: 'for_each_with_index', args: ['array', 'var', 'idx_var', 'expr'], desc: 'Iterate with index', category: 'Array', example: 'FOR_IDX(arr, "v", "i", "expr")' },
-  { name: 'MAP', dsl: 'map_array', args: ['array', 'var', 'expr', 'context?'], desc: 'Transform each element', category: 'Array', example: 'MAP(amounts, "x", "multiply(x, 1.1)")' },
-  { name: 'ZIP', dsl: 'zip_arrays', args: ['a', 'b'], desc: 'Zip two arrays', category: 'Array', example: 'ZIP(dates, amounts)' },
   { name: 'ARR_LEN', dsl: 'array_length', args: ['array'], desc: 'Array length', category: 'Array', example: 'ARR_LEN(items)' },
   { name: 'ARR_GET', dsl: 'array_get', args: ['array', 'index'], desc: 'Get element at index', category: 'Array', example: 'ARR_GET(items, 0)' },
   { name: 'ARR_FIRST', dsl: 'array_first', args: ['array'], desc: 'First element', category: 'Array', example: 'ARR_FIRST(payments)' },
@@ -181,7 +141,6 @@ const FORMULA_CATALOG = [
   { name: 'COLLECT_INSTR', dsl: 'collect_by_instrument', args: ['EVENT.field'], desc: 'Collect by instrument ID', category: 'Collect', example: 'COLLECT_INSTR(LoanEvent.rate)' },
   { name: 'COLLECT_ALL', dsl: 'collect_all', args: ['EVENT.field'], desc: 'Collect all values (all dates)', category: 'Collect', example: 'COLLECT_ALL(LoanEvent.amount)' },
   { name: 'COLLECT_SUB', dsl: 'collect_by_subinstrument', args: ['EVENT.field'], desc: 'Collect by sub-instrument', category: 'Collect', example: 'COLLECT_SUB(LoanEvent.tranche)' },
-  { name: 'COLLECT_SUBIDS', dsl: 'collect_subinstrumentids', args: ['EVENT'], desc: 'Get unique sub-instrument IDs', category: 'Collect', example: 'COLLECT_SUBIDS(LoanEvent)' },
   { name: 'COLLECT_DATES', dsl: 'collect_effectivedates_for_subinstrument', args: ['EVENT', 'sub_id'], desc: 'Effective dates for sub-instrument', category: 'Collect', example: 'COLLECT_DATES(LoanEvent, "T001")' },
 
   // ── Transaction & Output (2) ─────────────────────────────────────────

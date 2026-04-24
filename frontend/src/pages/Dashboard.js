@@ -417,10 +417,6 @@ const Dashboard = () => {
     toast.success(`Loaded template: ${template.name}`);
   };
 
-  const handleInsertFunction = (functionCall) => {
-    setDslCode(prev => prev + "\n" + functionCall);
-  };
-
   const handleGeneratedCode = async (code, metadata) => {
     setDslCode(code);
     setEditorMode('code');
@@ -832,7 +828,7 @@ const Dashboard = () => {
                               { name: 'print', params: 'value', description: 'Print value to console' },
                               { name: 'collect_by_instrument', params: 'EVENT.field', description: 'Collect values for current instrument' },
                               { name: 'for_each', params: 'dates_arr, amounts_arr, date_var, amount_var, expression', description: 'Iterate paired arrays and evaluate expression' },
-                              { name: 'map_array', params: 'array, var_name, expression, context?', description: 'Transform array elements' },
+                              { name: 'apply_each', params: 'array, expression', description: 'Apply expression to each element using `each`' },
                               { name: 'sum_vals', params: 'array', description: 'Sum numeric values in array' }
                             ];
 
@@ -1043,6 +1039,15 @@ const Dashboard = () => {
               editorRef={editorRef}
               monacoRef={monacoRef}
               providerRefreshKey={providerRefreshKey}
+              uiContext={{
+                mode: editorMode,
+                editingRule: editingRule?.name || editingRule?.ruleName || null,
+                editingSchedule: editingSchedule?.name || editingSchedule?.scheduleName || null,
+                editingCustomCode: editingCustomCode?.name || editingCustomCode?.label || null,
+                lastExecutionSummary: lastExecutionResult && (lastExecutionResult.templateName || (lastExecutionResult.transactions || []).length || (lastExecutionResult.printOutputs || []).length)
+                  ? `${lastExecutionResult.templateName || 'last run'}: ${(lastExecutionResult.transactions || []).length} txn(s), ${(lastExecutionResult.printOutputs || []).length} print(s)`
+                  : null,
+              }}
             />
           </div>
         </div>
@@ -1052,7 +1057,6 @@ const Dashboard = () => {
       {showFunctionBrowser && (
         <FunctionBrowser 
           dslFunctions={dslFunctions}
-          onInsertFunction={handleInsertFunction}
           onClose={() => setShowFunctionBrowser(false)}
           onAskAI={handleAskAIAboutFunction}
         />

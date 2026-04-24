@@ -84,77 +84,6 @@ const ACCOUNTING_TEMPLATES = [
     },
   },
 
-  {
-    id: 'straight_line_depreciation',
-    title: 'Straight-Line Depreciation',
-    description: 'Calculate periodic depreciation expense evenly over the asset life',
-    category: 'Depreciation',
-    icon: 'TrendingDown',
-    standard: 'ASC 360',
-    fields: [
-      { key: 'asset_cost', label: 'Asset Cost', type: 'number_or_field', required: true, placeholder: '50000' },
-      { key: 'salvage_value', label: 'Salvage (Residual) Value', type: 'number_or_field', required: true, placeholder: '5000' },
-      { key: 'useful_life', label: 'Useful Life (years)', type: 'number_or_field', required: true, placeholder: '5' },
-      { key: 'start_date', label: 'In-Service Date', type: 'date_or_field', required: true, placeholder: '2026-01-01' },
-      { key: 'partial_year', label: 'First Year Convention', type: 'select', options: ['Full Year', 'Half-Year', 'Mid-Month', 'Prorate from In-Service'], default: 'Full Year' },
-    ],
-    outputs: [
-      { key: 'annual_depreciation', label: 'Annual Depreciation', default: true },
-      { key: 'schedule', label: 'Depreciation Schedule', default: true },
-      { key: 'create_txn', label: 'Create Transaction', default: false, txnType: 'Depreciation Expense' },
-    ],
-    generateDSL: (config) => {
-      const cost = config.asset_cost_source === 'field' ? config.asset_cost_field : config.asset_cost;
-      const salvage = config.salvage_value_source === 'field' ? config.salvage_value_field : config.salvage_value;
-      const life = config.useful_life_source === 'field' ? config.useful_life_field : config.useful_life;
-      const startDate = config.start_date_source === 'field' ? config.start_date_field : `"${config.start_date}"`;
-
-      let lines = [];
-      lines.push('## ═══════════════════════════════════════════════════════════════');
-      lines.push('## STRAIGHT-LINE DEPRECIATION');
-      lines.push('## ═══════════════════════════════════════════════════════════════');
-      lines.push('');
-      lines.push(`asset_cost = ${cost}`);
-      lines.push(`salvage_value = ${salvage}`);
-      lines.push(`useful_life_years = ${life}`);
-      lines.push('');
-      lines.push('## Calculate annual depreciation');
-      lines.push('annual_depr = straight_line(asset_cost, salvage_value, useful_life_years)');
-      lines.push('monthly_depr = divide(annual_depr, 12)');
-      lines.push('');
-
-      if (config.outputs_schedule) {
-        lines.push('## Generate depreciation schedule');
-        lines.push(`end_date = add_years(${startDate}, useful_life_years)`);
-        lines.push(`p = period(${startDate}, end_date, "A")`);
-        lines.push('');
-        lines.push('sched = schedule(p, {');
-        lines.push('    "year": "period_date",');
-        lines.push('    "opening_nbv": "lag(\'closing_nbv\', 1, asset_cost)",');
-        lines.push('    "depreciation": "annual_depr",');
-        lines.push('    "closing_nbv": "subtract(opening_nbv, depreciation)"');
-        lines.push('}, {"asset_cost": asset_cost, "annual_depr": annual_depr})');
-        lines.push('');
-        lines.push('print(sched)');
-      }
-
-      lines.push('print("Annual Depreciation:", annual_depr)');
-      lines.push('print("Monthly Depreciation:", monthly_depr)');
-
-      if (config.outputs_create_txn) {
-        lines.push('');
-        if (config.outputs_schedule) {
-          lines.push('depr_for_postingdate = schedule_filter(sched, "year", postingdate, "depreciation")');
-          lines.push('print("Depreciation for posting date:", depr_for_postingdate)');
-          lines.push(`createTransaction(postingdate, postingdate, "${config.txn_type || 'Depreciation Expense'}", depr_for_postingdate)`);
-        } else {
-          lines.push(`createTransaction(${startDate}, ${startDate}, "${config.txn_type || 'Depreciation Expense'}", annual_depr)`);
-        }
-      }
-
-      return lines.join('\n');
-    },
-  },
 
   {
     id: 'revenue_recognition',
@@ -190,7 +119,7 @@ const ACCOUNTING_TEMPLATES = [
       lines.push(`esp_values = collect_by_instrument(${config.selling_prices_field})`);
       lines.push(`start_dates = collect_by_instrument(${config.start_dates_field})`);
       lines.push(`end_dates = collect_by_instrument(${config.end_dates_field})`);
-      lines.push(`subinstrument_ids = collect_subinstrumentids()`);
+      lines.push(`subinstrument_ids = subinstrumentid`);
       lines.push(`posting_date = ${postingDate}`);
       lines.push('ssp_values = esp_values');
       lines.push('total_ssp = sum(ssp_values)');
@@ -354,66 +283,6 @@ const ACCOUNTING_TEMPLATES = [
     },
   },
 
-  {
-    id: 'double_declining_depreciation',
-    title: 'Double Declining Balance Depreciation',
-    description: 'Accelerated depreciation using the double declining balance method',
-    category: 'Depreciation',
-    icon: 'TrendingDown',
-    standard: 'ASC 360',
-    fields: [
-      { key: 'asset_cost', label: 'Asset Cost', type: 'number_or_field', required: true, placeholder: '50000' },
-      { key: 'salvage_value', label: 'Salvage Value', type: 'number_or_field', required: true, placeholder: '5000' },
-      { key: 'useful_life', label: 'Useful Life (years)', type: 'number_or_field', required: true, placeholder: '5' },
-      { key: 'start_date', label: 'In-Service Date', type: 'date_or_field', required: true, placeholder: '2026-01-01' },
-    ],
-    outputs: [
-      { key: 'schedule', label: 'Depreciation Schedule', default: true },
-      { key: 'create_txn', label: 'Create Transaction', default: false, txnType: 'Depreciation Expense' },
-    ],
-    generateDSL: (config) => {
-      const cost = config.asset_cost_source === 'field' ? config.asset_cost_field : config.asset_cost;
-      const salvage = config.salvage_value_source === 'field' ? config.salvage_value_field : config.salvage_value;
-      const life = config.useful_life_source === 'field' ? config.useful_life_field : config.useful_life;
-      const startDate = config.start_date_source === 'field' ? config.start_date_field : `"${config.start_date}"`;
-
-      let lines = [];
-      lines.push('## ═══════════════════════════════════════════════════════════════');
-      lines.push('## DOUBLE DECLINING BALANCE DEPRECIATION');
-      lines.push('## ═══════════════════════════════════════════════════════════════');
-      lines.push('');
-      lines.push(`asset_cost = ${cost}`);
-      lines.push(`salvage_value = ${salvage}`);
-      lines.push(`useful_life = ${life}`);
-      lines.push('ddb_rate = divide(2, useful_life)');
-      lines.push('');
-      lines.push(`end_date = add_years(${startDate}, useful_life)`);
-      lines.push(`p = period(${startDate}, end_date, "A")`);
-      lines.push('');
-      lines.push('sched = schedule(p, {');
-      lines.push('    "year": "period_date",');
-      lines.push('    "opening_nbv": "lag(\'closing_nbv\', 1, asset_cost)",');
-      lines.push('    "depreciation": "if(gt(subtract(opening_nbv, multiply(opening_nbv, ddb_rate)), salvage_value), multiply(opening_nbv, ddb_rate), subtract(opening_nbv, salvage_value))",');
-      lines.push('    "closing_nbv": "subtract(opening_nbv, depreciation)"');
-      lines.push('}, {"asset_cost": asset_cost, "salvage_value": salvage_value, "ddb_rate": ddb_rate})');
-      lines.push('');
-      lines.push('print(sched)');
-      lines.push('print("Total Depreciation:", schedule_sum(sched, "depreciation"))');
-
-      if (config.outputs_create_txn) {
-        lines.push('');
-        if (config.outputs_schedule) {
-          lines.push('depr_for_postingdate = schedule_filter(sched, "year", postingdate, "depreciation")');
-          lines.push('print("Depreciation for posting date:", depr_for_postingdate)');
-          lines.push(`createTransaction(postingdate, postingdate, "${config.txn_type || 'Depreciation Expense'}", depr_for_postingdate)`);
-        } else {
-          lines.push(`createTransaction(${startDate}, ${startDate}, "${config.txn_type || 'Depreciation Expense'}", schedule_sum(sched, "depreciation"))`);
-        }
-      }
-
-      return lines.join('\n');
-    },
-  },
 
   {
     id: 'npv_analysis',

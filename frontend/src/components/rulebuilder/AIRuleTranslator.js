@@ -74,7 +74,7 @@ KEY DSL PATTERNS — Use these as references:
 
 2. PERIOD CONVENTIONS: period(start, end, freq, convention)
    Frequencies: "M" monthly, "Q" quarterly, "S" semi-annual, "A" annual
-   Conventions: "act/360", "act/365", "30/360", "act/act"
+   Conventions: "ACT/360", "ACT/365", "30/360", "ACT/ACT"
 
 3. SCHEDULE EXTRACTION:
    schedule_sum(sched, "column") — total of a column
@@ -90,8 +90,8 @@ KEY DSL PATTERNS — Use these as references:
    dates = collect_by_instrument(EVENT.postingdate)
 
 6. ITERATION PATTERN:
-   result = map_array(arr, "item", "multiply(item, 2)")
-   total = sum_vals(result)
+   doubled = apply_each(arr, "multiply(each, 2)")
+   total = sum_vals(doubled)
    for_each(dates, amounts, "d", "a", "createTransaction(d, d, \\"Type\\", a)")
 
 7. GENERATE_SCHEDULES (multi-instrument from event data):

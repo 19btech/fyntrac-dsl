@@ -602,97 +602,27 @@ def yield_to_maturity(price: float, face: float, coupon: float, years: float) ->
     return ytm_approx
 
 # Interest Functions
-def compound_interest(principal: float, rate: float, periods: int) -> float:
-    """Compound interest"""
-    try:
-        return principal * ((1 + rate) ** periods - 1)
-    except OverflowError:
-        raise ValueError(f"compound_interest: overflow — rate must be decimal (e.g., 0.05 for 5%, not 5), got rate={rate}, periods={periods}")
 
-def interest_on_balance(balance: float, rate: float, days: int) -> float:
-    """Interest using ACT/360"""
-    return balance * rate * (days / 360)
 
-def capitalization(interest: float, balance: float) -> float:
-    """Add interest to principal"""
-    return balance + interest
 
-def amortized_cost(opening: float, interest: float, payment: float) -> float:
-    """Balance after payment"""
-    return opening + interest - payment
 
 
 
 # Depreciation
-def straight_line(cost: float, salvage: float, life: int) -> float:
-    """Straight-line depreciation"""
-    life = _coerce_n_to_int(life, 'life')
-    if life == 0:
-        raise ValueError("straight_line: life must be greater than zero")
-    return (cost - salvage) / life
 
-def reducing_balance(cost: float, rate: float) -> float:
-    """Declining balance"""
-    return cost * rate
 
-def double_declining(cost: float, life: int) -> float:
-    """Double declining balance"""
-    life = _coerce_n_to_int(life, 'life')
-    if life == 0:
-        raise ValueError("double_declining: life must be greater than zero")
-    return cost * (2 / life)
 
-def sum_of_years(cost: float, salvage: float, life: int, year: int) -> float:
-    """Sum of years digits"""
-    total_years = sum(range(1, life + 1))
-    if total_years == 0:
-        return 0
-    return ((cost - salvage) * (life - year + 1)) / total_years
 
-def units_of_production(cost: float, units: float, total: float) -> float:
-    """Usage-based depreciation"""
-    return cost * (units / total) if total > 0 else 0
 
 # Allocation
-def prorate(value: float, part: float, total: float) -> float:
-    """Proportional allocation"""
-    return value * (part / total) if total > 0 else 0
 
-def allocate(value: float, weights: List[float]) -> List[float]:
-    """Weight-based allocation"""
-    total_weight = sum(weights)
-    if total_weight == 0:
-        return [0] * len(weights)
-    return [value * (w / total_weight) for w in weights]
 
-def split(value: float, n: int) -> float:
-    """Equal split"""
-    n = _coerce_n_to_int(n, 'n')
-    return value / n if n > 0 else 0
 
-def percentage_of(value: float, pct: float) -> float:
-    """Calculate percentage"""
-    return value * pct
 
-def ratio_split(value: float, ratios: List[float]) -> List[float]:
-    """Split by ratios"""
-    return allocate(value, ratios)
 
 # Balance Functions
-def rolling_balance(opening: float, flows: List[float]) -> float:
-    """Running balance"""
-    return opening + sum(flows)
 
-def average_balance(balances: List[float]) -> float:
-    """Average of balances"""
-    return sum(balances) / len(balances) if balances else 0
 
-def weighted_balance(balances: List[float], days: List[int]) -> float:
-    """Weighted average balance"""
-    if not balances or not days or len(balances) != len(days):
-        return 0
-    total_days = sum(days)
-    return sum(b * d for b, d in zip(balances, days)) / total_days if total_days > 0 else 0
 
 # Arithmetic
 def _broadcast_binary(a, b, op_name, scalar_op):
@@ -753,10 +683,6 @@ def power(a: float, b: float) -> float:
     except (ValueError, ZeroDivisionError):
         raise ValueError(f"power({a}, {b}): mathematically undefined (e.g., negative base with fractional exponent or 0 to negative power)")
 
-def sqrt(x: float) -> float:
-    if x < 0:
-        raise ValueError(f"sqrt: input must be >= 0, got {x}")
-    return math.sqrt(x)
 
 def abs_val(x: float) -> float:
     return abs(x)
@@ -801,10 +727,6 @@ def floor(x: float) -> int:
 def ceil(x: float) -> int:
     return math.ceil(x)
 
-def mod(a: float, b: float) -> float:
-    if b == 0:
-        raise ValueError("mod: divisor b cannot be zero")
-    return a % b
 
 def truncate(x: float, decimals: int = 0) -> float:
     """Truncate to decimals"""
@@ -815,9 +737,6 @@ def percentage(value: float, total: float) -> float:
     """Calculate percentage of total"""
     return (value / total * 100) if total != 0 else 0
 
-def change_pct(old: float, new: float) -> float:
-    """Percentage change"""
-    return ((new - old) / old * 100) if old != 0 else 0
 
 # Comparison
 def eq(a: Any, b: Any) -> bool:
@@ -852,13 +771,7 @@ def is_null(x: Any) -> bool:
             return True
     return False
 
-def is_positive(x: float) -> bool:
-    """Check if positive"""
-    return x > 0
 
-def is_negative(x: float) -> bool:
-    """Check if negative"""
-    return x < 0
 
 # Logical
 def and_op(a: bool, b: bool) -> bool:
@@ -870,8 +783,6 @@ def or_op(a: bool, b: bool) -> bool:
 def not_op(a: bool) -> bool:
     return not a
 
-def xor(a: bool, b: bool) -> bool:
-    return a != b
 
 def all_op(lst: List[bool]) -> bool:
     return all(lst)
@@ -888,8 +799,6 @@ def coalesce(*args) -> Any:
             return arg
     return None
 
-def clamp(x: float, min_val: float, max_val: float) -> float:
-    return max(min_val, min(x, max_val))
 
 def switch(value: Any, cases: Dict[Any, Any], default_val: Any = None) -> Any:
     """Switch-case logic"""
@@ -1122,7 +1031,6 @@ def period(start: str, end: str, freq: str = "M", convention: str = "ACT/360") -
             raise ValueError("start and end arrays must have the same length")
         # Carry subinstrument_ids through if either array is an _ScheduleValueList
         # so downstream schedule() can map results back to the right sub-instruments
-        # without relying on a separate collect_subinstrumentids() step.
         sub_ids = getattr(start, 'subinstrument_ids', None) or getattr(end, 'subinstrument_ids', None)
         out = {
             "type": "period_array",
@@ -2609,17 +2517,7 @@ def eq_ignore_case(a: str, b: str) -> bool:
         return a is None and b is None
     return str(a).strip().lower() == str(b).strip().lower()
 
-def starts_with(s: str, prefix: str) -> bool:
-    """Check if string starts with prefix"""
-    if s is None or prefix is None:
-        return False
-    return str(s).startswith(str(prefix))
 
-def ends_with(s: str, suffix: str) -> bool:
-    """Check if string ends with suffix"""
-    if s is None or suffix is None:
-        return False
-    return str(s).endswith(str(suffix))
 
 def trim(s: str) -> str:
     """Remove leading and trailing whitespace"""
@@ -2757,74 +2655,25 @@ def median(col: List[float]) -> float:
         return (sorted_col[n//2-1] + sorted_col[n//2]) / 2
     return sorted_col[n//2]
 
-def variance(col: List[float]) -> float:
-    if not col:
-        return 0
-    mu = avg(col)
-    return sum((x - mu) ** 2 for x in col) / len(col)
 
 def std_dev(col: List[float]) -> float:
     return math.sqrt(variance(col))
 
-def percentile(col: List[float], p: float) -> float:
-    """Calculate percentile"""
-    if not col:
-        return 0
-    sorted_col = sorted(col)
-    k = (len(sorted_col) - 1) * p
-    f = math.floor(k)
-    c = math.ceil(k)
-    if f == c:
-        return sorted_col[int(k)]
-    return sorted_col[int(f)] * (c - k) + sorted_col[int(c)] * (k - f)
 
 def range_val(col: List[float]) -> float:
     """Range of values"""
     return max_val(col) - min_val(col) if col else 0
 
 # Conversion
-def fx_convert(v: float, rate: float) -> float:
-    return v * rate
 
-def normalize(v: float, base: float) -> float:
-    return v / base if base != 0 else 0
 
-def basis_points(rate: float) -> float:
-    return rate * 10000
 
-def from_bps(bps: float) -> float:
-    return bps / 10000
 
-def to_percentage(decimal: float) -> float:
-    """Convert decimal to percentage"""
-    return decimal * 100
 
-def from_percentage(pct: float) -> float:
-    """Convert percentage to decimal"""
-    return pct / 100
 
 # Statistical
-def correlation(x: List[float], y: List[float]) -> float:
-    """Pearson correlation coefficient"""
-    if len(x) != len(y) or not x:
-        return 0
-    mean_x = avg(x)
-    mean_y = avg(y)
-    numerator = sum((xi - mean_x) * (yi - mean_y) for xi, yi in zip(x, y))
-    denominator = math.sqrt(sum((xi - mean_x) ** 2 for xi in x) * sum((yi - mean_y) ** 2 for yi in y))
-    return numerator / denominator if denominator != 0 else 0
 
-def covariance(x: List[float], y: List[float]) -> float:
-    """Covariance between two lists"""
-    if len(x) != len(y) or not x:
-        return 0
-    mean_x = avg(x)
-    mean_y = avg(y)
-    return sum((xi - mean_x) * (yi - mean_y) for xi, yi in zip(x, y)) / len(x)
 
-def zscore(value: float, mean_val: float, std: float) -> float:
-    """Z-score"""
-    return (value - mean_val) / std if std != 0 else 0
 
 
 # ============= Transaction Functions =============
@@ -3229,40 +3078,6 @@ def for_each_with_index(array: List[Any], var_name: str, expression: str, contex
     return results
 
 
-def map_array(array: List[Any], var_name: str, expression: str, context: Dict[str, Any] = None) -> List[Any]:
-    """
-    Transform each element of an array using an expression.
-    Similar to for_each_with_index but focused on transformation.
-    
-    Args:
-        array: Array to transform
-        var_name: Variable name for current element
-        expression: Transformation expression
-        context: Optional dictionary of external variables (other arrays, totals, etc.)
-    
-    Returns:
-        Transformed array
-    
-    Example:
-        map_array(amounts_arr, "x", "x * 1.1")  # Apply 10% increase
-        map_array(dates_arr, "d", "add_days(d, 30)")  # Shift all dates
-        
-        # With context:
-        map_array(names, "n", "if(eq(n, 'Discount'), 0, array_get(values, index, 0))", {"values": [100, 200]})
-    """
-    import logging
-    logger = logging.getLogger(__name__)
-
-    mapped = for_each_with_index(array, var_name, expression, context)
-    # Convert None results (evaluation errors) to a safe numeric default (0)
-    cleaned = []
-    for i, v in enumerate(mapped):
-        if v is None:
-            logger.debug(f"map_array: expression evaluation returned None at index {i} for var '{var_name}'")
-            cleaned.append(0)
-        else:
-            cleaned.append(v)
-    return cleaned
 
 
 def apply_each(source, expr_or_second, expr_if_paired=None, context: Dict[str, Any] = None) -> List[Any]:
@@ -3299,11 +3114,11 @@ def apply_each(source, expr_or_second, expr_if_paired=None, context: Dict[str, A
 
     # Detect mode: if expr_or_second is a string, it's single-array mode
     if isinstance(expr_or_second, str):
-        # Single-array mode — delegate to map_array with var_name="each"
+        # Single-array mode — delegate to for_each_with_index with var_name="each"
         # 3rd arg could be context dict (passed as expr_if_paired positionally)
         ctx = expr_if_paired if isinstance(expr_if_paired, dict) else context
         enriched_context = dict(ctx) if ctx else {}
-        return map_array(source, "each", expr_or_second, enriched_context)
+        return for_each_with_index(source, "each", expr_or_second, enriched_context)
     else:
         # Paired-array mode
         second_array = expr_or_second
@@ -3341,32 +3156,6 @@ def apply_each(source, expr_or_second, expr_if_paired=None, context: Dict[str, A
         return results
 
 
-def zip_arrays(*arrays) -> List[List[Any]]:
-    """
-    Combine multiple arrays into array of tuples/lists.
-    Useful for parallel iteration.
-    
-    Args:
-        *arrays: Variable number of arrays to zip
-    
-    Returns:
-        List of lists, where each inner list contains elements at same index
-    
-    Example:
-        zip_arrays(dates_arr, amounts_arr, types_arr)
-        -> [["2024-01-15", 1000, "CF"], ["2024-02-15", 1000, "CF"], ...]
-    """
-    if not arrays:
-        return []
-    
-    min_len = min(len(arr) for arr in arrays if arr)
-    result = []
-    
-    for i in range(min_len):
-        row = [arr[i] if arr and i < len(arr) else None for arr in arrays]
-        result.append(row)
-    
-    return result
 
 
 def array_length(array: List[Any]) -> int:
@@ -3550,44 +3339,26 @@ DSL_FUNCTIONS = {
     'xnpv': xnpv, 'xirr': xirr,
     'discount_factor': discount_factor, 'accumulation_factor': accumulation_factor,
     'effective_rate': effective_rate, 'nominal_rate': nominal_rate, 'yield_to_maturity': yield_to_maturity,
-    'compound_interest': compound_interest,
-    'interest_on_balance': interest_on_balance,
-    'capitalization': capitalization, 'amortized_cost': amortized_cost,
-    
-    # Depreciation
-    'straight_line': straight_line, 'reducing_balance': reducing_balance,
-    'double_declining': double_declining, 'sum_of_years': sum_of_years,
-    'units_of_production': units_of_production,
-    
-    # Allocation
-    'prorate': prorate, 'allocate': allocate, 'split': split,
-    'percentage_of': percentage_of, 'ratio_split': ratio_split,
-    
-    # Balance
-    'rolling_balance': rolling_balance,
-    'average_balance': average_balance, 'weighted_balance': weighted_balance,
-    
+
     # Arithmetic
     'add': add, 'subtract': subtract, 'multiply': multiply, 'divide': divide,
-    'power': power, 'sqrt': sqrt, 'abs': abs_val, 'sign': sign,
-    'round': round_val, 'floor': floor, 'ceil': ceil, 'mod': mod,
-    'truncate': truncate, 'percentage': percentage, 'change_pct': change_pct,
+    'power': power, 'abs': abs_val, 'sign': sign,
+    'round': round_val, 'floor': floor, 'ceil': ceil,
+    'truncate': truncate, 'percentage': percentage,
     # Operator wrappers (explicit secure operators)
     'op_eq': op_eq, 'op_neq': op_neq, 'op_gt': op_gt, 'op_gte': op_gte, 'op_lt': op_lt, 'op_lte': op_lte,
     'op_add': op_add, 'op_sub': op_sub, 'op_mul': op_mul, 'op_div': op_div,
-    
+
     # Comparison
     'eq': eq, 'neq': neq, 'gt': gt, 'gte': gte, 'lt': lt, 'lte': lte,
     'between': between, 'is_null': is_null,
-    'is_positive': is_positive, 'is_negative': is_negative,
-    
+
     # Logical
-    'and': and_op, 'or': or_op, 'not': not_op, 'xor': xor,
+    'and': and_op, 'or': or_op, 'not': not_op,
     'all': all_op, 'any': any_op, 'if': if_op, 'iif': if_op,
-    'coalesce': coalesce, 'clamp': clamp, 'switch': switch,
-    
+    'coalesce': coalesce, 'switch': switch,
+
     # Date
-    'normalize_date': normalize_date,
     'days_between': days_between, 'months_between': months_between, 'years_between': years_between,
     'add_days': add_days, 'add_months': add_months, 'add_years': add_years,
     'subtract_days': subtract_days, 'subtract_months': subtract_months, 'subtract_years': subtract_years,
@@ -3595,43 +3366,32 @@ DSL_FUNCTIONS = {
     'day_count_fraction': day_count_fraction, 'is_leap_year': is_leap_year,
     'days_in_year': days_in_year, 'quarter': quarter, 'day_of_week': day_of_week,
     'is_weekend': is_weekend, 'business_days': business_days,
-    
+
     # Schedule Functions
     'period': period, 'schedule': schedule,
     'schedule_sum': schedule_sum,
     'schedule_last': schedule_last, 'schedule_first': schedule_first,
     'schedule_column': schedule_column,
     'schedule_filter': schedule_filter,
-    
-    # Generic Multi-Item Schedule Generation (internal implementations retained, not exposed)
-    
+
     # Aggregation
     'sum': sum_vals, 'sum_field': sum_field, 'avg': avg, 'min': min_val, 'max': max_val, 'count': count,
     'weighted_avg': weighted_avg, 'cumulative_sum': cumulative_sum,
-    'median': median, 'variance': variance, 'std_dev': std_dev,
-    'percentile': percentile, 'range': range_val,
-    
-    # Conversion
-    'fx_convert': fx_convert, 'normalize': normalize,
-    'basis_points': basis_points, 'from_bps': from_bps,
-    'to_percentage': to_percentage, 'from_percentage': from_percentage,
-    
-    # Statistical
-    'correlation': correlation, 'covariance': covariance, 'zscore': zscore,
-    
+    'median': median, 'std_dev': std_dev,
+
     # String Functions
     'lower': lower, 'upper': upper, 'concat': concat, 'contains': contains,
-    'eq_ignore_case': eq_ignore_case, 'starts_with': starts_with, 'ends_with': ends_with,
+    'eq_ignore_case': eq_ignore_case,
     'trim': trim, 'str_length': str_length,
-    
+
     # Transaction
     'createTransaction': createTransaction,
     # Safe print wrapper
     'print': dsl_print,
-    
+
     # Iteration & Array Operations
     'for_each': for_each, 'for_each_with_index': for_each_with_index,
-    'map_array': map_array, 'apply_each': apply_each, 'zip_arrays': zip_arrays,
+    'apply_each': apply_each,
     'array_length': array_length, 'array_get': array_get,
     'array_first': array_first, 'array_last': array_last,
     'array_slice': array_slice, 'array_reverse': array_reverse,
@@ -3639,7 +3399,7 @@ DSL_FUNCTIONS = {
     'array_filter': array_filter,
 }
 
-# Function metadata for UI display (145 functions)
+# Function metadata for UI display (104 functions)
 DSL_FUNCTION_METADATA = [
     {"name": "lookup", "params": "value_array, match_array, target_value", "description": "Search a list for a matching value and return the corresponding item from a second list. Returns null if no match is found.", "category": "Array Utilities"},
     {"name": "normalize_arraydate", "params": "array", "description": "Convert a list of dates written in various formats into the standard YYYY-MM-DD format.", "category": "Date"},
@@ -3659,29 +3419,12 @@ DSL_FUNCTION_METADATA = [
     {"name": "effective_rate", "params": "nominal, freq", "description": "Convert a nominal interest rate to its effective annual rate, accounting for the number of compounding periods per year.", "category": "Financial"},
     {"name": "nominal_rate", "params": "effective, freq", "description": "Convert an effective annual interest rate back to its nominal rate for a given number of compounding periods per year.", "category": "Financial"},
     {"name": "yield_to_maturity", "params": "price, face, coupon, years", "description": "Calculate the approximate yield to maturity of a bond based on its market price, face value, annual coupon rate, and remaining years to maturity.", "category": "Financial"},
-    {"name": "compound_interest", "params": "principal, rate, periods", "description": "Calculate the total interest earned when a principal is compounded over a number of periods at a given rate. The rate is entered as a decimal.", "category": "Financial"},
-    {"name": "interest_on_balance", "params": "balance, rate, days", "description": "Calculate the interest accrued on a balance for a given number of days using an annual rate under the ACT/360 day count convention.", "category": "Financial"},
-    {"name": "capitalization", "params": "interest, balance", "description": "Add accrued interest to an existing balance to produce the new outstanding principal balance.", "category": "Financial"},
-    {"name": "amortized_cost", "params": "opening, interest, payment", "description": "Calculate the closing balance of a financial instrument after applying the period interest and deducting the payment from the opening balance.", "category": "Financial"},
 
     # Depreciation (5)
-    {"name": "straight_line", "params": "cost, salvage, life", "description": "Calculate the annual depreciation charge by spreading the depreciable cost evenly over the useful life of an asset.", "category": "Depreciation"},
-    {"name": "reducing_balance", "params": "cost, rate", "description": "Calculate the depreciation charge for the period by applying a fixed percentage rate to the current book value of the asset.", "category": "Depreciation"},
-    {"name": "double_declining", "params": "cost, life", "description": "Calculate the depreciation charge using double the straight-line rate applied to the current book value, front-loading higher charges in early years.", "category": "Depreciation"},
-    {"name": "sum_of_years", "params": "cost, salvage, life, year", "description": "Calculate the depreciation charge for a specific year using the sum-of-years-digits method, which assigns higher charges to earlier years.", "category": "Depreciation"},
-    {"name": "units_of_production", "params": "cost, units, total", "description": "Calculate the depreciation charge based on actual usage in the period, such as units produced or hours of operation.", "category": "Depreciation"},
 
     # Allocation (5)
-    {"name": "prorate", "params": "value, part, total", "description": "Allocate a portion of a value in proportion to a partial period or partial quantity relative to a defined total.", "category": "Allocation"},
-    {"name": "allocate", "params": "value, weights", "description": "Distribute a total value across multiple recipients according to a list of weights, returning the allocated amount for each.", "category": "Allocation"},
-    {"name": "split", "params": "value, n", "description": "Divide a value into a specified number of equal portions.", "category": "Allocation"},
-    {"name": "percentage_of", "params": "value, pct", "description": "Calculate the monetary amount that corresponds to a given percentage of a value.", "category": "Allocation"},
-    {"name": "ratio_split", "params": "value, ratios", "description": "Split a total amount across multiple recipients according to a list of ratios.", "category": "Allocation"},
 
     # Balance (3)
-    {"name": "rolling_balance", "params": "opening, flows", "description": "Calculate the running balance by applying a series of inflows and outflows to an opening balance.", "category": "Balance"},
-    {"name": "average_balance", "params": "balances", "description": "Calculate the simple arithmetic average of a list of balance amounts.", "category": "Balance"},
-    {"name": "weighted_balance", "params": "balances, days", "description": "Calculate the average balance weighted by the number of days each balance was held during the period.", "category": "Balance"},
 
     # Arithmetic (15)
     {"name": "add", "params": "a, b", "description": "Add two numbers together.", "category": "Arithmetic"},
@@ -3689,16 +3432,13 @@ DSL_FUNCTION_METADATA = [
     {"name": "multiply", "params": "a, b", "description": "Multiply two numbers together.", "category": "Arithmetic"},
     {"name": "divide", "params": "a, b", "description": "Divide the first number by the second.", "category": "Arithmetic"},
     {"name": "power", "params": "a, b", "description": "Raise a number to the power of a given exponent.", "category": "Arithmetic"},
-    {"name": "sqrt", "params": "x", "description": "Calculate the square root of a non-negative number.", "category": "Arithmetic"},
     {"name": "abs", "params": "x", "description": "Return the absolute value of a number, removing any negative sign.", "category": "Arithmetic"},
     {"name": "sign", "params": "x", "description": "Return -1 if the number is negative, 0 if zero, or 1 if positive.", "category": "Arithmetic"},
     {"name": "round", "params": "x, n=0", "description": "Round a number to a specified number of decimal places.", "category": "Arithmetic"},
     {"name": "floor", "params": "x", "description": "Round a number down to the nearest whole number.", "category": "Arithmetic"},
     {"name": "ceil", "params": "x", "description": "Round a number up to the nearest whole number.", "category": "Arithmetic"},
-    {"name": "mod", "params": "a, b", "description": "Return the remainder left over after dividing one number by another.", "category": "Arithmetic"},
     {"name": "truncate", "params": "x, decimals=0", "description": "Remove decimal places beyond a specified number of positions without any rounding.", "category": "Arithmetic"},
     {"name": "percentage", "params": "value, total", "description": "Calculate what percentage one number represents of a given total.", "category": "Arithmetic"},
-    {"name": "change_pct", "params": "old, new", "description": "Calculate the percentage change between an old value and a new value.", "category": "Arithmetic"},
 
     # Comparison (10)
     {"name": "eq", "params": "a, b", "description": "Check whether two values are equal.", "category": "Comparison"},
@@ -3709,19 +3449,15 @@ DSL_FUNCTION_METADATA = [
     {"name": "lte", "params": "a, b", "description": "Check whether the first value is less than or equal to the second.", "category": "Comparison"},
     {"name": "between", "params": "x, l, u", "description": "Check whether a value falls within a specified lower and upper boundary, inclusive.", "category": "Comparison"},
     {"name": "is_null", "params": "x", "description": "Check whether a value is empty or missing.", "category": "Comparison"},
-    {"name": "is_positive", "params": "x", "description": "Check whether a number is greater than zero.", "category": "Comparison"},
-    {"name": "is_negative", "params": "x", "description": "Check whether a number is less than zero.", "category": "Comparison"},
 
     # Logical (10)
     {"name": "and", "params": "a, b", "description": "Return true only if both conditions are true.", "category": "Logical"},
     {"name": "or", "params": "a, b", "description": "Return true if at least one of the two conditions is true.", "category": "Logical"},
     {"name": "not", "params": "a", "description": "Reverse a condition — returns true if the condition is false, and false if it is true.", "category": "Logical"},
-    {"name": "xor", "params": "a, b", "description": "Return true if exactly one of the two conditions is true, but not both.", "category": "Logical"},
     {"name": "all", "params": "list", "description": "Return true only if every item in a list evaluates to true.", "category": "Logical"},
     {"name": "any", "params": "list", "description": "Return true if at least one item in a list evaluates to true.", "category": "Logical"},
     {"name": "if", "params": "cond, true_val, false_val", "description": "Return one of two values based on a condition — works like an IF statement in a spreadsheet.", "category": "Logical"},
     {"name": "coalesce", "params": "*args", "description": "Return the first non-empty value from a list — useful for providing a fallback default when a value may be missing.", "category": "Logical"},
-    {"name": "clamp", "params": "x, min, max", "description": "Restrict a value so it falls within a specified minimum and maximum range.", "category": "Logical"},
     {"name": "switch", "params": "value, cases, default", "description": "Look up a value against a set of named cases and return the matching result, or a default value if no match is found.", "category": "Logical"},
 
     # Date (19)
@@ -3764,23 +3500,11 @@ DSL_FUNCTION_METADATA = [
     {"name": "weighted_avg", "params": "v, w", "description": "Calculate the average of a list of values, where each value is weighted by a corresponding weight factor.", "category": "Aggregation"},
     {"name": "cumulative_sum", "params": "col", "description": "Calculate the running total of a list, returning a new list where each entry is the accumulated sum up to that point.", "category": "Aggregation"},
     {"name": "median", "params": "col", "description": "Return the middle value of a sorted list — half the values fall above and half fall below.", "category": "Aggregation"},
-    {"name": "variance", "params": "col", "description": "Measure how spread out the values in a list are by calculating the average of squared differences from the mean.", "category": "Aggregation"},
     {"name": "std_dev", "params": "col", "description": "Measure how spread out the values in a list are around the average, expressed on the same scale as the values.", "category": "Aggregation"},
-    {"name": "percentile", "params": "col, p", "description": "Return the value below which a given share of values in the list fall. Supply p as a decimal between 0 and 1.", "category": "Aggregation"},
-    {"name": "range", "params": "col", "description": "Return the difference between the largest and smallest values in a list.", "category": "Aggregation"},
 
     # Conversion (6)
-    {"name": "fx_convert", "params": "v, rate", "description": "Convert an amount from one currency to another using a given exchange rate.", "category": "Conversion"},
-    {"name": "normalize", "params": "v, base", "description": "Scale a value relative to a base amount, expressing it as a proportion of that base.", "category": "Conversion"},
-    {"name": "basis_points", "params": "rate", "description": "Convert a decimal interest rate to basis points, where one percent equals 100 basis points.", "category": "Conversion"},
-    {"name": "from_bps", "params": "bps", "description": "Convert a basis point value back to its decimal interest rate equivalent.", "category": "Conversion"},
-    {"name": "to_percentage", "params": "decimal", "description": "Convert a decimal value to a percentage by multiplying by 100.", "category": "Conversion"},
-    {"name": "from_percentage", "params": "pct", "description": "Convert a percentage value back to its decimal equivalent by dividing by 100.", "category": "Conversion"},
 
     # Statistical (3)
-    {"name": "correlation", "params": "x, y", "description": "Measure the linear relationship between two sets of values, returning a result between -1 (inverse) and 1 (perfect match).", "category": "Statistical"},
-    {"name": "covariance", "params": "x, y", "description": "Measure how two sets of values move together — a positive result means they tend to increase and decrease together.", "category": "Statistical"},
-    {"name": "zscore", "params": "value, mean, std", "description": "Calculate how many standard deviations a single value sits above or below the mean of a distribution.", "category": "Statistical"},
 
     # String (9)
     {"name": "lower", "params": "s", "description": "Convert all characters in a text value to lowercase.", "category": "String"},
@@ -3788,8 +3512,6 @@ DSL_FUNCTION_METADATA = [
     {"name": "concat", "params": "s1, s2, ...", "description": "Join two or more text values together into a single combined string.", "category": "String"},
     {"name": "contains", "params": "s, substring", "description": "Check whether a piece of text contains a specific word or phrase.", "category": "String"},
     {"name": "eq_ignore_case", "params": "a, b", "description": "Check whether two text values are equal, ignoring any differences in upper or lower case.", "category": "String"},
-    {"name": "starts_with", "params": "s, prefix", "description": "Check whether a text value begins with a specified word or prefix.", "category": "String"},
-    {"name": "ends_with", "params": "s, suffix", "description": "Check whether a text value ends with a specified word or suffix.", "category": "String"},
     {"name": "trim", "params": "s", "description": "Remove any extra spaces from the beginning and end of a text value.", "category": "String"},
     {"name": "str_length", "params": "s", "description": "Return the number of characters in a text value.", "category": "String"},
 
@@ -3797,18 +3519,15 @@ DSL_FUNCTION_METADATA = [
     {"name": "collect_by_instrument", "params": "EVENT.field", "description": "Gather all values of an event field for the current instrument across all dates into a single list.", "category": "Array"},
     {"name": "collect_all", "params": "EVENT.field", "description": "Gather every value of an event field across all rows in the dataset without any filtering.", "category": "Array"},
     {"name": "collect_by_subinstrument", "params": "EVENT.field", "description": "Gather all values of an event field for a specific instrument and sub-instrument combination.", "category": "Array"},
-    {"name": "collect_subinstrumentids", "params": "", "description": "Return a list of all unique sub-instrument IDs associated with the current instrument.", "category": "Array"},
     {"name": "collect_effectivedates_for_subinstrument", "params": "subinstrument_id?", "description": "Return a list of all effective dates associated with a specified sub-instrument.", "category": "Array"},
 
     # Iteration (5)
     {"name": "apply_each", "params": "array, expression", "description": "Apply a formula to every item in a list using 'each' as the current item, and return the results. For paired lists, pass two arrays and use 'first' and 'second' in the formula.", "category": "Iteration"},
     {"name": "for_each", "params": "dates_arr, amounts_arr, date_var, amt_var, expr", "description": "Loop through two paired lists of dates and amounts, running a specified action for each pair — commonly used to create multiple transactions.", "category": "Iteration"},
     {"name": "for_each_with_index", "params": "array, var_name, expression, context?", "description": "Loop through a list, making each item and its position number available inside the loop body.", "category": "Iteration"},
-    {"name": "map_array", "params": "array, var_name, expression, context?", "description": "Apply a calculation to every item in a list and return the transformed results as a new list.", "category": "Iteration"},
     {"name": "array_filter", "params": "array, var_name, condition, context?", "description": "Return a new list containing only the items from the original list that meet a specified condition.", "category": "Iteration"},
 
     # Array Utilities (9)
-    {"name": "zip_arrays", "params": "*arrays", "description": "Combine two or more lists element-by-element, pairing items at matching positions for use in parallel processing.", "category": "Array Utilities"},
     {"name": "array_length", "params": "array", "description": "Return the number of items in a list.", "category": "Array Utilities"},
     {"name": "array_get", "params": "array, index, default=None", "description": "Return the item at a specified position in a list, with a fallback value if the position is beyond the end of the list.", "category": "Array Utilities"},
     {"name": "array_first", "params": "array, default=None", "description": "Return the first item in a list, with an optional fallback value if the list is empty.", "category": "Array Utilities"},

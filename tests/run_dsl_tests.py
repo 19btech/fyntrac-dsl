@@ -33,29 +33,12 @@ TEST_CASES = [
     {"name": "effective_rate",   "cat": "Financial",     "dsl": "print(effective_rate(0.12, 12))"},
     {"name": "nominal_rate",     "cat": "Financial",     "dsl": "print(nominal_rate(0.1268, 12))"},
     {"name": "yield_to_maturity","cat": "Financial",     "dsl": "print(yield_to_maturity(950, 1000, 50, 10))"},
-    {"name": "compound_interest","cat": "Financial",     "dsl": "print(compound_interest(10000, 0.05, 5))"},
-    {"name": "interest_on_balance","cat":"Financial",    "dsl": "print(interest_on_balance(100000, 0.05, 90))"},
-    {"name": "capitalization",   "cat": "Financial",     "dsl": "print(capitalization(500, 10000))"},
-    {"name": "amortized_cost",   "cat": "Financial",     "dsl": "print(amortized_cost(10000, 500, 1200))"},
 
     # ── Depreciation (5) ──────────────────────────────────────────
-    {"name": "straight_line",    "cat": "Depreciation",  "dsl": "print(straight_line(10000, 1000, 5))"},
-    {"name": "reducing_balance", "cat": "Depreciation",  "dsl": "print(reducing_balance(10000, 0.2))"},
-    {"name": "double_declining", "cat": "Depreciation",  "dsl": "print(double_declining(10000, 5))"},
-    {"name": "sum_of_years",     "cat": "Depreciation",  "dsl": "print(sum_of_years(10000, 1000, 5, 1))"},
-    {"name": "units_of_production","cat":"Depreciation", "dsl": "print(units_of_production(10000, 2000, 10000))"},
 
     # ── Allocation (5) ────────────────────────────────────────────
-    {"name": "prorate",          "cat": "Allocation",    "dsl": "print(prorate(1000, 3, 12))"},
-    {"name": "allocate",         "cat": "Allocation",    "dsl": "print(allocate(1000, [0.5, 0.3, 0.2]))"},
-    {"name": "split",            "cat": "Allocation",    "dsl": "print(split(1000, 3))"},
-    {"name": "percentage_of",    "cat": "Allocation",    "dsl": "print(percentage_of(500, 15))"},
-    {"name": "ratio_split",      "cat": "Allocation",    "dsl": "print(ratio_split(1000, [2, 3, 5]))"},
 
     # ── Balance (3) ───────────────────────────────────────────────
-    {"name": "rolling_balance",  "cat": "Balance",       "dsl": "print(rolling_balance(1000, [100, -200, 300, -50]))"},
-    {"name": "average_balance",  "cat": "Balance",       "dsl": "print(average_balance([1000, 1100, 900, 1200, 1150]))"},
-    {"name": "weighted_balance", "cat": "Balance",       "dsl": "print(weighted_balance([1000, 1100, 900], [30, 31, 29]))"},
 
     # ── Arithmetic (15) ───────────────────────────────────────────
     {"name": "add",              "cat": "Arithmetic",    "dsl": "print(add(100, 250))"},
@@ -63,16 +46,13 @@ TEST_CASES = [
     {"name": "multiply",         "cat": "Arithmetic",    "dsl": "print(multiply(25, 40))"},
     {"name": "divide",           "cat": "Arithmetic",    "dsl": "print(divide(1000, 8))"},
     {"name": "power",            "cat": "Arithmetic",    "dsl": "print(power(2, 10))"},
-    {"name": "sqrt",             "cat": "Arithmetic",    "dsl": "print(sqrt(144))"},
     {"name": "abs",              "cat": "Arithmetic",    "dsl": "print(abs(-42.5))"},
     {"name": "sign",             "cat": "Arithmetic",    "dsl": "print(sign(-100))"},
     {"name": "round",            "cat": "Arithmetic",    "dsl": "print(round(3.14159, 2))"},
     {"name": "floor",            "cat": "Arithmetic",    "dsl": "print(floor(3.9))"},
     {"name": "ceil",             "cat": "Arithmetic",    "dsl": "print(ceil(3.1))"},
-    {"name": "mod",              "cat": "Arithmetic",    "dsl": "print(mod(17, 5))"},
     {"name": "truncate",         "cat": "Arithmetic",    "dsl": "print(truncate(3.7891, 2))"},
     {"name": "percentage",       "cat": "Arithmetic",    "dsl": "print(percentage(25, 200))"},
-    {"name": "change_pct",       "cat": "Arithmetic",    "dsl": "print(change_pct(100, 125))"},
 
     # ── Comparison (10) ───────────────────────────────────────────
     {"name": "eq",               "cat": "Comparison",    "dsl": "print(eq(100, 100))"},
@@ -83,19 +63,15 @@ TEST_CASES = [
     {"name": "lte",              "cat": "Comparison",    "dsl": "print(lte(100, 100))"},
     {"name": "between",          "cat": "Comparison",    "dsl": "print(between(5, 1, 10))"},
     {"name": "is_null",          "cat": "Comparison",    "dsl": "print(is_null(None))"},
-    {"name": "is_positive",      "cat": "Comparison",    "dsl": "print(is_positive(42))"},
-    {"name": "is_negative",      "cat": "Comparison",    "dsl": "print(is_negative(-5))"},
 
     # ── Logical (10) ──────────────────────────────────────────────
     {"name": "and",              "cat": "Logical",       "dsl": "print(True and True)"},
     {"name": "or",               "cat": "Logical",       "dsl": "print(False or True)"},
     {"name": "not",              "cat": "Logical",       "dsl": "print(not(False))"},
-    {"name": "xor",              "cat": "Logical",       "dsl": "print(xor(True, False))"},
     {"name": "all",              "cat": "Logical",       "dsl": "print(all([True, True, True]))"},
     {"name": "any",              "cat": "Logical",       "dsl": "print(any([False, False, True]))"},
     {"name": "iif",              "cat": "Logical",       "dsl": 'print(iif(True, "yes", "no"))'},
     {"name": "coalesce",         "cat": "Logical",       "dsl": "print(coalesce(None, None, 42, 99))"},
-    {"name": "clamp",            "cat": "Logical",       "dsl": "print(clamp(150, 0, 100))"},
     {"name": "switch",           "cat": "Logical",       "dsl": 'print(switch("B", {"A": 1, "B": 2, "C": 3}, 0))'},
 
     # ── Date (20) ─────────────────────────────────────────────────
@@ -169,23 +145,11 @@ TEST_CASES = [
     {"name": "weighted_avg",     "cat": "Aggregation",   "dsl": "print(weighted_avg([100, 200, 300], [1, 2, 3]))"},
     {"name": "cumulative_sum",   "cat": "Aggregation",   "dsl": "print(cumulative_sum([10, 20, 30, 40]))"},
     {"name": "median",           "cat": "Aggregation",   "dsl": "print(median([3, 7, 1, 9, 5]))"},
-    {"name": "variance",         "cat": "Aggregation",   "dsl": "print(variance([2, 4, 4, 4, 5, 5, 7, 9]))"},
     {"name": "std_dev",          "cat": "Aggregation",   "dsl": "print(std_dev([2, 4, 4, 4, 5, 5, 7, 9]))"},
-    {"name": "percentile",       "cat": "Aggregation",   "dsl": "print(percentile([10, 20, 30, 40, 50, 60, 70, 80, 90, 100], 0.75))"},
-    {"name": "range",            "cat": "Aggregation",   "dsl": "print(range([10, 50, 30, 90, 20]))"},
 
     # ── Conversion (6) ────────────────────────────────────────────
-    {"name": "fx_convert",       "cat": "Conversion",    "dsl": "print(fx_convert(1000, 1.35))"},
-    {"name": "normalize",        "cat": "Conversion",    "dsl": "print(normalize(50, 200))"},
-    {"name": "basis_points",     "cat": "Conversion",    "dsl": "print(basis_points(0.0525))"},
-    {"name": "from_bps",         "cat": "Conversion",    "dsl": "print(from_bps(525))"},
-    {"name": "to_percentage",    "cat": "Conversion",    "dsl": "print(to_percentage(0.1275))"},
-    {"name": "from_percentage",  "cat": "Conversion",    "dsl": "print(from_percentage(12.75))"},
 
     # ── Statistical (3) ───────────────────────────────────────────
-    {"name": "correlation",      "cat": "Statistical",   "dsl": "print(correlation([1, 2, 3, 4, 5], [2, 4, 5, 4, 5]))"},
-    {"name": "covariance",       "cat": "Statistical",   "dsl": "print(covariance([1, 2, 3, 4, 5], [2, 4, 5, 4, 5]))"},
-    {"name": "zscore",           "cat": "Statistical",   "dsl": "print(zscore(85, 70, 10))"},
 
     # ── String (9) ────────────────────────────────────────────────
     {"name": "lower",            "cat": "String",        "dsl": 'print(lower("HELLO WORLD"))'},
@@ -193,8 +157,6 @@ TEST_CASES = [
     {"name": "concat",           "cat": "String",        "dsl": 'print(concat("Hello", " ", "World"))'},
     {"name": "contains",         "cat": "String",        "dsl": 'print(contains("Hello World", "World"))'},
     {"name": "eq_ignore_case",   "cat": "String",        "dsl": 'print(eq_ignore_case("Hello", "hello"))'},
-    {"name": "starts_with",      "cat": "String",        "dsl": 'print(starts_with("FyntracDSL", "Fyn"))'},
-    {"name": "ends_with",        "cat": "String",        "dsl": 'print(ends_with("report.pdf", ".pdf"))'},
     {"name": "trim",             "cat": "String",        "dsl": 'print(trim("  hello  "))'},
     {"name": "str_length",       "cat": "String",        "dsl": 'print(str_length("Fyntrac"))'},
 
@@ -207,12 +169,10 @@ TEST_CASES = [
         'result = for_each_with_index([10, 20, 30], "x", "x * 2")\n'
         'print(result)'
     )},
-    {"name": "map_array",        "cat": "Iteration",     "dsl": 'print(map_array([1, 2, 3, 4, 5], "x", "x * x"))'},
     {"name": "array_filter",     "cat": "Iteration",     "dsl": 'print(array_filter([1, 2, 3, 4, 5, 6, 7, 8], "x", "x > 4"))'},
 
     # ── Array Utilities (10) ──────────────────────────────────────
     {"name": "lookup",           "cat": "Array Utilities","dsl": 'print(lookup([100, 200, 300], ["A", "B", "C"], "B"))'},
-    {"name": "zip_arrays",       "cat": "Array Utilities","dsl": 'print(zip_arrays([1, 2, 3], ["a", "b", "c"]))'},
     {"name": "array_length",     "cat": "Array Utilities","dsl": "print(array_length([10, 20, 30, 40, 50]))"},
     {"name": "array_get",        "cat": "Array Utilities","dsl": 'print(array_get(["a", "b", "c", "d"], 2))'},
     {"name": "array_first",      "cat": "Array Utilities","dsl": "print(array_first([100, 200, 300]))"},
@@ -229,7 +189,6 @@ TEST_CASES = [
     {"name": "collect_by_instrument",            "cat": "Array", "dsl": "print(collect_by_instrument([100, 200]))",  "skip": True},
     {"name": "collect_all",                      "cat": "Array", "dsl": "print(collect_all([100, 200, 300]))",        "skip": True},
     {"name": "collect_by_subinstrument",         "cat": "Array", "dsl": "print(collect_by_subinstrument([100]))",    "skip": True},
-    {"name": "collect_subinstrumentids",         "cat": "Array", "dsl": "print(collect_subinstrumentids())",         "skip": True},
     {"name": "collect_effectivedates_for_subinstrument","cat":"Array","dsl":'print(collect_effectivedates_for_subinstrument("1"))',"skip": True},
 ]
 

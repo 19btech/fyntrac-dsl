@@ -579,10 +579,8 @@ const ScheduleBuilder = ({ events, dslFunctions, onClose, onSave, initialData })
         lines.push(`${v.name} = ${isDate ? '"2026-01-31"' : '100'}`);
       } else if (v.source === 'formula') lines.push(`${v.name} = ${v.formula || 0}`);
       else if (v.source === 'collect') {
-        const ct = v.collectType || 'collect_by_instrument';
         const isDate = /date/i.test(v.name) || /date/i.test(v.eventField || '');
-        if (ct === 'collect_subinstrumentids') lines.push(`${v.name} = ["sub_1", "sub_2", "sub_3"]`);
-        else if (isDate) {
+        if (isDate) {
           const isEnd = /end/i.test(v.name) || /end/i.test(v.eventField || '');
           lines.push(`${v.name} = ${isEnd ? '["2026-06-30", "2026-09-30", "2026-12-31"]' : '["2026-01-01", "2026-04-01", "2026-07-01"]'}`);
         }

@@ -13,7 +13,7 @@ calculation models that were built and tested in the DSL Studio playground.
 
 | File                 | What It Does                                                         |
 |----------------------|----------------------------------------------------------------------|
-| `dsl_functions.py`   | All 152 financial functions (like `pv`, `compound_interest`, `schedule`, etc.). The generated Python code calls these functions. This is a copy of the same file from the playground. |
+| `dsl_functions.py`   | All 112 financial functions (like `pv`, `npv`, `schedule`, etc.). The generated Python code calls these functions. This is a copy of the same file from the playground. |
 | `data_transformer.py`| Takes the raw event JSON (same format your main app already produces) and cleans it up into the shape the model needs. |
 | `model_runner.py`    | Runs the model: takes the generated Python code + the cleaned-up data, loops through every instrument, and gives back the transactions. |
 | `__init__.py`        | Empty file that tells Python this folder is a package (required for imports to work). |
