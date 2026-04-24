@@ -13,6 +13,224 @@ import io
 import pandas as pd
 import json
 import re
+import ast
+
+
+# ---------------------------------------------------------------------------
+# DSL template AST safety validator
+# ---------------------------------------------------------------------------
+# Generated DSL templates are executed via exec(). The template scaffolding
+# itself is trusted (we generate it), but it embeds user-supplied DSL/Custom
+# Code lines verbatim. Without validation, a Custom Code step could write
+# something like  __import__('os').system('rm -rf /')  and bypass the small
+# 6-name builtin blacklist used at the exec sites.
+#
+# This validator walks the AST of the *full generated template* and rejects:
+#   1. Any `import` / `from ... import` whose module is not in
+#      _ALLOWED_IMPORT_MODULES (the fixed set the scaffolding actually uses).
+#   2. Any reference to dunder names (e.g. __import__, __class__,
+#      __subclasses__, __globals__, __builtins__, __getattribute__, __mro__,
+#      __code__, __bases__, __dict__) either as a bare Name or as an
+#      attribute access. A small allowlist of safe dunders the scaffolding
+#      itself uses (__file__, __name__) is permitted.
+#
+# Raised errors are surfaced to the caller as DSLSecurityError so existing
+# error-handling code paths can present a clear message to the user.
+# ---------------------------------------------------------------------------
+
+class DSLSecurityError(Exception):
+    """Raised when generated DSL code contains a forbidden construct."""
+
+
+_ALLOWED_IMPORT_MODULES = frozenset({
+    'sys',
+    'os',
+    'json',
+    'datetime',
+    'inspect',
+    'backend.dsl_functions',
+    'dsl_functions',
+})
+
+_ALLOWED_DUNDER_NAMES = frozenset({
+    '__file__',
+    '__name__',
+})
+
+
+def _validate_template_ast(source: str, label: str = '<dsl_template>') -> None:
+    """Validate a generated DSL template before exec.
+
+    Raises DSLSecurityError if the AST contains a forbidden import or any
+    dunder reference outside the small allowlist.
+    """
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        # Let the caller's existing syntax-error handling produce the message.
+        return
+
+    def _is_forbidden_dunder(name: str) -> bool:
+        if not isinstance(name, str):
+            return False
+        if not (name.startswith('__') and name.endswith('__') and len(name) > 4):
+            return False
+        return name not in _ALLOWED_DUNDER_NAMES
+
+    for node in ast.walk(tree):
+        # Block disallowed `import x` / `import x.y`
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                root = (alias.name or '').split('.')[0]
+                if alias.name not in _ALLOWED_IMPORT_MODULES and root not in _ALLOWED_IMPORT_MODULES:
+                    raise DSLSecurityError(
+                        f"Disallowed import '{alias.name}' in {label}. "
+                        f"Custom Code may not import arbitrary modules."
+                    )
+            continue
+
+        # Block disallowed `from x import ...`
+        if isinstance(node, ast.ImportFrom):
+            module = node.module or ''
+            root = module.split('.')[0]
+            if module not in _ALLOWED_IMPORT_MODULES and root not in _ALLOWED_IMPORT_MODULES:
+                raise DSLSecurityError(
+                    f"Disallowed import 'from {module} import ...' in {label}. "
+                    f"Custom Code may not import arbitrary modules."
+                )
+            continue
+
+        # Block bare references to dunder names (e.g. __import__, __builtins__)
+        if isinstance(node, ast.Name) and _is_forbidden_dunder(node.id):
+            raise DSLSecurityError(
+                f"Use of '{node.id}' is not allowed in DSL Custom Code."
+            )
+
+        # Block dunder attribute access (e.g. obj.__class__.__subclasses__())
+        if isinstance(node, ast.Attribute) and _is_forbidden_dunder(node.attr):
+            raise DSLSecurityError(
+                f"Access to attribute '{node.attr}' is not allowed in DSL Custom Code."
+            )
+
+
+# ---------------------------------------------------------------------------
+# DSL *user code* AST safety validator (strict)
+# ---------------------------------------------------------------------------
+# The template scaffolding we generate is trusted and legitimately uses
+# `globals().update(...)`, `getattr(...)`, `hasattr(...)`, `type(...)`, etc.
+# User-supplied DSL/Custom Code, however, has no business calling those —
+# they are well-known Python sandbox-escape primitives. This validator runs
+# only over the user-code section (after DSL→Python translation, before
+# wrapping in the scaffolding) so we can be aggressive without breaking the
+# scaffolding.
+#
+# Rejects:
+#   * any `import` / `from ... import`
+#   * any reference to or attribute named __dunder__ (allowlist: __file__,
+#     __name__) — same rule as the template-level validator
+#   * any subscript with a dunder string literal:  obj['__class__']
+#   * walrus assignments to a dunder target
+#   * calls to known dangerous builtins, by call-name OR attribute-name:
+#       eval, exec, compile, open, input, breakpoint, __import__,
+#       getattr, setattr, delattr, globals, locals, vars
+# ---------------------------------------------------------------------------
+
+_USER_FORBIDDEN_CALL_NAMES = frozenset({
+    'eval', 'exec', 'compile',
+    'open', 'input', 'breakpoint',
+    '__import__',
+    'getattr', 'setattr', 'delattr',
+    'globals', 'locals', 'vars',
+})
+
+
+def _validate_dsl_user_code(user_python_body: str, label: str = '<dsl_user_code>') -> None:
+    """Validate the user-supplied (post-translation) DSL python body.
+
+    `user_python_body` is the assembled, indented body that will be embedded
+    inside `def process_standalone():` / `def process_event_data():`. We wrap
+    it in a synthetic function so the indentation parses cleanly.
+    """
+    if not user_python_body or not user_python_body.strip():
+        return
+
+    # Detect the leading indent so we can wrap correctly. The two callers
+    # produce 4-space (standalone) or 8-space (multi-event) indentation, but
+    # we don't need to know which — wrapping inside a fresh `def` re-anchors
+    # the indentation as long as every non-blank line is indented at least
+    # once.
+    wrapped = "def __dsl_user__():\n" + user_python_body
+    try:
+        tree = ast.parse(wrapped)
+    except SyntaxError:
+        # Let the existing syntax-error path produce the user-facing message.
+        return
+
+    def _is_forbidden_dunder_local(name):
+        if not isinstance(name, str):
+            return False
+        if not (name.startswith('__') and name.endswith('__') and len(name) > 4):
+            return False
+        return name not in _ALLOWED_DUNDER_NAMES
+
+    for node in ast.walk(tree):
+        # No imports in user code.
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            raise DSLSecurityError(
+                f"'import' statements are not allowed in DSL Custom Code."
+            )
+
+        # Dunder name reference.
+        if isinstance(node, ast.Name) and _is_forbidden_dunder_local(node.id):
+            raise DSLSecurityError(
+                f"Use of '{node.id}' is not allowed in DSL Custom Code."
+            )
+
+        # Dunder attribute access (obj.__class__).
+        if isinstance(node, ast.Attribute) and _is_forbidden_dunder_local(node.attr):
+            raise DSLSecurityError(
+                f"Access to attribute '.{node.attr}' is not allowed in DSL Custom Code."
+            )
+
+        # Dunder subscript with a string constant: obj['__class__'].
+        if isinstance(node, ast.Subscript):
+            slice_node = getattr(node, 'slice', None)
+            # Python 3.9+: slice is the expression directly.
+            const_val = None
+            if isinstance(slice_node, ast.Constant):
+                const_val = slice_node.value
+            # Python <=3.8 uses ast.Index wrapping a Constant.
+            elif hasattr(ast, 'Index') and isinstance(slice_node, ast.Index):
+                inner = getattr(slice_node, 'value', None)
+                if isinstance(inner, ast.Constant):
+                    const_val = inner.value
+            if isinstance(const_val, str) and _is_forbidden_dunder_local(const_val):
+                raise DSLSecurityError(
+                    f"Subscripting with '{const_val}' is not allowed in DSL Custom Code."
+                )
+
+        # Walrus assignment to a dunder target: (__import__ := f).
+        if hasattr(ast, 'NamedExpr') and isinstance(node, ast.NamedExpr):
+            tgt = node.target
+            if isinstance(tgt, ast.Name) and _is_forbidden_dunder_local(tgt.id):
+                raise DSLSecurityError(
+                    f"Walrus assignment to '{tgt.id}' is not allowed in DSL Custom Code."
+                )
+
+        # Direct or attribute calls to dangerous builtins:
+        #   getattr(obj, '__class__')   -> blocked by call-name
+        #   x.getattr(...)              -> also blocked (defensive)
+        if isinstance(node, ast.Call):
+            func = node.func
+            fname = None
+            if isinstance(func, ast.Name):
+                fname = func.id
+            elif isinstance(func, ast.Attribute):
+                fname = func.attr
+            if fname in _USER_FORBIDDEN_CALL_NAMES:
+                raise DSLSecurityError(
+                    f"Call to '{fname}()' is not allowed in DSL Custom Code."
+                )
 
 
 def _normalize_ingest_date_value(value):
@@ -593,6 +811,13 @@ def clear_print_outputs():
         processed_lines.append(f"    {stripped}  # DSL_LINE:{dsl_line_num}")
     
     python_body = '\n'.join(processed_lines)
+
+    # Defense-in-depth: strict validation of user-supplied DSL code before it
+    # is embedded in the trusted scaffolding. The scaffolding itself is then
+    # also validated at exec time, but this catches obvious sandbox-escape
+    # attempts (getattr/__class__/etc.) with a clearer error message and
+    # before any code generation work downstream.
+    _validate_dsl_user_code(python_body, label='<dsl_standalone_user_code>')
     
     template = f'''
 {imports}
@@ -1077,6 +1302,11 @@ def collect_effectivedates_for_subinstrument(subinstrument_id=None):
         i += 1
 
     python_body = '\n'.join(processed_lines)
+
+    # Defense-in-depth: strict validation of user-supplied DSL code before it
+    # is embedded in the multi-event scaffolding (see dsl_to_python_standalone
+    # for rationale).
+    _validate_dsl_user_code(python_body, label='<dsl_multi_event_user_code>')
     
     # Generate field extraction code for ALL events
     field_extraction_lines = []
@@ -1218,6 +1448,10 @@ async def execute_python_template(python_code: str, event_data: List[Dict[str, A
             '__name__': '__dsl_template__',
             '__builtins__': {k: v for k, v in __builtins__.items() if k not in ('exec', 'eval', 'compile', 'open', 'input', 'breakpoint')} if isinstance(__builtins__, dict) else {k: getattr(__builtins__, k) for k in dir(__builtins__) if k not in ('exec', 'eval', 'compile', 'open', 'input', 'breakpoint')},
         }
+        # Defense-in-depth: AST-validate the generated template before exec
+        # so user-injected Custom Code cannot reach __import__, dunder
+        # introspection, or import disallowed modules.
+        _validate_template_ast(python_code, label='<dsl_template>')
         # Execute the template which defines helper functions like process_event_data, get_print_outputs
         exec(compile(python_code, '<dsl_template>', 'exec'), exec_globals)
 
@@ -2193,6 +2427,11 @@ async def run_dsl_code(request: DSLRunRequest):
                     '__name__': '__dsl_standalone__',
                     '__builtins__': {k: v for k, v in __builtins__.items() if k not in ('exec', 'eval', 'compile', 'open', 'input', 'breakpoint')} if isinstance(__builtins__, dict) else {k: getattr(__builtins__, k) for k in dir(__builtins__) if k not in ('exec', 'eval', 'compile', 'open', 'input', 'breakpoint')},
                 }
+                # Defense-in-depth: AST-validate the generated standalone
+                # template before exec to block __import__, dunder
+                # introspection, and disallowed module imports injected via
+                # Custom Code.
+                _validate_template_ast(python_code, label='<dsl_standalone>')
                 exec(compile(python_code, '<dsl_standalone>', 'exec'), exec_globals)
                 
                 # Clear any previous print outputs
