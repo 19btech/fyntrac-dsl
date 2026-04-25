@@ -197,12 +197,73 @@ const Dashboard = () => {
           await loadDslFunctions();
           await loadTemplates();
 
-          toast.success("All data cleared! Fresh environment ready.");
+          toast.success("All data cleared! Reloading...");
+
+          // Hard refresh after the clear-all-data operation completes so every
+          // component, cache and in-memory state starts fresh. Bypass the HTTP
+          // cache by appending a cache-busting query param.
+          setTimeout(() => {
+            try {
+              const url = new URL(window.location.href);
+              url.searchParams.set('_', Date.now().toString());
+              window.location.replace(url.toString());
+            } catch (e) {
+              window.location.reload(true);
+            }
+          }, 400);
         } catch (error) {
           addConsoleLog(`✗ Error clearing data: ${error.message}`, "error");
           toast.error("Failed to clear data");
         }
       }
+    });
+  };
+
+  const handleLoadSampleData = async () => {
+    openConfirm({
+      title: "Load Sample Data",
+      message: "This will replace all current events, event data and DSL functions with a small sample dataset (2 instruments, 1 standard activity event, 1 custom reference event). Continue?",
+      confirmLabel: "Load Sample",
+      confirmColor: "primary",
+      onConfirm: async () => {
+        try {
+          addConsoleLog("Loading sample data...", "info");
+          const response = await axios.post(`${API}/load-simple-sample`);
+          addConsoleLog(`✓ ${response.data.message}`, "success");
+          toast.success("Sample data loaded! Reloading...");
+
+          // Mark the upload cards as having "uploaded" files so the user sees
+          // the same green filename badges they'd see after a real upload.
+          // FileUploadPanel restores these from localStorage on mount, so they
+          // survive the hard refresh below.
+          try {
+            localStorage.setItem('uploadedEventFileName', 'Event.csv');
+            localStorage.setItem('uploadedExcelFileName', 'Activity.xlsx');
+            localStorage.setItem('lastEventDataUploadFileName', 'Activity.xlsx');
+            localStorage.setItem('lastEventDataUploadStatus', 'success');
+            localStorage.removeItem('lastEventDataUploadFailedFile');
+            localStorage.removeItem('lastEventDataUploadErrors');
+          } catch (e) {
+            // ignore storage errors
+          }
+
+          // Hard refresh so every component picks up the fresh data and
+          // any cached state (event lists, viewers, sidebars) is rebuilt.
+          setTimeout(() => {
+            try {
+              const url = new URL(window.location.href);
+              url.searchParams.set('_', Date.now().toString());
+              window.location.replace(url.toString());
+            } catch (e) {
+              window.location.reload(true);
+            }
+          }, 400);
+        } catch (error) {
+          const detail = error?.response?.data?.detail || error.message;
+          addConsoleLog(`✗ Error loading sample data: ${detail}`, "error");
+          toast.error("Failed to load sample data");
+        }
+      },
     });
   };
 
@@ -670,14 +731,14 @@ const Dashboard = () => {
                 <Divider />
                 <MenuItem
                   onClick={() => {
-                    setShowEventDataViewer(true);
+                    handleLoadSampleData();
                     setSettingsAnchorEl(null);
                   }}
-                  data-testid="menu-event-data-viewer"
+                  data-testid="menu-load-sample-data"
                   sx={{ fontSize: '0.875rem', py: 1.5 }}
                 >
                   <Database className="w-4 h-4 text-[#6C757D] mr-2" />
-                  View Event Data
+                  Load Sample Data
                 </MenuItem>
                 <Divider />
                 <MenuItem

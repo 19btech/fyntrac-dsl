@@ -1524,6 +1524,104 @@ async def execute_python_template(python_code: str, event_data: List[Dict[str, A
 async def root():
     return {"message": "Fyntrac DSL Studio API"}
 
+@api_router.post("/load-simple-sample")
+async def load_simple_sample():
+    """Load a small, focused sample dataset for the Settings → Load Sample Data menu.
+
+    Contains exactly two instruments and two event definitions that together
+    exercise the standard/custom event-table split:
+
+      - LoanActivity  (eventTable=standard, eventType=activity)   — per-instrument activity rows
+      - RateSchedule  (eventTable=custom,   eventType=reference)  — shared reference data
+
+    Existing event_definitions, event_data and dsl_functions collections are
+    cleared first so the user starts from a clean slate.
+    """
+    try:
+        await db.event_definitions.delete_many({})
+        await db.dsl_functions.delete_many({})
+        await db.event_data.delete_many({})
+
+        # ── Event Definitions ───────────────────────────────────────────────
+        loan_activity_def = EventDefinition(
+            event_name="LoanActivity",
+            fields=[
+                {"name": "principal", "datatype": "decimal"},
+                {"name": "rate_code", "datatype": "string"},
+                {"name": "term_months", "datatype": "integer"},
+                {"name": "origination_date", "datatype": "date"},
+            ],
+            eventType="activity",
+            eventTable="standard",
+        )
+        rate_schedule_def = EventDefinition(
+            event_name="RateSchedule",
+            fields=[
+                {"name": "rate_code", "datatype": "string"},
+                {"name": "rate_value", "datatype": "decimal"},
+                {"name": "effective_date", "datatype": "date"},
+                {"name": "expiry_date", "datatype": "date"},
+            ],
+            eventType="reference",
+            eventTable="custom",
+        )
+        for evt in (loan_activity_def, rate_schedule_def):
+            doc = evt.model_dump()
+            doc['created_at'] = doc['created_at'].isoformat()
+            await db.event_definitions.insert_one(doc)
+
+        # ── Activity Data — 2 instruments ───────────────────────────────────
+        loan_activity_data = EventData(
+            event_name="LoanActivity",
+            data_rows=[
+                {
+                    "postingdate": "2026-01-01",
+                    "effectivedate": "2026-01-01",
+                    "instrumentid": "INST-001",
+                    "principal": "100000",
+                    "rate_code": "PRIME",
+                    "term_months": "60",
+                    "origination_date": "2026-01-01",
+                },
+                {
+                    "postingdate": "2026-01-01",
+                    "effectivedate": "2026-01-01",
+                    "instrumentid": "INST-002",
+                    "principal": "250000",
+                    "rate_code": "BASE",
+                    "term_months": "120",
+                    "origination_date": "2026-01-01",
+                },
+            ],
+        )
+        doc = loan_activity_data.model_dump()
+        doc['created_at'] = doc['created_at'].isoformat()
+        await db.event_data.insert_one(doc)
+
+        # ── Reference Data ──────────────────────────────────────────────────
+        rate_schedule_data = EventData(
+            event_name="RateSchedule",
+            data_rows=[
+                {"rate_code": "PRIME", "rate_value": "0.0525", "effective_date": "2025-01-01", "expiry_date": "2025-12-31"},
+                {"rate_code": "PRIME", "rate_value": "0.0500", "effective_date": "2026-01-01", "expiry_date": "2026-12-31"},
+                {"rate_code": "BASE",  "rate_value": "0.0400", "effective_date": "2025-01-01", "expiry_date": "2025-12-31"},
+                {"rate_code": "BASE",  "rate_value": "0.0375", "effective_date": "2026-01-01", "expiry_date": "2026-12-31"},
+            ],
+        )
+        doc = rate_schedule_data.model_dump()
+        doc['created_at'] = doc['created_at'].isoformat()
+        await db.event_data.insert_one(doc)
+
+        return {
+            "message": "Simple sample data loaded successfully",
+            "events": ["LoanActivity", "RateSchedule"],
+            "instruments": ["INST-001", "INST-002"],
+        }
+    except Exception as e:
+        logger.exception("Failed to load simple sample data")
+        raise HTTPException(status_code=500, detail=f"Failed to load sample data: {str(e)}")
+
+
 @api_router.post("/load-sample-data")
 async def load_sample_data():
     """Load sample data for testing"""
