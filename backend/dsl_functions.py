@@ -1012,19 +1012,102 @@ def business_days(d1: str, d2: str) -> int:
 
 # ============= Schedule Functions =============
 
-def period(start: str, end: str, freq: str = "M", convention: str = "ACT/360") -> Dict[str, Any]:
+def period(start, end=None, freq: str = "M", convention: str = "ACT/360") -> Dict[str, Any]:
     """
     Creates a period definition for schedule generation.
 
     Args:
-        start: Start date (YYYY-MM-DD)
-        end: End date (YYYY-MM-DD)
+        start: Start date (YYYY-MM-DD), OR an integer/numeric count of periods
+               when ``end`` is omitted. In count form the schedule is anchored
+               at the current posting date and advances by ``freq``.
+        end: End date (YYYY-MM-DD). Optional when ``start`` is a count.
         freq: Frequency - M (monthly), Q (quarterly), A (annual), D (daily), W (weekly)
         convention: Day count convention - ACT/360, ACT/365, 30/360
 
     Returns:
         Period definition object with dates list
     """
+    # Count form: period(N) or period(N, freq) — anchor at current posting date
+    # and emit N period dates advancing by freq. If end is a string that doesn't
+    # parse as a date but start is numeric, treat the string as freq.
+    def _as_count(v):
+        if isinstance(v, bool):
+            return None
+        if isinstance(v, int):
+            return v
+        if isinstance(v, float) and v.is_integer():
+            return int(v)
+        if isinstance(v, str):
+            s = v.strip()
+            if s.isdigit():
+                return int(s)
+            try:
+                f = float(s)
+                if f.is_integer():
+                    return int(f)
+            except Exception:
+                return None
+        return None
+
+    count = _as_count(start) if end is None else None
+    # Simpler: if end is None, treat start as count.
+    # Also handle period(count, "M") where end is a freq code, not a date.
+    _FREQ_CODES = {"M", "Q", "A", "Y", "W", "D"}
+    if end is not None and isinstance(end, str) and end.strip().upper() in _FREQ_CODES and _as_count(start) is not None:
+        freq = end.strip().upper()
+        end = None
+    if end is None:
+        count = _as_count(start)
+        if count is None:
+            # Nothing usable — return empty period
+            return {"type": "period", "start": start, "end": end, "freq": freq, "convention": convention, "dates": []}
+        anchor = _get_current_postingdate() or datetime.now().strftime("%Y-%m-%d")
+        nd = normalize_date(anchor) or anchor
+        try:
+            start_date = datetime.fromisoformat(nd)
+        except Exception:
+            return {"type": "period", "start": anchor, "end": None, "freq": freq, "convention": convention, "dates": []}
+        dates = []
+        current = start_date
+        for _ in range(max(0, count)):
+            dates.append(current.strftime("%Y-%m-%d"))
+            if freq == "M":
+                month = current.month + 1; year = current.year
+                if month > 12: month = 1; year += 1
+                try: current = current.replace(year=year, month=month)
+                except ValueError:
+                    nxt = current.replace(year=year+1, month=1, day=1) if month == 12 else current.replace(year=year, month=month+1, day=1)
+                    current = nxt - timedelta(days=1)
+            elif freq == "Q":
+                month = current.month + 3; year = current.year
+                while month > 12: month -= 12; year += 1
+                try: current = current.replace(year=year, month=month)
+                except ValueError:
+                    nxt = current.replace(year=year+1, month=1, day=1) if month == 12 else current.replace(year=year, month=month+1, day=1)
+                    current = nxt - timedelta(days=1)
+            elif freq == "A":
+                current = current.replace(year=current.year + 1)
+            elif freq == "W":
+                current = current + timedelta(weeks=1)
+            elif freq == "D":
+                current = current + timedelta(days=1)
+            else:
+                month = current.month + 1; year = current.year
+                if month > 12: month = 1; year += 1
+                try: current = current.replace(year=year, month=month)
+                except ValueError:
+                    nxt = current.replace(year=year+1, month=1, day=1) if month == 12 else current.replace(year=year, month=month+1, day=1)
+                    current = nxt - timedelta(days=1)
+        return {
+            "type": "period",
+            "start": dates[0] if dates else None,
+            "end": dates[-1] if dates else None,
+            "freq": freq,
+            "convention": convention,
+            "dates": dates,
+            "count": count,
+        }
+
     # Support passing arrays of start/end dates to create per-item schedules implicitly.
     if isinstance(start, list) and isinstance(end, list):
         if len(start) != len(end):
@@ -1418,16 +1501,19 @@ def schedule(period_def: Dict[str, Any], columns: Dict[str, str], context: Dict[
         if context and isinstance(context, dict):
             n_dates = len(dates)
             for k, v in context.items():
-                # If already a list, ensure it's at least n_dates long (pad with last or zeros)
+                # If already a list, ensure it's at least n_dates long.
+                # Pad short arrays with None (NOT the last value) so out-of-bounds
+                # periods are treated as "missing" — `coalesce(arr, 0)` returns 0,
+                # `array_get` sees a None element, and `_RowAwareArray._r()` falls
+                # back to 0 for arithmetic. Repeating the last value would cause
+                # e.g. replay_remit=[50,275,350] over 4 periods to incorrectly
+                # report 350 in period 4 instead of 0.
                 if isinstance(v, list):
                     arr = list(v)
                     if len(arr) < n_dates:
-                        if arr:
-                            arr = arr + [arr[-1]] * (n_dates - len(arr))
-                        else:
-                            arr = [0] * n_dates
+                        arr = arr + [None] * (n_dates - len(arr))
                 elif v is None:
-                    arr = [0] * n_dates
+                    arr = [None] * n_dates
                 else:
                     # Scalar: broadcast to full-length array
                     arr = [v] * n_dates
@@ -3486,7 +3572,7 @@ DSL_FUNCTION_METADATA = [
 
     # Schedule (7)
     {"name": "schedule", "params": "period, columns", "description": "Generate a time-based schedule table with calculated columns, suitable for amortisation, accrual, revenue, or depreciation schedules.", "category": "Schedule"},
-    {"name": "period", "params": "start, end, freq, conv?", "description": "Define a time period with a start date, end date, frequency (monthly, quarterly, annual, etc.), and an optional day count convention.", "category": "Schedule"},
+    {"name": "period", "params": "start, end?, freq?, conv?", "description": "Define a time period. Two forms: (1) period(start_date, end_date, freq, conv?) with explicit YYYY-MM-DD dates; (2) period(N) or period(N, freq) — count form: emit N period dates starting from the current posting date, advancing by freq (default M). freq: M=monthly, Q=quarterly, A=annual, W=weekly, D=daily.", "category": "Schedule"},
     {"name": "schedule_sum", "params": "schedule, column", "description": "Add up all values in a specified column of a generated schedule.", "category": "Schedule"},
     {"name": "schedule_last", "params": "schedule, column", "description": "Retrieve the value from the last row of a specified column in a schedule.", "category": "Schedule"},
     {"name": "schedule_first", "params": "schedule, column", "description": "Retrieve the value from the first row of a specified column in a schedule.", "category": "Schedule"},

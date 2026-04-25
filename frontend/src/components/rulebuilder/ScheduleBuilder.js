@@ -316,7 +316,7 @@ const ScheduleBuilder = ({ events, dslFunctions, onClose, onSave, initialData })
       const countExpr = periodCountSource === 'field' && periodCountField ? periodCountField
         : periodCountSource === 'formula' && periodCountFormula ? periodCountFormula
         : (periodCount || 12);
-      schedLines.push(`p = period(${countExpr})`);
+      schedLines.push(`p = period(${countExpr}, "${frequency}")`);
     } else {
       const startExpr = startDateSource === 'field' && startDateField ? startDateField
         : startDateSource === 'formula' && startDateFormula ? startDateFormula
@@ -398,12 +398,12 @@ const ScheduleBuilder = ({ events, dslFunctions, onClose, onSave, initialData })
 
     // Period definition
     if (periodType === 'number') {
-      // Number-based period: period(count)
+      // Number-based period: period(count, freq)
       const countExpr = periodCountSource === 'field' && periodCountField ? periodCountField
         : periodCountSource === 'formula' && periodCountFormula ? periodCountFormula
         : (periodCount || 12);
       lines.push('## Schedule Period');
-      lines.push(`p = period(${countExpr})`);
+      lines.push(`p = period(${countExpr}, "${frequency}")`);
     } else {
       // Date-based period
       const startExpr = startDateSource === 'field' && startDateField ? startDateField
@@ -509,7 +509,7 @@ const ScheduleBuilder = ({ events, dslFunctions, onClose, onSave, initialData })
       const countExpr = periodCountSource === 'field' && periodCountField ? periodCountField
         : periodCountSource === 'formula' && periodCountFormula ? periodCountFormula
         : (periodCount || 12);
-      lines.push(`p = period(${countExpr})`);
+      lines.push(`p = period(${countExpr}, "${frequency}")`);
     } else {
       const startExpr = startDateSource === 'field' && startDateField ? startDateField
         : startDateSource === 'formula' && startDateFormula ? startDateFormula
@@ -591,7 +591,7 @@ const ScheduleBuilder = ({ events, dslFunctions, onClose, onSave, initialData })
       const countExpr = periodCountSource === 'field' && periodCountField ? periodCountField
         : periodCountSource === 'formula' && periodCountFormula ? periodCountFormula
         : (periodCount || 12);
-      lines.push(`p = period(${countExpr})`);
+      lines.push(`p = period(${countExpr}, "${frequency}")`);
     } else {
       const startExpr = startDateSource === 'field' && startDateField ? startDateField
         : startDateSource === 'formula' && startDateFormula ? startDateFormula

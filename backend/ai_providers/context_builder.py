@@ -256,7 +256,7 @@ def build_agent_context(
 # registry-hash invalidates the cache without needing a process restart.
 # ──────────────────────────────────────────────────────
 
-_STATIC_TEMPLATE_VERSION = "2026-04-24-no-codegen-v2"
+_STATIC_TEMPLATE_VERSION = "2026-04-25-period-count-and-oob-pad"
 
 _STATIC_TEMPLATE = r"""You are an expert DSL agent for Fyntrac DSL Studio - a financial calculation and transaction processing system.
 
@@ -575,11 +575,20 @@ SYNTAX: schedule(period_def, columns, context?)
 - context: Optional dictionary of external variables (for using event data)
 
 PERIOD FUNCTION:
-period(start, end, freq, convention?)
+Two forms are supported:
+
+(1) Explicit-date form — period(start, end, freq, convention?)
 - start: Start date "YYYY-MM-DD"
 - end: End date "YYYY-MM-DD"
 - freq: M=monthly, Q=quarterly, A=annual, W=weekly, D=daily
 - convention: ACT/360, ACT/365, 30/360 (for dcf calculation)
+
+(2) Count form — period(N) or period(N, freq)
+- N: integer number of periods to emit
+- freq: optional frequency code (default "M")
+- Anchored at the CURRENT POSTING DATE; emits N dates advancing by freq.
+- Useful when the user wants "next 12 months" or "5 quarters from posting date" without computing an explicit end date.
+- Examples: period(12) → 12 monthly dates from posting date; period(4, "Q") → 4 quarterly dates.
 
 SPECIAL VARIABLES IN SCHEDULE EXPRESSIONS:
 - period_date: Current row's date
@@ -622,6 +631,15 @@ IMPORTANT: When using event data in schedule:
 1. Store the event value in a variable BEFORE the schedule
 2. Pass the variable via the context parameter (3rd argument)
 3. Reference the variable name in your expressions
+
+CONTEXT-ARRAY SEMANTICS IN SCHEDULE:
+When a context value passed to schedule() is a list (e.g. {"replay_remit": [50, 275, 350]})
+and the schedule has more periods than the array length, out-of-bounds positions are
+treated as MISSING (None), NOT as a repeat of the last value. Use coalesce(...) or
+array_get(arr, period_index, default) to supply a per-row default.
+  - coalesce(replay_remit, 0)                         → 0 in OOB periods
+  - coalesce(array_get(replay_remit, period_index, 0), 0) → 0 in OOB periods
+Scalar context values (numbers, strings) are broadcast to every period.
 
 === RESPONSE FORMAT ===
 Default response shape:

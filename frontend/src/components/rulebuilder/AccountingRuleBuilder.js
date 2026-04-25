@@ -1096,7 +1096,7 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
       const countExpr = sc.periodCountSource === 'field' && sc.periodCountField ? sc.periodCountField
         : sc.periodCountSource === 'formula' && sc.periodCountFormula ? sc.periodCountFormula
         : (sc.periodCount || 12);
-      lines.push(`p = period(${countExpr})`);
+      lines.push(`p = period(${countExpr}, "${sc.frequency || 'M'}")`);
     } else {
       const startExpr = sc.startDateSource === 'field' && sc.startDateField ? sc.startDateField
         : sc.startDateSource === 'formula' && sc.startDateFormula ? sc.startDateFormula
@@ -1485,7 +1485,7 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
           const countExpr = sc.periodCountSource === 'field' && sc.periodCountField ? sc.periodCountField
             : sc.periodCountSource === 'formula' && sc.periodCountFormula ? sc.periodCountFormula
             : (sc.periodCount || 12);
-          lines.push(`p = period(${countExpr})`);
+          lines.push(`p = period(${countExpr}, "${sc.frequency || 'M'}")`);
         } else {
           const startExpr = sc.startDateSource === 'field' && sc.startDateField ? sc.startDateField
             : sc.startDateSource === 'formula' && sc.startDateFormula ? sc.startDateFormula

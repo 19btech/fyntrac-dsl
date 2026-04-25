@@ -402,7 +402,7 @@ const ScheduleStepModal = ({ open, step, onClose, onSaveStep, events, dslFunctio
       const countExpr = periodCountSource === 'field' && periodCountField ? periodCountField
         : periodCountSource === 'formula' && periodCountFormula ? periodCountFormula
         : (periodCount || 12);
-      lines.push(`p = period(${countExpr})`);
+      lines.push(`p = period(${countExpr}, "${frequency}")`);
     } else {
       const startExpr = startDateSource === 'field' && startDateField ? startDateField
         : startDateSource === 'formula' && startDateFormula ? startDateFormula
@@ -442,7 +442,7 @@ const ScheduleStepModal = ({ open, step, onClose, onSaveStep, events, dslFunctio
       const countExpr = periodCountSource === 'field' && periodCountField ? periodCountField
         : periodCountSource === 'formula' && periodCountFormula ? periodCountFormula
         : (periodCount || 12);
-      schedLines.push(`p = period(${countExpr})`);
+      schedLines.push(`p = period(${countExpr}, "${frequency}")`);
     } else {
       const startExpr = startDateSource === 'field' && startDateField ? startDateField
         : startDateSource === 'formula' && startDateFormula ? startDateFormula
