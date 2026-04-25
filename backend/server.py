@@ -1,14 +1,10 @@
-print('DEBUG: server.py is running')
-from fastapi import FastAPI, APIRouter, UploadFile, File, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi import FastAPI, APIRouter, UploadFile, File, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import StreamingResponse
-from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 import os
 import logging
 from pathlib import Path
-from pydantic import BaseModel, Field, ConfigDict
 from typing import List, Dict, Any, Optional
 import uuid
 from datetime import datetime, timezone
@@ -17,6 +13,224 @@ import io
 import pandas as pd
 import json
 import re
+import ast
+
+
+# ---------------------------------------------------------------------------
+# DSL template AST safety validator
+# ---------------------------------------------------------------------------
+# Generated DSL templates are executed via exec(). The template scaffolding
+# itself is trusted (we generate it), but it embeds user-supplied DSL/Custom
+# Code lines verbatim. Without validation, a Custom Code step could write
+# something like  __import__('os').system('rm -rf /')  and bypass the small
+# 6-name builtin blacklist used at the exec sites.
+#
+# This validator walks the AST of the *full generated template* and rejects:
+#   1. Any `import` / `from ... import` whose module is not in
+#      _ALLOWED_IMPORT_MODULES (the fixed set the scaffolding actually uses).
+#   2. Any reference to dunder names (e.g. __import__, __class__,
+#      __subclasses__, __globals__, __builtins__, __getattribute__, __mro__,
+#      __code__, __bases__, __dict__) either as a bare Name or as an
+#      attribute access. A small allowlist of safe dunders the scaffolding
+#      itself uses (__file__, __name__) is permitted.
+#
+# Raised errors are surfaced to the caller as DSLSecurityError so existing
+# error-handling code paths can present a clear message to the user.
+# ---------------------------------------------------------------------------
+
+class DSLSecurityError(Exception):
+    """Raised when generated DSL code contains a forbidden construct."""
+
+
+_ALLOWED_IMPORT_MODULES = frozenset({
+    'sys',
+    'os',
+    'json',
+    'datetime',
+    'inspect',
+    'backend.dsl_functions',
+    'dsl_functions',
+})
+
+_ALLOWED_DUNDER_NAMES = frozenset({
+    '__file__',
+    '__name__',
+})
+
+
+def _validate_template_ast(source: str, label: str = '<dsl_template>') -> None:
+    """Validate a generated DSL template before exec.
+
+    Raises DSLSecurityError if the AST contains a forbidden import or any
+    dunder reference outside the small allowlist.
+    """
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        # Let the caller's existing syntax-error handling produce the message.
+        return
+
+    def _is_forbidden_dunder(name: str) -> bool:
+        if not isinstance(name, str):
+            return False
+        if not (name.startswith('__') and name.endswith('__') and len(name) > 4):
+            return False
+        return name not in _ALLOWED_DUNDER_NAMES
+
+    for node in ast.walk(tree):
+        # Block disallowed `import x` / `import x.y`
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                root = (alias.name or '').split('.')[0]
+                if alias.name not in _ALLOWED_IMPORT_MODULES and root not in _ALLOWED_IMPORT_MODULES:
+                    raise DSLSecurityError(
+                        f"Disallowed import '{alias.name}' in {label}. "
+                        f"Custom Code may not import arbitrary modules."
+                    )
+            continue
+
+        # Block disallowed `from x import ...`
+        if isinstance(node, ast.ImportFrom):
+            module = node.module or ''
+            root = module.split('.')[0]
+            if module not in _ALLOWED_IMPORT_MODULES and root not in _ALLOWED_IMPORT_MODULES:
+                raise DSLSecurityError(
+                    f"Disallowed import 'from {module} import ...' in {label}. "
+                    f"Custom Code may not import arbitrary modules."
+                )
+            continue
+
+        # Block bare references to dunder names (e.g. __import__, __builtins__)
+        if isinstance(node, ast.Name) and _is_forbidden_dunder(node.id):
+            raise DSLSecurityError(
+                f"Use of '{node.id}' is not allowed in DSL Custom Code."
+            )
+
+        # Block dunder attribute access (e.g. obj.__class__.__subclasses__())
+        if isinstance(node, ast.Attribute) and _is_forbidden_dunder(node.attr):
+            raise DSLSecurityError(
+                f"Access to attribute '{node.attr}' is not allowed in DSL Custom Code."
+            )
+
+
+# ---------------------------------------------------------------------------
+# DSL *user code* AST safety validator (strict)
+# ---------------------------------------------------------------------------
+# The template scaffolding we generate is trusted and legitimately uses
+# `globals().update(...)`, `getattr(...)`, `hasattr(...)`, `type(...)`, etc.
+# User-supplied DSL/Custom Code, however, has no business calling those —
+# they are well-known Python sandbox-escape primitives. This validator runs
+# only over the user-code section (after DSL→Python translation, before
+# wrapping in the scaffolding) so we can be aggressive without breaking the
+# scaffolding.
+#
+# Rejects:
+#   * any `import` / `from ... import`
+#   * any reference to or attribute named __dunder__ (allowlist: __file__,
+#     __name__) — same rule as the template-level validator
+#   * any subscript with a dunder string literal:  obj['__class__']
+#   * walrus assignments to a dunder target
+#   * calls to known dangerous builtins, by call-name OR attribute-name:
+#       eval, exec, compile, open, input, breakpoint, __import__,
+#       getattr, setattr, delattr, globals, locals, vars
+# ---------------------------------------------------------------------------
+
+_USER_FORBIDDEN_CALL_NAMES = frozenset({
+    'eval', 'exec', 'compile',
+    'open', 'input', 'breakpoint',
+    '__import__',
+    'getattr', 'setattr', 'delattr',
+    'globals', 'locals', 'vars',
+})
+
+
+def _validate_dsl_user_code(user_python_body: str, label: str = '<dsl_user_code>') -> None:
+    """Validate the user-supplied (post-translation) DSL python body.
+
+    `user_python_body` is the assembled, indented body that will be embedded
+    inside `def process_standalone():` / `def process_event_data():`. We wrap
+    it in a synthetic function so the indentation parses cleanly.
+    """
+    if not user_python_body or not user_python_body.strip():
+        return
+
+    # Detect the leading indent so we can wrap correctly. The two callers
+    # produce 4-space (standalone) or 8-space (multi-event) indentation, but
+    # we don't need to know which — wrapping inside a fresh `def` re-anchors
+    # the indentation as long as every non-blank line is indented at least
+    # once.
+    wrapped = "def __dsl_user__():\n" + user_python_body
+    try:
+        tree = ast.parse(wrapped)
+    except SyntaxError:
+        # Let the existing syntax-error path produce the user-facing message.
+        return
+
+    def _is_forbidden_dunder_local(name):
+        if not isinstance(name, str):
+            return False
+        if not (name.startswith('__') and name.endswith('__') and len(name) > 4):
+            return False
+        return name not in _ALLOWED_DUNDER_NAMES
+
+    for node in ast.walk(tree):
+        # No imports in user code.
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            raise DSLSecurityError(
+                f"'import' statements are not allowed in DSL Custom Code."
+            )
+
+        # Dunder name reference.
+        if isinstance(node, ast.Name) and _is_forbidden_dunder_local(node.id):
+            raise DSLSecurityError(
+                f"Use of '{node.id}' is not allowed in DSL Custom Code."
+            )
+
+        # Dunder attribute access (obj.__class__).
+        if isinstance(node, ast.Attribute) and _is_forbidden_dunder_local(node.attr):
+            raise DSLSecurityError(
+                f"Access to attribute '.{node.attr}' is not allowed in DSL Custom Code."
+            )
+
+        # Dunder subscript with a string constant: obj['__class__'].
+        if isinstance(node, ast.Subscript):
+            slice_node = getattr(node, 'slice', None)
+            # Python 3.9+: slice is the expression directly.
+            const_val = None
+            if isinstance(slice_node, ast.Constant):
+                const_val = slice_node.value
+            # Python <=3.8 uses ast.Index wrapping a Constant.
+            elif hasattr(ast, 'Index') and isinstance(slice_node, ast.Index):
+                inner = getattr(slice_node, 'value', None)
+                if isinstance(inner, ast.Constant):
+                    const_val = inner.value
+            if isinstance(const_val, str) and _is_forbidden_dunder_local(const_val):
+                raise DSLSecurityError(
+                    f"Subscripting with '{const_val}' is not allowed in DSL Custom Code."
+                )
+
+        # Walrus assignment to a dunder target: (__import__ := f).
+        if hasattr(ast, 'NamedExpr') and isinstance(node, ast.NamedExpr):
+            tgt = node.target
+            if isinstance(tgt, ast.Name) and _is_forbidden_dunder_local(tgt.id):
+                raise DSLSecurityError(
+                    f"Walrus assignment to '{tgt.id}' is not allowed in DSL Custom Code."
+                )
+
+        # Direct or attribute calls to dangerous builtins:
+        #   getattr(obj, '__class__')   -> blocked by call-name
+        #   x.getattr(...)              -> also blocked (defensive)
+        if isinstance(node, ast.Call):
+            func = node.func
+            fname = None
+            if isinstance(func, ast.Name):
+                fname = func.id
+            elif isinstance(func, ast.Attribute):
+                fname = func.attr
+            if fname in _USER_FORBIDDEN_CALL_NAMES:
+                raise DSLSecurityError(
+                    f"Call to '{fname}()' is not allowed in DSL Custom Code."
+                )
 
 
 def _normalize_ingest_date_value(value):
@@ -57,8 +271,68 @@ def _normalize_ingest_date_value(value):
         return normalize_date(s)
     except Exception:
         return ''
-import google.generativeai as genai
-import asyncio
+
+
+def _sort_activity_rows(rows):
+    """Enforce canonical activity-data ordering:
+        instrumentid ASC, postingdate ASC, effectivedate ASC, subinstrumentid ASC
+
+    Applied at every ingestion entry point (direct upload + JSON import
+    transform) and again at rule-step execution, so every step inside a rule
+    (Schedule, Condition, Iteration, Calculation, Custom Code, Create
+    Transaction) sees the same deterministic order.
+
+    NOTE: must only be called for ACTIVITY data. Reference / custom / static
+    data has no instrumentid/postingdate/effectivedate/subinstrumentid and
+    must be passed through untouched.
+    """
+    if not isinstance(rows, list) or len(rows) <= 1:
+        return rows
+
+    def _ci(row, name):
+        if not isinstance(row, dict):
+            return ''
+        if name in row:
+            v = row[name]
+        else:
+            lname = name.lower()
+            v = ''
+            for k, val in row.items():
+                if str(k).lower() == lname:
+                    v = val
+                    break
+        if v is None:
+            return ''
+        return str(v)
+
+    try:
+        rows.sort(key=lambda r: (
+            _ci(r, 'instrumentid'),
+            _ci(r, 'postingdate'),
+            _ci(r, 'effectivedate'),
+            _ci(r, 'subinstrumentid') or '1',
+        ))
+    except Exception:
+        # Never let sorting mask an ingestion / execution error.
+        pass
+    return rows
+# AI provider abstraction layer
+try:
+    from backend.ai_providers import (
+        get_provider, PROVIDER_INFO, build_agent_context,
+        encrypt_key, decrypt_key, AIError,
+    )
+except Exception:
+    try:
+        from ai_providers import (
+            get_provider, PROVIDER_INFO, build_agent_context,
+            encrypt_key, decrypt_key, AIError,
+        )
+    except Exception:
+        from .ai_providers import (
+            get_provider, PROVIDER_INFO, build_agent_context,
+            encrypt_key, decrypt_key, AIError,
+        )
 # Support running in different execution contexts: prefer package import, fallback to module-level
 try:
     from backend.dsl_functions import DSL_FUNCTIONS, DSL_FUNCTION_METADATA, normalize_date
@@ -74,14 +348,31 @@ try:
 except Exception:
     ObjectId = None
 
+# Load configuration
+try:
+    from backend.config import settings
+except Exception:
+    try:
+        from config import settings
+    except Exception:
+        from .config import settings
+
 ROOT_DIR = Path(__file__).parent
-load_dotenv(ROOT_DIR / '.env')
 
 # MongoDB connection
-mongo_url = os.environ.get('MONGO_URL', 'mongodb://localhost:27017')
-db_name = os.environ.get('DB_NAME', 'dsl_db')
-client = AsyncIOMotorClient(mongo_url, serverSelectionTimeoutMS=5000)
-db = client[db_name]
+client = AsyncIOMotorClient(settings.mongo_url, serverSelectionTimeoutMS=settings.mongo_timeout_ms)
+db = client[settings.db_name]
+
+# --- Shared error message table for AI chat endpoints ---
+ERROR_MESSAGES = {
+    "no_provider": "You haven't set up an AI provider yet. Go to Settings \u2192 AI Agent Setup to get started.",
+    "invalid_key": "Your API key appears to be invalid or has expired. Please update it in Settings \u2192 AI Agent Setup.",
+    "quota_exceeded": "You've reached the usage limit for your {provider} account. Please check your plan or billing.",
+    "rate_limited": "You're sending messages too quickly. Please wait a moment before trying again.",
+    "model_premium": "The selected model ({model}) requires a paid subscription on {provider}. Switch to a free-tier model or upgrade your account.",
+    "network": "Couldn't reach {provider} right now. Check your internet connection and try again.",
+    "model_deprecated": "The model '{model}' is no longer available on {provider}. Please select a different model in the chatbot settings.",
+}
 
 # Create the main app
 app = FastAPI()
@@ -108,118 +399,32 @@ in_memory_data = {
 # Flag to track if we should use in-memory storage
 USE_IN_MEMORY = False
 
-# ============= Models =============
-
-class EventDefinition(BaseModel):
-    model_config = ConfigDict(extra="ignore")
-    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    event_name: str
-    fields: List[Dict[str, str]]  # Changed to list of dicts with field name and datatype
-    # New: eventType indicates whether this event is activity (default) or reference
-    eventType: str = 'activity'
-    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-
-class DSLFunction(BaseModel):
-    model_config = ConfigDict(extra="ignore")
-    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    function_name: str
-    parameters: str
-    description: str
-    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-
-class EventData(BaseModel):
-    model_config = ConfigDict(extra="ignore")
-    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    event_name: str
-    data_rows: List[Dict[str, Any]]
-    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-
-class DSLTemplate(BaseModel):
-    model_config = ConfigDict(extra="ignore")
-    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    name: str
-    dsl_code: str
-    python_code: str
-    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-
-
-class DSLTemplateArtifact(BaseModel):
-    model_config = ConfigDict(extra="ignore")
-    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    template_id: str
-    template_name: str
-    version: int = 1
-    python_code: str
-    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-    read_only: bool = True
-
-class TransactionOutput(BaseModel):
-    model_config = ConfigDict(extra="ignore")
-    postingdate: str
-    effectivedate: str
-    instrumentid: str
-    subinstrumentid: str = '1'
-    transactiontype: str
-    amount: float
-
-class TransactionReport(BaseModel):
-    model_config = ConfigDict(extra="ignore")
-    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    template_name: str
-    event_name: str
-    transactions: List[Dict[str, Any]]
-    executed_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-
-class ChatMessage(BaseModel):
-    message: str
-    session_id: Optional[str] = None
-    context: Optional[Dict[str, Any]] = None
-
-class ChatResponse(BaseModel):
-    response: str
-    session_id: str
-
-class DSLValidationRequest(BaseModel):
-    dsl_code: str
-
-class SaveTemplateRequest(BaseModel):
-    name: str
-    dsl_code: str
-    event_name: str
-    replace: bool = False
-
-class DSLRunRequest(BaseModel):
-    dsl_code: str
-    posting_date: Optional[str] = None
-    effective_date: Optional[str] = None
-
-class TemplateExecuteRequest(BaseModel):
-    template_id: str
-    event_name: str
-    posting_date: Optional[str] = None
-    effective_date: Optional[str] = None
-
-class CustomFunctionCreate(BaseModel):
-    model_config = ConfigDict(extra="ignore")
-    name: str
-    category: str = "Custom"
-    description: str
-    parameters: List[Dict[str, str]]
-    returnType: str = "decimal"
-    formula: str
-    example: str = ""
-
-class CustomFunction(BaseModel):
-    model_config = ConfigDict(extra="ignore")
-    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    name: str
-    category: str
-    description: str
-    parameters: List[Dict[str, str]]
-    return_type: str
-    formula: str
-    example: str
-    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+# ============= Models (imported from models.py) =============
+try:
+    from backend.models import (
+        EventDefinition, DSLFunction, EventData, DSLTemplate, DSLTemplateArtifact,
+        TransactionOutput, TransactionReport, ChatMessage, ChatResponse,
+        AIProviderTestRequest, AIProviderSaveRequest, DSLValidationRequest,
+        SaveTemplateRequest, DSLRunRequest, TemplateExecuteRequest,
+        TemplateDeployRequest,
+    )
+except Exception:
+    try:
+        from models import (
+            EventDefinition, DSLFunction, EventData, DSLTemplate, DSLTemplateArtifact,
+            TransactionOutput, TransactionReport, ChatMessage, ChatResponse,
+            AIProviderTestRequest, AIProviderSaveRequest, DSLValidationRequest,
+            SaveTemplateRequest, DSLRunRequest, TemplateExecuteRequest,
+            TemplateDeployRequest,
+        )
+    except Exception:
+        from .models import (
+            EventDefinition, DSLFunction, EventData, DSLTemplate, DSLTemplateArtifact,
+            TransactionOutput, TransactionReport, ChatMessage, ChatResponse,
+            AIProviderTestRequest, AIProviderSaveRequest, DSLValidationRequest,
+            SaveTemplateRequest, DSLRunRequest, TemplateExecuteRequest,
+            TemplateDeployRequest,
+        )
 
 # ============= Sample Data (for when MongoDB is unavailable) =============
 SAMPLE_EVENTS = [
@@ -232,7 +437,8 @@ SAMPLE_EVENTS = [
             {"name": "term", "datatype": "decimal"}
         ],
         "created_at": datetime.now(timezone.utc),
-        "eventType": "activity"
+        "eventType": "activity",
+        "eventTable": "standard"
     },
     {
         "id": "evt2",
@@ -243,7 +449,8 @@ SAMPLE_EVENTS = [
             {"name": "payment_type", "datatype": "string"}
         ],
         "created_at": datetime.now(timezone.utc),
-        "eventType": "activity"
+        "eventType": "activity",
+        "eventTable": "standard"
     },
     {
         "id": "evt3",
@@ -254,26 +461,12 @@ SAMPLE_EVENTS = [
             {"name": "years", "datatype": "decimal"}
         ],
         "created_at": datetime.now(timezone.utc),
-        "eventType": "activity"
+        "eventType": "activity",
+        "eventTable": "standard"
     }
 ]
 
-SAMPLE_TEMPLATES = [
-    {
-        "id": "tpl1",
-        "name": "Compound Interest Calculator",
-        "dsl_code": "interest = compound_interest(principal, rate, term)\ntransactiontype = \"Compound Interest\"\namount = interest",
-        "python_code": "def calculate(principal, rate, term):\n    return principal * ((1 + rate) ** term - 1)",
-        "created_at": datetime.now(timezone.utc)
-    },
-    {
-        "id": "tpl2",
-        "name": "Compound Interest Calculator",
-        "dsl_code": "interest = compound_interest(principal, rate, term)\nnew_balance = capitalization(interest, principal)\ntransactiontype = \"Compound Interest\"\namount = interest",
-        "python_code": "def calculate(principal, rate, term):\n    return principal * ((1 + rate) ** term - 1)",
-        "created_at": datetime.now(timezone.utc)
-    }
-]
+SAMPLE_TEMPLATES = []
 
 # ============= Helper Functions =============
 
@@ -298,9 +491,21 @@ def get_field_case_insensitive(row: Dict[str, Any], field_name: str, default: An
     return default
 
 def get_latest_data_per_instrument(data_rows: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
-    """Get latest postingdate per instrumentid (case-insensitive field matching)"""
+    """Get latest postingdate per instrumentid (case-insensitive field matching).
+
+    Defensively skips any row that is not a dict (e.g. a stringified JSON object
+    that slipped through during import). Such rows are logged so the user can fix
+    the source data instead of seeing a cryptic ``'str' object has no attribute 'items'``.
+    """
     latest_data = {}
-    for row in data_rows:
+    for idx, row in enumerate(data_rows):
+        if not isinstance(row, dict):
+            logger.warning(
+                "Skipping non-dict row at index %d in event data (got %s). "
+                "Re-import the source file — each row must be a JSON object.",
+                idx, type(row).__name__,
+            )
+            continue
         instrument_id = get_field_case_insensitive(row, 'instrumentid', '')
         posting_date = get_field_case_insensitive(row, 'postingdate', '')
         
@@ -319,8 +524,9 @@ def get_latest_data_per_instrument(data_rows: List[Dict[str, Any]]) -> Dict[str,
 def extract_event_names_from_dsl(dsl_code: str) -> List[str]:
     """Extract all event names referenced in DSL code (EVENT_NAME.field pattern)"""
     import re
-    # Match patterns like PMT.field_name or INT_ACC.field_name
-    pattern = r'\b([A-Z][A-Z0-9_]*)\.[A-Za-z_][A-Za-z0-9_]*'
+    # Match patterns like PMT.field_name, LoanEvent.principal, ProductConfig.fee_percent
+    # Event name: starts with uppercase, followed by alphanumerics/underscores
+    pattern = r'\b([A-Z][A-Za-z0-9_]*)\.[A-Za-z_][A-Za-z0-9_]*'
     matches = re.findall(pattern, dsl_code)
     # Return unique event names
     return list(set(matches))
@@ -336,9 +542,16 @@ def merge_event_data_by_instrument(event_data_dict: Dict[str, List[Dict]]) -> Li
     If subInstrumentId is missing or null, it defaults to "1".
     """
     merged_data = {}
+    bad_row_events = []
     
     for event_name, data_rows in event_data_dict.items():
-        latest_data = get_latest_data_per_instrument(data_rows)
+        # Pre-flight check: ensure every row is a dict. Surface a clear error pointing
+        # at the offending event/row so the user knows where to look.
+        if isinstance(data_rows, list):
+            for idx, row in enumerate(data_rows):
+                if not isinstance(row, dict):
+                    bad_row_events.append((event_name, idx, type(row).__name__))
+        latest_data = get_latest_data_per_instrument(data_rows if isinstance(data_rows, list) else [])
         
         for instrument_id, row in latest_data.items():
             if instrument_id not in merged_data:
@@ -368,6 +581,9 @@ def merge_event_data_by_instrument(event_data_dict: Dict[str, List[Dict]]) -> Li
             
             # Add other fields with event prefix (EVENT_FIELD) for clarity
             # Also add without prefix for direct field access
+            if not isinstance(row, dict):
+                # Already logged above; skip safely.
+                continue
             for key, value in row.items():
                 key_lower = key.lower()
                 if key_lower not in ['instrumentid', 'postingdate', 'effectivedate', 'subinstrumentid']:
@@ -377,7 +593,77 @@ def merge_event_data_by_instrument(event_data_dict: Dict[str, List[Dict]]) -> Li
                     # Also store the original field name for backward compatibility
                     merged_data[instrument_id][key] = value
     
+    if bad_row_events:
+        # Raise a single descriptive error pointing at the first bad row so the user
+        # knows which event needs to be re-imported.
+        evt, idx, kind = bad_row_events[0]
+        raise ValueError(
+            f"Event '{evt}' has malformed data: row #{idx} is a {kind}, not an object. "
+            f"Re-import the source file — each row must be a JSON object "
+            f"(total bad rows: {len(bad_row_events)})."
+        )
+    
     return list(merged_data.values())
+
+
+def filter_event_data_by_posting_date(
+    event_data_dict: Dict[str, List[Dict]],
+    posting_date: str,
+    event_metadata: Optional[Dict[str, Dict]] = None,
+) -> Dict[str, List[Dict]]:
+    """
+    Return a copy of event_data_dict where each event's rows are restricted to those
+    whose postingdate (case-insensitive) matches the requested posting_date string.
+    Events with no matching rows keep an empty list (not removed, so callers can log
+    a warning instead of crashing).
+
+    Reference events (custom tables without postingdate) are passed through unchanged
+    when their metadata says eventType == 'reference'. Without this, every CATALOG
+    row would be filtered out and `collect_all(CATALOG.field)` would return [].
+    """
+    filtered: Dict[str, List[Dict]] = {}
+    target = posting_date.strip()
+    for event_name, rows in event_data_dict.items():
+        safe_rows = rows if isinstance(rows, list) else []
+        meta = (event_metadata or {}).get(event_name) or {}
+        if str(meta.get('eventType', 'activity')).lower() == 'reference':
+            # Reference tables have no postingdate — keep all rows.
+            filtered[event_name] = list(safe_rows)
+            continue
+        filtered[event_name] = [
+            row for row in safe_rows
+            if isinstance(row, dict)
+            and str(get_field_case_insensitive(row, "postingdate", "")).strip() == target
+        ]
+    return filtered
+
+
+def _extract_dsl_line_from_exception(python_code: str, exc: Exception) -> Optional[int]:
+    """Extract the DSL line number from a Python exception using DSL_LINE comments.
+    
+    Looks at the traceback to find the Python line that failed, then reads the
+    corresponding source line from python_code to find a # DSL_LINE:N marker.
+    Returns the DSL line number (1-based) or None if it can't be determined.
+    """
+    import traceback as tb_mod
+    try:
+        tb = exc.__traceback__
+        if tb is None:
+            return None
+        # Walk to the innermost frame
+        while tb.tb_next:
+            tb = tb.tb_next
+        py_lineno = tb.tb_lineno
+        code_lines = python_code.split('\n')
+        if 1 <= py_lineno <= len(code_lines):
+            source_line = code_lines[py_lineno - 1]
+            m = re.search(r'# DSL_LINE:(\d+)', source_line)
+            if m:
+                return int(m.group(1))
+    except Exception:
+        pass
+    return None
+
 
 def dsl_to_python_standalone(dsl_code: str) -> str:
     """Convert DSL code to Python for standalone execution (no events required)"""
@@ -392,9 +678,9 @@ except Exception:
 if ROOT_DIR not in sys.path:
     sys.path.insert(0, ROOT_DIR)
 try:
-    from backend.dsl_functions import DSL_FUNCTIONS, _set_current_instrumentid, _clear_transaction_results, _get_transaction_results, _set_dsl_print
+    from backend.dsl_functions import DSL_FUNCTIONS, _set_current_instrumentid, _set_current_postingdate, _clear_transaction_results, _get_transaction_results, _set_dsl_print
 except Exception:
-    from dsl_functions import DSL_FUNCTIONS, _set_current_instrumentid, _clear_transaction_results, _get_transaction_results, _set_dsl_print
+    from dsl_functions import DSL_FUNCTIONS, _set_current_instrumentid, _set_current_postingdate, _clear_transaction_results, _get_transaction_results, _set_dsl_print
 from datetime import datetime
 import json
 
@@ -409,12 +695,22 @@ _builtin_print = print
 # Make all DSL functions available globally
 globals().update(DSL_FUNCTIONS)
 
+# Expose safe aliases for DSL functions whose names are Python keywords
+and_op = DSL_FUNCTIONS.get('and', lambda a, b: a and b)
+or_op = DSL_FUNCTIONS.get('or', lambda a, b: a or b)
+not_op = DSL_FUNCTIONS.get('not', lambda a: not a)
+
 # Restore Python built-ins (needed for native Python syntax)
 min = _builtin_min
 max = _builtin_max
 sum = _builtin_sum
 len = _builtin_len
-range = _builtin_range
+# Smart range: DSL range(list)->max-min; Python range(int,...) for iterations
+_dsl_range_val = DSL_FUNCTIONS.get('range', lambda col: (_builtin_max(col) - _builtin_min(col)) if col else 0)
+def range(*args):
+    if len(args) == 1 and isinstance(args[0], list):
+        return _dsl_range_val(args[0])
+    return _builtin_range(*args)
 
 # Global list to capture print outputs
 _print_outputs = []
@@ -464,7 +760,7 @@ def dsl_print(*args, **kwargs):
             if isinstance(arg, (list, dict)):
                 try:
                     output_parts.append(json.dumps(arg, indent=2, default=str))
-                except:
+                except Exception:
                     output_parts.append(str(arg))
             else:
                 output_parts.append(str(arg))
@@ -472,7 +768,6 @@ def dsl_print(*args, **kwargs):
         sep = kwargs.get('sep', ' ')
         output = sep.join(output_parts)
         _print_outputs.append(output)
-        _builtin_print(output)
     except Exception:
         try:
             _builtin_print(' '.join(map(str, args)))
@@ -496,8 +791,8 @@ def clear_print_outputs():
     import re
     processed_lines = []
     
-    lines = dsl_code.strip().split('\n')
-    for line in lines:
+    dsl_lines = dsl_code.split('\n')
+    for dsl_line_num, line in enumerate(dsl_lines, start=1):
         stripped = line.strip()
         
         if not stripped or stripped.startswith('#') or stripped.startswith('//'):
@@ -506,10 +801,23 @@ def clear_print_outputs():
             processed_lines.append(f"    {stripped}" if stripped else "")
             continue
         
-        # Simply add the line - transactions are created via createTransaction()
-        processed_lines.append(f"    {stripped}")
+        # Replace Python keyword function calls with safe aliases
+        stripped = re.sub(r'\band\s*\(', 'and_op(', stripped)
+        stripped = re.sub(r'\bor\s*\(', 'or_op(', stripped)
+        stripped = re.sub(r'\bnot\s*\(', 'not_op(', stripped)
+        stripped = re.sub(r'\bif\s*\(', 'iif(', stripped)
+
+        # Simply add the line with DSL line marker
+        processed_lines.append(f"    {stripped}  # DSL_LINE:{dsl_line_num}")
     
     python_body = '\n'.join(processed_lines)
+
+    # Defense-in-depth: strict validation of user-supplied DSL code before it
+    # is embedded in the trusted scaffolding. The scaffolding itself is then
+    # also validated at exec time, but this catches obvious sandbox-escape
+    # attempts (getattr/__class__/etc.) with a clearer error message and
+    # before any code generation work downstream.
+    _validate_dsl_user_code(python_body, label='<dsl_standalone_user_code>')
     
     template = f'''
 {imports}
@@ -520,6 +828,13 @@ def process_standalone(override_postingdate=None, override_effectivedate=None):
     
     # Set instrumentid for standalone mode
     _set_current_instrumentid('STANDALONE')
+    
+    # Expose posting_date in scope so schedule column formulas can reference it
+    postingdate = override_postingdate or ''
+    posting_date = postingdate
+    _set_current_postingdate(postingdate)
+    effectivedate = override_effectivedate or ''
+    effective_date = effectivedate
     
     # Execute DSL logic - transactions are created via createTransaction()
 {python_body}
@@ -564,9 +879,9 @@ ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__)))
 if ROOT_DIR not in sys.path:
     sys.path.insert(0, ROOT_DIR)
 try:
-    from backend.dsl_functions import DSL_FUNCTIONS, _set_current_instrumentid, _clear_transaction_results, _get_transaction_results, _set_dsl_print
+    from backend.dsl_functions import DSL_FUNCTIONS, _set_current_instrumentid, _set_current_postingdate, _clear_transaction_results, _get_transaction_results, _set_dsl_print
 except Exception:
-    from dsl_functions import DSL_FUNCTIONS, _set_current_instrumentid, _clear_transaction_results, _get_transaction_results, _set_dsl_print
+    from dsl_functions import DSL_FUNCTIONS, _set_current_instrumentid, _set_current_postingdate, _clear_transaction_results, _get_transaction_results, _set_dsl_print
 from datetime import datetime
 import json
 
@@ -581,12 +896,22 @@ _builtin_print = print
 # Make all DSL functions available globally
 globals().update(DSL_FUNCTIONS)
 
+# Expose safe aliases for DSL functions whose names are Python keywords
+and_op = DSL_FUNCTIONS.get('and', lambda a, b: a and b)
+or_op = DSL_FUNCTIONS.get('or', lambda a, b: a or b)
+not_op = DSL_FUNCTIONS.get('not', lambda a: not a)
+
 # Restore Python built-ins (needed for native Python syntax)
 min = _builtin_min
 max = _builtin_max
 sum = _builtin_sum
 len = _builtin_len
-range = _builtin_range
+# Smart range: DSL range(list)->max-min; Python range(int,...) for iterations
+_dsl_range_val = DSL_FUNCTIONS.get('range', lambda col: (_builtin_max(col) - _builtin_min(col)) if col else 0)
+def range(*args):
+    if len(args) == 1 and isinstance(args[0], list):
+        return _dsl_range_val(args[0])
+    return _builtin_range(*args)
 
 # Global list to capture print outputs
 _print_outputs = []
@@ -638,7 +963,7 @@ def dsl_print(*args, **kwargs):
                 # Pretty print complex objects
                 try:
                     output_parts.append(json.dumps(arg, indent=2, default=str))
-                except:
+                except Exception:
                     output_parts.append(str(arg))
             else:
                 output_parts.append(str(arg))
@@ -646,8 +971,6 @@ def dsl_print(*args, **kwargs):
         sep = kwargs.get('sep', ' ')
         output = sep.join(output_parts)
         _print_outputs.append(output)
-        # Also print to stdout for debugging
-        _builtin_print(output)
     except Exception:
         try:
             _builtin_print(' '.join(map(str, args)))
@@ -692,10 +1015,22 @@ def set_all_event_data(data):
 def set_raw_event_data(data):
     \"\"\"Set the raw event data (unmerged) for collect() functions\"\"\"
     global _raw_event_data
+    if not isinstance(data, dict):
+        # Refuse to corrupt global state — something upstream passed the wrong type.
+        # Reset to empty so collect_*() functions return [] instead of crashing later
+        # with the cryptic ``'str' object has no attribute 'items'``.
+        try:
+            _builtin_print(
+                f"[dsl-template warning] set_raw_event_data got {type(data).__name__}; expected dict. Resetting to empty."
+            )
+        except Exception:
+            pass
+        _raw_event_data = {}
+        return
     _raw_event_data = data
 
 def set_current_context(instrumentid, postingdate, effectivedate, subinstrumentid='1'):
-    \"\"\"Set the current row context for filtering collect()\"\"\"
+    \"\"\"Set the current row context for filtering collect_by_* functions\"\"\"
     global _current_context
     _current_context = {
         'instrumentid': instrumentid,
@@ -704,115 +1039,156 @@ def set_current_context(instrumentid, postingdate, effectivedate, subinstrumenti
         'effectivedate': effectivedate
     }
 
-def collect(field_name):
-    \"\"\"
-    Collect all values of a field for the current instrumentid, postingdate, and effectivedate.
-    Usage: cashflows = collect('ECF_ExpectedCF')
-    Returns a list of numeric values from RAW event data (all rows, not merged).
-    \"\"\"
-    values = []
-    current_instrument = _current_context.get('instrumentid', '')
-    current_posting = _current_context.get('postingdate', '')
-    current_effective = _current_context.get('effectivedate', '')
-    
-    # Parse field_name to get event name and field (e.g., 'ECF_ExpectedCF' -> 'ECF', 'ExpectedCF')
-    parts = field_name.split('_', 1)
-    if len(parts) == 2:
-        event_name, actual_field = parts[0], parts[1]
-    else:
-        event_name, actual_field = None, field_name
-    
-    # Search in raw event data
-    for evt_name, rows in _raw_event_data.items():
-        # If event_name specified, only search that event
-        if event_name and evt_name.upper() != event_name.upper():
-            continue
-            
-        for row in rows:
-            row_instrument = get_field_case_insensitive(row, 'instrumentid', '')
-            row_posting = get_field_case_insensitive(row, 'postingdate', '')
-            row_effective = get_field_case_insensitive(row, 'effectivedate', '') or row_posting
-            
-            if (row_instrument == current_instrument and 
-                row_posting == current_posting and 
-                row_effective == current_effective):
-                # Try the actual field name
-                val = get_field_case_insensitive(row, actual_field, None)
-                if val is None:
-                    # Try the full field name
-                    val = get_field_case_insensitive(row, field_name, None)
-                if val is not None and val != '':
-                    try:
-                        values.append(float(val))
-                    except (ValueError, TypeError):
-                        # Keep string values (dates, etc.)
-                        values.append(str(val))
-    return values
-
 def collect_by_instrument(field_name):
     \"\"\"
     Collect all values of a field for the current instrumentid only (ignores dates).
     Useful for time-series data across multiple periods for same instrument.
     Returns numeric values as floats, non-numeric (dates, strings) as strings.
+
+    Results are sorted by subinstrumentid (numeric-aware) so arrays produced
+    by separate collect_by_instrument() calls in the same rule line up index
+    for index across instruments. Without this sort, collect_by_instrument(REV.x)
+    and collect_by_instrument(REV.y) could end up in different orders for
+    different instruments and break index-based joins.
     \"\"\"
-    values = []
+    pairs = []
     current_instrument = _current_context.get('instrumentid', '')
-    
+
     # Parse field_name
     parts = field_name.split('_', 1)
     if len(parts) == 2:
         event_name, actual_field = parts[0], parts[1]
     else:
         event_name, actual_field = None, field_name
-    
+
     for evt_name, rows in _raw_event_data.items():
         if event_name and evt_name.upper() != event_name.upper():
             continue
-            
+
         for row in rows:
             row_instrument = get_field_case_insensitive(row, 'instrumentid', '')
-            
+
             if row_instrument == current_instrument:
                 val = get_field_case_insensitive(row, actual_field, None)
                 if val is None:
                     val = get_field_case_insensitive(row, field_name, None)
-                if val is not None and val != '':
-                    try:
-                        values.append(float(val))
-                    except (ValueError, TypeError):
-                        # Keep string values (dates, etc.)
-                        values.append(str(val))
-    return values
+                # Always emit a row per subinstrument so parallel arrays stay
+                # index-aligned. Type-aware placeholder is decided after the
+                # scan so dates/strings don't get coerced to 0.
+                sub = get_field_case_insensitive(row, 'subinstrumentid', '') or ''
+                pairs.append((str(sub), val))
+
+    # Decide whether this is a numeric field. If every non-null value parses
+    # as a number, missing entries become 0; otherwise they become ''. This
+    # preserves subinstrument alignment without polluting date/string arrays
+    # with a meaningless 0.
+    all_numeric = True
+    has_value = False
+    for _s, v in pairs:
+        if v is None or v == '':
+            continue
+        has_value = True
+        try:
+            float(v)
+        except (ValueError, TypeError):
+            all_numeric = False
+            break
+    null_placeholder = 0 if (has_value and all_numeric) else ''
+
+    converted = []
+    for s, v in pairs:
+        if v is None or v == '':
+            converted.append((s, null_placeholder))
+        else:
+            try:
+                converted.append((s, float(v)))
+            except (ValueError, TypeError):
+                converted.append((s, str(v)))
+    pairs = converted
+
+    def _sort_key(p):
+        s = p[0]
+        try:
+            return (0, float(s))
+        except (ValueError, TypeError):
+            return (1, s)
+
+    pairs.sort(key=_sort_key)
+    sub_ids = [s for s, _v in pairs]
+    values = [v for _s, v in pairs]
+    try:
+        from dsl_functions import _ScheduleValueList
+        return _ScheduleValueList(values, subinstrument_ids=sub_ids)
+    except Exception:
+        return values
 
 def collect_all(field_name):
     \"\"\"
     Collect ALL values of a field across all data rows (no filtering).
     Returns numeric values as floats, non-numeric (dates, strings) as strings.
+
+    Results are sorted by subinstrumentid (numeric-aware) where present so
+    parallel collect_all() arrays stay aligned by index. Reference tables
+    without subinstrumentid keep their natural row order.
     \"\"\"
-    values = []
-    
+    pairs = []
+
     # Parse field_name
     parts = field_name.split('_', 1)
     if len(parts) == 2:
         event_name, actual_field = parts[0], parts[1]
     else:
         event_name, actual_field = None, field_name
-    
+
     for evt_name, rows in _raw_event_data.items():
         if event_name and evt_name.upper() != event_name.upper():
             continue
-            
-        for row in rows:
+
+        for idx, row in enumerate(rows):
             val = get_field_case_insensitive(row, actual_field, None)
             if val is None:
                 val = get_field_case_insensitive(row, field_name, None)
-            if val is not None and val != '':
-                try:
-                    values.append(float(val))
-                except (ValueError, TypeError):
-                    # Keep string values (dates, etc.)
-                    values.append(str(val))
-    return values
+            # Always emit a row so parallel collect_all() arrays stay
+            # index-aligned. Type-aware placeholder is decided after scan.
+            sub = get_field_case_insensitive(row, 'subinstrumentid', '') or ''
+            pairs.append((str(sub), idx, val))
+
+    all_numeric = True
+    has_value = False
+    for _s, _i, v in pairs:
+        if v is None or v == '':
+            continue
+        has_value = True
+        try:
+            float(v)
+        except (ValueError, TypeError):
+            all_numeric = False
+            break
+    null_placeholder = 0 if (has_value and all_numeric) else ''
+
+    converted = []
+    for s, i, v in pairs:
+        if v is None or v == '':
+            converted.append((s, i, null_placeholder))
+        else:
+            try:
+                converted.append((s, i, float(v)))
+            except (ValueError, TypeError):
+                converted.append((s, i, str(v)))
+    pairs = converted
+
+    def _sort_key(p):
+        s = p[0]
+        if s == '':
+            # Reference/no-sub rows keep insertion order via the idx tiebreaker.
+            return (2, p[1])
+        try:
+            return (0, float(s), p[1])
+        except (ValueError, TypeError):
+            return (1, s, p[1])
+
+    pairs.sort(key=_sort_key)
+    return [v for _s, _i, v in pairs]
 
 def collect_by_subinstrument(field_name):
     \"\"\"
@@ -852,23 +1228,6 @@ def collect_by_subinstrument(field_name):
                         values.append(val)
     return values
 
-def collect_subinstrumentids():
-    \"\"\"
-    Collect all unique subInstrumentIds for the current instrumentId.
-    Returns list of subInstrumentId values.
-    \"\"\"
-    current_instrument = _current_context.get('instrumentid', '')
-    subinstrument_ids = set()
-    
-    for evt_name, rows in _raw_event_data.items():
-        for row in rows:
-            row_instrument = get_field_case_insensitive(row, 'instrumentid', '')
-            if row_instrument == current_instrument:
-                subinstrument = get_field_case_insensitive(row, 'subinstrumentid', '1') or '1'
-                subinstrument_ids.add(subinstrument)
-    
-    return sorted(list(subinstrument_ids))
-
 def collect_effectivedates_for_subinstrument(subinstrument_id=None):
     \"\"\"
     Collect all unique effectiveDates for a specific subInstrumentId within current instrumentId.
@@ -902,9 +1261,11 @@ def collect_effectivedates_for_subinstrument(subinstrument_id=None):
             if str(meta.get('eventType', 'activity')).lower() == 'reference':
                 reference_events.add(ename)
 
-    lines = dsl_code.strip().split('\n')
+    lines = dsl_code.split('\n')
     i = 0
+    dsl_line_num = 0
     while i < len(lines):
+        dsl_line_num = i + 1  # 1-based DSL line number
         line = lines[i].strip()
 
         if not line or line.startswith('#') or line.startswith('//'):
@@ -914,36 +1275,38 @@ def collect_effectivedates_for_subinstrument(subinstrument_id=None):
             i += 1
             continue
 
-        # Replace collect(...) patterns. For reference events, use collect_all
-        def _collect_repl(m):
-            evt, fld = m.group(1), m.group(2)
-            if evt in reference_events:
-                return f"collect_all('{evt}_{fld}')"
-            return f"collect('{evt}_{fld}')"
-
-        line = re.sub(r"collect\(\s*([A-Z][A-Z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)\s*\)", _collect_repl, line)
-
-        # collect_by_instrument -> use collect_all for reference events
+        # Replace collect_by_instrument(...) -> use collect_all for reference events
         def _collect_by_inst_repl(m):
             evt, fld = m.group(1), m.group(2)
             if evt in reference_events:
                 return f"collect_all('{evt}_{fld}')"
             return f"collect_by_instrument('{evt}_{fld}')"
 
-        line = re.sub(r"collect_by_instrument\(\s*([A-Z][A-Z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)\s*\)", _collect_by_inst_repl, line)
+        line = re.sub(r"collect_by_instrument\(\s*([A-Z][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)\s*\)", _collect_by_inst_repl, line)
 
         # collect_all(EVENT.field) - always becomes collect_all('EVENT_field')
-        line = re.sub(r"collect_all\(\s*([A-Z][A-Z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)\s*\)", r"collect_all('\1_\2')", line)
+        line = re.sub(r"collect_all\(\s*([A-Z][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)\s*\)", r"collect_all('\1_\2')", line)
 
         # Convert EVENT.field to EVENT_field
-        line = re.sub(r"\b([A-Z][A-Z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)", r"\1_\2", line)
+        line = re.sub(r"\b([A-Z][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)", r"\1_\2", line)
 
-        # Simply add the line - transactions are created via createTransaction()
-        processed_lines.append(f"        {line}")
+        # Replace Python keyword function calls with safe aliases
+        line = re.sub(r'\band\s*\(', 'and_op(', line)
+        line = re.sub(r'\bor\s*\(', 'or_op(', line)
+        line = re.sub(r'\bnot\s*\(', 'not_op(', line)
+        line = re.sub(r'\bif\s*\(', 'iif(', line)
+
+        # Add the line with DSL line marker
+        processed_lines.append(f"        {line}  # DSL_LINE:{dsl_line_num}")
 
         i += 1
 
     python_body = '\n'.join(processed_lines)
+
+    # Defense-in-depth: strict validation of user-supplied DSL code before it
+    # is embedded in the multi-event scaffolding (see dsl_to_python_standalone
+    # for rationale).
+    _validate_dsl_user_code(python_body, label='<dsl_multi_event_user_code>')
     
     # Generate field extraction code for ALL events
     field_extraction_lines = []
@@ -1014,6 +1377,23 @@ def process_event_data(event_data, raw_event_data=None, override_postingdate=Non
 
     # Set global event data for collect() function
     set_all_event_data(event_data)
+
+    # Activity-data ordering guarantee: enforce
+    #   instrumentid ASC, postingdate ASC, effectivedate ASC, subinstrumentid ASC
+    # so every step inside this rule (Schedule, Condition, Iteration,
+    # Calculation, Custom Code, Create Transaction) sees rows in the same
+    # canonical order. event_data here is the merged ACTIVITY dataset only;
+    # reference/custom rows live in raw_event_data and are not touched.
+    try:
+        if isinstance(event_data, list) and len(event_data) > 1:
+            event_data.sort(key=lambda _r: (
+                str(get_field_case_insensitive(_r, 'instrumentid', '') or ''),
+                str(get_field_case_insensitive(_r, 'postingdate', '') or ''),
+                str(get_field_case_insensitive(_r, 'effectivedate', '') or ''),
+                str(get_field_case_insensitive(_r, 'subinstrumentid', '1') or '1'),
+            ))
+    except Exception:
+        pass
     
     for row in event_data:
         # Extract standard fields (case-insensitive)
@@ -1021,9 +1401,15 @@ def process_event_data(event_data, raw_event_data=None, override_postingdate=Non
         effectivedate = get_field_case_insensitive(row, 'effectivedate', '') or postingdate
         instrumentid = get_field_case_insensitive(row, 'instrumentid', '')
         subinstrumentid = get_field_case_insensitive(row, 'subinstrumentid', '1') or '1'
+        # Expose underscore aliases so schedule column formulas can reference them
+        posting_date = postingdate
+        effective_date = effectivedate
         
         # Set current instrumentid for createTransaction()
         _set_current_instrumentid(instrumentid)
+        # Set current postingdate so print_schedule() can tag emitted rows
+        # with (_instrumentid, _postingdate) for the Business Preview filter.
+        _set_current_postingdate(postingdate)
         
         # Set current context for collect() filtering
         set_current_context(instrumentid, postingdate, effectivedate, subinstrumentid)
@@ -1060,17 +1446,34 @@ async def execute_python_template(python_code: str, event_data: List[Dict[str, A
         exec_globals = {
             '__file__': os.path.abspath(__file__),
             '__name__': '__dsl_template__',
+            '__builtins__': {k: v for k, v in __builtins__.items() if k not in ('exec', 'eval', 'compile', 'open', 'input', 'breakpoint')} if isinstance(__builtins__, dict) else {k: getattr(__builtins__, k) for k in dir(__builtins__) if k not in ('exec', 'eval', 'compile', 'open', 'input', 'breakpoint')},
         }
+        # Defense-in-depth: AST-validate the generated template before exec
+        # so user-injected Custom Code cannot reach __import__, dunder
+        # introspection, or import disallowed modules.
+        _validate_template_ast(python_code, label='<dsl_template>')
         # Execute the template which defines helper functions like process_event_data, get_print_outputs
         exec(compile(python_code, '<dsl_template>', 'exec'), exec_globals)
 
-        # Prefer calling process_event_data (multi-event template) and pass raw_event_data
+        # Prefer calling process_event_data (multi-event template) and pass raw_event_data.
+        # Inspect the signature explicitly so we never swallow internal TypeErrors as a
+        # "wrong signature" — that previously caused the 3-arg fallback to bind
+        # raw_event_data = override_postingdate (a string), corrupting global state and
+        # producing the cryptic "'str' object has no attribute 'items'" error from
+        # collect_by_instrument on subsequent calls.
         if 'process_event_data' in exec_globals:
+            import inspect as _inspect
+            _proc = exec_globals['process_event_data']
             try:
-                transactions = exec_globals['process_event_data'](event_data, raw_event_data, override_postingdate, override_effectivedate)
-            except TypeError:
-                # Fallback if template signature differs
-                transactions = exec_globals['process_event_data'](event_data, override_postingdate, override_effectivedate)
+                _sig = _inspect.signature(_proc)
+                _param_count = len(_sig.parameters)
+            except (TypeError, ValueError):
+                _param_count = 4
+            if _param_count >= 4:
+                transactions = _proc(event_data, raw_event_data, override_postingdate, override_effectivedate)
+            else:
+                # Older template signature without raw_event_data
+                transactions = _proc(event_data, override_postingdate, override_effectivedate)
         elif 'process_standalone' in exec_globals:
             transactions = exec_globals['process_standalone'](override_postingdate, override_effectivedate)
         else:
@@ -1100,14 +1503,124 @@ async def execute_python_template(python_code: str, event_data: List[Dict[str, A
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error executing python template: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        import traceback
+        tb = traceback.format_exc()
+        # Dump the generated template so we can inspect the offending line by number
+        try:
+            with open('/tmp/last_dsl_template.py', 'w') as _f:
+                _f.write(python_code)
+        except Exception:
+            pass
+        dsl_line = _extract_dsl_line_from_exception(python_code, e)
+        error_msg = str(e)
+        if dsl_line:
+            error_msg = f"[Line {dsl_line}] {error_msg}"
+        logger.error(f"Error executing python template: {error_msg}\nFull traceback:\n{tb}")
+        raise HTTPException(status_code=500, detail=error_msg)
 
 # ============= API Endpoints =============
 
 @api_router.get("/")
 async def root():
     return {"message": "Fyntrac DSL Studio API"}
+
+@api_router.post("/load-simple-sample")
+async def load_simple_sample():
+    """Load a small, focused sample dataset for the Settings → Load Sample Data menu.
+
+    Contains exactly two instruments and two event definitions that together
+    exercise the standard/custom event-table split:
+
+      - LoanActivity  (eventTable=standard, eventType=activity)   — per-instrument activity rows
+      - RateSchedule  (eventTable=custom,   eventType=reference)  — shared reference data
+
+    Existing event_definitions, event_data and dsl_functions collections are
+    cleared first so the user starts from a clean slate.
+    """
+    try:
+        await db.event_definitions.delete_many({})
+        await db.dsl_functions.delete_many({})
+        await db.event_data.delete_many({})
+
+        # ── Event Definitions ───────────────────────────────────────────────
+        loan_activity_def = EventDefinition(
+            event_name="LoanActivity",
+            fields=[
+                {"name": "principal", "datatype": "decimal"},
+                {"name": "rate_code", "datatype": "string"},
+                {"name": "term_months", "datatype": "integer"},
+                {"name": "origination_date", "datatype": "date"},
+            ],
+            eventType="activity",
+            eventTable="standard",
+        )
+        rate_schedule_def = EventDefinition(
+            event_name="RateSchedule",
+            fields=[
+                {"name": "rate_code", "datatype": "string"},
+                {"name": "rate_value", "datatype": "decimal"},
+                {"name": "effective_date", "datatype": "date"},
+                {"name": "expiry_date", "datatype": "date"},
+            ],
+            eventType="reference",
+            eventTable="custom",
+        )
+        for evt in (loan_activity_def, rate_schedule_def):
+            doc = evt.model_dump()
+            doc['created_at'] = doc['created_at'].isoformat()
+            await db.event_definitions.insert_one(doc)
+
+        # ── Activity Data — 2 instruments ───────────────────────────────────
+        loan_activity_data = EventData(
+            event_name="LoanActivity",
+            data_rows=[
+                {
+                    "postingdate": "2026-01-01",
+                    "effectivedate": "2026-01-01",
+                    "instrumentid": "INST-001",
+                    "principal": "100000",
+                    "rate_code": "PRIME",
+                    "term_months": "60",
+                    "origination_date": "2026-01-01",
+                },
+                {
+                    "postingdate": "2026-01-01",
+                    "effectivedate": "2026-01-01",
+                    "instrumentid": "INST-002",
+                    "principal": "250000",
+                    "rate_code": "BASE",
+                    "term_months": "120",
+                    "origination_date": "2026-01-01",
+                },
+            ],
+        )
+        doc = loan_activity_data.model_dump()
+        doc['created_at'] = doc['created_at'].isoformat()
+        await db.event_data.insert_one(doc)
+
+        # ── Reference Data ──────────────────────────────────────────────────
+        rate_schedule_data = EventData(
+            event_name="RateSchedule",
+            data_rows=[
+                {"rate_code": "PRIME", "rate_value": "0.0525", "effective_date": "2025-01-01", "expiry_date": "2025-12-31"},
+                {"rate_code": "PRIME", "rate_value": "0.0500", "effective_date": "2026-01-01", "expiry_date": "2026-12-31"},
+                {"rate_code": "BASE",  "rate_value": "0.0400", "effective_date": "2025-01-01", "expiry_date": "2025-12-31"},
+                {"rate_code": "BASE",  "rate_value": "0.0375", "effective_date": "2026-01-01", "expiry_date": "2026-12-31"},
+            ],
+        )
+        doc = rate_schedule_data.model_dump()
+        doc['created_at'] = doc['created_at'].isoformat()
+        await db.event_data.insert_one(doc)
+
+        return {
+            "message": "Simple sample data loaded successfully",
+            "events": ["LoanActivity", "RateSchedule"],
+            "instruments": ["INST-001", "INST-002"],
+        }
+    except Exception as e:
+        logger.exception("Failed to load simple sample data")
+        raise HTTPException(status_code=500, detail=f"Failed to load sample data: {str(e)}")
+
 
 @api_router.post("/load-sample-data")
 async def load_sample_data():
@@ -1134,7 +1647,32 @@ async def load_sample_data():
                 {"name": "initial_investment", "datatype": "decimal"},
                 {"name": "return_rate", "datatype": "decimal"},
                 {"name": "years", "datatype": "decimal"}
-            ])
+            ]),
+            # Custom reference tables
+            EventDefinition(
+                event_name="RateTable",
+                fields=[
+                    {"name": "rate_code", "datatype": "string"},
+                    {"name": "rate_value", "datatype": "decimal"},
+                    {"name": "effective_date", "datatype": "date"},
+                    {"name": "expiry_date", "datatype": "date"},
+                ],
+                eventType="reference",
+                eventTable="custom",
+            ),
+            EventDefinition(
+                event_name="ProductConfig",
+                fields=[
+                    {"name": "product_code", "datatype": "string"},
+                    {"name": "product_name", "datatype": "string"},
+                    {"name": "max_term", "datatype": "integer"},
+                    {"name": "min_principal", "datatype": "decimal"},
+                    {"name": "max_principal", "datatype": "decimal"},
+                    {"name": "fee_percent", "datatype": "decimal"},
+                ],
+                eventType="reference",
+                eventTable="custom",
+            ),
         ]
         
         for event in sample_events:
@@ -1177,24 +1715,24 @@ async def load_sample_data():
         doc['created_at'] = doc['created_at'].isoformat()
         await db.event_data.insert_one(doc)
         
-        # Sample Event Data - PaymentEvent
+        # Sample Event Data - PaymentEvent (instrumentids match LoanEvent for join)
         payment_data = EventData(
             event_name="PaymentEvent",
             data_rows=[
                 {
-                    "postingdate": "2026-01-10",
-                    "effectivedate": "2026-01-10",
-                    "instrumentid": "PAY-001",
+                    "postingdate": "2026-01-01",
+                    "effectivedate": "2026-01-01",
+                    "instrumentid": "LOAN-001",
                     "payment_amount": "5000",
-                    "payment_date": "2026-01-10",
+                    "payment_date": "2026-01-01",
                     "payment_type": "Principal"
                 },
                 {
-                    "postingdate": "2026-01-20",
-                    "effectivedate": "2026-01-20",
-                    "instrumentid": "PAY-002",
+                    "postingdate": "2026-01-15",
+                    "effectivedate": "2026-01-15",
+                    "instrumentid": "LOAN-002",
                     "payment_amount": "2000",
-                    "payment_date": "2026-01-20",
+                    "payment_date": "2026-01-15",
                     "payment_type": "Interest"
                 }
             ]
@@ -1211,7 +1749,7 @@ async def load_sample_data():
                 {
                     "postingdate": "2026-01-01",
                     "effectivedate": "2026-01-01",
-                    "instrumentid": "INV-001",
+                    "instrumentid": "LOAN-001",
                     "initial_investment": "10000",
                     "return_rate": "0.08",
                     "years": "5"
@@ -1219,7 +1757,7 @@ async def load_sample_data():
                 {
                     "postingdate": "2026-01-15",
                     "effectivedate": "2026-01-15",
-                    "instrumentid": "INV-002",
+                    "instrumentid": "LOAN-002",
                     "initial_investment": "25000",
                     "return_rate": "0.10",
                     "years": "10"
@@ -1230,17 +1768,87 @@ async def load_sample_data():
         doc = investment_data.model_dump()
         doc['created_at'] = doc['created_at'].isoformat()
         await db.event_data.insert_one(doc)
-        
-        # Sample DSL Code using createTransaction
-        sample_dsl_code = """// Calculate compound interest
-interest = compound_interest(principal, rate, term)
 
-// Create the transaction with required dates
-createTransaction(postingdate, effectivedate, "Compound Interest", interest)"""
+        # Sample Custom Reference Data - RateTable
+        rate_table_data = EventData(
+            event_name="RateTable",
+            data_rows=[
+                {"rate_code": "PRIME", "rate_value": "0.0525", "effective_date": "2025-01-01", "expiry_date": "2025-06-30"},
+                {"rate_code": "PRIME", "rate_value": "0.0500", "effective_date": "2025-07-01", "expiry_date": "2025-12-31"},
+                {"rate_code": "PRIME", "rate_value": "0.0475", "effective_date": "2026-01-01", "expiry_date": "2026-12-31"},
+                {"rate_code": "BASE",  "rate_value": "0.0400", "effective_date": "2025-01-01", "expiry_date": "2025-12-31"},
+                {"rate_code": "BASE",  "rate_value": "0.0375", "effective_date": "2026-01-01", "expiry_date": "2026-12-31"},
+                {"rate_code": "LIBOR", "rate_value": "0.0310", "effective_date": "2025-01-01", "expiry_date": "2025-12-31"},
+                {"rate_code": "LIBOR", "rate_value": "0.0290", "effective_date": "2026-01-01", "expiry_date": "2026-12-31"},
+            ]
+        )
+        doc = rate_table_data.model_dump()
+        doc['created_at'] = doc['created_at'].isoformat()
+        await db.event_data.insert_one(doc)
+
+        # Sample Custom Reference Data - ProductConfig
+        product_config_data = EventData(
+            event_name="ProductConfig",
+            data_rows=[
+                {"product_code": "HL-STD",  "product_name": "Standard Home Loan",    "max_term": "360", "min_principal": "50000",  "max_principal": "2000000", "fee_percent": "0.005"},
+                {"product_code": "HL-FIX",  "product_name": "Fixed Rate Home Loan",  "max_term": "300", "min_principal": "100000", "max_principal": "1500000", "fee_percent": "0.0075"},
+                {"product_code": "PL-UNSEC","product_name": "Unsecured Personal Loan","max_term": "84",  "min_principal": "5000",   "max_principal": "100000",  "fee_percent": "0.010"},
+                {"product_code": "BL-SME",  "product_name": "SME Business Loan",     "max_term": "120", "min_principal": "20000",  "max_principal": "500000",  "fee_percent": "0.008"},
+                {"product_code": "INV-TERM","product_name": "Term Investment",        "max_term": "60",  "min_principal": "10000",  "max_principal": "5000000", "fee_percent": "0.000"},
+            ]
+        )
+        doc = product_config_data.model_dump()
+        doc['created_at'] = doc['created_at'].isoformat()
+        await db.event_data.insert_one(doc)
+
+        # Sample DSL Code - Loan Validation, Fee Calculation & Investment Projection
+        sample_dsl_code = """## 1. Loan Validation and Fee Calculation
+## Reference data access for single-row config
+min_p = ProductConfig.min_principal or 0
+max_p = ProductConfig.max_principal or 1000000
+principal = LoanEvent.principal or 0
+
+## Check if loan principal is within allowed range
+is_valid = and(gte(principal, min_p), lte(principal, max_p))
+
+## Calculate fee using percentage from ProductConfig
+fee_pct = ProductConfig.fee_percent or 0.01
+loan_fee = if(is_valid, multiply(principal, fee_pct), 0)
+print(concat("Calculated Loan Fee: ", loan_fee))
+
+## 2. Loan Payment Calculation
+annual_rate = LoanEvent.rate or 0.05
+monthly_rate = divide(annual_rate, 12)
+term_months = LoanEvent.term or 360
+
+## Use multiply to handle negation for the PV argument in pmt()
+neg_principal = multiply(principal, -1)
+monthly_pmt = pmt(monthly_rate, term_months, neg_principal)
+print(concat("Expected Monthly Payment: ", monthly_pmt))
+
+## 3. Investment Growth Projection
+init_inv = InvestmentEvent.initial_investment or 0
+ret_rate = InvestmentEvent.return_rate or 0
+inv_years = InvestmentEvent.years or 0
+
+## Future value calculation
+neg_inv = multiply(init_inv, -1)
+future_val = fv(ret_rate, inv_years, 0, neg_inv)
+print(concat("Projected Investment Value: ", future_val))
+
+## 4. Create Transactions
+## Use global postingdate and effectivedate (no prefixes needed)
+
+## Only create fee transaction if the amount is greater than 0
+if(gt(loan_fee, 0), createTransaction(postingdate, effectivedate, "Loan Processing Fee", loan_fee), 0)
+
+## Record the monthly interest accrual
+monthly_interest = multiply(principal, monthly_rate)
+createTransaction(postingdate, effectivedate, "Interest Accrual", monthly_interest)"""
         
         return {
             "message": "Sample data loaded successfully",
-            "events": ["LoanEvent", "PaymentEvent", "InvestmentEvent"],
+            "events": ["LoanEvent", "PaymentEvent", "InvestmentEvent", "RateTable", "ProductConfig"],
             "sample_dsl_code": sample_dsl_code
         }
     except Exception as e:
@@ -1267,11 +1875,49 @@ createTransaction(postingdate, effectivedate, "Compound Interest", interest)"""
         except Exception:
             logger.exception("Failed to populate in-memory sample data")
 
-        sample_dsl_code = """// Calculate compound interest
-interest = compound_interest(principal, rate, term)
+        sample_dsl_code = """## 1. Loan Validation and Fee Calculation
+## Reference data access for single-row config
+min_p = ProductConfig.min_principal or 0
+max_p = ProductConfig.max_principal or 1000000
+principal = LoanEvent.principal or 0
 
-// Create the transaction with required dates
-createTransaction(postingdate, effectivedate, \"Compound Interest\", interest)"""
+## Check if loan principal is within allowed range
+is_valid = and(gte(principal, min_p), lte(principal, max_p))
+
+## Calculate fee using percentage from ProductConfig
+fee_pct = ProductConfig.fee_percent or 0.01
+loan_fee = if(is_valid, multiply(principal, fee_pct), 0)
+print(concat("Calculated Loan Fee: ", loan_fee))
+
+## 2. Loan Payment Calculation
+annual_rate = LoanEvent.rate or 0.05
+monthly_rate = divide(annual_rate, 12)
+term_months = LoanEvent.term or 360
+
+## Use multiply to handle negation for the PV argument in pmt()
+neg_principal = multiply(principal, -1)
+monthly_pmt = pmt(monthly_rate, term_months, neg_principal)
+print(concat("Expected Monthly Payment: ", monthly_pmt))
+
+## 3. Investment Growth Projection
+init_inv = InvestmentEvent.initial_investment or 0
+ret_rate = InvestmentEvent.return_rate or 0
+inv_years = InvestmentEvent.years or 0
+
+## Future value calculation
+neg_inv = multiply(init_inv, -1)
+future_val = fv(ret_rate, inv_years, 0, neg_inv)
+print(concat("Projected Investment Value: ", future_val))
+
+## 4. Create Transactions
+## Use global postingdate and effectivedate (no prefixes needed)
+
+## Only create fee transaction if the amount is greater than 0
+if(gt(loan_fee, 0), createTransaction(postingdate, effectivedate, "Loan Processing Fee", loan_fee), 0)
+
+## Record the monthly interest accrual
+monthly_interest = multiply(principal, monthly_rate)
+createTransaction(postingdate, effectivedate, "Interest Accrual", monthly_interest)"""
         return {
             "message": "Sample data loaded into memory (DB unavailable)",
             "events": [e['event_name'] for e in SAMPLE_EVENTS],
@@ -1287,10 +1933,21 @@ async def clear_all_data():
         await db.event_data.delete_many({})
         await db.transaction_reports.delete_many({})
         await db.custom_functions.delete_many({})
-        
+        await db.saved_rules.delete_many({})
+        await db.saved_schedules.delete_many({})
+
+        # Also clear in-memory fallback data so stale entries don't survive
+        global in_memory_data
+        in_memory_data['event_definitions'] = []
+        in_memory_data['event_data'] = []
+        in_memory_data['transaction_reports'] = []
+        in_memory_data['custom_functions'] = []
+        in_memory_data.pop('saved_rules', None)
+        in_memory_data.pop('saved_schedules', None)
+
         return {
             "message": "All data cleared successfully (templates preserved).",
-            "cleared": ["event_definitions", "event_data", "transaction_reports", "custom_functions"],
+            "cleared": ["event_definitions", "event_data", "transaction_reports", "custom_functions", "saved_rules", "saved_schedules"],
             "preserved": ["templates"]
         }
     except Exception as e:
@@ -1298,26 +1955,9 @@ async def clear_all_data():
         raise HTTPException(status_code=500, detail=str(e))
 
 
-async def truncate_event_collections():
-    """Helper to truncate all event-related collections (preserve templates)."""
-    try:
-        await db.event_definitions.delete_many({})
-        await db.event_data.delete_many({})
-        await db.transaction_reports.delete_many({})
-        await db.custom_functions.delete_many({})
-    except Exception:
-        # If DB unavailable, fall back to clearing in-memory structures
-        global in_memory_data, USE_IN_MEMORY
-        USE_IN_MEMORY = True
-        in_memory_data['event_definitions'] = []
-        in_memory_data['event_data'] = []
-        in_memory_data['transaction_reports'] = []
-        in_memory_data['custom_functions'] = []
-
-# Event Definitions
 @api_router.post("/events/upload")
 async def upload_event_definitions(file: UploadFile = File(...)):
-    """Upload event definitions CSV (EventName, EventField, DataType)"""
+    """Upload event definitions CSV (EventName, EventField, DataType[, EventType[, EventTable]])"""
     try:
         # Clear existing event definitions (preserve other collections)
         try:
@@ -1335,15 +1975,17 @@ async def upload_event_definitions(file: UploadFile = File(...)):
         events_dict = {}
         header = rows[0]
         
-        # Validate header - support optional EventType column as the 4th column
+        # Validate header - support optional EventType (4th) and EventTable (5th) columns
         if len(header) < 3 or header[0].lower() != 'eventname' or header[1].lower() != 'eventfield' or header[2].lower() != 'datatype':
-            raise HTTPException(status_code=400, detail="CSV must have columns: EventName, EventField, DataType[, EventType]")
+            raise HTTPException(status_code=400, detail="CSV must have columns: EventName, EventField, DataType[, EventType[, EventTable]]")
 
-        # Supported event types
+        # Supported event types and event table values
         VALID_EVENT_TYPES = ('activity', 'reference')
+        VALID_EVENT_TABLES = ('standard', 'custom')
 
-        # Temporary map to capture event-level eventType values
+        # Temporary maps to capture event-level values
         event_type_map = {}
+        event_table_map = {}
 
         for row in rows[1:]:
             if len(row) >= 3:
@@ -1351,12 +1993,33 @@ async def upload_event_definitions(file: UploadFile = File(...)):
                 event_field = row[1].strip()
                 data_type = row[2].strip().lower()
 
-                # Optional eventType column (4th column)
+                # Optional columns 4 and 5: EventType and EventTable.
+                # Some CSVs omit EventType and put EventTable in column 4.
+                # Detect that case: if column 4 value matches EventTable values
+                # (standard/custom) but not EventType values (activity/reference),
+                # treat it as EventTable and default EventType to 'activity'.
                 event_type = 'activity'
-                if len(row) >= 4 and row[3].strip():
-                    event_type = row[3].strip().lower()
-                    if event_type not in VALID_EVENT_TYPES:
-                        raise HTTPException(status_code=400, detail=f"Invalid eventType '{row[3]}'. Must be one of: {', '.join(VALID_EVENT_TYPES)}")
+                event_table = 'standard'
+                col4 = row[3].strip().lower() if len(row) >= 4 and row[3].strip() else None
+                col5 = row[4].strip().lower() if len(row) >= 5 and row[4].strip() else None
+
+                if col4 is not None:
+                    if col4 in VALID_EVENT_TYPES:
+                        # Normal layout: col4 = EventType, col5 = EventTable
+                        event_type = col4
+                        if col5 is not None:
+                            if col5 not in VALID_EVENT_TABLES:
+                                raise HTTPException(status_code=400, detail=f"Invalid eventTable '{row[4]}'. Must be one of: {', '.join(VALID_EVENT_TABLES)}")
+                            event_table = col5
+                    elif col4 in VALID_EVENT_TABLES:
+                        # Shifted layout: col4 = EventTable, EventType defaults to 'activity'
+                        event_table = col4
+                    else:
+                        raise HTTPException(status_code=400, detail=f"Invalid value '{row[3]}' in column 4. Must be an eventType ({', '.join(VALID_EVENT_TYPES)}) or eventTable ({', '.join(VALID_EVENT_TABLES)}).")
+
+                # Validate eventTable + eventType combination
+                if event_table == 'standard' and event_type != 'activity':
+                    raise HTTPException(status_code=400, detail=f"Event '{event_name}': standard event table must have eventType 'activity', got '{event_type}'")
 
                 # Validate datatype
                 if data_type not in ['string', 'date', 'boolean', 'decimal', 'integer', 'int']:
@@ -1366,6 +2029,11 @@ async def upload_event_definitions(file: UploadFile = File(...)):
                 if event_name in event_type_map and event_type_map[event_name] != event_type:
                     raise HTTPException(status_code=400, detail=f"Conflicting eventType values for event '{event_name}'")
                 event_type_map[event_name] = event_type
+
+                # Ensure event_table is consistent across rows for same event
+                if event_name in event_table_map and event_table_map[event_name] != event_table:
+                    raise HTTPException(status_code=400, detail=f"Conflicting eventTable values for event '{event_name}'")
+                event_table_map[event_name] = event_table
 
                 if event_name not in events_dict:
                     events_dict[event_name] = []
@@ -1379,7 +2047,8 @@ async def upload_event_definitions(file: UploadFile = File(...)):
             # Store in database
             for event_name, fields in events_dict.items():
                 evt_type = event_type_map.get(event_name, 'activity')
-                event = EventDefinition(event_name=event_name, fields=fields, eventType=evt_type)
+                evt_table = event_table_map.get(event_name, 'standard')
+                event = EventDefinition(event_name=event_name, fields=fields, eventType=evt_type, eventTable=evt_table)
                 doc = event.model_dump()
                 doc['created_at'] = doc['created_at'].isoformat()
                 await db.event_definitions.insert_one(doc)
@@ -1394,7 +2063,8 @@ async def upload_event_definitions(file: UploadFile = File(...)):
             in_memory_defs = []
             for event_name, fields in events_dict.items():
                 evt_type = event_type_map.get(event_name, 'activity')
-                event = EventDefinition(event_name=event_name, fields=fields, eventType=evt_type)
+                evt_table = event_table_map.get(event_name, 'standard')
+                event = EventDefinition(event_name=event_name, fields=fields, eventType=evt_type, eventTable=evt_table)
                 doc = event.model_dump()
                 # store created_at as ISO string for consistency with DB format
                 doc['created_at'] = doc['created_at'].isoformat()
@@ -1475,12 +2145,13 @@ async def download_event_definitions():
 
         output = io.StringIO()
         writer = csv.writer(output)
-        writer.writerow(['EventName', 'EventField', 'DataType', 'EventType'])
+        writer.writerow(['EventName', 'EventField', 'DataType', 'EventType', 'EventTable'])
 
         for event in events:
             evt_type = event.get('eventType', 'activity')
+            evt_table = event.get('eventTable', 'standard')
             for field in event.get('fields', []):
-                writer.writerow([event.get('event_name'), field.get('name'), field.get('datatype'), evt_type])
+                writer.writerow([event.get('event_name'), field.get('name'), field.get('datatype'), evt_type, evt_table])
 
         output.seek(0)
         return StreamingResponse(
@@ -1509,14 +2180,30 @@ async def upload_event_data_excel(file: UploadFile = File(...)):
         sheet_names = excel_file.sheet_names
         
         # First pass: Collect all postingdates across all sheets to validate single date
+        # Only collect from activity events (not custom reference events which are tenant-level data)
         all_posting_dates = set()
         sheet_data_cache = {}  # Cache sheet data to avoid re-reading
+        # Pre-fetch event definitions for each sheet to determine eventType/eventTable
+        sheet_event_defs = {}
         
         for sheet_name in sheet_names:
             df = pd.read_excel(excel_file, sheet_name=sheet_name)
             sheet_data_cache[sheet_name] = df
             
-            if df.empty:
+            # Look up the event definition for this sheet
+            try:
+                evt_def = await db.event_definitions.find_one(
+                    {"event_name": {"$regex": f"^{sheet_name}$", "$options": "i"}},
+                    {"_id": 0}
+                )
+            except Exception:
+                evt_def = next((e for e in in_memory_data.get('event_definitions', []) if str(e.get('event_name', '')).lower() == sheet_name.lower()), None)
+            sheet_event_defs[sheet_name] = evt_def
+            
+            # Determine if this is a custom reference event (tenant-level, no instrument/date fields)
+            is_reference = (evt_def and evt_def.get('eventTable') == 'custom' and evt_def.get('eventType') == 'reference')
+            
+            if df.empty or is_reference:
                 continue
             
             # Look for postingdate column (case-insensitive)
@@ -1535,12 +2222,9 @@ async def upload_event_data_excel(file: UploadFile = File(...)):
                         date_str = str(pd_val).strip().split(' ')[0]  # Handle datetime strings
                         all_posting_dates.add(date_str)
         
-        # Validate single postingdate across all events
-        if len(all_posting_dates) > 1:
-            raise HTTPException(
-                status_code=400, 
-                detail=f"Multiple posting dates found across events: {sorted(all_posting_dates)}. All events must have the same postingdate."
-            )
+        # Multiple posting dates are allowed: users often upload a file spanning
+        # several periods at once (e.g. month-end snapshots). Downstream, each
+        # posting date is processed independently via filter_event_data_by_posting_date.
 
         # Enforce maximum rows per sheet: do not proceed if any sheet exceeds the limit
         MAX_ROWS_PER_SHEET = 500
@@ -1558,15 +2242,15 @@ async def upload_event_data_excel(file: UploadFile = File(...)):
         # Note: do not wipe all event data here; only replace data for the target event below.
         
         for sheet_name in sheet_names:
-            # Check if event exists (case-insensitive match)
-            event = await db.event_definitions.find_one(
-                {"event_name": {"$regex": f"^{sheet_name}$", "$options": "i"}}, 
-                {"_id": 0}
-            )
+            # Use pre-fetched event definition from first pass
+            event = sheet_event_defs.get(sheet_name)
             
             if not event:
                 errors.append(f"Sheet '{sheet_name}' - No matching event definition found")
                 continue
+            
+            # Determine if this is a custom reference event
+            is_reference = (event.get('eventTable') == 'custom' and event.get('eventType') == 'reference')
             
             # Use cached data
             df = sheet_data_cache.get(sheet_name)
@@ -1650,15 +2334,22 @@ async def upload_event_data_excel(file: UploadFile = File(...)):
                     else:
                         cleaned_row[str(key)] = str(value)
                 cleaned_rows.append(cleaned_row)
-            # Ensure standard date fields are normalized even if not declared as date type
-            for r in cleaned_rows:
-                for dkey in list(r.keys()):
-                    if str(dkey).lower() in ('postingdate', 'effectivedate', 'posting_date', 'effective_date'):
-                        r[dkey] = _normalize_ingest_date_value(r.get(dkey))
-                # Ensure standard date fields are normalized even if not declared as date type
-                for dkey in list(cleaned_row.keys()):
-                    if str(dkey).lower() in ('postingdate', 'effectivedate', 'posting_date', 'effective_date'):
-                        cleaned_row[dkey] = _normalize_ingest_date_value(cleaned_row.get(dkey))
+            # Normalize standard date fields only for non-reference events
+            if not is_reference:
+                for r in cleaned_rows:
+                    for dkey in list(r.keys()):
+                        if str(dkey).lower() in ('postingdate', 'effectivedate', 'posting_date', 'effective_date'):
+                            r[dkey] = _normalize_ingest_date_value(r.get(dkey))
+                    # Ensure standard date fields are normalized even if not declared as date type
+                    for dkey in list(cleaned_row.keys()):
+                        if str(dkey).lower() in ('postingdate', 'effectivedate', 'posting_date', 'effective_date'):
+                            cleaned_row[dkey] = _normalize_ingest_date_value(cleaned_row.get(dkey))
+
+                # Activity-data only: enforce canonical sort
+                # (instrumentid ASC, postingdate ASC, effectivedate ASC, subinstrumentid ASC)
+                # before the rows are persisted. Reference/custom event data is
+                # intentionally skipped — it has no instrument/date axis.
+                _sort_activity_rows(cleaned_rows)
 
             # Store event data
             event_data = EventData(event_name=event['event_name'], data_rows=cleaned_rows)
@@ -1677,7 +2368,11 @@ async def upload_event_data_excel(file: UploadFile = File(...)):
                 "coercions": coercions if coercions else None
             })
         
-        posting_date_info = list(all_posting_dates)[0] if all_posting_dates else "No posting dates found"
+        if not all_posting_dates:
+            posting_date_info = "No posting dates found"
+        else:
+            sorted_dates = sorted(all_posting_dates)
+            posting_date_info = sorted_dates[0] if len(sorted_dates) == 1 else sorted_dates
 
         summary = {
             "message": f"Processed {len(sheet_names)} sheets",
@@ -1695,150 +2390,80 @@ async def upload_event_data_excel(file: UploadFile = File(...)):
         logger.error(f"Error uploading Excel event data: {str(e)}")
         raise HTTPException(status_code=400, detail=str(e))
 
-# Event Data - CSV Upload (single event)
-@api_router.post("/event-data/upload/{event_name}")
-async def upload_event_data(event_name: str, file: UploadFile = File(...)):
-    """Upload event data CSV for a specific event"""
-    try:
-        # Check if event exists (DB first, fallback to in-memory)
-        try:
-            event = await db.event_definitions.find_one({"event_name": event_name}, {"_id": 0})
-        except Exception:
-            # DB unavailable - look in in-memory definitions
-            event = next((e for e in in_memory_data.get('event_definitions', []) if str(e.get('event_name', '')).lower() == event_name.lower()), None)
 
-        if not event:
-            raise HTTPException(status_code=404, detail=f"Event '{event_name}' not found")
-        
-        # Clear existing event data (preserve event_definitions)
-        try:
-            await db.event_data.delete_many({})
-        except Exception as e:
-            logger.warning(f"Could not clear event_data in DB: {e} - continuing with in-memory fallback")
-        
-        content = await file.read()
-        csv_content = content.decode('utf-8')
-        rows = parse_csv_content(csv_content)
-        
-        if len(rows) < 2:
-            raise HTTPException(status_code=400, detail="CSV must have header and at least one row")
-        
-        # Parse data
-        headers = [h.strip() for h in rows[0]]
-        data_rows = []
+@api_router.get("/event-data")
+async def get_all_event_data():
+    """Get summary of all uploaded event data"""
+    event_data_list = await db.event_data.find({}, {"_id": 0}).to_list(1000)
+    summary = []
+    for event_data in event_data_list:
+        summary.append({
+            "event_name": event_data['event_name'],
+            "row_count": len(event_data.get('data_rows', [])),
+            "created_at": event_data.get('created_at')
+        })
+    return summary
 
-        # Build header -> canonical field name mapping using event definition
-        def _normalize(s: str) -> str:
-            import re
-            return re.sub(r'[^A-Za-z0-9]', '_', (s or '').strip()).strip('_').upper()
 
-        field_names = [f['name'] for f in event.get('fields', [])]
-        norm_to_field = { _normalize(fn): fn for fn in field_names }
+@api_router.get("/event-data/posting-dates")
+async def get_event_data_posting_dates():
+    """
+    Return all unique posting dates found across all activity (non-custom/reference) event data,
+    sorted ascending.  Custom / reference events have no posting date and are excluded.
+    """
+    # Identify activity event names
+    defs = await db.event_definitions.find({}, {"_id": 0, "event_name": 1, "eventType": 1}).to_list(1000)
+    activity_names: set = {
+        d["event_name"] for d in defs
+        if d.get("eventType", "activity") != "reference"
+    }
 
-        # Build header mapping summary
-        remapped_headers = []
-        header_to_field = {}
-        for h in headers:
-            hnorm = _normalize(h)
-            if hnorm in norm_to_field:
-                header_to_field[h] = norm_to_field[hnorm]
-                remapped_headers.append({"incoming": h, "mapped_to": norm_to_field[hnorm]})
-            else:
-                header_to_field[h] = h.strip()
-                remapped_headers.append({"incoming": h, "mapped_to": None})
+    # Collect posting dates from activity event data
+    unique_dates: set = set()
+    event_data_list = await db.event_data.find({}, {"_id": 0, "event_name": 1, "data_rows": 1}).to_list(1000)
+    for ed in event_data_list:
+        if ed.get("event_name") not in activity_names:
+            continue
+        for row in ed.get("data_rows", []):
+            pd_val = get_field_case_insensitive(row, "postingdate", "")
+            if pd_val:
+                unique_dates.add(str(pd_val).strip())
 
-        for row in rows[1:]:
-            if row:
-                raw = {headers[i]: row[i].strip() if i < len(row) else '' for i in range(len(headers))}
-                # Map raw headers to canonical field names when possible
-                row_dict = {}
-                for h, v in raw.items():
-                    mapped_key = header_to_field.get(h, h.strip())
-                    row_dict[mapped_key] = v
-                data_rows.append(row_dict)
-        
-        # Get field types from event definition
-        field_types = {f['name']: f.get('datatype', 'string') for f in event.get('fields', [])}
+    return {"posting_dates": sorted(unique_dates)}
 
-        cleaned_rows = []
-        coercions = {}
-        for row in data_rows:
-            cleaned_row = {}
-            for key, value in row.items():
-                field_type = field_types.get(str(key), 'string')
-                sval = '' if value is None else str(value).strip()
-                if sval == '' or sval.lower() in ('none', 'null'):
-                    # Empty for numeric types -> coerce to 0, otherwise keep empty string
-                    if field_type in ('decimal', 'float'):
-                        cleaned_row[str(key)] = 0.0
-                        coercions[str(key)] = coercions.get(str(key), 0) + 1
-                    elif field_type in ('integer', 'int'):
-                        cleaned_row[str(key)] = 0
-                        coercions[str(key)] = coercions.get(str(key), 0) + 1
-                    else:
-                        cleaned_row[str(key)] = ''
-                elif field_type in ('decimal', 'float'):
-                    try:
-                        cleaned_row[str(key)] = float(sval)
-                    except Exception:
-                        cleaned_row[str(key)] = 0.0
-                        coercions[str(key)] = coercions.get(str(key), 0) + 1
-                elif field_type in ('integer', 'int'):
-                    try:
-                        cleaned_row[str(key)] = int(float(sval))
-                    except Exception:
-                        cleaned_row[str(key)] = 0
-                        coercions[str(key)] = coercions.get(str(key), 0) + 1
-                else:
-                    cleaned_row[str(key)] = str(value)
-            cleaned_rows.append(cleaned_row)
 
-        # Store event data
-        event_data = EventData(event_name=event_name, data_rows=cleaned_rows)
-        doc = event_data.model_dump()
-        doc['created_at'] = doc['created_at'].isoformat()
+@api_router.get("/event-data/download/{event_name}")
+async def download_event_data(event_name: str):
+    """Download event data as CSV"""
+    event_data = await db.event_data.find_one({"event_name": event_name}, {"_id": 0})
+    if not event_data:
+        raise HTTPException(status_code=404, detail=f"No data found for event '{event_name}'")
 
-        # Replace existing data for this event (DB first, fallback to in-memory)
-        try:
-            await db.event_data.delete_many({"event_name": event_name})
-            await db.event_data.insert_one(doc)
-        except Exception as e:
-            logger.warning(f"Could not write event data to DB, using in-memory store: {e}")
-            # Remove old entries for this event and append the new doc
-            in_memory_event_data = [ed for ed in in_memory_data.get('event_data', []) if ed.get('event_name') != event_name]
-            in_memory_event_data.append(doc)
-            in_memory_data['event_data'] = in_memory_event_data
+    # Create CSV. Collect ALL unique headers across every row so rows with different
+    # field sets (common with JSON-imported data) do not cause DictWriter to crash.
+    output = io.StringIO()
+    rows = event_data.get('data_rows', [])
+    if rows:
+        all_keys: list = []
+        seen_keys: set = set()
+        for row in rows:
+            for k in row.keys():
+                if k not in seen_keys:
+                    all_keys.append(k)
+                    seen_keys.add(k)
+        writer = csv.DictWriter(
+            output, fieldnames=all_keys, extrasaction='ignore', restval=''
+        )
+        writer.writeheader()
+        writer.writerows(rows)
 
-        summary = {
-            "message": f"Uploaded {len(cleaned_rows)} data rows for event '{event_name}'",
-            "event_name": event_name,
-            "rows_uploaded": len(cleaned_rows),
-            "remapped_headers": remapped_headers,
-            "coercions": coercions if coercions else None
-        }
+    output.seek(0)
+    return StreamingResponse(
+        iter([output.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": f"attachment; filename={event_name}_data.csv"}
+    )
 
-        logger.info(f"Event data upload summary for '{event_name}': {summary}")
-
-        return summary
-    except Exception as e:
-        logger.exception(f"Error uploading event data: {str(e)}")
-        # If possible, fall back to storing the prepared doc in in-memory storage
-        try:
-            if 'doc' in locals():
-                in_memory_event_data = [ed for ed in in_memory_data.get('event_data', []) if ed.get('event_name') != event_name]
-                in_memory_event_data.append(doc)
-                in_memory_data['event_data'] = in_memory_event_data
-                logger.info(f"Stored event data for '{event_name}' in in-memory fallback after error: {str(e)}")
-                return {
-                    "message": f"Uploaded {len(cleaned_rows)} data rows for event '{event_name}' (in-memory fallback)",
-                    "event_name": event_name,
-                    "rows_uploaded": len(cleaned_rows),
-                    "remapped_headers": remapped_headers,
-                    "coercions": coercions if coercions else None
-                }
-        except Exception:
-            pass
-        raise HTTPException(status_code=400, detail=str(e))
 
 @api_router.get("/event-data/{event_name}")
 async def get_event_data(event_name: str):
@@ -1852,95 +2477,6 @@ async def get_event_data(event_name: str):
     
     return event_data
 
-@api_router.get("/event-data")
-async def get_all_event_data():
-    """Get summary of all uploaded event data"""
-    event_data_list = await db.event_data.find({}, {"_id": 0}).to_list(1000)
-    
-    summary = []
-    for event_data in event_data_list:
-        summary.append({
-            "event_name": event_data['event_name'],
-            "row_count": len(event_data.get('data_rows', [])),
-            "created_at": event_data.get('created_at')
-        })
-    
-    return summary
-
-@api_router.get("/event-data/download/{event_name}")
-async def download_event_data(event_name: str):
-    """Download event data as CSV"""
-    event_data = await db.event_data.find_one({"event_name": event_name}, {"_id": 0})
-    if not event_data:
-        raise HTTPException(status_code=404, detail=f"No data found for event '{event_name}'")
-    
-    # Create CSV
-    output = io.StringIO()
-    
-    if event_data['data_rows']:
-        headers = list(event_data['data_rows'][0].keys())
-        writer = csv.DictWriter(output, fieldnames=headers)
-        writer.writeheader()
-        writer.writerows(event_data['data_rows'])
-    
-    output.seek(0)
-    return StreamingResponse(
-        iter([output.getvalue()]),
-        media_type="text/csv",
-        headers={"Content-Disposition": f"attachment; filename={event_name}_data.csv"}
-    )
-
-# DSL Validation and Conversion
-@api_router.post("/dsl/validate")
-async def validate_dsl(request: DSLValidationRequest):
-    """Validate DSL code and convert to Python"""
-    try:
-        # Editor-level safety: reject raw Python syntax or system calls in DSL input
-        code_text = (request.dsl_code or '')
-        code_lower = code_text.lower()
-        forbidden_tokens = [
-            'import ', ' from ', 'def ', 'class ', 'return ', 'exec(', 'eval(', 'compile(',
-            'async ', 'await ', 'lambda ', 'with ', 'try:', 'except ', 'raise ', 'open(', 'os.', 'sys.', 'subprocess'
-        ]
-        for tok in forbidden_tokens:
-            if tok in code_lower:
-                return {"valid": False, "error": f"Python syntax or system calls not allowed in editor: '{tok.strip()}' detected", "message": "Remove Python syntax; use DSL functions only."}
-
-        # For validation, use a generic set of event fields with decimal type
-        event_fields = [
-            {"name": "principal", "datatype": "decimal"},
-            {"name": "rate", "datatype": "decimal"},
-            {"name": "term", "datatype": "decimal"},
-            {"name": "payment_amount", "datatype": "decimal"},
-            {"name": "payment_date", "datatype": "date"}
-        ]
-        
-        # Convert to Python
-        python_code = dsl_to_python(request.dsl_code, event_fields)
-        
-        # Try to compile the Python code
-        compile(python_code, '<string>', 'exec')
-        
-        return {
-            "valid": True,
-            "python_code": python_code,
-            "message": "DSL code is valid"
-        }
-    except SyntaxError as e:
-        return {
-            "valid": False,
-            "error": str(e),
-            "message": "Invalid DSL syntax"
-        }
-    except Exception as e:
-        logger.error(f"DSL validation error: {str(e)}")
-        return {
-            "valid": False,
-            "error": str(e),
-            "message": "Validation error"
-        }
-
-# DSL Run (Console Play Button)
 @api_router.post("/dsl/run")
 async def run_dsl_code(request: DSLRunRequest):
     """Run DSL code directly and return results (for console testing)"""
@@ -1955,14 +2491,46 @@ async def run_dsl_code(request: DSLRunRequest):
             # Create standalone execution template
             python_code = dsl_to_python_standalone(dsl_code)
             try:
+                try:
+                    compile(python_code, '<dsl_standalone>', 'exec')
+                except SyntaxError as se:
+                    # Log the problematic line for debugging
+                    py_lines = python_code.split('\n')
+                    err_lineno = se.lineno or 0
+                    context_start = max(0, err_lineno - 3)
+                    context_end = min(len(py_lines), err_lineno + 2)
+                    context = '\n'.join(f"  {'>>>' if i+1 == err_lineno else '   '} {i+1}: {py_lines[i]}" for i in range(context_start, context_end))
+                    logger.error(f"Syntax error in generated standalone code at Python line {err_lineno}:\n{context}")
+                    # Try to extract DSL line from the error line
+                    dsl_line = None
+                    if 1 <= err_lineno <= len(py_lines):
+                        m = re.search(r'# DSL_LINE:(\d+)', py_lines[err_lineno - 1])
+                        if m:
+                            dsl_line = int(m.group(1))
+                    error_msg = se.msg or "invalid syntax"
+                    if dsl_line:
+                        error_msg = f"[Line {dsl_line}] SyntaxError: {error_msg}"
+                    else:
+                        error_msg = f"SyntaxError: {error_msg}"
+                    return {
+                        "success": False,
+                        "error": error_msg,
+                        "transactions": []
+                    }
                 # Provide minimal globals including __file__ so any code
                 # referencing __file__ (e.g., os.path.dirname(__file__))
                 # does not raise NameError when executed here.
                 exec_globals = {
                     '__file__': os.path.abspath(__file__),
                     '__name__': '__dsl_standalone__',
+                    '__builtins__': {k: v for k, v in __builtins__.items() if k not in ('exec', 'eval', 'compile', 'open', 'input', 'breakpoint')} if isinstance(__builtins__, dict) else {k: getattr(__builtins__, k) for k in dir(__builtins__) if k not in ('exec', 'eval', 'compile', 'open', 'input', 'breakpoint')},
                 }
-                exec(python_code, exec_globals)
+                # Defense-in-depth: AST-validate the generated standalone
+                # template before exec to block __import__, dunder
+                # introspection, and disallowed module imports injected via
+                # Custom Code.
+                _validate_template_ast(python_code, label='<dsl_standalone>')
+                exec(compile(python_code, '<dsl_standalone>', 'exec'), exec_globals)
                 
                 # Clear any previous print outputs
                 clear_prints = exec_globals.get('clear_print_outputs')
@@ -1989,10 +2557,14 @@ async def run_dsl_code(request: DSLRunRequest):
                     "mode": "standalone"
                 }
             except Exception as e:
-                logger.error(f"Standalone DSL error: {str(e)}")
+                dsl_line = _extract_dsl_line_from_exception(python_code, e)
+                error_msg = str(e)
+                if dsl_line:
+                    error_msg = f"[Line {dsl_line}] {error_msg}"
+                logger.error(f"Standalone DSL error: {error_msg}")
                 return {
                     "success": False,
-                    "error": str(e),
+                    "error": error_msg,
                     "transactions": []
                 }
         
@@ -2047,8 +2619,32 @@ async def run_dsl_code(request: DSLRunRequest):
         # - If we have activity events with data, merge them by instrument
         # - If no activity data but reference events present, create a single dummy row so template runs once
         # - Otherwise, error (no data at all)
+        date_fallback_warning = None
         if activity_events_with_data:
-            merged_data = merge_event_data_by_instrument(activity_event_data)
+            # Filter by requested posting date before merging (Console date-scoped runs)
+            scoped_activity = (
+                filter_event_data_by_posting_date(activity_event_data, request.posting_date)
+                if request.posting_date
+                else activity_event_data
+            )
+            merged_data = merge_event_data_by_instrument(scoped_activity)
+            
+            # If no data for the requested posting date, fall back to all available data
+            if not merged_data and request.posting_date:
+                logger.info(f"No data for posting date {request.posting_date}, falling back to all available data")
+                merged_data = merge_event_data_by_instrument(activity_event_data)
+                if merged_data:
+                    # Collect available posting dates for the warning
+                    available_dates = set()
+                    for rows in activity_event_data.values():
+                        for row in rows:
+                            pd = str(get_field_case_insensitive(row, "postingdate", "")).strip()
+                            if pd:
+                                available_dates.add(pd)
+                    date_fallback_warning = (
+                        f"No data found for posting date {request.posting_date}. "
+                        f"Using all available data. Available posting dates: {sorted(available_dates)}"
+                    )
         elif reference_events_with_data:
             # No activity rows but we have reference data — run template once with an empty merged row
             merged_data = [{}]
@@ -2068,10 +2664,20 @@ async def run_dsl_code(request: DSLRunRequest):
         
         # Generate and execute Python code. Pass event metadata (fields + eventType)
         python_code = dsl_to_python_multi_event(dsl_code, all_event_fields)
+        # When a posting date is supplied (per-step tests use the earliest posting
+        # date), also restrict the raw event data so collect_by_instrument() and
+        # collect_all() — which normally span all dates — only see rows for that
+        # date. collect() already filters by date, but the broader variants do not.
+        # Reference events are passed through unchanged (they have no postingdate).
+        raw_for_collect = (
+            filter_event_data_by_posting_date(event_data_dict, request.posting_date, all_event_fields)
+            if request.posting_date
+            else event_data_dict
+        )
         execution_result = await execute_python_template(
             python_code, 
             merged_data,
-            event_data_dict,  # Pass raw event data for collect() functions
+            raw_for_collect,  # Raw event data for collect() functions
             request.posting_date,
             request.effective_date
         )
@@ -2095,7 +2701,20 @@ async def run_dsl_code(request: DSLRunRequest):
             result["warning"] = f"No data for events: {events_without_data}. Their fields defaulted to 0/empty."
             result["events_without_data"] = events_without_data
         
+        # Add warning if we fell back to all dates
+        if date_fallback_warning:
+            existing_warning = result.get("warning", "")
+            result["warning"] = (existing_warning + " " + date_fallback_warning).strip()
+        
         return result
+    except HTTPException as he:
+        # Re-extract the detail from execute_python_template which already includes [Line N]
+        logger.error(f"DSL run error: {he.detail}")
+        return {
+            "success": False,
+            "error": he.detail,
+            "transactions": []
+        }
     except Exception as e:
         logger.error(f"DSL run error: {str(e)}")
         return {
@@ -2105,8 +2724,6 @@ async def run_dsl_code(request: DSLRunRequest):
         }
 
 # Templates
-@api_router.post("/templates")
-
 @api_router.post("/templates")
 async def save_template(request: SaveTemplateRequest):
     """Save DSL code as a reusable template"""
@@ -2160,45 +2777,13 @@ async def save_template(request: SaveTemplateRequest):
             await db.dsl_templates.insert_one(doc)
         except Exception:
             # DB unavailable - store in-memory
+            global USE_IN_MEMORY
             USE_IN_MEMORY = True
             in_memory_data.setdefault('templates', []).append(doc)
 
-        # Persist Python artifact in dedicated collection for external execution
-        try:
-            # Determine next version
-            keep_versions = os.environ.get('KEEP_TEMPLATE_ARTIFACT_VERSIONS', 'false').lower() in ('1','true','yes')
-            existing_art = await db.dsl_template_artifacts.find_one({"template_id": template.id}, {"_id": 0, "version": 1})
-            next_version = 1
-            if existing_art and isinstance(existing_art.get('version'), int):
-                next_version = existing_art['version'] + 1
-
-            artifact_doc = {
-                "template_id": template.id,
-                "template_name": request.name,
-                "version": next_version,
-                "python_code": python_code,
-                "created_at": datetime.now(timezone.utc).isoformat(),
-                "read_only": True
-            }
-            # Insert new artifact
-            await db.dsl_template_artifacts.insert_one(artifact_doc)
-
-            # If not keeping history, delete older artifacts for this template
-            if not keep_versions:
-                await db.dsl_template_artifacts.delete_many({"template_id": template.id, "version": {"$lt": next_version}})
-        except Exception as e:
-            # DB unavailable - persist artifact in-memory
-            logger.warning(f"Could not persist template artifact for {template.id}: {str(e)} - saving in memory")
-            USE_IN_MEMORY = True
-            artifact_doc = {
-                "template_id": template.id,
-                "template_name": request.name,
-                "version": 1,
-                "python_code": python_code,
-                "created_at": datetime.now(timezone.utc).isoformat(),
-                "read_only": True
-            }
-            in_memory_data.setdefault('template_artifacts', []).append(artifact_doc)
+        # Note: dsl_template_artifacts is intentionally NOT written here.
+        # The runtime artifact collection is populated only by the explicit
+        # Deploy action (POST /user-templates/{id}/deploy).
 
         return {"message": "Template saved successfully", "template_id": template.id, "replaced": existing is not None}
     except HTTPException:
@@ -2309,69 +2894,23 @@ async def delete_template(template_id: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-# Debug helper to inspect where a template exists
-@api_router.get("/debug/templates/check/{template_id}")
-async def debug_check_template(template_id: str):
-    info = {
-        "db_has": False,
-        "in_memory": False,
-        "in_sample": False
-    }
+@api_router.post("/templates/deploy")
+async def deploy_template(request: TemplateDeployRequest):
+    """Mark a template as deployed."""
     try:
-        doc = await db.dsl_templates.find_one({"id": template_id}, {"_id": 0})
-        info["db_has"] = bool(doc)
-    except Exception as e:
-        logger.debug(f"DB check error: {e}")
-
-    info["in_memory"] = any(t.get("id") == template_id or t.get("name") == template_id for t in in_memory_data.get("templates", []))
-    info["in_sample"] = any(t.get("id") == template_id or t.get("name") == template_id for t in SAMPLE_TEMPLATES)
-
-    return info
-
-
-@api_router.get("/templates/{template_id}/artifact")
-async def get_template_artifact(template_id: str, version: Optional[int] = None):
-    """Return the stored Python artifact for a template. If version is omitted, return latest."""
-    try:
-        query = {"template_id": template_id}
-        if version is not None:
-            query['version'] = version
-
-        artifact = None
-        try:
-            # Find latest if version not specified
-            if version is None:
-                doc = await db.dsl_template_artifacts.find(query).sort([('version', -1)]).limit(1).to_list(1)
-                artifact = doc[0] if doc else None
-            else:
-                artifact = await db.dsl_template_artifacts.find_one(query, {"_id": 0})
-        except Exception:
-            logger.warning("DB unavailable when fetching template artifact, checking in-memory storage")
-
-        # If not found in DB or DB unavailable, check in-memory artifacts
-        if not artifact:
-            for art in in_memory_data.get('template_artifacts', []):
-                if art.get('template_id') == template_id:
-                    if version is None or art.get('version') == version:
-                        artifact = art
-                        break
-
-        if not artifact:
-            raise HTTPException(status_code=404, detail="Artifact not found")
-
-        result = {
-            "template_id": artifact.get('template_id'),
-            "template_name": artifact.get('template_name'),
-            "version": artifact.get('version'),
-            "created_at": artifact.get('created_at'),
-            "python_code": artifact.get('python_code')
-        }
-        return sanitize_for_json(result)
+        result = await db.dsl_templates.update_one(
+            {"id": request.template_id},
+            {"$set": {"deployed": True, "deployed_at": datetime.now(timezone.utc).isoformat()}}
+        )
+        if result.matched_count == 0:
+            raise HTTPException(status_code=404, detail="Template not found")
+        return {"success": True, "message": f"Template {request.template_id} deployed successfully"}
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error fetching artifact for {template_id}: {str(e)}")
+        logger.error(f"Error deploying template {request.template_id}: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
+
 
 @api_router.post("/templates/execute")
 async def execute_template(request: TemplateExecuteRequest):
@@ -2438,7 +2977,13 @@ async def execute_template(request: TemplateExecuteRequest):
                 event_data_dict[event_def['event_name']] = []
         
         # Merge data from all events by instrumentid
-        merged_data = merge_event_data_by_instrument(event_data_dict)
+        # Filter by requested posting date before merging (batch date-scoped runs)
+        scoped_event_data = (
+            filter_event_data_by_posting_date(event_data_dict, request.posting_date)
+            if request.posting_date
+            else event_data_dict
+        )
+        merged_data = merge_event_data_by_instrument(scoped_event_data)
         
         if not merged_data:
             raise HTTPException(status_code=404, detail="No data found for the referenced events")
@@ -2460,7 +3005,7 @@ async def execute_template(request: TemplateExecuteRequest):
         transactions = execution_result["transactions"]
         print_outputs = execution_result["print_outputs"]
         
-        # Save transaction report (DB or in-memory)
+        # Save transaction report (DB or in-memory) — append each batch
         transaction_dicts = [t.model_dump() for t in transactions]
         report = TransactionReport(
             template_name=template.get('name', ''),
@@ -2470,15 +3015,13 @@ async def execute_template(request: TemplateExecuteRequest):
         doc = report.model_dump()
         doc['executed_at'] = doc['executed_at'].isoformat()
         try:
-            # Overwrite existing report for the same template_name to keep a single instance
-            await db.transaction_reports.delete_many({"template_name": report.template_name})
+            # Append new batch — each execution gets its own document
             await db.transaction_reports.insert_one(doc)
         except Exception:
-            # Fallback to in-memory storage: replace any existing entry for template_name
+            # Fallback to in-memory storage
+            global USE_IN_MEMORY  # noqa: F811
             USE_IN_MEMORY = True
             lst = in_memory_data.setdefault('transaction_reports', [])
-            # Remove existing docs for same template_name
-            lst = [r for r in lst if r.get('template_name') != report.template_name]
             lst.append(doc)
             in_memory_data['transaction_reports'] = lst
         
@@ -2495,570 +3038,241 @@ async def execute_template(request: TemplateExecuteRequest):
         logger.error(f"Error executing template: {str(e)}")
         raise HTTPException(status_code=400, detail=str(e))
 
-@api_router.get("/transaction-reports")
-async def get_transaction_reports():
-    """Get all transaction reports"""
-    try:
-        reports = await db.transaction_reports.find({}, {"_id": 0}).sort("executed_at", -1).to_list(1000)
-        for report in reports:
-            if isinstance(report.get('executed_at'), str):
-                report['executed_at'] = datetime.fromisoformat(report['executed_at'])
-        return reports
-    except Exception as e:
-        logger.warning(f"Could not load transaction reports from database: {str(e)}")
-        return []
 
-@api_router.get("/transaction-reports/download/{report_id}")
-async def download_transaction_report(report_id: str):
-    """Download transaction report as CSV"""
-    report = await db.transaction_reports.find_one({"id": report_id}, {"_id": 0})
-    if not report:
-        raise HTTPException(status_code=404, detail="Report not found")
-    
-    # Create CSV
-    output = io.StringIO()
-    
-    if report['transactions']:
-        headers = ['postingdate', 'effectivedate', 'instrumentid', 'subinstrumentid', 'transactiontype', 'amount']
-        writer = csv.DictWriter(output, fieldnames=headers, extrasaction='ignore')
-        writer.writeheader()
-        # Ensure subinstrumentid has a default value
-        for tx in report['transactions']:
-            if 'subinstrumentid' not in tx or not tx.get('subinstrumentid'):
-                tx['subinstrumentid'] = '1'
-        writer.writerows(report['transactions'])
-    
-    output.seek(0)
-    timestamp = datetime.fromisoformat(report['executed_at']).strftime('%Y%m%d_%H%M%S')
-    filename = f"transactions_{report['template_name']}_{timestamp}.csv"
-    
-    return StreamingResponse(
-        iter([output.getvalue()]),
-        media_type="text/csv",
-        headers={"Content-Disposition": f"attachment; filename={filename}"}
-    )
+@api_router.delete("/transaction-reports/all")
+async def delete_all_transaction_reports():
+    """Wipe all transaction reports"""
+    try:
+        result = await db.transaction_reports.delete_many({})
+        return {"message": f"Deleted {result.deleted_count} report(s)"}
+    except Exception:
+        in_memory_data['transaction_reports'] = []
+        return {"message": "Cleared in-memory reports"}
 
 @api_router.delete("/transaction-reports/{report_id}")
 async def delete_transaction_report(report_id: str):
-    """Delete a transaction report"""
-    result = await db.transaction_reports.delete_one({"id": report_id})
-    if result.deleted_count == 0:
+    """Delete all batches for a transaction report"""
+    anchor = await db.transaction_reports.find_one({"id": report_id}, {"_id": 0})
+    if not anchor:
         raise HTTPException(status_code=404, detail="Report not found")
-    return {"message": "Transaction report deleted successfully"}
+    # Delete all batches belonging to the same template
+    template_name = anchor.get('template_name', '')
+    result = await db.transaction_reports.delete_many({"template_name": template_name})
+    return {"message": f"Deleted {result.deleted_count} batch(es) for '{template_name}'"}
+
+
+@api_router.post("/ai/provider/test")
+async def test_ai_provider(req: AIProviderTestRequest):
+    """Validate an API key and return available models."""
+    if req.provider not in PROVIDER_INFO:
+        raise HTTPException(status_code=400, detail=f"Unknown provider: {req.provider}")
+    try:
+        provider = get_provider(req.provider)
+        models = await provider.list_models(req.api_key)
+        return {
+            "valid": True,
+            "models": [m.model_dump() for m in models],
+        }
+    except AIError as e:
+        logger.warning(f"AI provider test failed ({req.provider}): {e.error_type} - {e.detail}")
+        return {
+            "valid": False,
+            "error_type": e.error_type,
+            "error_message": e.detail,
+            "models": [],
+        }
+    except Exception as e:
+        logger.exception(f"Unexpected error testing AI provider ({req.provider})")
+        return {
+            "valid": False,
+            "error_type": "network",
+            "error_message": str(e),
+            "models": [],
+        }
+
+@api_router.post("/ai/provider/save")
+async def save_ai_provider(req: AIProviderSaveRequest):
+    """Persist the selected provider, encrypted API key, and models."""
+    encrypted = encrypt_key(req.api_key)
+    doc = {
+        "provider": req.provider,
+        "encrypted_api_key": encrypted,
+        "selected_model": req.selected_model,
+        "available_models": req.available_models,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.ai_provider_config.delete_many({})
+    await db.ai_provider_config.insert_one(doc)
+    return {"success": True}
+
+@api_router.get("/ai/provider/status")
+async def get_ai_provider_status():
+    """Get the current provider config with dynamically refreshed model list."""
+    try:
+        config = await db.ai_provider_config.find_one({}, {"_id": 0})
+    except Exception:
+        config = None
+    if not config:
+        return {"configured": False}
+
+    provider_name = config.get("provider")
+    cached_models = config.get("available_models", [])
+
+    # Dynamically refresh models from the provider API
+    fresh_models = cached_models
+    try:
+        api_key = decrypt_key(config["encrypted_api_key"])
+        provider = get_provider(provider_name)
+        models = await provider.list_models(api_key)
+        fresh_models = [m.model_dump() for m in models]
+        # Update DB cache in the background
+        await db.ai_provider_config.update_one(
+            {"provider": provider_name},
+            {"$set": {"available_models": fresh_models}},
+        )
+    except Exception as exc:
+        logger.warning(f"Failed to refresh model list for {provider_name}: {exc}")
+        # Fall back to cached models
+
+    return {
+        "configured": True,
+        "provider": provider_name,
+        "selected_model": config.get("selected_model"),
+        "available_models": fresh_models,
+    }
+
+@api_router.delete("/ai/provider")
+async def delete_ai_provider():
+    """Remove the saved provider configuration."""
+    await db.ai_provider_config.delete_many({})
+    return {"success": True}
 
 # AI Chat Assistant
 @api_router.post("/chat", response_model=ChatResponse)
 async def chat_with_assistant(message: ChatMessage):
     """Chat with AI assistant for DSL help - with full context awareness"""
     try:
-        # Get hardcoded DSL functions for context - organize by category with better formatting
-        functions_by_category = {}
-        for func in DSL_FUNCTION_METADATA:
-            category = func.get('category', 'Other')
-            if category not in functions_by_category:
-                functions_by_category[category] = []
-            functions_by_category[category].append(f"  {func['name']}({func['params']}) - {func['description']}")
-        
-        functions_context = "\n".join([
-            f"\n{category} ({len(funcs)} functions):\n" + "\n".join(funcs)
-            for category, funcs in functions_by_category.items()
-        ])
-        
-        # Get custom functions (DB first, then in-memory)
-        try:
-            custom_funcs = await db.custom_functions.find({}, {"_id": 0}).to_list(1000)
-        except Exception:
-            logger.debug("DB unavailable when fetching custom functions for chat; using in-memory list")
-            custom_funcs = in_memory_data.get('custom_functions', [])
+        session_id = message.session_id or str(uuid.uuid4())
 
-        custom_functions_context = ""
-        if custom_funcs:
-            custom_lines = []
-            for func in custom_funcs:
-                params = ', '.join([f"{p['name']}: {p['type']}" for p in func.get('parameters', [])])
-                custom_lines.append(f"  - {func.get('name')}({params}): {func.get('description', '')}")
-            custom_functions_context = f"\n\nCustom Functions (User-Defined):\n" + "\n".join(custom_lines)
-        
-        # Get events for context (from database or from provided context)
-        events_context = ""
+        # --- Load provider config ---
+        try:
+            provider_config = await db.ai_provider_config.find_one({}, {"_id": 0})
+        except Exception:
+            provider_config = None
+
+        if not provider_config:
+            return ChatResponse(
+                response="",
+                session_id=session_id,
+                error_type="no_provider",
+                error_message=ERROR_MESSAGES["no_provider"],
+            )
+
+        provider_name = provider_config.get("provider", "")
+        selected_model = message.model or provider_config.get("selected_model", "")
+        provider_display = PROVIDER_INFO.get(provider_name, {}).get("name", provider_name)
+
+        # Decrypt key
+        try:
+            api_key = decrypt_key(provider_config["encrypted_api_key"])
+        except Exception as e:
+            logger.warning(f"Failed to decrypt API key: {e}")
+            return ChatResponse(
+                response="",
+                session_id=session_id,
+                error_type="invalid_key",
+                error_message=ERROR_MESSAGES["invalid_key"],
+            )
+
+        # --- Gather context data ---
         if message.context and message.context.get('events'):
             events = message.context['events']
         else:
             try:
                 events = await db.event_definitions.find({}, {"_id": 0}).to_list(1000)
             except Exception:
-                logger.debug("DB unavailable when fetching events for chat; using in-memory event definitions")
                 events = in_memory_data.get('event_definitions', SAMPLE_EVENTS)
-        
-        if events:
-            event_lines = []
-            for event in events:
-                fields = event.get('fields', [])
-                field_list = ', '.join([f"{f['name']} ({f.get('datatype', 'unknown')})" for f in fields])
-                event_lines.append(f"- {event.get('event_name', 'Unknown')}: {field_list}")
-            events_context = "\n".join(event_lines)
-        
-        # Get editor code from context
-        editor_code_context = ""
+
+        editor_code = ""
         if message.context and message.context.get('editor_code'):
             editor_code = message.context['editor_code']
-            if editor_code.strip():
-                editor_code_context = f"\n\nCURRENT EDITOR CODE:\n```dsl\n{editor_code}\n```"
-        
-        # Get console output from context
-        console_context = ""
+
+        console_output = []
         if message.context and message.context.get('console_output'):
-            console_logs = message.context['console_output']
-            if console_logs:
-                # Get last 10 logs
-                recent_logs = console_logs[-10:] if len(console_logs) > 10 else console_logs
-                log_lines = []
-                for log in recent_logs:
-                    log_type = log.get('type', 'info')
-                    log_msg = log.get('message', '')
-                    log_lines.append(f"[{log_type.upper()}] {log_msg}")
-                console_context = f"\n\nRECENT CONSOLE OUTPUT:\n" + "\n".join(log_lines)
-        
-        system_message = """You are an expert DSL assistant for Fyntrac DSL Studio - a financial calculation and transaction processing system.
-
-=== SYSTEM OVERVIEW ===
-Fyntrac DSL Studio processes financial events (CSV data) through DSL code to create transactions. The workflow is:
-1. User uploads CSV event data (each row has fields like amounts, dates, rates)
-2. User writes DSL code to process the event data
-3. DSL code runs against each row and creates transactions via createTransaction() (only if requested)
-4. Transactions are output to reports
-
-=== AI ASSISTANT CODE GENERATION RULES ===
-You must follow these rules for all generated code, examples, and templates:
-
-1. Comment format:
-    - Do NOT use // for inline comments.
-    - Use ## for all comments in code.
-    - Apply this rule to all generated code and examples, without exceptions.
-
-2. Transaction creation behavior:
-    - Do NOT create transactions or call createTransaction/createTransactions by default.
-    - Only create transactions if the user explicitly asks for them.
-    - In the usual setup (when transactions are not requested):
-      - Compute the required values.
-      - Print the value of the final variable using print().
-
-3. Language and function constraints:
-    - Use only DSL functions available in both frontend and backend.
-    - Do NOT use Python or any other programming language in the generated code.
-    - Do NOT introduce helper functions or syntax outside the supported DSL.
-
-4. Code correctness:
-    - Ensure the generated code is syntactically valid.
-    - The code must run without syntax errors.
-    - Avoid incomplete statements, missing arguments, or invalid constructs.
-
-5. General instructions:
-    - Provide complete, runnable code examples in ```dsl code blocks.
-    - Use the EVENT.field format for accessing data (e.g., INT_ACC.principal).
-    - Explain briefly what the code does.
-
-=== AVAILABLE DSL FUNCTIONS ===
-{functions_context}
-{custom_functions_context}
-
-=== DSL EXAMPLES GUIDANCE ===
-When a user asks "how" to perform a calculation or requests an example, reference the ready-made DSL examples and show a concise, step-by-step explanation using a self-contained hard-coded example. Follow these rules:
-- Always provide a short (1-2 sentence) explanation of the calculation.
-- Show a runnable DSL snippet in a ```dsl code block that uses literal values (no external CSV fields) illustrating the calculation.
-- If the user asks how to adapt an example to their event fields, explain which EVENT.field to substitute and provide a single-line mapping example (e.g., `principal = LOAN.principal or 100000`).
-- Do NOT load or assume external CSV rows when demonstrating — use literals for clarity.
-- Keep examples concise and focused on the calculation; avoid creating transactions unless the user explicitly requests them.
-
-=== USER'S EVENTS AND FIELDS ===
-{events_context}
-{editor_code_context}
-{console_context}
-
-=== CORE DSL SYNTAX ===
-Variables: lowercase names (result, amount, total)
-Assignments: variable = expression
-Arithmetic: +, -, *, /, (), parentheses supported
-Event fields: EVENT_NAME.field_name (e.g., INT_ACC.rate, PMT.amount)
-- amount: Calculated numeric value
-- subinstrumentid: Optional, defaults to "1"
-- postingdate: The posting date (YYYY-MM-DD format)
-- effectivedate: The effective date (YYYY-MM-DD format)
-- transactiontype: A string describing the transaction type
-- amount: The transaction amount (numeric)
-- subinstrumentid: Optional sub-instrument identifier (defaults to '1' if not provided)
-- The instrumentid is automatically set based on the current data row
-
-EXAMPLE - Creating transactions:
-// Calculate interest
-interest = INT_ACC.principal * INT_ACC.rate / 12
-// Create the transaction (REQUIRED)
-createTransaction("2024-01-15", "2024-01-15", "Interest Accrual", interest)
-
-// Transaction with subinstrumentid
-createTransaction("2024-01-15", "2024-01-15", "Product Revenue", 1000, "PROD-001")
-
-// Multiple transactions in one DSL
-fee = 100
-createTransaction(postingdate, effectivedate, "Service Fee", fee)
-interest = principal * rate
-createTransaction(postingdate, effectivedate, "Interest Income", interest)
-
-CONDITIONAL LOGIC - Use iif() function (NOT if):
-- iif(condition, value_if_true, value_if_false)
-- Example: result = iif(amount > 1000, "Large", "Small")
-- Example: days = iif(is_leap_year(2024), 366, 365)
-- Example: fee = iif(balance > 0, balance * 0.01, 0)
-- IMPORTANT: "if" is a reserved keyword - always use "iif" instead
-
-COMPARISON OPERATORS:
-- Equal: == (NOT =)
-- Not equal: !=
-- Greater: >, >=
-- Less: <, <=
-- Example: iif(days_between(date1, date2) == 0, value1, value2)
-
-=== IMPORTANT SAFETY FOR CODE OUTPUT ===
-- Always produce code examples only in the DSL syntax (wrap code in ```dsl blocks).
-- Never output Python code, Python syntax, or native Python constructs (no def, import, class, for/while loops using Python syntax, or other Python-specific APIs).
-- Use only available DSL functions and the DSL language constructs described above when producing code.
-- If the user's request requires Python for integration, explain why and provide only the equivalent DSL approach, not Python code.
-
-CRITICAL SYNTAX RULE - ALWAYS USE EVENT.FIELD FORMAT:
-- When referencing ANY field from an event, you MUST use the format: EVENT_NAME.field_name
-- Example: If event "INT_ACC" has field "BALANCES_ENDINGBALANCE_Unpaid_Principal_Balance", write it as:
-  INT_ACC.BALANCES_ENDINGBALANCE_Unpaid_Principal_Balance
-- NEVER write field names without the event prefix
-- For multiple events: PMT.TRANSACTIONS_AMOUNT_REMIT, INT_ACC.ATTRIBUTE_INTEREST_RATE_CURRENT
-
-=== SCHEDULE USAGE GUIDELINES ===
-When generating schedules with `schedule(period_def, columns, context?)`, do NOT reference the schedule object being created (for example, `schedule_data`) inside the column expressions. The schedule engine evaluates column expressions while the schedule is being built, so referencing the schedule itself will be undefined and lead to errors.
-
-Best practice:
-- Compute any per-period inputs (e.g., `per_period`) before calling `schedule(...)` and pass them via the optional `context` parameter.
-- Inside the `columns` expressions use `lag('column_name', 1, 0)` to compute running/cumulative values.
-- Do not call `schedule_sum(schedule_data, ...)` or reference `schedule_data` within the `columns` map; compute totals after the schedule is returned.
-
-Example:
-## Build period definition and compute period count ##
-period_def = period(contract_start, contract_end, recognition_frequency, "ACT/360")
-period_count = len(period_def['dates'])
-per_period = divide(total_revenue, period_count)
-
-# Correct schedule usage: compute per-period inputs first, then pass them via a single dict
-# as the optional `context` argument. Inside `columns` expressions use `lag()` to reference
-# prior row values (e.g., cumulative calculations).
-schedule_data = schedule(
-    period_def,
-    {
-        "period_date": "period_date",
-        "recognized_revenue": "per_period",
-        "cumulative_revenue": "iif(eq(period_index,0), per_period, add(lag('cumulative_revenue', 1, 0), per_period))"
-    },
-    {"per_period": per_period}
-)
-
-This is a general rule applied to all generated schedule code to avoid None/undefined errors.
-
-ARRAY COLLECTION FUNCTIONS (for npv, irr, sum_vals, avg, etc.):
-- collect(EVENT.field) - Collects all values for current instrument/postingdate/effectivedate
-- collect_by_instrument(EVENT.field) - Collects all values for current instrument (ignores dates)
-- collect_all(EVENT.field) - Collects ALL values across all rows
-- collect_by_subinstrument(EVENT.field) - Collects values for current instrumentId AND subInstrumentId
-- collect_subinstrumentids() - Get all unique subInstrumentIds for current instrumentId
-- collect_effectivedates_for_subinstrument(subid?) - Get all effectiveDates for a specific subInstrumentId
-- Example: npv_value = npv(rate, collect(ECF.ExpectedCF))
-
-AGGREGATION FUNCTIONS FOR OBJECT ARRAYS:
-- sum_field(array, field) - Sum a specific field from array of objects (None values treated as 0)
-- Example: total_revenue = sum_field(recognition_results, "period_amount")
-- Use Case: Summing amounts from find_period_amounts() results or generate_schedules() output
-
-STANDARD FIELDS (automatically available for each event):
-- postingdate: The transaction posting date
-- effectivedate: The transaction effective date
-- instrumentid: Parent entity identifier (e.g., sales order, loan)
-- subinstrumentid: Child entity identifier (e.g., product within order). Defaults to "1" if not present.
-
-DATA HIERARCHY:
-postingDate → instrumentId → subInstrumentId → multiple effectiveDates
-
-When data has multiple subInstrumentIds for the same instrumentId:
-- Code execution operates at postingDate + instrumentId level
-- All subInstrumentId rows are automatically available via collect functions
-- Use collect_subinstrumentids() to get list of all sub-instruments
-- Use collect_by_subinstrument() to filter by specific sub-instrument
-
-ITERATION FUNCTIONS (for multi-row operations with context):
-- for_each(dates_arr, amounts_arr, date_var, amount_var, expression) - Iterate paired arrays, create multiple transactions
-- for_each_with_index(array, var_name, expression, context?) - Iterate array with index. Context allows passing other arrays/variables.
-- map_array(array, var_name, expression, context?) - Transform each element. Context allows accessing other arrays.
-- array_filter(array, var_name, condition, context?) - Filter array by condition
-
-ITERATION WITH CONTEXT EXAMPLE:
-## Dynamic product processing with context parameter
-product_names = ["Product A", "Product B", "Discount"]
-esp_values = [1200, 800, -200]
-
-## Derive SSP values using map_array with context to access esp_values
-ssp_values = map_array(product_names, "name", "iif(eq_ignore_case(name, 'discount'), 0, array_get(esp_values, index, 0))", {"esp_values": esp_values})
-
-// Calculate totals
-total_ssp = sum_vals(ssp_values)
-total_esp = sum_vals(esp_values)
-
-// Create transactions dynamically using for_each_with_index with context
-for_each_with_index(product_names, "name", "createTransaction('2026-01-19', '2026-01-19', concat('Revenue - ', name), multiply(divide(array_get(ssp_values, index, 0), total_ssp), total_esp))", {"ssp_values": ssp_values, "total_ssp": total_ssp, "total_esp": total_esp})
-
-ARRAY UTILITY FUNCTIONS:
-- array_length(arr), array_get(arr, index, default), array_first(arr), array_last(arr)
-- array_slice(arr, start, end), array_reverse(arr), zip_arrays(arr1, arr2, ...)
-
-PYTHON NATIVE SYNTAX SUPPORT:
-The DSL supports native Python syntax including:
-- List comprehensions: [x * 2 for x in my_list]
-- Native sum(): sum([1, 2, 3]) or sum(my_list)
-- Native len(): len(my_list)
-- Native range(): range(10), range(0, 5)
-- Conditional expressions: value = 0 if condition else other_value
-- String methods: my_string.lower(), my_string.upper()
-- List indexing: my_list[0], my_list[-1]
-- Direct arithmetic: a + b, a * b, a / b
-
-IMPORTANT: Use lowercase variable names to avoid conflicts with EVENT_NAME patterns.
-Uppercase names like MY_VAR will be interpreted as event references.
-
-=== EXCEL-COMPATIBLE FINANCIAL FUNCTIONS ===
-All financial functions now match Excel's calculations exactly:
-- pv(), fv(), pmt() - Now support optional 'type' parameter (0=end of period, 1=beginning)
-- rate() - Calculate interest rate per period (NEW function)
-- nper() - Calculate number of periods (NEW function)
-- npv(), irr() - Fixed to use period 1 start, matching Excel convention (not period 0)
-- xnpv(), xirr() - Use 365-day year convention (matching Excel)
-
-EXAMPLES:
-- Loan payment: pmt(0.01, 60, 100000) → monthly payment on 100k loan at 1% per month
-- Annuity due: pmt(0.01, 60, 100000, 0, 1) → same loan but payments at start of period
-- Find rate: rate(60, -2224.44, 100000) → find monthly rate for 60-month 100k loan
-- Find periods: nper(0.01, -2224.44, 100000) → how many months needed?
-- NPV: npv(0.10, [-1000, 300, 400, 500]) → discounted value of cash flows
-- IRR: irr([-1000, 300, 400, 500]) → rate where NPV = 0
-- Date-based NPV: xnpv(0.10, [-1000, 300, 400], ['2024-01-01', '2024-06-01', '2025-01-01'])
-
-STRING FUNCTIONS (for text processing):
-- lower(s) - Convert to lowercase: lower("HELLO") → "hello"
-- upper(s) - Convert to uppercase: upper("hello") → "HELLO"
-- concat(s1, s2, ...) - Concatenate strings: concat("Hello", " ", "World") → "Hello World"
-- contains(s, sub) - Check if contains substring: contains("Product A", "Product") → true
-- eq_ignore_case(a, b) - Case-insensitive equality: eq_ignore_case("Discount", "DISCOUNT") → true
-- starts_with(s, prefix) - Check prefix: starts_with("Product A", "Prod") → true
-- ends_with(s, suffix) - Check suffix: ends_with("file.txt", ".txt") → true
-- trim(s) - Remove whitespace: trim("  hello  ") → "hello"
-- str_length(s) - String length: str_length("hello") → 5
-
-EXAMPLE - Multi-row iteration:
-// Collect all effective dates and amounts for current instrument
-dates_arr = collect_by_instrument(ECF.effectivedate)
-amounts_arr = collect_by_instrument(ECF.amount)
-// Create transaction for each cash flow
-for_each(dates_arr, amounts_arr, "edate", "amt", "createTransaction(postingdate, edate, 'Cash Flow', amt)")
-
-EXAMPLE - SubInstrumentId handling:
-// Get all sub-instruments for current order
-sub_ids = collect_subinstrumentids()
-// Process specific sub-instrument
-product_amounts = collect_by_subinstrument(ORDER.amount)
-total = sum(product_amounts)
-
-EXAMPLE - Dynamic Revenue Allocation with iteration:
-// Input arrays
-product_names = ["Product A", "Product B", "Discount"]
-esp_values = [1200, 800, -200]
-
-## Derive SSP using map_array with context (discount gets SSP=0)
-ssp_values = map_array(product_names, "name", "iif(eq_ignore_case(name, 'discount'), 0, array_get(esp_values, index, 0))", {"esp_values": esp_values})
-
-// Calculate totals and allocation
-total_ssp = sum(ssp_values)
-total_esp = sum(esp_values)
-alloc_pcts = map_array(ssp_values, "ssp", "divide(ssp, total_ssp)", {"total_ssp": total_ssp})
-allocated_revenues = map_array(alloc_pcts, "pct", "multiply(pct, total_esp)", {"total_esp": total_esp})
-
-## Create transactions dynamically for each product
-for_each_with_index(product_names, "name", "createTransaction('2026-01-19', '2026-01-19', concat('Revenue - ', name), array_get(allocated_revenues, index, 0))", {"allocated_revenues": allocated_revenues})
-
-IMPORTANT RULES:
-1. ONLY use functions from the "Available DSL Functions" list above
-2. Do NOT invent or suggest functions that don't exist
-3. ALWAYS use EVENT_NAME.field_name format (e.g., INT_ACC.principal, PMT.amount)
-4. For null/missing value handling, use "or" operator: value = INT_ACC.field_name or 0
-5. Field names are case-sensitive - use them exactly as shown in the events list
-6. Use iif() for conditionals, NOT if()
-7. Use == for equality comparison, NOT =
-8. ALWAYS use createTransaction() to emit transactions - this is MANDATORY
-9. Use DSL string functions (lower, upper, eq_ignore_case, concat) instead of Python methods
-
-When providing code examples:
-1. For explanatory text, use comments with //
-2. For actual DSL formulas, do NOT add // prefix
-3. Keep responses focused and concise
-4. ALWAYS prefix field names with their event name (EVENT.field)
-5. ALWAYS use iif() for conditional logic, never if()
-6. ALWAYS end with createTransaction() to emit the transaction
-
-Example format for code suggestions:
-// Calculate interest using the formula
-interest = (INT_ACC.BALANCES_ENDINGBALANCE_Unpaid_Principal_Balance * INT_ACC.ATTRIBUTE_INTEREST_RATE_CURRENT) / 360
-// Create the transaction
-createTransaction(postingdate, effectivedate, "Interest Accrual", interest)
-
-// Example with conditional logic using iif
-fee = iif(INT_ACC.BALANCES_ENDINGBALANCE_Unpaid_Principal_Balance > 10000, 100, 50)
-createTransaction(postingdate, effectivedate, "Account Fee", fee)
-
-// Example with collect for array functions
-cashflows = collect(ECF.ExpectedCF)
-npv_result = npv(0.05, cashflows)
-print(npv_result)
-createTransaction(postingdate, effectivedate, "NPV Calculation", npv_result)
-
-SCHEDULE FUNCTION - For amortization, revenue schedules, FAS-91, accruals, depreciation:
-The schedule() function creates deterministic time-based tables. It is agnostic and can be used for any schedule type.
-
-SYNTAX: schedule(period_def, columns, context?)
-- period_def: Result from period() function
-- columns: Dictionary of column names to expressions
-- context: Optional dictionary of external variables (for using event data)
-
-PERIOD FUNCTION:
-period(start, end, freq, convention?)
-- start: Start date "YYYY-MM-DD"
-- end: End date "YYYY-MM-DD"  
-- freq: M=monthly, Q=quarterly, A=annual, W=weekly, D=daily
-- convention: ACT/360, ACT/365, 30/360 (for dcf calculation)
-
-SPECIAL VARIABLES IN SCHEDULE EXPRESSIONS:
-- period_date: Current row's date
-- period_index: Current row index (0-based)
-- dcf: Day count fraction for current period
-- lag('column', offset, default): Get previous row value
-
-EXAMPLE 1 - Loan Amortization with Transaction:
-p = period("2024-01-01", "2024-12-01", "M", "ACT/360")
-# Use lag() to seed the opening balance from the previous row (or default)
-sched = schedule(p, {"date": "period_date", "opening": "lag('closing', 1, 100000)", "interest": "opening * 0.00417", "principal": "8560.75 - interest", "closing": "opening - principal"})
-print(sched)
-total_interest = schedule_sum(sched, "interest")
-createTransaction("2024-12-01", "2024-12-01", "Total Interest", total_interest)
-
-EXAMPLE 2 - Revenue Schedule with Transaction:
-p = period("2025-01-01", "2025-12-31", "M")
-# Evenly allocate annual revenue across periods; compute rates/amounts before calling schedule
-sched = schedule(p, {"month": "period_date", "days": "days_between(start_of_month(period_date), end_of_month(period_date)) + 1", "revenue": "12000 / 12"})
-print(sched)
-total_revenue = schedule_sum(sched, "revenue")
-createTransaction("2025-12-31", "2025-12-31", "Annual Revenue", total_revenue)
-
-EXAMPLE 3 - Using Event Data:
-initial_balance = INT_ACC.BALANCES_ENDINGBALANCE_Unpaid_Principal_Balance or 100000
-p = period("2024-01-01", "2024-06-01", "M")
-# Pass event-derived variables via the context dict (single braces) to the schedule call
-sched = schedule(p, {"date": "period_date", "opening": "lag('closing', 1, initial_balance)", "closing": "opening - 5000"}, {"initial_balance": initial_balance})
-final_balance = schedule_last(sched, "closing")
-createTransaction(postingdate, effectivedate, "Balance Adjustment", final_balance)
-
-SCHEDULE HELPER FUNCTIONS:
-- schedule_sum(sched, col) - Sum all values in a column
-- schedule_last(sched, col) - Get the last value in a column
-- schedule_first(sched, col) - Get the first value in a column  
-- print_schedule(sched, title) - Print schedule to console
-- print_all_schedules(results) - Print all schedules from generate_schedules
-- print_schedule(sched, title) - Print schedule to console
-- print_all_schedules(results) - Print all schedules from generate_schedules
-
-IMPORTANT: When using event data in schedule:
-1. Store the event value in a variable BEFORE the schedule
-2. Pass the variable via the context parameter (3rd argument)
-3. Reference the variable name in your expressions
-4. ALWAYS call createTransaction() to emit the final transaction
-
-=== RESPONSE FORMAT ===
-When providing code:
-1. Put all DSL code in a ```dsl code block
-2. Keep explanations brief (1-2 sentences)
-3. Always include createTransaction() to produce output
-4. Use comments (// ...) inside code to explain complex parts
-
-Example response format:
-Here's how to calculate compound interest and create a transaction:
-
-```dsl
-// Get principal and rate from event data
-principal = INT_ACC.principal or 10000
-rate = INT_ACC.rate or 0.05
-
-// Calculate compound interest
-interest = compound_interest(principal, rate, 12, 1)
-total = principal + interest
-
-// Create the transaction
-createTransaction(postingdate, effectivedate, "Compound Interest", interest)
-```
-
-This calculates monthly compound interest and emits a transaction with the result.
-"""
-        
-        # Initialize Gemini with user's API key (fallback to local reply if unavailable)
-        session_id = message.session_id or str(uuid.uuid4())
-        google_api_key = os.environ.get('GOOGLE_API_KEY', '')
-
-        # Safely inject the dynamic contexts without using f-string formatting (avoids brace formatting issues)
-        system_message = system_message.replace('{functions_context}', functions_context).replace('{custom_functions_context}', custom_functions_context).replace('{events_context}', events_context).replace('{editor_code_context}', editor_code_context).replace('{console_context}', console_context)
-        full_prompt = f"{system_message}\n\nUser question: {message.message}"
-        response_text = None
-
-        if google_api_key:
-            try:
-                genai.configure(api_key=google_api_key)
-                model = genai.GenerativeModel('gemma-3-27b-it')
-                chat = model.start_chat(history=[])
-                response = await asyncio.to_thread(chat.send_message, full_prompt)
-                response_text = response.text
-            except Exception as e:
-                logger.warning(f"GenAI call failed, falling back to local reply: {e}")
-
-        if not response_text:
-            # Simple fallback reply that references available context to satisfy tests
-            reply_parts = []
-            msg_lower = (message.message or '').lower()
-            if 'interest' in msg_lower or 'loan' in msg_lower:
-                reply_parts.append('Interest calculations involve principal, rate and term.')
-            if message.context and message.context.get('events'):
-                event_names = [e.get('event_name', '').lower() for e in message.context.get('events', [])]
-                if any('loan' in en for en in event_names):
-                    reply_parts.append('For LoanEvent use principal and rate values.')
-            if not reply_parts:
-                reply_parts.append('I can help with DSL functions and event data processing.')
-            response_text = ' '.join(reply_parts)
-
-        # Post-process model response to enforce generation rules server-side
+            console_output = message.context['console_output']
+
+        # Rich editor context (cursor, selection, syntax errors)
+        editor_cursor = message.context.get('editor_cursor') if message.context else None
+        editor_selection = message.context.get('editor_selection') if message.context else None
+        editor_syntax_errors = message.context.get('editor_syntax_errors') if message.context else None
+        ui_mode = message.context.get('ui_mode') if message.context else None
+
+        # --- Build system prompt via two-tier context engine ---
+        system_prompt = build_agent_context(
+            dsl_function_metadata=list(DSL_FUNCTION_METADATA),
+            events=events,
+            editor_code=editor_code,
+            editor_cursor=editor_cursor,
+            editor_selection=editor_selection,
+            editor_syntax_errors=editor_syntax_errors,
+            console_output=console_output,
+            conversation_history=message.history,
+            ui_mode=ui_mode,
+        )
+
+        # --- Call the AI provider ---
+        try:
+            provider = get_provider(provider_name)
+            ai_response = await provider.chat(
+                api_key=api_key,
+                model_id=selected_model,
+                system_prompt=system_prompt,
+                user_message=message.message,
+                history=message.history,
+            )
+            response_text = ai_response.text
+        except AIError as e:
+            err_msg = ERROR_MESSAGES.get(e.error_type, e.detail)
+            err_msg = err_msg.replace("{provider}", provider_display).replace("{model}", selected_model)
+            return ChatResponse(
+                response="",
+                session_id=session_id,
+                error_type=e.error_type,
+                error_message=err_msg,
+            )
+
+        # --- Try to parse structured JSON response ---
+        structured = None
+        try:
+            import re as _re
+            json_match = _re.search(r'```json\s*(\{.*?\})\s*```', response_text, _re.S)
+            if json_match:
+                parsed = json.loads(json_match.group(1))
+                if "dsl_code" in parsed and "explanation" in parsed:
+                    structured = {
+                        "explanation": parsed.get("explanation", ""),
+                        "dsl_code": parsed.get("dsl_code", ""),
+                        "insert_mode": parsed.get("insert_mode", "append"),
+                        "confidence": parsed.get("confidence", "medium"),
+                    }
+        except Exception:
+            pass
+
+        # --- Post-process response to enforce DSL rules ---
         try:
             import re
 
             user_msg_lower = (message.message or '').lower()
-            # Consider the user explicitly requested transactions if their message mentions it
             user_requested_transactions = any(k in user_msg_lower for k in [
                 'createtransaction', 'create transaction', 'createtransactions', 'create transactions', 'include transaction', 'emit transaction', 'include createtransaction'
             ])
 
             def replace_leading_comments(text: str) -> str:
-                # Replace leading // with ## at line starts
                 return re.sub(r'(^|\n)\s*//', r"\1##", text)
 
             def process_code_block(code: str) -> str:
                 code = replace_leading_comments(code)
 
-                # Build allowed function set from runtime DSL functions and metadata
                 allowed_funcs = set()
                 try:
                     allowed_funcs.update(DSL_FUNCTIONS.keys())
@@ -3071,11 +3285,9 @@ This calculates monthly compound interest and emits a transaction with the resul
                             allowed_funcs.add(name)
                 except Exception:
                     pass
-                # Always allow print and common DSL helpers. Include schedule-local helpers like 'lag'
-                extra_allowed = {'print', 'iif', 'collect', 'collect_by_instrument', 'collect_all', 'collect_by_subinstrument', 'collect_subinstrumentids', 'collect_effectivedates_for_subinstrument', 'npv', 'irr', 'sum_field', 'sum', 'len', 'min', 'max', 'abs', 'round', 'lag'}
+                extra_allowed = {'print', 'iif', 'collect_by_instrument', 'collect_all', 'collect_by_subinstrument', 'collect_effectivedates_for_subinstrument', 'npv', 'irr', 'sum_field', 'sum', 'len', 'min', 'max', 'abs', 'round', 'lag'}
                 allowed_funcs.update(extra_allowed)
 
-                # Remove Python-specific constructs (def, import, class, for/while with Python syntax)
                 lines = code.splitlines()
                 cleaned_lines = []
                 for ln in lines:
@@ -3088,39 +3300,25 @@ This calculates monthly compound interest and emits a transaction with the resul
                     cleaned_lines.append(ln)
                 code = "\n".join(cleaned_lines)
 
-                # Remove any createTransaction/createTransactions calls if not explicitly requested
                 has_create = re.search(r"\bcreateTransactions?\s*\(", code)
                 if has_create and not user_requested_transactions:
                     lines = code.splitlines()
-                    # Remove lines that call createTransaction(s)
                     lines = [ln for ln in lines if not re.search(r"\bcreateTransactions?\s*\(", ln)]
                     code = "\n".join(lines)
-
-                    # Find last assignment variable to print
                     assigns = re.findall(r'^\s*([a-z_][a-zA-Z0-9_]*)\s*=.*$', code, flags=re.MULTILINE)
                     if assigns:
                         last_var = assigns[-1]
-                        # Append print(last_var) if not already present
                         if not re.search(r'print\s*\(\s*' + re.escape(last_var) + r'\s*\)', code):
                             code = code.rstrip() + '\n\nprint(' + last_var + ')'
-
-                    # Update any nearby comments that mention creating transactions
                     try:
                         code = re.sub(r'(?mi)^\s*##.*create.*transaction.*$', '## Executing the final value', code, flags=re.M)
                     except Exception:
                         pass
 
-                # Map common alias function names to supported DSL functions
-                alias_map = {
-                    'periods': 'nper',
-                    'num_periods': 'nper',
-                    'number_of_periods': 'nper'
-                }
+                alias_map = {'periods': 'nper', 'num_periods': 'nper', 'number_of_periods': 'nper'}
                 for a, b in alias_map.items():
                     code = re.sub(rf"\b{a}\s*\(", f"{b}(", code)
 
-                # Remove calls to functions that are not allowed
-                # Find function calls only in non-comment lines to avoid matching parentheses inside comments
                 non_comment_lines = [ln for ln in code.splitlines() if not ln.strip().startswith('##')]
                 func_calls = []
                 for ln in non_comment_lines:
@@ -3132,13 +3330,11 @@ This calculates monthly compound interest and emits a transaction with the resul
                         if ln.strip().startswith('##'):
                             new_lines.append(ln)
                             continue
-                        # Strip inline comments before detecting function calls
                         code_only = ln.split('##')[0].split('//')[0]
                         called = re.findall(r"\b([a-zA-Z_][a-zA-Z0-9_]*)\s*\(", code_only)
                         if called:
                             illegal = [f for f in called if f not in allowed_funcs]
                             if illegal:
-                                # Replace the line with a comment indicating removal
                                 new_lines.append('## removed call to unsupported function: ' + ','.join(illegal))
                                 continue
                         new_lines.append(ln)
@@ -3146,22 +3342,16 @@ This calculates monthly compound interest and emits a transaction with the resul
 
                 return code
 
-            # Process fenced ```dsl``` blocks
             def process_response(text: str) -> str:
                 def repl(match):
                     inner = match.group(1)
                     processed = process_code_block(inner)
                     return '```dsl\n' + processed + '\n```'
 
-                # Process triple-backtick blocks (optionally labeled 'dsl')
                 text = re.sub(r'```(?:dsl)?\n(.*?)\n```', repl, text, flags=re.S)
-
-                # Also replace standalone leading // comments outside code blocks
                 text = replace_leading_comments(text)
 
-                # If there are stray createTransaction calls outside fenced blocks and user didn't request them, remove them and try to append a print
                 if not user_requested_transactions and re.search(r"\bcreateTransactions?\s*\(", text):
-                    # Remove lines with createTransaction outside fences
                     lines = text.splitlines()
                     new_lines = []
                     for ln in lines:
@@ -3169,8 +3359,6 @@ This calculates monthly compound interest and emits a transaction with the resul
                             continue
                         new_lines.append(ln)
                     text = "\n".join(new_lines)
-
-                    # Attempt to append print of last assigned variable across the whole text
                     assigns = re.findall(r'^\s*([a-z_][a-zA-Z0-9_]*)\s*=.*$', text, flags=re.MULTILINE)
                     if assigns:
                         last_var = assigns[-1]
@@ -3180,45 +3368,1228 @@ This calculates monthly compound interest and emits a transaction with the resul
                 return text
 
             response_text = process_response(response_text)
+
+            # Also post-process structured dsl_code if present
+            if structured and structured.get("dsl_code"):
+                structured["dsl_code"] = process_code_block(structured["dsl_code"])
+
         except Exception as e:
             logger.warning(f"Post-processing of AI response failed: {e}")
 
-        return ChatResponse(response=response_text, session_id=session_id)
+        return ChatResponse(
+            response=response_text,
+            session_id=session_id,
+            structured=structured,
+        )
     except Exception as e:
         logger.error(f"Chat error: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Chat error: {str(e)}")
 
-# ============= Custom Functions API =============
 
-@api_router.get("/custom-functions")
-async def get_custom_functions():
-    """Get all custom user-defined functions"""
-    # Custom functions feature removed; return 404 to indicate endpoint unavailable
-    raise HTTPException(status_code=404, detail="Custom functions feature has been removed")
+@api_router.post("/chat/stream")
+async def chat_stream(message: ChatMessage):
+    """SSE streaming chat endpoint — sends tokens as they arrive from the provider."""
 
-@api_router.post("/custom-functions")
-async def create_custom_function(func_data: CustomFunctionCreate):
-    """Create a new custom function"""
-    # Custom functions feature removed
-    raise HTTPException(status_code=404, detail="Custom functions feature has been removed")
+    session_id = message.session_id or str(uuid.uuid4())
 
-@api_router.delete("/custom-functions/{function_id}")
-async def delete_custom_function(function_id: str):
-    """Delete a custom function"""
-    # Custom functions feature removed
-    raise HTTPException(status_code=404, detail="Custom functions feature has been removed")
+    async def event_stream():
+        try:
+            # Load provider config
+            try:
+                provider_config = await db.ai_provider_config.find_one({}, {"_id": 0})
+            except Exception:
+                provider_config = None
 
-@api_router.put("/custom-functions/{function_id}")
-async def update_custom_function(function_id: str, func_data: CustomFunctionCreate):
-    """Update an existing custom function"""
-    # Custom functions feature removed
-    raise HTTPException(status_code=404, detail="Custom functions feature has been removed")
+            if not provider_config:
+                yield f"data: {json.dumps({'type': 'error', 'error_type': 'no_provider', 'error_message': ERROR_MESSAGES['no_provider']})}\n\n"
+                yield "data: [DONE]\n\n"
+                return
 
-async def register_custom_function_runtime(func: CustomFunction):
-    """Register a custom function in the DSL runtime"""
-    # Custom functions feature removed - do not register runtime functions
-    logger.info(f"Skipping registration of custom function '{getattr(func, 'name', '<unknown>')}' because custom functions feature is disabled")
-    return
+            provider_name = provider_config.get("provider", "")
+            selected_model = message.model or provider_config.get("selected_model", "")
+            provider_display = PROVIDER_INFO.get(provider_name, {}).get("name", provider_name)
+
+            # Decrypt key
+            try:
+                api_key = decrypt_key(provider_config["encrypted_api_key"])
+            except Exception:
+                yield f"data: {json.dumps({'type': 'error', 'error_type': 'invalid_key', 'error_message': ERROR_MESSAGES['invalid_key']})}\n\n"
+                yield "data: [DONE]\n\n"
+                return
+
+            # Emit session info
+            yield f"data: {json.dumps({'type': 'session', 'session_id': session_id})}\n\n"
+
+            # Gather context
+            if message.context and message.context.get('events'):
+                events = message.context['events']
+            else:
+                try:
+                    events = await db.event_definitions.find({}, {"_id": 0}).to_list(1000)
+                except Exception:
+                    events = in_memory_data.get('event_definitions', SAMPLE_EVENTS)
+
+            editor_code = ""
+            if message.context and message.context.get('editor_code'):
+                editor_code = message.context['editor_code']
+
+            console_output = []
+            if message.context and message.context.get('console_output'):
+                console_output = message.context['console_output']
+
+            # Rich editor context
+            editor_cursor = message.context.get('editor_cursor') if message.context else None
+            editor_selection = message.context.get('editor_selection') if message.context else None
+            editor_syntax_errors = message.context.get('editor_syntax_errors') if message.context else None
+            ui_mode = message.context.get('ui_mode') if message.context else None
+
+            # Build system prompt via two-tier context engine
+            system_prompt = build_agent_context(
+                dsl_function_metadata=list(DSL_FUNCTION_METADATA),
+                events=events,
+                editor_code=editor_code,
+                editor_cursor=editor_cursor,
+                editor_selection=editor_selection,
+                editor_syntax_errors=editor_syntax_errors,
+                console_output=console_output,
+                conversation_history=message.history,
+                ui_mode=ui_mode,
+            )
+
+            # Emit context-ready event with summary for the UI
+            events_count = len(events) if events else 0
+            editor_lines = len(editor_code.split('\n')) if editor_code.strip() else 0
+            console_count = len(console_output) if console_output else 0
+            yield f"data: {json.dumps({'type': 'context_ready', 'events_count': events_count, 'editor_lines': editor_lines, 'console_count': console_count, 'model': selected_model, 'provider': provider_display})}\n\n"
+
+            # Stream from provider
+            provider = get_provider(provider_name)
+            full_text = []
+            try:
+                async for chunk in provider.stream_chat(
+                    api_key=api_key,
+                    model_id=selected_model,
+                    system_prompt=system_prompt,
+                    user_message=message.message,
+                    history=message.history,
+                ):
+                    full_text.append(chunk)
+                    yield f"data: {json.dumps({'type': 'token', 'token': chunk})}\n\n"
+            except AIError as e:
+                err_msg = ERROR_MESSAGES.get(e.error_type, e.detail)
+                err_msg = err_msg.replace("{provider}", provider_display).replace("{model}", selected_model)
+                yield f"data: {json.dumps({'type': 'error', 'error_type': e.error_type, 'error_message': err_msg})}\n\n"
+                yield "data: [DONE]\n\n"
+                return
+
+            # Post-process the full response (same rules as /chat)
+            full_response = ''.join(full_text)
+            try:
+                import re as _pp_re
+                user_msg_lower = (message.message or '').lower()
+                user_requested_txn = any(k in user_msg_lower for k in [
+                    'createtransaction', 'create transaction', 'createtransactions',
+                    'create transactions', 'include transaction', 'emit transaction',
+                ])
+
+                def _pp_replace_comments(text):
+                    return _pp_re.sub(r'(^|\n)\s*//', r'\1##', text)
+
+                if not user_requested_txn and _pp_re.search(r'\bcreateTransactions?\s*\(', full_response):
+                    # AI included transactions the user didn't ask for — flag it
+                    yield f"data: {json.dumps({'type': 'post_process', 'warning': 'unrequested_transactions'})}\n\n"
+            except Exception:
+                pass
+
+            # Send done event
+            yield f"data: {json.dumps({'type': 'done'})}\n\n"
+            yield "data: [DONE]\n\n"
+
+        except Exception as e:
+            logger.error(f"Stream chat error: {str(e)}")
+            yield f"data: {json.dumps({'type': 'error', 'error_type': 'network', 'error_message': str(e)})}\n\n"
+            yield "data: [DONE]\n\n"
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+REQUIRED_EVENT_FIELDS = {"instrumentId", "eventId", "eventName", "postingDate", "effectiveDate", "status", "eventDetail", "_class"}
+
+# ---------------------------------------------------------------------------
+# Import transformation helpers
+# ---------------------------------------------------------------------------
+# Fixed/system fields — both PascalCase (EOD-style) and camelCase (inner-row style)
+# must be excluded from dynamic columns and handled explicitly.
+_IMPORT_FIXED_KEYS = {
+    "PostingDate", "EffectiveDate", "InstrumentId", "AttributeId",
+    "postingDate", "effectiveDate", "instrumentId", "attributeId",
+    "_id", "_metadata_version", "_imported_at",
+}
+
+
+def _infer_field_datatype(values: list) -> str:
+    """Infer the best datatype for a field from a list of sample values.
+    Scans all non-null values; the first conclusive type wins (boolean > date > string > decimal).
+    Numeric strings (e.g. "1250.50", "42") are treated as decimal.
+    """
+    for v in values:
+        if v is None:
+            continue
+        if isinstance(v, bool):
+            return "boolean"
+        if isinstance(v, dict) and "$date" in v:
+            return "date"
+        if isinstance(v, str):
+            if re.match(r"^\d{4}-\d{2}-\d{2}", v):
+                return "date"
+            # Check if the string is a numeric value (handles "1250.50", "-42", "1,234.56")
+            stripped = v.strip().lstrip('-').replace(',', '')
+            if stripped.replace('.', '', 1).isdigit():
+                return "decimal"
+            return "string"
+        if isinstance(v, (int, float)):
+            return "decimal"
+    return "decimal"  # all-null or empty → decimal (financial default)
+
+
+def _parse_import_date(val) -> str:
+    """Normalise a date value from an imported event record to YYYY-MM-DD."""
+    if val is None:
+        return ""
+    if isinstance(val, dict) and "$date" in val:
+        return str(val["$date"])[:10]
+    if isinstance(val, int):
+        s = str(val)
+        if len(s) == 8:
+            return f"{s[:4]}-{s[4:6]}-{s[6:8]}"
+        return s
+    try:
+        return normalize_date(str(val))
+    except Exception:
+        return str(val)
+
+
+# Sentinel for "system" / placeholder instrument IDs with no real business meaning
+def _is_custom_event(records: list, event_id: str) -> bool:
+    """
+    Return True if the event has no real InstrumentId.
+
+    Rule (no hardcoding of names or placeholder strings):
+      An event is 'standard' only when at least one inner value row contains
+      an instrumentId that matches the outer instrumentId of the same event
+      record — i.e. the inner rows are genuinely tied to a specific instrument.
+      If no inner row matches its enclosing record's outer instrumentId, the
+      event carries no instrument-specific data and is classified as
+      eventTable='custom', eventType='reference'.
+    """
+    for event in records:
+        if event.get("eventId") != event_id:
+            continue
+        outer = (event.get("instrumentId") or event.get("InstrumentId") or "").strip()
+        if not outer:
+            continue  # outer has no instrumentId — skip this record
+        for row_val in event.get("eventDetail", {}).get("values", {}).values():
+            if not isinstance(row_val, dict):
+                continue
+            inner = (row_val.get("instrumentId") or row_val.get("InstrumentId") or "").strip()
+            if inner and inner == outer:
+                return False  # inner instrumentId matches outer → real instrument event
+    return True  # no inner row matched its enclosing event's instrumentId → custom
+
+
+def _select_instruments(records: list, max_count: int = 2) -> list:
+    """
+    Collect all unique instrument IDs that appear in standard (non-custom) event records
+    and randomly return up to max_count of them.
+    Custom/reference events are excluded — they carry no real instrument.
+    Returns a sorted (deterministic within selection) list of instrument IDs.
+    """
+    import random
+    seen: set = set()
+    for event in records:
+        instrument = (event.get("instrumentId") or event.get("InstrumentId") or "").strip()
+        if not instrument:
+            continue
+        event_id = event.get("eventId", "")
+        # Only count instruments from standard (non-custom) events
+        if not _is_custom_event(records, event_id):
+            seen.add(instrument)
+    population = sorted(seen)  # sort for reproducibility of the pool
+    count = min(max_count, len(population))
+    if count == 0:
+        return []
+    return random.sample(population, count)
+
+
+def _build_event_definitions_from_import(records: list, allowed_instruments: set | None = None) -> list:
+    """
+    Derive unique event definitions from the imported records.
+    Groups by eventId, collects dynamic field names and infers datatypes.
+    Excludes all fixed/system fields (both PascalCase and camelCase) and meta keys.
+    Events with no real instrumentId are classified as custom/reference.
+    If allowed_instruments is given, standard event records whose outer instrumentId
+    is not in that set are skipped (custom/reference events are never filtered).
+    Returns a list of dicts compatible with EventDefinition.model_dump().
+    """
+    from collections import defaultdict
+    event_fields: dict = defaultdict(lambda: defaultdict(list))
+
+    for event in records:
+        event_id = event.get("eventId", "")
+        outer_instrument = (event.get("instrumentId") or event.get("InstrumentId") or "").strip()
+        is_custom = _is_custom_event(records, event_id)
+        # Filter standard events by allowed instrument list
+        if not is_custom and allowed_instruments is not None and outer_instrument not in allowed_instruments:
+            continue
+        for row_val in event.get("eventDetail", {}).get("values", {}).values():
+            if not isinstance(row_val, dict):
+                continue
+            for key, value in row_val.items():
+                if key not in _IMPORT_FIXED_KEYS:
+                    event_fields[event_id][key].append(value)
+
+    definitions = []
+    ts = datetime.now(timezone.utc).isoformat()
+    for event_id, fields in event_fields.items():
+        field_list = [
+            {"name": fn, "datatype": _infer_field_datatype(sv)}
+            for fn, sv in fields.items()
+        ]
+        is_custom = _is_custom_event(records, event_id)
+        definitions.append({
+            "id": str(uuid.uuid4()),
+            "event_name": event_id,
+            "fields": field_list,
+            "eventType": "reference" if is_custom else "activity",
+            "eventTable": "custom" if is_custom else "standard",
+            "created_at": ts,
+        })
+    return definitions
+
+
+def _build_event_data_from_import(records: list, allowed_instruments: set | None = None) -> list:
+    """
+    Build event data rows from imported records.
+    Groups rows by eventId. Each value entry in eventDetail.values becomes one data row.
+    Handles both PascalCase (EOD) and camelCase inner row keys.
+    Maps attributeId (either case) to SubInstrumentId — for standard events only.
+    Custom/reference events (no instrumentId in inner rows) omit all standard fields.
+    Normalises all date values to YYYY-MM-DD.
+    If allowed_instruments is given, standard event records whose outer instrumentId
+    is not in that set are skipped. Custom/reference events are never filtered.
+    """
+    from collections import defaultdict
+
+    # Pre-classify each event_id so we only scan once
+    event_ids = list({evt.get("eventId", "") for evt in records})
+    custom_events = {eid for eid in event_ids if _is_custom_event(records, eid)}
+
+    event_rows: dict = defaultdict(list)
+    # For custom/reference events, dedup by inner value-id so repeated event records
+    # (same data across different posting dates / instruments) don't multiply rows.
+    seen_custom_value_ids: dict = defaultdict(set)
+
+    for event in records:
+        event_id = event.get("eventId", "")
+        is_custom = event_id in custom_events
+
+        # Outer event-level fallbacks (always camelCase at top level)
+        outer_posting = _parse_import_date(event.get("postingDate") or event.get("PostingDate", ""))
+        outer_effective = _parse_import_date(event.get("effectiveDate") or event.get("EffectiveDate", ""))
+        outer_instrument = (event.get("instrumentId") or event.get("InstrumentId", "")).strip()
+
+        # Filter standard events by allowed instrument list
+        if not is_custom and allowed_instruments is not None and outer_instrument not in allowed_instruments:
+            continue
+
+        raw_values = event.get("eventDetail", {}).get("values", {})
+        for value_id, row_val in raw_values.items():
+            # Dedup: skip this inner row if we've already emitted it for this custom event
+            if is_custom:
+                if value_id in seen_custom_value_ids[event_id]:
+                    continue
+                seen_custom_value_ids[event_id].add(value_id)
+
+            if not isinstance(row_val, dict):
+                continue
+
+            if is_custom:
+                # Custom/reference events: no standard fields at all
+                row: dict = {}
+            else:
+                # Standard events: include the four standard fields
+                inner_posting = _parse_import_date(
+                    row_val.get("PostingDate") or row_val.get("postingDate")
+                ) or outer_posting
+                inner_effective = _parse_import_date(
+                    row_val.get("EffectiveDate") or row_val.get("effectiveDate")
+                ) or outer_effective
+                inner_instrument = (
+                    row_val.get("InstrumentId") or row_val.get("instrumentId") or outer_instrument
+                )
+                # attributeId (either case) maps to SubInstrumentId
+                inner_subinstr = str(
+                    row_val.get("AttributeId") or row_val.get("attributeId") or ""
+                )
+                row = {
+                    "PostingDate":     inner_posting,
+                    "EffectiveDate":   inner_effective,
+                    "InstrumentId":    inner_instrument,
+                    "SubInstrumentId": inner_subinstr,
+                }
+
+            for key, value in row_val.items():
+                if key in _IMPORT_FIXED_KEYS:
+                    continue
+                if isinstance(value, dict) and "$date" in value:
+                    row[key] = _parse_import_date(value)
+                elif isinstance(value, dict) and "$oid" in value:
+                    # Skip embedded object-id fields
+                    continue
+                else:
+                    row[key] = value
+
+            event_rows[event_id].append(row)
+
+    ts = datetime.now(timezone.utc).isoformat()
+    # Activity-data only: enforce canonical sort
+    # (instrumentid ASC, postingdate ASC, effectivedate ASC, subinstrumentid ASC)
+    # for every non-custom event. Custom/reference events are left untouched —
+    # they have no instrumentid/postingdate/effectivedate/subinstrumentid axis.
+    for _eid, _rows in event_rows.items():
+        if _eid not in custom_events:
+            _sort_activity_rows(_rows)
+    return [
+        {"id": str(uuid.uuid4()), "event_name": eid, "data_rows": rows, "created_at": ts}
+        for eid, rows in event_rows.items()
+    ]
+
+def _validate_imported_events(data: Any) -> str | None:
+    """Return an error string if data does not match the required format, else None."""
+    if not isinstance(data, list):
+        return "File must contain a JSON array of event objects."
+    if len(data) == 0:
+        return "The JSON array is empty — no events to import."
+    for i, item in enumerate(data):
+        if not isinstance(item, dict):
+            return f"Item at index {i} is not a JSON object."
+        missing = REQUIRED_EVENT_FIELDS - item.keys()
+        if missing:
+            return f"Item at index {i} is missing required fields: {', '.join(sorted(missing))}."
+        if not isinstance(item.get("eventDetail"), dict):
+            return f"Item at index {i}: 'eventDetail' must be a JSON object."
+        if "values" not in item["eventDetail"]:
+            return f"Item at index {i}: 'eventDetail' must contain a 'values' field."
+    return None
+
+
+@api_router.post("/import-events/transform")
+async def import_and_transform_events(file: UploadFile = File(...)):
+    """
+    Full import pipeline: validate JSON → persist raw → transform to
+    event definitions + event data and persist both.
+    Returns a structured result with success/failure details for each step.
+    """
+    # ---- Read and validate file ----
+    if not file.filename or not file.filename.lower().endswith(".json"):
+        raise HTTPException(status_code=400, detail="Only .json files are accepted.")
+    try:
+        content = await file.read()
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Could not read file: {e}")
+
+    try:
+        records = json.loads(content.decode("utf-8"))
+    except Exception:
+        raise HTTPException(status_code=400, detail="The file is not valid JSON. Please check the file and try again.")
+
+    validation_error = _validate_imported_events(records)
+    if validation_error:
+        raise HTTPException(status_code=422, detail=validation_error)
+
+    import_ts = datetime.now(timezone.utc).isoformat()
+    # ---- Instrument selection (1–2 instruments for activity data) ----
+    selected_instruments = _select_instruments(records, max_count=2)
+    allowed_instruments_set = set(selected_instruments) if selected_instruments else None
+
+    result = {
+        "imported_count": len(records),
+        "selected_instruments": selected_instruments,
+        "event_definitions": None,
+        "event_data": None,
+    }
+
+    # ---- Step 1: Persist raw to imported_events ----
+    try:
+        docs = []
+        for item in records:
+            doc = dict(item)
+            doc["_imported_at"] = import_ts
+            doc.pop("_id", None)
+            docs.append(doc)
+        await db.imported_events.insert_many(docs)
+    except Exception as e:
+        logger.warning(f"Could not persist raw events to imported_events: {e}")
+        # Non-fatal — continue with transformation
+
+    # ---- Step 2: Transform → Event Definitions (MUST complete before Event Data) ----
+    def_error = None
+    definitions = []
+    try:
+        definitions = _build_event_definitions_from_import(records, allowed_instruments=allowed_instruments_set)
+        if not definitions:
+            def_error = "No event types could be extracted from the uploaded file."
+        else:
+            await db.event_definitions.delete_many({})
+            await db.event_definitions.insert_many([dict(d) for d in definitions])
+            result["event_definitions"] = {
+                "success": True,
+                "count": len(definitions),
+                "names": [d["event_name"] for d in definitions],
+                "types": {d["event_name"]: d["eventTable"] for d in definitions},
+            }
+    except Exception as e:
+        logger.error(f"Event definition transformation failed: {e}")
+        def_error = f"Could not build event definitions: {e}"
+
+    if def_error:
+        result["event_definitions"] = {"success": False, "error": def_error}
+
+    # ---- Step 3: Transform → Event Data (uses classification from Step 2) ----
+    data_error = None
+    try:
+        event_data_list = _build_event_data_from_import(records, allowed_instruments=allowed_instruments_set)
+        if not event_data_list:
+            data_error = "No event data rows could be extracted from the uploaded file."
+        else:
+            await db.event_data.delete_many({})
+            rows_by_event = {}
+            for ed in event_data_list:
+                await db.event_data.insert_one(dict(ed))
+                rows_by_event[ed["event_name"]] = len(ed["data_rows"])
+            result["event_data"] = {
+                "success": True,
+                "total_rows": sum(rows_by_event.values()),
+                "by_event": rows_by_event,
+            }
+    except Exception as e:
+        logger.error(f"Event data transformation failed: {e}")
+        data_error = f"Could not build event data: {e}"
+
+    if data_error:
+        result["event_data"] = {"success": False, "error": data_error}
+
+    # If BOTH transformations failed, surface as a 500
+    if not result["event_definitions"]["success"] and not result["event_data"]["success"]:
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                f"Both transformations failed. "
+                f"Event definitions: {result['event_definitions']['error']}. "
+                f"Event data: {result['event_data']['error']}."
+            ),
+        )
+
+    return result
+
+
+# ── Saved Rules CRUD ────────────────────────────────────────────────────
+
+@api_router.get("/saved-rules")
+async def list_saved_rules(summary: int = 0):
+    """List all saved rule builder configurations.
+    Pass ?summary=1 to exclude generatedCode (fast list for UI display).
+    """
+    try:
+        projection = {"_id": 0}
+        if summary:
+            projection["generatedCode"] = 0
+        rules = await db.saved_rules.find({}, projection).sort("updated_at", -1).to_list(500)
+        return rules
+    except Exception as e:
+        logger.error(f"Error listing saved rules: {e}")
+        return []
+
+@api_router.post("/saved-rules")
+async def save_rule(request: dict):
+    """Save or update a rule builder configuration. Rule name must be unique."""
+    name = (request.get("name") or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Rule name is required.")
+
+    rule_id = request.get("id")
+    now = datetime.now(timezone.utc).isoformat()
+
+    # Check uniqueness: no other rule with same name (case-insensitive)
+    existing = await db.saved_rules.find_one(
+        {"name": {"$regex": f"^{re.escape(name)}$", "$options": "i"}},
+        {"_id": 0, "id": 1},
+    )
+    if existing and (not rule_id or existing["id"] != rule_id):
+        raise HTTPException(
+            status_code=409,
+            detail=f"A rule named \"{name}\" already exists. Please choose a different name.",
+        )
+
+    # Priority uniqueness across rules AND schedules
+    priority = request.get("priority")
+    if priority is not None:
+        priority = int(priority)
+        # Check other rules
+        rule_with_priority = await db.saved_rules.find_one(
+            {"priority": priority, **({"id": {"$ne": rule_id}} if rule_id else {})},
+            {"_id": 0, "id": 1, "name": 1},
+        )
+        if rule_with_priority:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Priority {priority} is already used by rule \"{rule_with_priority['name']}\". Please choose a different priority.",
+            )
+        # Check schedules collection
+        sched_with_priority = await db.saved_schedules.find_one(
+            {"priority": priority},
+            {"_id": 0, "id": 1, "name": 1},
+        )
+        if sched_with_priority:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Priority {priority} is already used by schedule \"{sched_with_priority['name']}\". Please choose a different priority.",
+            )
+
+    doc = {
+        "name": name,
+        "priority": priority,
+        "ruleType": request.get("ruleType", "simple_calc"),
+        "variables": request.get("variables", []),
+        "conditions": request.get("conditions", []),
+        "elseFormula": request.get("elseFormula", ""),
+        "conditionResultVar": request.get("conditionResultVar", "result"),
+        "iterations": request.get("iterations", []),
+        "iterConfig": request.get("iterConfig", {}),
+        "outputs": request.get("outputs", {}),
+        "inlineComment": request.get("inlineComment", False),
+        "commentText": request.get("commentText", ""),
+        "customCode": request.get("customCode", ""),
+        "generatedCode": request.get("generatedCode", ""),
+        "steps": request.get("steps", []),
+        "updated_at": now,
+    }
+
+    if rule_id:
+        doc["id"] = rule_id
+        await db.saved_rules.replace_one({"id": rule_id}, doc, upsert=True)
+    else:
+        doc["id"] = str(uuid.uuid4())
+        doc["created_at"] = now
+        await db.saved_rules.insert_one(doc)
+
+    return {"success": True, "id": doc["id"], "message": f"Rule \"{name}\" saved."}
+
+# NOTE: Static routes (/saved-rules/reorder) MUST be declared BEFORE the
+# parameterized routes (/saved-rules/{rule_id}) — otherwise FastAPI matches
+# "reorder" as a {rule_id} path parameter.
+@api_router.put("/saved-rules/reorder")
+async def reorder_saved_rules(request: dict):
+    """Batch-update priorities for saved rules based on drag-and-drop ordering.
+    Expects: { "order": [ { "id": "...", "priority": 1 }, ... ] }
+    """
+    order = request.get("order", [])
+    if not order:
+        raise HTTPException(status_code=400, detail="No ordering provided.")
+    try:
+        for item in order:
+            rule_id = item.get("id")
+            priority = item.get("priority")
+            if rule_id is not None and priority is not None:
+                await db.saved_rules.update_one(
+                    {"id": rule_id},
+                    {"$set": {"priority": int(priority)}},
+                )
+        return {"success": True, "message": f"Updated priorities for {len(order)} rules."}
+    except Exception as e:
+        logger.error(f"Error reordering rules: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@api_router.delete("/saved-rules/{rule_id}")
+async def delete_saved_rule(rule_id: str):
+    """Delete a saved rule by its id."""
+    result = await db.saved_rules.delete_one({"id": rule_id})
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Rule not found.")
+    return {"success": True, "message": "Rule deleted."}
+
+@api_router.put("/saved-rules/{rule_id}")
+async def update_saved_rule(rule_id: str, request: dict):
+    """Patch specific fields of a saved rule (generatedCode, outputs, steps, etc.)."""
+    allowed = {"generatedCode", "outputs", "steps", "name", "priority", "variables",
+               "conditions", "elseFormula", "conditionResultVar", "iterations",
+               "iterConfig", "inlineComment", "commentText", "ruleType"}
+    update_fields = {k: v for k, v in request.items() if k in allowed}
+    if not update_fields:
+        raise HTTPException(status_code=400, detail="No valid fields to update.")
+    result = await db.saved_rules.update_one({"id": rule_id}, {"$set": update_fields})
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Rule not found.")
+    return {"success": True, "message": "Rule updated."}
+
+@api_router.delete("/saved-rules")
+async def delete_all_saved_rules():
+    """Delete ALL saved rules."""
+    result = await db.saved_rules.delete_many({})
+    return {"success": True, "deleted": result.deleted_count, "message": f"Deleted {result.deleted_count} rule(s)."}
+
+
+@api_router.put("/saved-schedules/reorder")
+async def reorder_saved_schedules(request: dict):
+    """Batch-update priorities for saved schedules based on drag-and-drop ordering.
+    Expects: { "order": [ { "id": "...", "priority": 1 }, ... ] }
+    """
+    order = request.get("order", [])
+    if not order:
+        raise HTTPException(status_code=400, detail="No ordering provided.")
+    try:
+        for item in order:
+            sched_id = item.get("id")
+            priority = item.get("priority")
+            if sched_id is not None and priority is not None:
+                await db.saved_schedules.update_one(
+                    {"id": sched_id},
+                    {"$set": {"priority": int(priority)}},
+                )
+        return {"success": True, "message": f"Updated priorities for {len(order)} schedules."}
+    except Exception as e:
+        logger.error(f"Error reordering schedules: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ── User Templates CRUD ─────────────────────────────────────────────────
+
+async def _mirror_user_template_to_dsl(name: str, combined_code: str, rules: list) -> None:
+    """Mirror a user_template into dsl_templates (upsert by name) and append a
+    versioned artifact in dsl_template_artifacts.
+
+    `combined_code` from the rule builder is *DSL* source (not Python). To make
+    the artifact directly executable by FyntracPythonModel.ModelRunner, we
+    compile it through the same path the playground uses
+    (`dsl_to_python_multi_event` / `dsl_to_python_standalone`). The compiled
+    Python defines `process_event_data(...)` (or `process_standalone(...)`),
+    which is the entry point ModelRunner expects.
+    """
+    if not name:
+        return
+    try:
+        now_iso = datetime.now(timezone.utc).isoformat()
+
+        # Compile DSL → Python so the artifact is runnable by ModelRunner.
+        python_code = ""
+        compile_error = None
+        try:
+            referenced_events = extract_event_names_from_dsl(combined_code or "")
+            all_event_fields: Dict[str, Dict[str, Any]] = {}
+            for evt_name in referenced_events:
+                evt = await db.event_definitions.find_one(
+                    {"event_name": evt_name}, {"_id": 0}
+                )
+                if evt:
+                    all_event_fields[evt_name] = {
+                        "fields": evt.get("fields", []),
+                        "eventType": evt.get("eventType", "activity"),
+                    }
+            if all_event_fields:
+                python_code = dsl_to_python_multi_event(
+                    combined_code or "", all_event_fields
+                )
+            else:
+                python_code = dsl_to_python_standalone(combined_code or "")
+        except Exception as e:
+            compile_error = str(e)
+            logger.warning(
+                f"DSL→Python compile failed for user template '{name}': {e}"
+            )
+
+        # Upsert dsl_templates by name. Preserve existing id when updating so
+        # the artifact's template_id remains stable across edits.
+        existing = await db.dsl_templates.find_one({"name": name}, {"_id": 0, "id": 1})
+        template_id = (existing or {}).get("id") or str(uuid.uuid4())
+        dsl_doc = {
+            "id": template_id,
+            "name": name,
+            "dsl_code": combined_code or "",
+            "python_code": python_code,
+            "updated_at": now_iso,
+        }
+        if not existing:
+            dsl_doc["created_at"] = now_iso
+        await db.dsl_templates.update_one(
+            {"name": name},
+            {"$set": dsl_doc, "$setOnInsert": {"source": "user_template"}},
+            upsert=True,
+        )
+
+        # Determine next artifact version for this template.
+        latest = await db.dsl_template_artifacts.find_one(
+            {"template_id": template_id},
+            {"_id": 0, "version": 1},
+            sort=[("version", -1)],
+        )
+        next_version = 1
+        if latest and isinstance(latest.get("version"), int):
+            next_version = latest["version"] + 1
+
+        artifact_doc = {
+            "id": str(uuid.uuid4()),
+            "template_id": template_id,
+            "template_name": name,
+            "version": next_version,
+            "python_code": python_code,
+            "rules_count": len(rules or []),
+            "created_at": now_iso,
+            "read_only": True,
+        }
+        if compile_error:
+            artifact_doc["compile_error"] = compile_error
+        await db.dsl_template_artifacts.insert_one(artifact_doc)
+
+        keep_versions = os.environ.get(
+            "KEEP_TEMPLATE_ARTIFACT_VERSIONS", "false"
+        ).lower() in ("1", "true", "yes")
+        if not keep_versions:
+            await db.dsl_template_artifacts.delete_many(
+                {"template_id": template_id, "version": {"$lt": next_version}}
+            )
+    except Exception as e:
+        logger.warning(f"Failed to mirror user template '{name}' to dsl_templates: {e}")
+
+
+@api_router.get("/user-templates")
+async def list_user_templates():
+    """List all user-created templates."""
+    try:
+        templates = await db.user_templates.find({}, {"_id": 0}).sort("created_at", -1).to_list(500)
+        return templates
+    except Exception as e:
+        logger.error(f"Error listing user templates: {e}")
+        return []
+
+@api_router.post("/user-templates")
+async def save_user_template(request: dict):
+    """Create a user template from saved rules."""
+    name = (request.get("name") or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Template name is required.")
+    description = (request.get("description") or "").strip()
+    category = (request.get("category") or "User Created").strip()
+    rules = request.get("rules", [])
+    schedules = request.get("schedules", [])
+    combined_code = request.get("combinedCode", "")
+
+    # Check name uniqueness
+    existing = await db.user_templates.find_one(
+        {"name": {"$regex": f"^{re.escape(name)}$", "$options": "i"}},
+        {"_id": 0, "id": 1},
+    )
+    if existing:
+        raise HTTPException(status_code=409, detail=f"A template named \"{name}\" already exists.")
+
+    now = datetime.now(timezone.utc).isoformat()
+    doc = {
+        "id": str(uuid.uuid4()),
+        "name": name,
+        "description": description,
+        "category": category,
+        "rules": rules,
+        "schedules": schedules,
+        "combinedCode": combined_code,
+        "created_at": now,
+        "updated_at": now,
+    }
+    await db.user_templates.insert_one(doc)
+    # Note: dsl_templates / dsl_template_artifacts are populated only when the
+    # user explicitly clicks Deploy (POST /user-templates/{id}/deploy).
+    return {"success": True, "id": doc["id"], "message": f"Template \"{name}\" created."}
+
+@api_router.delete("/user-templates/{template_id}")
+async def delete_user_template(template_id: str):
+    """Delete a user template by id."""
+    existing = await db.user_templates.find_one({"id": template_id}, {"_id": 0, "name": 1})
+    result = await db.user_templates.delete_one({"id": template_id})
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Template not found.")
+    # Cascade delete the mirrored dsl_template + its artifacts.
+    if existing and existing.get("name"):
+        try:
+            mirrored = await db.dsl_templates.find_one(
+                {"name": existing["name"]}, {"_id": 0, "id": 1}
+            )
+            await db.dsl_templates.delete_one({"name": existing["name"]})
+            if mirrored and mirrored.get("id"):
+                await db.dsl_template_artifacts.delete_many(
+                    {"template_id": mirrored["id"]}
+                )
+        except Exception as e:
+            logger.warning(
+                f"Failed to cascade-delete dsl_template mirror for '{existing['name']}': {e}"
+            )
+    return {"success": True, "message": "Template deleted."}
+
+@api_router.put("/user-templates/{template_id}")
+async def update_user_template(template_id: str, request: dict):
+    """Overwrite an existing user template's rules and code (keeps name/description/category)."""
+    existing = await db.user_templates.find_one({"id": template_id}, {"_id": 0})
+    if not existing:
+        raise HTTPException(status_code=404, detail="Template not found.")
+    now = datetime.now(timezone.utc).isoformat()
+    update_fields = {"updated_at": now}
+    if "rules" in request:
+        update_fields["rules"] = request["rules"]
+    if "schedules" in request:
+        update_fields["schedules"] = request["schedules"]
+    if "combinedCode" in request:
+        update_fields["combinedCode"] = request["combinedCode"]
+    # Allow optional metadata updates
+    if "description" in request:
+        update_fields["description"] = request["description"]
+    if "category" in request:
+        update_fields["category"] = request["category"]
+    await db.user_templates.update_one({"id": template_id}, {"$set": update_fields})
+    # Note: dsl_templates / dsl_template_artifacts are NOT auto-updated here.
+    # The user must click Deploy (POST /user-templates/{id}/deploy) to push
+    # changes to the runtime.
+    return {"success": True, "id": template_id, "message": f"Template \"{existing['name']}\" updated."}
+
+
+@api_router.post("/user-templates/{template_id}/deploy")
+async def deploy_user_template(template_id: str):
+    """
+    Deploy a single user template to the runtime.
+
+    Compiles the user_template's DSL using the *current* event_definitions
+    schema and writes:
+      - dsl_templates: one document keyed by template name (DSL + ready-to-run
+        Python in `python_code`).
+      - dsl_template_artifacts: a new versioned snapshot scoped to this
+        template's id (older versions of the same template are pruned unless
+        KEEP_TEMPLATE_ARTIFACT_VERSIONS=true).
+
+    Only the named template's documents are touched; all other templates and
+    their artifacts are left untouched.
+    """
+    existing = await db.user_templates.find_one({"id": template_id}, {"_id": 0})
+    if not existing:
+        raise HTTPException(status_code=404, detail="Template not found.")
+
+    name = existing.get("name") or ""
+    if not name:
+        raise HTTPException(status_code=400, detail="Template has no name; cannot deploy.")
+
+    combined_code = existing.get("combinedCode") or ""
+    rules = existing.get("rules") or []
+
+    await _mirror_user_template_to_dsl(name, combined_code, rules)
+
+    # Read back the freshly-written rows so the caller gets confirmation of
+    # what the runtime will see.
+    dsl_doc = await db.dsl_templates.find_one(
+        {"name": name},
+        {"_id": 0, "id": 1, "updated_at": 1},
+    ) or {}
+    artifact = await db.dsl_template_artifacts.find_one(
+        {"template_id": dsl_doc.get("id")},
+        {"_id": 0, "id": 1, "version": 1, "created_at": 1, "compile_error": 1},
+        sort=[("version", -1)],
+    ) or {}
+
+    return {
+        "success": True,
+        "message": f"Template \"{name}\" deployed.",
+        "template": {"id": dsl_doc.get("id"), "name": name, "updated_at": dsl_doc.get("updated_at")},
+        "artifact": artifact,
+    }
+
+
+# ── Template Sample Data ────────────────────────────────────────────────
+
+@api_router.post("/template-sample-data/{template_id}")
+async def load_template_sample_data(template_id: str):
+    """Load pre-defined sample event definitions and event data for a specific template."""
+    import importlib, sys, os
+    backend_dir = os.path.dirname(os.path.abspath(__file__))
+    if backend_dir not in sys.path:
+        sys.path.insert(0, backend_dir)
+    from template_sample_data import TEMPLATE_SAMPLE_DATA
+
+    if template_id not in TEMPLATE_SAMPLE_DATA:
+        raise HTTPException(status_code=404, detail=f"No sample data available for template '{template_id}'")
+
+    sample = TEMPLATE_SAMPLE_DATA[template_id]
+
+    for evt in sample["events"]:
+        existing = await db.event_definitions.find_one({"event_name": evt["event_name"]})
+        if not existing:
+            doc = {
+                "id": str(uuid.uuid4()),
+                "event_name": evt["event_name"],
+                "fields": evt["fields"],
+                "eventType": evt.get("eventType", "activity"),
+                "eventTable": evt.get("eventTable", "standard"),
+                "created_at": datetime.utcnow().isoformat(),
+            }
+            await db.event_definitions.insert_one(doc)
+
+    for ed in sample["event_data"]:
+        await db.event_data.delete_many({"event_name": ed["event_name"]})
+        doc = {
+            "event_name": ed["event_name"],
+            "data_rows": ed["data_rows"],
+            "created_at": datetime.utcnow().isoformat(),
+        }
+        await db.event_data.insert_one(doc)
+
+    events = await db.event_definitions.find({}, {"_id": 0}).to_list(1000)
+    return {"success": True, "events": events}
+
+# ── Saved Schedules CRUD ────────────────────────────────────────────────
+
+@api_router.get("/saved-schedules")
+async def list_saved_schedules(summary: int = 0):
+    """List all saved schedule builder configurations.
+    Pass ?summary=1 to exclude generatedCode (fast list for UI display).
+    """
+    try:
+        projection = {"_id": 0}
+        if summary:
+            projection["generatedCode"] = 0
+        schedules = await db.saved_schedules.find({}, projection).sort("updated_at", -1).to_list(500)
+        return schedules
+    except Exception as e:
+        logger.error(f"Error listing saved schedules: {e}")
+        return []
+
+@api_router.post("/saved-schedules")
+async def save_schedule(request: dict):
+    """Save or update a schedule builder configuration."""
+    name = (request.get("name") or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Schedule name is required.")
+
+    schedule_id = request.get("id")
+    now = datetime.now(timezone.utc).isoformat()
+
+    # Check uniqueness: no other schedule with same name (case-insensitive)
+    existing = await db.saved_schedules.find_one(
+        {"name": {"$regex": f"^{re.escape(name)}$", "$options": "i"}},
+        {"_id": 0, "id": 1},
+    )
+    if existing and (not schedule_id or existing["id"] != schedule_id):
+        raise HTTPException(
+            status_code=409,
+            detail=f"A schedule named \"{name}\" already exists. Please choose a different name.",
+        )
+
+    # Priority uniqueness across rules AND schedules
+    priority = request.get("priority")
+    if priority is not None:
+        priority = int(priority)
+        # Check rules collection
+        rule_with_priority = await db.saved_rules.find_one(
+            {"priority": priority, **({"id": {"$ne": schedule_id}} if schedule_id else {})},
+            {"_id": 0, "id": 1, "name": 1},
+        )
+        if rule_with_priority:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Priority {priority} is already used by rule \"{rule_with_priority['name']}\". Please choose a different priority.",
+            )
+        # Check schedules collection
+        sched_with_priority = await db.saved_schedules.find_one(
+            {"priority": priority, **({"id": {"$ne": schedule_id}} if schedule_id else {})},
+            {"_id": 0, "id": 1, "name": 1},
+        )
+        if sched_with_priority:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Priority {priority} is already used by schedule \"{sched_with_priority['name']}\". Please choose a different priority.",
+            )
+
+    doc = {
+        "name": name,
+        "priority": priority,
+        "generatedCode": request.get("generatedCode", ""),
+        "config": request.get("config", {}),
+        "updated_at": now,
+    }
+
+    if schedule_id:
+        doc["id"] = schedule_id
+        await db.saved_schedules.replace_one({"id": schedule_id}, doc, upsert=True)
+    else:
+        doc["id"] = str(uuid.uuid4())
+        doc["created_at"] = now
+        await db.saved_schedules.insert_one(doc)
+
+    return {"success": True, "id": doc["id"], "message": f"Schedule \"{name}\" saved."}
+
+@api_router.delete("/saved-schedules/{schedule_id}")
+async def delete_saved_schedule(schedule_id: str):
+    """Delete a saved schedule by its id."""
+    result = await db.saved_schedules.delete_one({"id": schedule_id})
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Schedule not found.")
+    return {"success": True, "message": "Schedule deleted."}
+
+@api_router.delete("/saved-schedules")
+async def delete_all_saved_schedules():
+    """Delete ALL saved schedules."""
+    result = await db.saved_schedules.delete_many({})
+    return {"success": True, "deleted": result.deleted_count, "message": f"Deleted {result.deleted_count} schedule(s)."}
+
+
+# ── Combined code endpoint (rules + schedules ordered by priority) ──────
+
+@api_router.get("/combined-code")
+async def get_combined_code():
+    """Return generated code from all saved rules and schedules, ordered by priority (ascending).
+
+    The 'Dependencies from saved rules' section inside each rule's generatedCode
+    re-emits variables that were already defined (and correctly ordered) by earlier
+    rules.  When the combined code is executed, those re-emissions overwrite the
+    correct values with potentially wrong-ordered ones (e.g. totalssp used before
+    it is computed).  To prevent this we track every variable name that has already
+    been assigned and strip any re-assignment from later rules' dependency sections.
+    """
+    import re as _re
+    try:
+        rules = await db.saved_rules.find({}, {"_id": 0}).to_list(500)
+        schedules = await db.saved_schedules.find({}, {"_id": 0}).to_list(500)
+
+        items = []
+        for r in rules:
+            p = r.get("priority")
+            items.append({"priority": p if p is not None else float('inf'), "code": r.get("generatedCode", ""), "name": r.get("name", "")})
+        for s in schedules:
+            p = s.get("priority")
+            items.append({"priority": p if p is not None else float('inf'), "code": s.get("generatedCode", ""), "name": s.get("name", "")})
+
+        items.sort(key=lambda x: (x["priority"], x["name"]))
+
+        _assign_re = _re.compile(r'^([A-Za-z_][A-Za-z0-9_]*)\s*=(?!=)')
+
+        def strip_dependencies_section(code: str) -> str:
+            """Remove lines between '## Dependencies from saved rules' and the next '##' heading."""
+            out = []
+            in_deps = False
+            for line in code.split('\n'):
+                stripped = line.strip()
+                if stripped == '## Dependencies from saved rules':
+                    in_deps = True
+                    out.append(line)
+                    continue
+                if in_deps:
+                    if stripped.startswith('## ') and not stripped.startswith('## ═'):
+                        in_deps = False
+                        out.append(line)
+                    continue
+                out.append(line)
+            return '\n'.join(out)
+
+        # Strip deps sections from EVERY rule first. The deps section is a
+        # snapshot meant for standalone execution; in combined execution every
+        # rule runs anyway, and keeping deps creates phantom cross-rule
+        # dependencies (e.g. Stage 1's deps referring to a Schedule defined by
+        # Stage 2) that lead to NameError at runtime.
+        for it in items:
+            it['code'] = strip_dependencies_section(it.get('code', ''))
+
+        # ── Topological reorder: if rule A's body references a symbol that
+        # rule B defines, B must come before A — even if A has a lower priority
+        # number. This prevents "cannot access local variable 'X'" errors when
+        # a high-priority rule references something defined by a lower-priority
+        # rule (e.g., a Schedule defined later).
+        _ident_re = _re.compile(r'\b([A-Za-z_][A-Za-z0-9_]*)\b')
+
+        def _parse_defines(code: str) -> set:
+            defines = set()
+            for line in code.split('\n'):
+                m = _assign_re.match(line.lstrip())
+                if m:
+                    defines.add(m.group(1))
+            return defines
+
+        def _parse_uses(code: str) -> set:
+            names = set()
+            for line in code.split('\n'):
+                s = line.strip()
+                if not s or s.startswith('#'):
+                    continue
+                if '=' in line and not line.lstrip().startswith('=='):
+                    rhs = line.split('=', 1)[1]
+                else:
+                    rhs = line
+                names.update(_ident_re.findall(rhs))
+            return names
+
+        for it in items:
+            it['_defs'] = _parse_defines(it['code'])
+            it['_uses'] = _parse_uses(it['code'])
+
+        n = len(items)
+        indeg = [0] * n
+        edges = [[] for _ in range(n)]
+        for j in range(n):
+            needed = items[j]['_uses'] - items[j]['_defs']
+            for i in range(n):
+                if i == j:
+                    continue
+                if items[i]['_defs'] & needed:
+                    edges[i].append(j)
+                    indeg[j] += 1
+
+        import heapq as _heapq
+        heap = [(items[i]['priority'], items[i]['name'], i) for i in range(n) if indeg[i] == 0]
+        _heapq.heapify(heap)
+        ordered_idx = []
+        local_indeg = list(indeg)
+        while heap:
+            _, _, i = _heapq.heappop(heap)
+            ordered_idx.append(i)
+            for j in edges[i]:
+                local_indeg[j] -= 1
+                if local_indeg[j] == 0:
+                    _heapq.heappush(heap, (items[j]['priority'], items[j]['name'], j))
+
+        if len(ordered_idx) == n:
+            items = [items[i] for i in ordered_idx]
+        # else: cycle — fall back to the priority order already in place
+
+        for it in items:
+            it.pop('_defs', None)
+            it.pop('_uses', None)
+
+        code_blocks = [it['code'] for it in items if it.get('code')]
+        combined = "\n\n".join(code_blocks)
+        return {"success": True, "code": combined, "count": len(code_blocks)}
+    except Exception as e:
+        logger.error(f"Error generating combined code: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+from contextlib import asynccontextmanager
+
+@asynccontextmanager
+async def lifespan(app):
+    """Application lifespan: startup and shutdown hooks."""
+    logger.info("Application startup")
+    yield
+    client.close()
+    logger.info("Application shutdown — MongoDB client closed")
 
 # Include router under /api so frontend proxying to /api/* resolves correctly
 app.include_router(api_router, prefix="/api")
@@ -3229,25 +4600,17 @@ app.include_router(api_router, prefix="/api")
 # prevents 404s when the proxy rewrites paths unexpectedly.
 app.include_router(api_router)
 
+# Set lifespan on app
+app.router.lifespan_context = lifespan
+
 # CORS
 app.add_middleware(
     CORSMiddleware,
     allow_credentials=True,
-    allow_origins=os.environ.get('CORS_ORIGINS', '*').split(','),
+    allow_origins=settings.cors_origins,
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-@app.on_event("startup")
-async def startup_load_custom_functions():
-    """Load all custom functions into the DSL runtime on startup"""
-    # Custom functions feature has been disabled; skip loading and registration
-    logger.info("Custom functions feature is disabled — skipping loading and registration at startup")
-    return
-
-@app.on_event("shutdown")
-async def shutdown_db_client():
-    client.close()
 
 # WebSocket endpoint for development (supports hot reload, live updates)
 @app.websocket("/ws")
@@ -3266,4 +4629,4 @@ async def websocket_endpoint(websocket: WebSocket):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(app, host=settings.host, port=settings.port)

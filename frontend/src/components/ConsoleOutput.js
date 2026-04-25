@@ -1,10 +1,12 @@
 import React, { useState } from "react";
 import axios from "axios";
 import { Button, Box } from '@mui/material';
+import AppDialog, { useAppDialog } from './AppDialog';
 import { Trash2, Terminal, Play, Table2, Code, Wand2, Download, Save, X } from "lucide-react";
 import { useToast } from "./ToastProvider";
-
-const API = '/api';
+import { API } from '../config';
+import { formatErrorForConsole } from '../agent/testing/translateError';
+import PostingDateModal from './PostingDateModal';
 
 // Helper to check if a string is JSON array/object
 const tryParseJSON = (str) => {
@@ -179,7 +181,7 @@ const PeriodDisplay = ({ data }) => {
 };
 
 // Smart print output renderer
-const PrintOutputRenderer = ({ output }) => {
+export const PrintOutputRenderer = ({ output }) => {
   const parsed = tryParseJSON(output);
 
   if (parsed !== null) {
@@ -243,8 +245,10 @@ const PrintOutputRenderer = ({ output }) => {
   return <span className="text-yellow-300">{output}</span>;
 };
 
-const ConsoleOutput = ({ output, onClear, dslCode, addConsoleLog, onCodeChange, events, handleSaveTemplate }) => {
+const ConsoleOutput = ({ output, onClear, dslCode, addConsoleLog, onCodeChange, events, handleSaveTemplate, onExecutionResult }) => {
   const [running, setRunning] = useState(false);
+  const [postingDateModalOpen, setPostingDateModalOpen] = useState(false);
+  const [availablePostingDates, setAvailablePostingDates] = useState([]);
   const toast = useToast();
 
   // Import all event fields as variables into the editor
@@ -297,7 +301,6 @@ const ConsoleOutput = ({ output, onClear, dslCode, addConsoleLog, onCodeChange, 
       // Section 2: Collected Arrays (for multi-row scenarios)
       lines.push(`## ─── ${eventName} Collected Arrays (all rows for instrument) ───`);
       lines.push(`${eventName}_effectivedates_arr = collect_by_instrument(${eventName}.effectivedate)`);
-      lines.push(`${eventName}_subinstrumentids_arr = collect_subinstrumentids()`);
       
       // Only add array collection for decimal fields (most common for iteration)
       event.fields.forEach((field) => {
@@ -382,19 +385,23 @@ const ConsoleOutput = ({ output, onClear, dslCode, addConsoleLog, onCodeChange, 
     }
   };
 
+  const { confirmProps, openConfirm } = useAppDialog();
+
   // Clear the editor content with confirmation
   const handleClearEditor = () => {
-    const confirmed = window.confirm("This action will clear all content from the editor. Do you want to proceed?");
-    if (!confirmed) {
-      addConsoleLog("Cancelled clear editor action", "info");
-      return;
-    }
-
-    if (onCodeChange) {
-      onCodeChange("");
-      addConsoleLog("✓ Editor cleared", "success");
-      toast.success("Editor cleared");
-    }
+    openConfirm({
+      title: "Clear Editor",
+      message: "This action will clear all content from the editor. Do you want to proceed?",
+      confirmLabel: "Clear",
+      confirmColor: "error",
+      onConfirm: () => {
+        if (onCodeChange) {
+          onCodeChange("");
+          addConsoleLog("✓ Editor cleared", "success");
+          toast.success("Editor cleared");
+        }
+      }
+    });
   };
 
   const handleRunCode = async () => {
@@ -403,13 +410,38 @@ const ConsoleOutput = ({ output, onClear, dslCode, addConsoleLog, onCodeChange, 
       return;
     }
 
+    // Fetch unique posting dates from loaded activity event data.
+    // If there is more than one, show the date-selection modal before running.
+    try {
+      const pdRes = await axios.get(`${API}/event-data/posting-dates`);
+      const dates = pdRes.data?.posting_dates || [];
+      if (dates.length > 1) {
+        setAvailablePostingDates(dates);
+        setPostingDateModalOpen(true);
+        return; // execution continues in handlePostingDateConfirm
+      }
+      // Zero or one posting date — proceed normally (pass the single date if present)
+      await executeCode(dates.length === 1 ? dates[0] : null);
+    } catch (_e) {
+      // If the endpoint fails (e.g. no event data loaded), just run without date scope
+      await executeCode(null);
+    }
+  };
+
+  const handlePostingDateConfirm = async (selectedDate) => {
+    setPostingDateModalOpen(false);
+    await executeCode(selectedDate);
+  };
+
+  const executeCode = async (postingDate) => {
     setRunning(true);
     addConsoleLog("Running DSL code...", "info");
 
     try {
-      const response = await axios.post(`${API}/dsl/run`, {
-        dsl_code: dslCode
-      });
+      const payload = { dsl_code: dslCode };
+      if (postingDate) payload.posting_date = postingDate;
+
+      const response = await axios.post(`${API}/dsl/run`, payload);
 
       if (response.data.success) {
         const eventsUsed = response.data.events_used?.length > 0 
@@ -435,11 +467,19 @@ const ConsoleOutput = ({ output, onClear, dslCode, addConsoleLog, onCodeChange, 
             "result"
           );
         });
+
+        // Propagate execution results for LivePreview
+        if (onExecutionResult) {
+          onExecutionResult({
+            transactions: response.data.transactions || [],
+            printOutputs: response.data.print_outputs || [],
+          });
+        }
       } else {
-        addConsoleLog(`✗ Error: ${response.data.error}`, "error");
+        addConsoleLog(`✗ ${formatErrorForConsole(response.data.error)}`, "error");
       }
     } catch (error) {
-      addConsoleLog(`✗ Error: ${error.response?.data?.detail || error.message}`, "error");
+      addConsoleLog(`✗ ${formatErrorForConsole(error.response?.data?.detail || error.message)}`, "error");
     } finally {
       setRunning(false);
     }
@@ -474,81 +514,6 @@ const ConsoleOutput = ({ output, onClear, dslCode, addConsoleLog, onCodeChange, 
         </div>
         
         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-            <Button
-              variant="outlined"
-              size="small"
-              onClick={handleClearEditor}
-              startIcon={<X size={12} />}
-              data-testid="clear-editor-button"
-              sx={{
-                fontSize: '0.75rem',
-                minHeight: 28,
-                px: 1,
-                py: 0.25,
-                color: '#8B949E',
-                borderColor: '#30363D',
-                bgcolor: 'transparent',
-                '&:hover': {
-                  borderColor: '#8B949E',
-                  bgcolor: 'rgba(139, 148, 158, 0.1)',
-                  color: '#E6EDF3',
-                },
-              }}
-            >
-              Clear Editor
-            </Button>
-
-          <Button 
-            variant="outlined" 
-            size="small" 
-            onClick={handleImportInputs}
-            disabled={!events || events.length === 0}
-            startIcon={<Download size={12} />}
-            data-testid="import-inputs-button"
-            sx={{
-              fontSize: '0.75rem',
-              minHeight: 28,
-              px: 1,
-              py: 0.25,
-              color: '#8B949E',
-              borderColor: '#30363D',
-              bgcolor: 'transparent',
-              '&:hover': {
-                borderColor: '#8B949E',
-                bgcolor: 'rgba(139, 148, 158, 0.1)',
-                color: '#E6EDF3',
-              },
-              '&:disabled': {
-                color: '#484F58',
-                borderColor: '#21262D',
-              },
-            }}
-          >
-            Import Inputs
-          </Button>
-          <Button 
-            variant="outlined" 
-            size="small" 
-            onClick={handleSaveTemplate}
-            startIcon={<Save size={12} />}
-            data-testid="save-template-button"
-            sx={{
-              fontSize: '0.75rem',
-              minHeight: 28,
-              px: 1,
-              py: 0.25,
-              color: '#8B949E',
-              borderColor: '#30363D',
-              bgcolor: 'transparent',
-              '&:hover': {
-                borderColor: '#8B949E',
-                bgcolor: 'rgba(139, 148, 158, 0.1)',
-                color: '#E6EDF3',
-              },
-            }}
-          >
-            Save as Template
-          </Button>
           <Button 
             variant="outlined" 
             size="small" 
@@ -619,6 +584,12 @@ const ConsoleOutput = ({ output, onClear, dslCode, addConsoleLog, onCodeChange, 
           >
             <Trash2 size={14} />
           </Button>
+      <PostingDateModal
+        open={postingDateModalOpen}
+        postingDates={availablePostingDates}
+        onConfirm={handlePostingDateConfirm}
+        onCancel={() => setPostingDateModalOpen(false)}
+      />
         </Box>
       </div>
       
@@ -645,6 +616,7 @@ const ConsoleOutput = ({ output, onClear, dslCode, addConsoleLog, onCodeChange, 
           )}
         </div>
       </Box>
+      <AppDialog {...confirmProps} />
     </div>
   );
 };

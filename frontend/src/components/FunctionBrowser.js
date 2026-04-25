@@ -2,8 +2,9 @@ import React, { useState, useMemo } from "react";
 import { Dialog, DialogContent, DialogTitle, Card, CardContent, Button, TextField, IconButton, InputAdornment, Chip, Box, Typography, Tooltip } from '@mui/material';
 import { Search, BookOpen, Copy, X, Sparkles } from "lucide-react";
 import { useToast } from "./ToastProvider";
+import { getExplanation } from "../agent/testing/explanationStore";
 
-const FunctionBrowser = ({ dslFunctions, onInsertFunction, onClose, onAskAI }) => {
+const FunctionBrowser = ({ dslFunctions, onClose, onAskAI }) => {
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedCategory, setSelectedCategory] = useState("All");
   const toast = useToast();
@@ -49,12 +50,12 @@ const FunctionBrowser = ({ dslFunctions, onInsertFunction, onClose, onAskAI }) =
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
             <BookOpen size={24} color="#5B5FED" />
             <Box>
-              <Typography variant="h4">DSL Function Browser</Typography>
+              <Typography variant="h4">Formula Library</Typography>
               <Typography variant="body2" color="text.secondary">
-                {dslFunctions.length} functions available
+                {dslFunctions.length} formulas available
                 {customCount > 0 && (
                   <Box component="span" sx={{ ml: 1, color: '#7C3AED' }}>
-                    ({customCount} custom)
+                    ({customCount} user-created)
                   </Box>
                 )}
               </Typography>
@@ -69,7 +70,7 @@ const FunctionBrowser = ({ dslFunctions, onInsertFunction, onClose, onAskAI }) =
       <DialogContent sx={{ display: 'flex', flexDirection: 'column', p: 3 }}>
         <Box sx={{ mb: 3 }}>
           <TextField
-            placeholder="Search functions by name, description, or parameters..."
+            placeholder="Search formulas by name or description..."
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
             fullWidth
@@ -111,7 +112,7 @@ const FunctionBrowser = ({ dslFunctions, onInsertFunction, onClose, onAskAI }) =
           </Box>
 
           <Typography variant="body2" color="text.secondary">
-            Showing {filteredFunctions.length} of {dslFunctions.length} functions
+            Showing {filteredFunctions.length} of {dslFunctions.length} formulas
           </Typography>
         </Box>
 
@@ -144,7 +145,7 @@ const FunctionBrowser = ({ dslFunctions, onInsertFunction, onClose, onAskAI }) =
                       {func.is_custom && (
                         <Chip
                           icon={<Sparkles size={10} />}
-                          label="Custom"
+                          label="User-Created"
                           size="small"
                           sx={{ 
                             ml: 0.5,
@@ -173,24 +174,37 @@ const FunctionBrowser = ({ dslFunctions, onInsertFunction, onClose, onAskAI }) =
                   </Typography>
                   
                   <Box sx={{ display: 'flex', gap: 1 }}>
-                    <Button
-                      variant="outlined"
-                      size="small"
-                      sx={{ flex: 1 }}
-                      onClick={() => {
-                        onInsertFunction(`${func.name}(${func.params})`);
-                        toast.success(`Inserted: ${func.name}()`);
-                      }}
-                      data-testid={`insert-${func.name}`}
-                    >
-                      Insert into Editor
-                    </Button>
                     {onAskAI && (
                       <Button
                         variant="contained"
                         size="small"
+                        fullWidth
                         onClick={() => {
-                          onAskAI(`Explain how to use the ${func.name} function with examples. Parameters: ${func.params}. Description: ${func.description}`);
+                          const explanation = getExplanation(func.name);
+                          // Build a single inline call expression — no fenced code, no print(), no result =
+                          const inlineCall = explanation?.inlineExample
+                            || `${func.name}(${func.params})`;
+                          const outputHint = explanation?.tested && explanation?.sampleOutput
+                            ? ` Verified result: \`${explanation.sampleOutput}\`.`
+                            : '';
+                          onAskAI(
+                            func.name,
+                            `Explain the \`${func.name}()\` DSL function in plain English using the FUNCTION-DEMO TEMPLATE.\n\n` +
+                            `Parameters: ${func.params}\n` +
+                            `Description: ${func.description}\n` +
+                            `Use this exact inline example (do NOT change it, do NOT wrap it in a fenced code block): \`${inlineCall}\`.${outputHint}\n\n` +
+                            `Required reply structure:\n` +
+                            `- One-sentence description of what \`${func.name}()\` does.\n` +
+                            `- A bold **Example:** label followed by the inline call above (single backticks only).\n` +
+                            `- A bold **Computation:** label followed by a bullet list: each argument value with a short meaning, the formula substitution in plain English, and the resulting value as inline code.\n` +
+                            `- A bold **When to use it in the Rule Builder:** label followed by one short tip referencing the right step (Parameters / Schedule / Iteration / Conditional / Transaction).\n\n` +
+                            `HARD RULES:\n` +
+                            `- NEVER use a fenced code block (no \`\`\`dsl, no \`\`\`python, no \`\`\` of any kind).\n` +
+                            `- NEVER include \`print(...)\`, \`result = ...\`, or \`##\` comment lines.\n` +
+                            `- NEVER write a custom multi-step DSL rule.\n` +
+                            `- NEVER call \`createTransaction()\`.\n` +
+                            `- NEVER tell the user to paste DSL into the editor.`
+                          );
                           onClose();
                         }}
                         startIcon={<Sparkles size={14} />}
@@ -213,9 +227,9 @@ const FunctionBrowser = ({ dslFunctions, onInsertFunction, onClose, onAskAI }) =
           {filteredFunctions.length === 0 && (
             <Box sx={{ textAlign: 'center', py: 6 }}>
               <Search size={48} color="#CED4DA" style={{ marginBottom: 16 }} />
-              <Typography variant="h5" sx={{ mb: 1 }}>No functions found</Typography>
+              <Typography variant="h5" sx={{ mb: 1 }}>No formulas found</Typography>
               <Typography variant="body2" color="text.secondary">
-                Try adjusting your search or filter criteria
+                Try a different search term or category
               </Typography>
             </Box>
           )}
@@ -223,7 +237,7 @@ const FunctionBrowser = ({ dslFunctions, onInsertFunction, onClose, onAskAI }) =
 
         <Box sx={{ pt: 2, borderTop: '1px solid #E9ECEF', bgcolor: '#F8F9FA', px: 2, py: 1.5, mx: -3, mb: -3, mt: 2 }}>
           <Typography variant="caption" color="text.secondary" sx={{ textAlign: 'center', display: 'block' }}>
-            Use "Build Function" to create custom DSL functions
+            Use "Build Formula" to create your own custom formulas
           </Typography>
         </Box>
       </DialogContent>

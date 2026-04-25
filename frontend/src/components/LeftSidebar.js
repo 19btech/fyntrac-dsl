@@ -1,12 +1,19 @@
 import React from "react";
-import { Box, Button, Card, Collapse, List, ListItemButton, ListItemIcon, ListItemText } from '@mui/material';
-import { FileText, Code2, RefreshCw, LogOut, ChevronDown, ChevronRight, Upload } from "lucide-react";
+import { Box, Button, Card, Collapse, List, ListItemButton, ListItemIcon, ListItemText, Tooltip, IconButton } from '@mui/material';
+import { FileText, RefreshCw, ChevronDown, ChevronRight, Upload, Eye } from "lucide-react";
 import { useToast } from "./ToastProvider";
+import ImportEventsModal from "./ImportEventsModal";
 
-const FYNTRAC_LOGO = "/logo.png";
+const formatDataType = (dt) => {
+  const map = { string: 'text', decimal: 'number', integer: 'whole number', int: 'whole number', boolean: 'yes/no', bool: 'yes/no', date: 'date' };
+  return map[(dt || '').toLowerCase()] || dt;
+};
+const formatEventTable = (t) => t;
+const formatEventType = (t) => t;
 
-const LeftSidebar = ({ events, selectedEvent, onEventSelect, onDownloadEvents, onSignOut }) => {
+const LeftSidebar = ({ events, selectedEvent, onEventSelect, onDownloadEvents, onImportSuccess, onViewEventData }) => {
   const [expandedEvent, setExpandedEvent] = React.useState(null);
+  const [importModalOpen, setImportModalOpen] = React.useState(false);
   const toast = useToast();
 
   const toggleExpand = (eventName) => {
@@ -41,13 +48,13 @@ const LeftSidebar = ({ events, selectedEvent, onEventSelect, onDownloadEvents, o
             <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1.5 }}>
               <RefreshCw size={16} color="#5B5FED" />
               <Box component="span" sx={{ fontSize: '0.8125rem', fontWeight: 600, color: '#212529' }}>
-                Event Configuration
+                Event Setup
               </Box>
             </Box>
             <Button
               variant="contained"
               size="small"
-              onClick={() => toast.info('Coming soon')}
+              onClick={() => setImportModalOpen(true)}
               fullWidth
               startIcon={<Upload size={14} color="#FFFFFF" />}
               data-testid="import-events-button"
@@ -78,7 +85,19 @@ const LeftSidebar = ({ events, selectedEvent, onEventSelect, onDownloadEvents, o
         <Box>
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1.5, px: 1 }}>
             <FileText size={16} color="#5B5FED" />
-            <Box component="span" sx={{ fontSize: '0.8125rem', fontWeight: 600, color: '#495057' }}>Events</Box>
+            <Box component="span" sx={{ fontSize: '0.8125rem', fontWeight: 600, color: '#495057', flex: 1 }}>Events</Box>
+            {events.length > 0 && onViewEventData && (
+              <Tooltip title="View event data" arrow>
+                <IconButton
+                  size="small"
+                  onClick={onViewEventData}
+                  data-testid="view-event-data-button"
+                  sx={{ p: 0.25, color: '#5B5FED', '&:hover': { bgcolor: 'rgba(91, 95, 237, 0.08)' } }}
+                >
+                  <Eye size={14} />
+                </IconButton>
+              </Tooltip>
+            )}
           </Box>
           {events.length === 0 ? (
             <Box sx={{ px: 1, py: 2 }}>
@@ -125,22 +144,43 @@ const LeftSidebar = ({ events, selectedEvent, onEventSelect, onDownloadEvents, o
                         <Box sx={{ fontSize: '0.75rem', color: '#6C757D', lineHeight: 1.6 }}>
                           {(() => {
                             const evtType = (event.eventType || event.event_type || '').toString().toLowerCase();
-                            const showStandard = evtType !== 'reference';
+                            const evtTable = (event.eventTable || event.event_table || 'standard').toString().toLowerCase();
+                            // Hide standard system fields for custom reference events
+                            const isCustomReference = evtTable === 'custom' && evtType === 'reference';
+                            const showStandard = !isCustomReference;
                             return (
                               <>
+                                {/* Show eventTable tag */}
+                                <Box sx={{ mb: 1, display: 'flex', gap: 0.5 }}>
+                                  <Box component="span" sx={{
+                                    fontSize: '0.625rem', fontWeight: 600, px: 0.75, py: 0.25, borderRadius: 0.5,
+                                    bgcolor: evtTable === 'standard' ? '#E8F5E9' : '#FFF3E0',
+                                    color: evtTable === 'standard' ? '#2E7D32' : '#E65100'
+                                  }}>
+                                    {formatEventTable(evtTable)}
+                                  </Box>
+                                  <Box component="span" sx={{
+                                    fontSize: '0.625rem', fontWeight: 600, px: 0.75, py: 0.25, borderRadius: 0.5,
+                                    bgcolor: evtType === 'activity' ? '#E3F2FD' : '#F3E5F5',
+                                    color: evtType === 'activity' ? '#1565C0' : '#7B1FA2'
+                                  }}>
+                                    {formatEventType(evtType)}
+                                  </Box>
+                                </Box>
+
                                 {showStandard && (
                                   <>
                                     <Box sx={{ mb: 0.5 }}>
-                                      <Box component="span" sx={{ fontFamily: 'monospace', color: '#5B5FED', fontWeight: 500 }}>• postingdate</Box>
+                                      <Box component="span" sx={{ fontFamily: 'monospace', color: '#5B5FED', fontWeight: 500 }}>• Posting Date</Box>
                                       <Box component="span" sx={{ color: '#ADB5BD', ml: 0.5 }}>(date)</Box>
                                     </Box>
                                     <Box sx={{ mb: 0.5 }}>
-                                      <Box component="span" sx={{ fontFamily: 'monospace', color: '#5B5FED', fontWeight: 500 }}>• effectivedate</Box>
+                                      <Box component="span" sx={{ fontFamily: 'monospace', color: '#5B5FED', fontWeight: 500 }}>• Effective Date</Box>
                                       <Box component="span" sx={{ color: '#ADB5BD', ml: 0.5 }}>(date)</Box>
                                     </Box>
                                     <Box sx={{ mb: 0.5 }}>
-                                      <Box component="span" sx={{ fontFamily: 'monospace', color: '#5B5FED', fontWeight: 500 }}>• subinstrumentid</Box>
-                                      <Box component="span" sx={{ color: '#ADB5BD', ml: 0.5 }}>(string)</Box>
+                                      <Box component="span" sx={{ fontFamily: 'monospace', color: '#5B5FED', fontWeight: 500 }}>• Sub-Instrument ID</Box>
+                                      <Box component="span" sx={{ color: '#ADB5BD', ml: 0.5 }}>(text)</Box>
                                     </Box>
                                   </>
                                 )}
@@ -148,7 +188,7 @@ const LeftSidebar = ({ events, selectedEvent, onEventSelect, onDownloadEvents, o
                                 {event.fields.map((field, idx) => (
                                   <Box key={idx} sx={{ mb: 0.5, display: 'flex', justifyContent: 'space-between' }}>
                                     <Box component="span" sx={{ fontFamily: 'monospace', fontWeight: 500 }}>{field.name}</Box>
-                                    <Box component="span" sx={{ color: '#ADB5BD' }}>({field.datatype})</Box>
+                                    <Box component="span" sx={{ color: '#ADB5BD' }}>({formatDataType(field.datatype)})</Box>
                                   </Box>
                                 ))}
                               </>
@@ -164,29 +204,27 @@ const LeftSidebar = ({ events, selectedEvent, onEventSelect, onDownloadEvents, o
           )}
         </Box>
       </Box>
-
-      <Box sx={{ p: 2, borderTop: '1px solid #E9ECEF' }}>
-        <Button 
-          variant="outlined" 
-          size="small" 
-          onClick={onSignOut}
-          fullWidth
-          startIcon={<LogOut size={16} />}
-          data-testid="signout-button"
-          sx={{
-            justifyContent: 'flex-start',
-            color: '#6C757D',
-            borderColor: '#CED4DA',
-            '&:hover': {
-              color: '#DC3545',
-              borderColor: '#F8D7DA',
-              bgcolor: '#FFF5F6',
-            },
-          }}
-        >
-          Sign Out
-        </Button>
-      </Box>
+      <ImportEventsModal
+        open={importModalOpen}
+        onClose={() => setImportModalOpen(false)}
+        onSuccess={(result) => {
+          setImportModalOpen(false);
+          const defNames = result?.event_definitions?.names?.join(', ');
+          const rowTotal = result?.event_data?.total_rows ?? 0;
+          const msg = defNames
+            ? `Events imported: ${defNames} — ${rowTotal} data row(s) loaded.`
+            : 'Events imported successfully.';
+          toast.success(msg);
+          // Show file labels in green in the Event Setup panel
+          try {
+            localStorage.setItem('uploadedEventFileName', 'Event.csv');
+            window.dispatchEvent(new CustomEvent('dsl-event-def-loaded', { detail: { filename: 'Event.csv' } }));
+            localStorage.setItem('uploadedExcelFileName', 'ActivityData.xlsx');
+            window.dispatchEvent(new CustomEvent('dsl-event-data-imported', { detail: { filename: 'ActivityData.xlsx' } }));
+          } catch (e) {}
+          if (onImportSuccess) onImportSuccess();
+        }}
+      />
     </Box>
   );
 };

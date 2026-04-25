@@ -1,10 +1,9 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import axios from "axios";
 import { useToast } from "./ToastProvider";
 import { X, Database, Download } from "lucide-react";
-import { Button, IconButton, Chip, Box, Typography, Table, TableHead, TableBody, TableRow, TableCell, Card, Tabs, Tab } from '@mui/material';
-
-const API = '/api';
+import { Button, IconButton, Chip, Box, Typography, Table, TableHead, TableBody, TableRow, TableCell, Card, Tabs, Tab, Alert } from '@mui/material';
+import { API } from '../config';
 
 const EventDataViewer = ({ onClose }) => {
   const [eventDataSummary, setEventDataSummary] = useState([]);
@@ -13,7 +12,34 @@ const EventDataViewer = ({ onClose }) => {
   const [loading, setLoading] = useState(false);
   const [leftTab, setLeftTab] = useState(0); // 0 = Events, 1 = Errors
   const [uploadErrors, setUploadErrors] = useState([]);
+  const [instrumentWarning, setInstrumentWarning] = useState(null); // array of instrument ids or null
   const toast = useToast();
+
+  const loadEventDataSummary = useCallback(async () => {
+    try {
+      // Clear prior viewer state before loading summary
+      setSelectedEvent(null);
+      setEventData(null);
+      setLeftTab(0);
+      const response = await axios.get(`${API}/event-data`);
+      setEventDataSummary(response.data);
+    } catch (error) {
+      console.error("Error loading event data summary:", error);
+    }
+  }, []);
+
+  const loadEventData = useCallback(async (eventName) => {
+    setLoading(true);
+    try {
+      const response = await axios.get(`${API}/event-data/${eventName}`);
+      setEventData(response.data);
+      setSelectedEvent(eventName);
+    } catch (error) {
+      toast.error("Failed to load event data");
+    } finally {
+      setLoading(false);
+    }
+  }, [toast]);
 
   useEffect(() => {
     loadEventDataSummary();
@@ -21,6 +47,11 @@ const EventDataViewer = ({ onClose }) => {
     try {
       const raw = localStorage.getItem('lastEventDataUploadErrors');
       if (raw) setUploadErrors(JSON.parse(raw));
+    } catch (e) {}
+    // load instrument warning from last JSON import
+    try {
+      const raw = localStorage.getItem('importSelectedInstruments');
+      if (raw) setInstrumentWarning(JSON.parse(raw));
     } catch (e) {}
     const uploadErrorsHandler = (e) => {
       try {
@@ -35,50 +66,37 @@ const EventDataViewer = ({ onClose }) => {
         setSelectedEvent(null);
         setEventData(null);
         setUploadErrors([]);
+        setInstrumentWarning(null);
         setLeftTab(0);
+        localStorage.removeItem('importSelectedInstruments');
       } catch (err) {}
+    };
+
+    const refreshHandler = () => {
+      loadEventDataSummary();
+      // Re-read instrument warning in case a new import just completed
+      try {
+        const raw = localStorage.getItem('importSelectedInstruments');
+        setInstrumentWarning(raw ? JSON.parse(raw) : null);
+      } catch (e) {}
     };
 
     window.addEventListener('dsl-upload-errors', uploadErrorsHandler);
     window.addEventListener('dsl-clear-event-viewer', clearViewerHandler);
+    window.addEventListener('dsl-event-data-refresh', refreshHandler);
     return () => {
       window.removeEventListener('dsl-upload-errors', uploadErrorsHandler);
       window.removeEventListener('dsl-clear-event-viewer', clearViewerHandler);
+      window.removeEventListener('dsl-event-data-refresh', refreshHandler);
     };
-  }, []);
+  }, [loadEventDataSummary]);
 
   // When summary is loaded and there's no selection, auto-select the first event
   useEffect(() => {
     if (eventDataSummary && eventDataSummary.length > 0 && !selectedEvent) {
       loadEventData(eventDataSummary[0].event_name);
     }
-  }, [eventDataSummary]);
-
-  const loadEventDataSummary = async () => {
-    try {
-      // Clear prior viewer state before loading summary
-      setSelectedEvent(null);
-      setEventData(null);
-      setLeftTab(0);
-      const response = await axios.get(`${API}/event-data`);
-      setEventDataSummary(response.data);
-    } catch (error) {
-      console.error("Error loading event data summary:", error);
-    }
-  };
-
-  const loadEventData = async (eventName) => {
-    setLoading(true);
-    try {
-      const response = await axios.get(`${API}/event-data/${eventName}`);
-      setEventData(response.data);
-      setSelectedEvent(eventName);
-    } catch (error) {
-      toast.error("Failed to load event data");
-    } finally {
-      setLoading(false);
-    }
-  };
+  }, [eventDataSummary, loadEventData, selectedEvent]);
 
   const downloadEventData = async (eventName) => {
     try {
@@ -100,7 +118,32 @@ const EventDataViewer = ({ onClose }) => {
 
   const getColumnHeaders = () => {
     if (!eventData || !eventData.data_rows || eventData.data_rows.length === 0) return [];
-    return Object.keys(eventData.data_rows[0]);
+    // Union all keys across every row so columns present only in later rows are not missed.
+    const seen = new Set();
+    const headers = [];
+    for (const row of eventData.data_rows) {
+      for (const key of Object.keys(row)) {
+        if (!seen.has(key)) {
+          seen.add(key);
+          headers.push(key);
+        }
+      }
+    }
+    return headers;
+  };
+
+  // Safely convert any cell value to a renderable string.
+  // Handles MongoDB extended JSON objects like {$oid: "..."} and {$date: "..."}.
+  const renderCellValue = (value) => {
+    if (value === null || value === undefined) return '';
+    if (typeof value === 'object') {
+      if (value.$date) return typeof value.$date === 'string' ? value.$date : String(value.$date);
+      if (value.$oid) return value.$oid;
+      if (value.$numberDecimal) return value.$numberDecimal;
+      if (value.$numberLong) return value.$numberLong;
+      return JSON.stringify(value);
+    }
+    return String(value);
   };
 
   return (
@@ -141,6 +184,21 @@ const EventDataViewer = ({ onClose }) => {
             <X size={20} />
           </IconButton>
         </Box>
+
+        {/* Instrument scope warning banner (from JSON import) */}
+        {instrumentWarning && instrumentWarning.length > 0 && (
+          <Box sx={{ px: 2, pt: 1.5, pb: 0.5 }}>
+            <Alert
+              severity="warning"
+              onClose={() => setInstrumentWarning(null)}
+              sx={{ fontSize: '0.8125rem' }}
+            >
+              This import has been loaded for {instrumentWarning.length} instrument{instrumentWarning.length > 1 ? 's' : ''} only. Data has been randomly selected for{' '}
+              <strong>{instrumentWarning.join(' and ')}</strong>.
+              All other instruments from the source JSON have been excluded.
+            </Alert>
+          </Box>
+        )}
 
         <Box sx={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
           {/* Left Panel - Event List */}
@@ -218,7 +276,7 @@ const EventDataViewer = ({ onClose }) => {
                     <Table size="small">
                       <TableHead>
                         <TableRow>
-                          <TableCell sx={{ fontWeight: 600, bgcolor: '#F8F9FA' }}>ErrorType</TableCell>
+                          <TableCell sx={{ fontWeight: 600, bgcolor: '#F8F9FA' }}>Error Type</TableCell>
                           <TableCell sx={{ fontWeight: 600, bgcolor: '#F8F9FA' }}>Message</TableCell>
                         </TableRow>
                       </TableHead>
@@ -295,7 +353,7 @@ const EventDataViewer = ({ onClose }) => {
                             </TableCell>
                             {getColumnHeaders().map((header, colIdx) => (
                               <TableCell key={colIdx} sx={{ fontFamily: 'monospace', fontSize: '0.8125rem', whiteSpace: 'nowrap' }}>
-                                {row[header]}
+                                {renderCellValue(row[header])}
                               </TableCell>
                             ))}
                           </TableRow>
