@@ -1,4 +1,5 @@
-from fastapi import FastAPI, APIRouter, UploadFile, File, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, APIRouter, UploadFile, File, HTTPException, WebSocket, WebSocketDisconnect, Request
+import httpx
 from fastapi.responses import StreamingResponse
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -14,6 +15,9 @@ import pandas as pd
 import json
 import re
 import ast
+from contextvars import ContextVar
+from .auth import verify_jwt
+from fastapi import Depends, Header
 
 
 # ---------------------------------------------------------------------------
@@ -361,7 +365,27 @@ ROOT_DIR = Path(__file__).parent
 
 # MongoDB connection
 client = AsyncIOMotorClient(settings.mongo_url, serverSelectionTimeoutMS=settings.mongo_timeout_ms)
-db = client[settings.db_name]
+
+# ContextVar to hold the tenant-specific database
+_db_ctx: ContextVar = ContextVar('db_ctx')
+
+class DatabaseProxy:
+    """Proxy that delegates to the database stored in _db_ctx."""
+    def __getattr__(self, name):
+        try:
+            return getattr(_db_ctx.get(), name)
+        except LookupError:
+            # Fallback to default database if context is not set (e.g. during startup)
+            return getattr(client[settings.db_name], name)
+            
+    def __getitem__(self, name):
+        try:
+            return _db_ctx.get()[name]
+        except LookupError:
+            return client[settings.db_name][name]
+
+# Global db object that all routes use
+db = DatabaseProxy()
 
 # --- Shared error message table for AI chat endpoints ---
 ERROR_MESSAGES = {
@@ -376,8 +400,48 @@ ERROR_MESSAGES = {
 
 # Create the main app
 app = FastAPI()
-# Router without /api prefix - proxy will handle the /api part
-api_router = APIRouter()
+
+@app.middleware("http")
+async def tenant_middleware(request, call_next):
+    # Extract tenant from X-Tenant header (sent by gateway)
+    tenant = request.headers.get("X-Tenant")
+    
+    # User requirement: DSL_STUDIO_ + tenant (UPPERCASE)
+    db_name_prefix = "DSL_STUDIO_"
+    
+    if tenant:
+        db_name = f"{db_name_prefix}{tenant}"
+        
+        # Separate DB connection per tenant (as requested)
+        # We use a cache to avoid creating too many clients
+        if not hasattr(app.state, 'tenant_clients'):
+            app.state.tenant_clients = {}
+            
+        if tenant not in app.state.tenant_clients:
+            logger.info(f"Creating separate MongoDB connection for tenant: {tenant}")
+            app.state.tenant_clients[tenant] = AsyncIOMotorClient(
+                settings.mongo_url, 
+                serverSelectionTimeoutMS=settings.mongo_timeout_ms
+            )
+        
+        tenant_client = app.state.tenant_clients[tenant]
+        _db_ctx.set(tenant_client[db_name])
+    else:
+        # Fallback to default
+        db_name = f"{db_name_prefix}master" if settings.db_name == "dsl_studio_master" else settings.db_name
+        _db_ctx.set(client[db_name])
+    
+    response = await call_next(request)
+    return response
+
+@app.get("/health")
+@app.get("/api/health")
+@app.get("/api/dsl_studio/health")
+async def health_check():
+    return {"status": "ok"}
+
+# Router secured with ZITADEL JWT validation
+api_router = APIRouter(dependencies=[Depends(verify_jwt)])
 
 # Configure logging
 logging.basicConfig(
@@ -4072,7 +4136,7 @@ async def reorder_saved_schedules(request: dict):
 
 # ── User Templates CRUD ─────────────────────────────────────────────────
 
-async def _mirror_user_template_to_dsl(name: str, combined_code: str, rules: list) -> None:
+async def _mirror_user_template_to_dsl(name: str, combined_code: str, rules: list) -> tuple[str, str, str]:
     """Mirror a user_template into dsl_templates (upsert by name) and append a
     versioned artifact in dsl_template_artifacts.
 
@@ -4165,8 +4229,46 @@ async def _mirror_user_template_to_dsl(name: str, combined_code: str, rules: lis
             await db.dsl_template_artifacts.delete_many(
                 {"template_id": template_id, "version": {"$lt": next_version}}
             )
+        return template_id, name, python_code
     except Exception as e:
         logger.warning(f"Failed to mirror user template '{name}' to dsl_templates: {e}")
+        return None, None, None
+
+
+async def _upload_to_dataloader(model_name: str, python_code: str, model_order_id: str, auth_token: Optional[str] = None, tenant: str = "master"):
+    """
+    Send the compiled Python code to the dataloader service's upload-dsl-model endpoint.
+    Uses the gateway-routed URI to ensure proper authentication and routing.
+    """
+    from .config import settings
+    # Ensure URL points to the gateway's dataloader path
+    url = f"{settings.dataloader_base_uri.rstrip('/')}/model/upload-dsl-model"
+    
+    files = {
+        "dslModel": (f"{model_name}.dsl", python_code, "text/plain")
+    }
+    data = {
+        "modelName": model_name,
+        "modelOrderId": model_order_id
+    }
+    
+    headers = {
+        "X-Tenant": tenant or "master"
+    }
+    if auth_token:
+        headers["Authorization"] = auth_token if auth_token.startswith("Bearer ") else f"Bearer {auth_token}"
+
+    async with httpx.AsyncClient() as client:
+        try:
+            logger.info(f"Uploading DSL model '{model_name}' to dataloader at {url}")
+            response = await client.post(url, files=files, data=data, headers=headers, timeout=30.0)
+            if response.status_code != 200:
+                logger.error(f"Dataloader upload failed with status {response.status_code}: {response.text}")
+                return {"success": False, "error": response.text}
+            return {"success": True, "data": response.json()}
+        except Exception as e:
+            logger.error(f"Error calling dataloader upload: {str(e)}")
+            return {"success": False, "error": str(e)}
 
 
 @api_router.get("/user-templates")
@@ -4267,20 +4369,9 @@ async def update_user_template(template_id: str, request: dict):
 
 
 @api_router.post("/user-templates/{template_id}/deploy")
-async def deploy_user_template(template_id: str):
+async def deploy_user_template(template_id: str, request: Request, auth_payload: dict = Depends(verify_jwt)):
     """
     Deploy a single user template to the runtime.
-
-    Compiles the user_template's DSL using the *current* event_definitions
-    schema and writes:
-      - dsl_templates: one document keyed by template name (DSL + ready-to-run
-        Python in `python_code`).
-      - dsl_template_artifacts: a new versioned snapshot scoped to this
-        template's id (older versions of the same template are pruned unless
-        KEEP_TEMPLATE_ARTIFACT_VERSIONS=true).
-
-    Only the named template's documents are touched; all other templates and
-    their artifacts are left untouched.
     """
     existing = await db.user_templates.find_one({"id": template_id}, {"_id": 0})
     if not existing:
@@ -4293,7 +4384,15 @@ async def deploy_user_template(template_id: str):
     combined_code = existing.get("combinedCode") or ""
     rules = existing.get("rules") or []
 
-    await _mirror_user_template_to_dsl(name, combined_code, rules)
+    # Mirror and compile
+    t_id, t_name, python_code = await _mirror_user_template_to_dsl(name, combined_code, rules)
+    
+    # Upload to dataloader
+    upload_result = None
+    if python_code:
+        auth_token = request.headers.get("Authorization")
+        tenant = request.headers.get("X-Tenant") or "master"
+        upload_result = await _upload_to_dataloader(t_name, python_code, template_id, auth_token, tenant)
 
     # Read back the freshly-written rows so the caller gets confirmation of
     # what the runtime will see.
@@ -4312,6 +4411,7 @@ async def deploy_user_template(template_id: str):
         "message": f"Template \"{name}\" deployed.",
         "template": {"id": dsl_doc.get("id"), "name": name, "updated_at": dsl_doc.get("updated_at")},
         "artifact": artifact,
+        "dataloader_upload": upload_result
     }
 
 
@@ -4592,13 +4692,7 @@ async def lifespan(app):
     logger.info("Application shutdown — MongoDB client closed")
 
 # Include router under /api so frontend proxying to /api/* resolves correctly
-app.include_router(api_router, prefix="/api")
-
-# Also include the same routes at root (no prefix) for dev environments where
-# the frontend proxy or external clients may strip the `/api` prefix. This
-# makes the backend tolerant to both `/api/...` and `/<route>` requests and
-# prevents 404s when the proxy rewrites paths unexpectedly.
-app.include_router(api_router)
+app.include_router(api_router, prefix="/api/dsl_studio")
 
 # Set lifespan on app
 app.router.lifespan_context = lifespan
@@ -4612,20 +4706,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# WebSocket endpoint for development (supports hot reload, live updates)
-@app.websocket("/ws")
-async def websocket_endpoint(websocket: WebSocket):
-    """WebSocket endpoint for dev client connections and hot reload"""
-    await websocket.accept()
-    try:
-        while True:
-            # Receive and echo messages to keep connection alive
-            data = await websocket.receive_text()
-            await websocket.send_text(data)
-    except WebSocketDisconnect:
-        logger.info("WebSocket client disconnected")
-    except Exception as e:
-        logger.error(f"WebSocket error: {str(e)}")
 
 if __name__ == "__main__":
     import uvicorn

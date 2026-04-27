@@ -85,25 +85,9 @@ if (config.enableVisualEdits && babelMetadataPlugin) {
 }
 
 webpackConfig.devServer = (devServerConfig) => {
-  // Set up API proxy using webpack devServer proxy configuration
-  // Without pathRewrite, webpack strips /api when forwarding
-  // With pathRewrite: {'^': ''} we prevent stripping by rewriting nothing to nothing
-  devServerConfig.proxy = {
-    '/api': {
-      target: 'http://localhost:8000',
-      changeOrigin: true,
-      logLevel: 'debug',
-      pathRewrite: {
-        '^/api': '/api'  // Rewrite /api to /api (essentially no-op, preserves /api)
-      }
-    },
-    '/ws': {
-      target: 'ws://localhost:8000',
-      ws: true,
-      changeOrigin: true,
-      logLevel: 'debug'
-    }
-  };
+  // API proxy is handled entirely by setupProxy.js.
+  // It is mounted at root (not '/api') so Express does NOT strip the /api prefix,
+  // ensuring the full path /api/dsl_studio/... reaches the gateway unchanged.
 
   // Set up middleware if we have setupProxy function
   const originalSetupMiddlewares = devServerConfig.setupMiddlewares;

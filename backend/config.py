@@ -20,6 +20,9 @@ class Settings:
     host: str = os.environ.get('HOST', '0.0.0.0')
     port: int = int(os.environ.get('PORT', '8000'))
     log_level: str = os.environ.get('LOG_LEVEL', 'INFO')
+    zitadel_issuer_uri: str = os.environ.get('ZITADEL_ISSUER_URI', '')
+    zitadel_project_id: str = os.environ.get('ZITADEL_PROJECT_ID', '')
+    dataloader_base_uri: str = os.environ.get('DATALOADER_BASE_URI', 'http://localhost:8585/api/dataloader')
 
 
 settings = Settings()

@@ -1,1 +1,1 @@
-export const API = '/api';
+export const API = '/api/dsl_studio';

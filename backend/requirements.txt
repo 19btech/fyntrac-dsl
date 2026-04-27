@@ -3,6 +3,8 @@ fastapi>=0.115,<1.0
 uvicorn>=0.34,<1.0
 starlette>=0.45,<2.0
 python-multipart>=0.0.21
+python-jose[cryptography]>=3.3.0
+httpx>=0.27.0
 
 # Database
 motor>=3.7,<4.0

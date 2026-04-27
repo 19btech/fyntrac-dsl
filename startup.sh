@@ -5,6 +5,11 @@
 
 set -e  # Exit on any error
 
+# Source dev profile if exists
+if [ -f "$HOME/.dev_profile" ]; then
+    source "$HOME/.dev_profile"
+fi
+
 echo "🚀 Starting DSL Studio..."
 echo ""
 
@@ -69,10 +74,14 @@ echo -e "${BLUE}Configuring environment...${NC}"
 if [ ! -f "$BACKEND_DIR/.env" ]; then
     echo "Creating .env file with configuration..."
     cat > "$BACKEND_DIR/.env" << 'ENV_EOF'
-MONGO_URL=mongodb://localhost:27017
-DB_NAME=dsl_db
+MONGO_URL=mongodb://root:R3s3rv%23313@127.0.0.1:27017/master?authSource=admin
+DB_NAME=DSL_STUDIO_master
 # Google Cloud Generative AI key for Gemini (set to your key)
 GOOGLE_API_KEY=your_google_api_key_here
+
+# Zitadel / JWT
+ZITADEL_ISSUER_URI=${ZITADEL_ISSUER_URI}
+ZITADEL_PROJECT_ID=${ZITADEL_PROJECT_ID}
 ENV_EOF
     echo -e "${GREEN}✓ Configuration created${NC}"
 else
@@ -126,7 +135,7 @@ sleep 1
 
 # Start backend in background (run from workspace root so package imports work)
 cd "$ROOT_DIR"
-python -m backend.server > /tmp/backend.log 2>&1 &
+python -m backend.server > /tmp/dsl_studio_backend.log 2>&1 &
 BACKEND_PID=$!
 
 # Wait for backend to start
@@ -135,7 +144,7 @@ sleep 3
 if ps -p $BACKEND_PID > /dev/null; then
     echo -e "${GREEN}✓ Backend running (PID: $BACKEND_PID)${NC}"
 else
-    echo -e "${YELLOW}⚠ Backend failed to start. Check logs: tail -f /tmp/backend.log${NC}"
+    echo -e "${YELLOW}⚠ Backend failed to start. Check logs: tail -f /tmp/dsl_studio_backend.log${NC}"
     exit 1
 fi
 
@@ -150,7 +159,7 @@ lsof -ti :3000 | xargs kill -9 2>/dev/null || true
 sleep 1
 
 # Start frontend in background
-npm start > /tmp/frontend.log 2>&1 &
+WDS_SOCKET_PORT=3000 npm start > /tmp/dsl_studio_frontend.log 2>&1 &
 FRONTEND_PID=$!
 
 # Wait for frontend to compile
@@ -159,7 +168,7 @@ sleep 15
 if ps -p $FRONTEND_PID > /dev/null; then
     echo -e "${GREEN}✓ Frontend running (PID: $FRONTEND_PID)${NC}"
 else
-    echo -e "${YELLOW}⚠ Frontend failed to start. Check logs: tail -f /tmp/frontend.log${NC}"
+    echo -e "${YELLOW}⚠ Frontend failed to start. Check logs: tail -f /tmp/dsl_studio_frontend.log${NC}"
     exit 1
 fi
 
@@ -182,8 +191,8 @@ echo -e "${BLUE}Backend:${NC}        http://localhost:8000"
 echo -e "${BLUE}MongoDB:${NC}        localhost:27017"
 echo ""
 echo -e "${BLUE}View logs:${NC}"
-echo "  Backend:  tail -f /tmp/backend.log"
-echo "  Frontend: tail -f /tmp/frontend.log"
+echo "  Backend:  tail -f /tmp/dsl_studio_backend.log"
+echo "  Frontend: tail -f /tmp/dsl_studio_frontend.log"
 echo ""
 echo -e "${BLUE}Load sample data:${NC}"
 echo "  curl -X POST http://localhost:3000/api/load-sample-data"
