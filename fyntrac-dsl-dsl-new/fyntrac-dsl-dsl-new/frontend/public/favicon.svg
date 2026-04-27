@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
+  <!-- Background -->
+  <rect width="100" height="100" fill="#1e40af"/>
+  
+  <!-- F for Fyntrac -->
+  <text x="50" y="70" font-family="Arial, sans-serif" font-size="60" font-weight="bold" fill="white" text-anchor="middle" dominant-baseline="middle">F</text>
+  
+  <!-- Dollar sign overlay -->
+  <path d="M 30 35 Q 30 30 35 30 L 65 30 Q 70 30 70 35" stroke="white" stroke-width="2" fill="none" stroke-linecap="round"/>
+</svg>
