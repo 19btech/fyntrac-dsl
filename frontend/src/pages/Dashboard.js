@@ -2,7 +2,8 @@ import React, { useState, useEffect, useRef } from "react";
 import axios from "axios";
 import { useToast } from "../components/ToastProvider";
 import { Upload, Code, BookOpen, Sparkles, Trash2, Search as SearchIcon, Settings, ChevronDown, Database, Calculator, Eye, Save } from "lucide-react";
-import { Button, Tabs, Tab, Box, Menu, MenuItem, Divider, Alert, Typography, ToggleButtonGroup, ToggleButton, Tooltip } from '@mui/material';
+import { Button, Tabs, Tab, Box, Menu, MenuItem, Divider, Alert, Typography, ToggleButtonGroup, ToggleButton, Tooltip, Avatar } from '@mui/material';
+import { alpha } from '@mui/material/styles';
 import Editor from "@monaco-editor/react";
 import FileUploadPanel from "../components/FileUploadPanel";
 import LeftSidebar from "../components/LeftSidebar";
@@ -79,6 +80,29 @@ const Dashboard = () => {
   const monacoRef = useRef(null);
   const toast = useToast();
   const { confirmProps, openConfirm, promptProps, openPrompt } = useAppDialog();
+
+  // Read firstName and tenant from URL or sessionStorage (so it survives URL changes)
+  const [firstName, setFirstName] = React.useState(() => {
+    try {
+      const urlVal = new URLSearchParams(window.location.search).get('firstName');
+      if (urlVal) {
+        sessionStorage.setItem('dsl_firstName', urlVal);
+        return urlVal;
+      }
+      return sessionStorage.getItem('dsl_firstName') || '';
+    } catch { return ''; }
+  });
+  
+  const [tenant, setTenant] = React.useState(() => {
+    try {
+      const urlVal = new URLSearchParams(window.location.search).get('tenant');
+      if (urlVal) {
+        sessionStorage.setItem('dsl_tenant', urlVal);
+        return urlVal;
+      }
+      return sessionStorage.getItem('dsl_tenant') || '';
+    } catch { return ''; }
+  });
 
   useEffect(() => {
 
@@ -653,7 +677,27 @@ const Dashboard = () => {
               <h1 className="text-2xl font-bold text-[#14213d] tracking-tight" style={{ fontFamily: "'Inter', sans-serif" }}>Logic Studio</h1>
               <p className="text-sm text-[#6C757D] mt-1">Design and test your financial calculation logic using built-in formulas</p>
             </div>
-            <div className="flex gap-2">
+            <div className="flex gap-2 items-center">
+              {/* User Profile Pill — same format as main/page.jsx */}
+              {firstName && (
+                <Box sx={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 1.5,
+                  bgcolor: alpha('#919EAB', 0.12),
+                  py: 0.5,
+                  px: 1.5,
+                  borderRadius: 3,
+                  mr: 1,
+                }}>
+                  <Avatar sx={{ bgcolor: '#2563EB', width: 28, height: 28, fontSize: 14, fontWeight: 700 }}>
+                    {firstName[0].toUpperCase()}
+                  </Avatar>
+                  <Typography variant="subtitle2" sx={{ color: '#1E293B', lineHeight: 1, fontWeight: 500 }}>
+                    {firstName} {tenant && tenant !== 'master' ? `/ ${tenant}` : ''}
+                  </Typography>
+                </Box>
+              )}
               <Button 
                 variant="outlined" 
                 size="small" 
