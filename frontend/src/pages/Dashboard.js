@@ -91,6 +91,14 @@ const Dashboard = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Reload transaction definitions when a template wizard seeds them
+  useEffect(() => {
+    const handler = () => loadTransactionDefinitions();
+    window.addEventListener('dsl-transaction-defs-changed', handler);
+    return () => window.removeEventListener('dsl-transaction-defs-changed', handler);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // Run DSL function test suite in background after functions load
   useEffect(() => {
     if (!dslFunctions || dslFunctions.length === 0) return;

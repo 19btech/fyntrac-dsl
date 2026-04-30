@@ -1,5 +1,5 @@
 from fastapi import FastAPI, APIRouter, UploadFile, File, HTTPException, WebSocket, WebSocketDisconnect
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, Response
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 import os
@@ -2238,16 +2238,28 @@ async def download_event_definitions():
                 events_rows.append([event.get('event_name'), field.get('name'), field.get('datatype'), evt_type, evt_table])
 
         import openpyxl
-        output = io.BytesIO()
-        with pd.ExcelWriter(output, engine='openpyxl') as writer:
-            events_df = pd.DataFrame(events_rows, columns=['EventName', 'EventField', 'DataType', 'EventType', 'EventTable'])
-            events_df.to_excel(writer, sheet_name='events', index=False)
-            txn_df = pd.DataFrame({'transactiontype': transaction_types})
-            txn_df.to_excel(writer, sheet_name='transactions', index=False)
+        wb = openpyxl.Workbook()
 
+        # Events sheet
+        ws_events = wb.active
+        ws_events.title = 'events'
+        ws_events.append(['EventName', 'EventField', 'DataType', 'EventType', 'EventTable'])
+        for row in events_rows:
+            ws_events.append(row)
+
+        # Transactions sheet
+        ws_txn = wb.create_sheet('transactions')
+        ws_txn.append(['transactiontype'])
+        for t in transaction_types:
+            ws_txn.append([t])
+
+        output = io.BytesIO()
+        wb.save(output)
         output.seek(0)
-        return StreamingResponse(
-            iter([output.read()]),
+        xlsx_bytes = output.read()
+
+        return Response(
+            content=xlsx_bytes,
             media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
             headers={"Content-Disposition": "attachment; filename=reference_data.xlsx"}
         )

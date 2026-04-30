@@ -705,6 +705,8 @@ const TemplateWizard = ({ template, events, onGenerate, onClose }) => {
       if (data.success && data.events) {
         setLocalEvents(data.events);
         setSampleLoaded(true);
+        // Notify Dashboard to reload transaction definitions seeded by this template
+        try { window.dispatchEvent(new CustomEvent('dsl-transaction-defs-changed')); } catch(e) {}
       }
     } catch (err) {
       console.error('Failed to load sample data:', err);
