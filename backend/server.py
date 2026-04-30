@@ -394,7 +394,8 @@ in_memory_data = {
     "templates": [],
     "template_artifacts": [],
     "custom_functions": [],
-    "transaction_reports": []
+    "transaction_reports": [],
+    "transaction_definitions": [],
 }
 # Flag to track if we should use in-memory storage
 USE_IN_MEMORY = False
@@ -1612,10 +1613,24 @@ async def load_simple_sample():
         doc['created_at'] = doc['created_at'].isoformat()
         await db.event_data.insert_one(doc)
 
+        # ── Transaction Definitions ─────────────────────────────────────────
+        await db.transaction_definitions.delete_many({})
+        sample_txn_types = [
+            "Interest Accrual",
+            "Principal Payment",
+            "Fee Amortization",
+            "Revenue",
+            "Lease Expense",
+            "NPV Analysis",
+        ]
+        for txn_type in sample_txn_types:
+            await db.transaction_definitions.insert_one({"transactiontype": txn_type})
+
         return {
             "message": "Simple sample data loaded successfully",
             "events": ["LoanActivity", "RateSchedule"],
             "instruments": ["INST-001", "INST-002"],
+            "transaction_types": sample_txn_types,
         }
     except Exception as e:
         logger.exception("Failed to load simple sample data")
@@ -1935,6 +1950,7 @@ async def clear_all_data():
         await db.custom_functions.delete_many({})
         await db.saved_rules.delete_many({})
         await db.saved_schedules.delete_many({})
+        await db.transaction_definitions.delete_many({})
 
         # Also clear in-memory fallback data so stale entries don't survive
         global in_memory_data
@@ -1942,12 +1958,13 @@ async def clear_all_data():
         in_memory_data['event_data'] = []
         in_memory_data['transaction_reports'] = []
         in_memory_data['custom_functions'] = []
+        in_memory_data['transaction_definitions'] = []
         in_memory_data.pop('saved_rules', None)
         in_memory_data.pop('saved_schedules', None)
 
         return {
             "message": "All data cleared successfully (templates preserved).",
-            "cleared": ["event_definitions", "event_data", "transaction_reports", "custom_functions", "saved_rules", "saved_schedules"],
+            "cleared": ["event_definitions", "event_data", "transaction_reports", "custom_functions", "saved_rules", "saved_schedules", "transaction_definitions"],
             "preserved": ["templates"]
         }
     except Exception as e:
@@ -1957,94 +1974,134 @@ async def clear_all_data():
 
 @api_router.post("/events/upload")
 async def upload_event_definitions(file: UploadFile = File(...)):
-    """Upload event definitions CSV (EventName, EventField, DataType[, EventType[, EventTable]])"""
+    """Upload Reference Data File (.xlsx) with two sheets:
+    - 'events'       : EventName, EventField, DataType[, EventType[, EventTable]]
+    - 'transactions' : transactiontype (single column, optional)
+    """
     try:
-        # Clear existing event definitions (preserve other collections)
-        try:
-            await db.event_definitions.delete_many({})
-        except Exception:
-            logger.warning("Could not clear event_definitions in DB - continuing with in-memory fallback")
+        if not (file.filename or '').lower().endswith('.xlsx'):
+            raise HTTPException(
+                status_code=400,
+                detail="File must be an Excel file (.xlsx). The Reference Data File format is .xlsx with two sheets: 'events' and 'transactions'."
+            )
         content = await file.read()
-        csv_content = content.decode('utf-8')
-        rows = parse_csv_content(csv_content)
-        
-        if len(rows) < 2:
-            raise HTTPException(status_code=400, detail="CSV must have header and at least one row")
-        
-        # Parse events from CSV
-        events_dict = {}
-        header = rows[0]
-        
-        # Validate header - support optional EventType (4th) and EventTable (5th) columns
-        if len(header) < 3 or header[0].lower() != 'eventname' or header[1].lower() != 'eventfield' or header[2].lower() != 'datatype':
-            raise HTTPException(status_code=400, detail="CSV must have columns: EventName, EventField, DataType[, EventType[, EventTable]]")
+        try:
+            xl = pd.ExcelFile(io.BytesIO(content))
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=f"Invalid Excel file: {exc}")
 
-        # Supported event types and event table values
+        sheet_names_lower = [s.lower() for s in xl.sheet_names]
+
+        # ── Events sheet ───────────────────────────────────────────────────────
+        if 'events' not in sheet_names_lower:
+            raise HTTPException(
+                status_code=400,
+                detail="Excel file must have a sheet named 'events' with columns: EventName, EventField, DataType[, EventType[, EventTable]]"
+            )
+        events_sheet = xl.sheet_names[sheet_names_lower.index('events')]
+        try:
+            events_df = pd.read_excel(xl, sheet_name=events_sheet, header=0, dtype=str)
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=f"Could not read 'events' sheet: {exc}")
+
+        # Normalise column names (strip whitespace)
+        events_df.columns = [str(c).strip() for c in events_df.columns]
+        col_lower_map = {c.lower(): c for c in events_df.columns}
+
+        for req in ('eventname', 'eventfield', 'datatype'):
+            if req not in col_lower_map:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Missing required column in 'events' sheet: '{req}'. Required: EventName, EventField, DataType"
+                )
+
         VALID_EVENT_TYPES = ('activity', 'reference')
         VALID_EVENT_TABLES = ('standard', 'custom')
 
-        # Temporary maps to capture event-level values
+        events_dict = {}
         event_type_map = {}
         event_table_map = {}
 
-        for row in rows[1:]:
-            if len(row) >= 3:
-                event_name = row[0].strip()
-                event_field = row[1].strip()
-                data_type = row[2].strip().lower()
+        for _, row in events_df.iterrows():
+            def _cell(col_key):
+                col = col_lower_map.get(col_key)
+                if col is None:
+                    return None
+                val = row[col]
+                return str(val).strip() if val is not None and not (isinstance(val, float) and pd.isna(val)) and str(val).strip() not in ('', 'nan', 'None') else None
 
-                # Optional columns 4 and 5: EventType and EventTable.
-                # Some CSVs omit EventType and put EventTable in column 4.
-                # Detect that case: if column 4 value matches EventTable values
-                # (standard/custom) but not EventType values (activity/reference),
-                # treat it as EventTable and default EventType to 'activity'.
-                event_type = 'activity'
-                event_table = 'standard'
-                col4 = row[3].strip().lower() if len(row) >= 4 and row[3].strip() else None
-                col5 = row[4].strip().lower() if len(row) >= 5 and row[4].strip() else None
+            event_name = _cell('eventname')
+            event_field = _cell('eventfield')
+            data_type = (_cell('datatype') or '').lower()
 
-                if col4 is not None:
-                    if col4 in VALID_EVENT_TYPES:
-                        # Normal layout: col4 = EventType, col5 = EventTable
-                        event_type = col4
-                        if col5 is not None:
-                            if col5 not in VALID_EVENT_TABLES:
-                                raise HTTPException(status_code=400, detail=f"Invalid eventTable '{row[4]}'. Must be one of: {', '.join(VALID_EVENT_TABLES)}")
-                            event_table = col5
-                    elif col4 in VALID_EVENT_TABLES:
-                        # Shifted layout: col4 = EventTable, EventType defaults to 'activity'
-                        event_table = col4
-                    else:
-                        raise HTTPException(status_code=400, detail=f"Invalid value '{row[3]}' in column 4. Must be an eventType ({', '.join(VALID_EVENT_TYPES)}) or eventTable ({', '.join(VALID_EVENT_TABLES)}).")
+            if not event_name or not event_field or not data_type:
+                continue  # skip blank rows
 
-                # Validate eventTable + eventType combination
-                if event_table == 'standard' and event_type != 'activity':
-                    raise HTTPException(status_code=400, detail=f"Event '{event_name}': standard event table must have eventType 'activity', got '{event_type}'")
+            # Resolve EventType (optional column)
+            event_type = 'activity'
+            et_raw = _cell('eventtype')
+            if et_raw:
+                et_raw_lower = et_raw.lower()
+                if et_raw_lower not in VALID_EVENT_TYPES:
+                    raise HTTPException(status_code=400, detail=f"Invalid eventType '{et_raw}'. Must be one of: {', '.join(VALID_EVENT_TYPES)}")
+                event_type = et_raw_lower
 
-                # Validate datatype
-                if data_type not in ['string', 'date', 'boolean', 'decimal', 'integer', 'int']:
-                    raise HTTPException(status_code=400, detail=f"Invalid datatype '{data_type}'. Must be one of: string, date, boolean, decimal, integer")
+            # Resolve EventTable (optional column)
+            event_table = 'standard'
+            etbl_raw = _cell('eventtable')
+            if etbl_raw:
+                etbl_raw_lower = etbl_raw.lower()
+                if etbl_raw_lower not in VALID_EVENT_TABLES:
+                    raise HTTPException(status_code=400, detail=f"Invalid eventTable '{etbl_raw}'. Must be one of: {', '.join(VALID_EVENT_TABLES)}")
+                event_table = etbl_raw_lower
 
-                # Ensure event_type is consistent across rows for same event
-                if event_name in event_type_map and event_type_map[event_name] != event_type:
-                    raise HTTPException(status_code=400, detail=f"Conflicting eventType values for event '{event_name}'")
-                event_type_map[event_name] = event_type
+            if event_table == 'standard' and event_type != 'activity':
+                raise HTTPException(status_code=400, detail=f"Event '{event_name}': standard event table must have eventType 'activity', got '{event_type}'")
 
-                # Ensure event_table is consistent across rows for same event
-                if event_name in event_table_map and event_table_map[event_name] != event_table:
-                    raise HTTPException(status_code=400, detail=f"Conflicting eventTable values for event '{event_name}'")
-                event_table_map[event_name] = event_table
+            if data_type not in ['string', 'date', 'boolean', 'decimal', 'integer', 'int']:
+                raise HTTPException(status_code=400, detail=f"Invalid datatype '{data_type}'. Must be one of: string, date, boolean, decimal, integer")
 
-                if event_name not in events_dict:
-                    events_dict[event_name] = []
-                events_dict[event_name].append({"name": event_field, "datatype": data_type})
-        
-        # Try to store in database; if DB unavailable, fall back to in-memory storage
+            if event_name in event_type_map and event_type_map[event_name] != event_type:
+                raise HTTPException(status_code=400, detail=f"Conflicting eventType values for event '{event_name}'")
+            event_type_map[event_name] = event_type
+
+            if event_name in event_table_map and event_table_map[event_name] != event_table:
+                raise HTTPException(status_code=400, detail=f"Conflicting eventTable values for event '{event_name}'")
+            event_table_map[event_name] = event_table
+
+            if event_name not in events_dict:
+                events_dict[event_name] = []
+            events_dict[event_name].append({"name": event_field, "datatype": data_type})
+
+        if not events_dict:
+            raise HTTPException(status_code=400, detail="No valid event definitions found in the 'events' sheet.")
+
+        # ── Transactions sheet (optional) ──────────────────────────────────────
+        transaction_types = []
+        if 'transactions' in sheet_names_lower:
+            txn_sheet = xl.sheet_names[sheet_names_lower.index('transactions')]
+            try:
+                txn_df = pd.read_excel(xl, sheet_name=txn_sheet, header=0, dtype=str)
+                # Locate the transactiontype column (case-insensitive, ignore spaces/underscores)
+                txn_col = None
+                for col in txn_df.columns:
+                    if str(col).strip().lower().replace(' ', '').replace('_', '') == 'transactiontype':
+                        txn_col = col
+                        break
+                if txn_col is None and not txn_df.empty:
+                    txn_col = txn_df.columns[0]  # fallback: first column
+                if txn_col is not None:
+                    transaction_types = [
+                        str(v).strip() for v in txn_df[txn_col]
+                        if v is not None and not (isinstance(v, float) and pd.isna(v)) and str(v).strip() not in ('', 'nan', 'None')
+                    ]
+            except Exception as exc:
+                logger.warning(f"Could not read 'transactions' sheet: {exc}")
+
+        # ── Store event definitions ────────────────────────────────────────────
+        stored_in_db = False
         try:
-            # Clear existing events
             await db.event_definitions.delete_many({})
-
-            # Store in database
             for event_name, fields in events_dict.items():
                 evt_type = event_type_map.get(event_name, 'activity')
                 evt_table = event_table_map.get(event_name, 'standard')
@@ -2052,13 +2109,8 @@ async def upload_event_definitions(file: UploadFile = File(...)):
                 doc = event.model_dump()
                 doc['created_at'] = doc['created_at'].isoformat()
                 await db.event_definitions.insert_one(doc)
-
-            return {
-                "message": f"Uploaded {len(events_dict)} event definitions with datatypes",
-                "events": list(events_dict.keys())
-            }
+            stored_in_db = True
         except Exception as e:
-            # Fallback to in-memory storage so tests and offline runs work
             logger.warning(f"Could not write event definitions to DB, using in-memory storage: {e}")
             in_memory_defs = []
             for event_name, fields in events_dict.items():
@@ -2066,17 +2118,29 @@ async def upload_event_definitions(file: UploadFile = File(...)):
                 evt_table = event_table_map.get(event_name, 'standard')
                 event = EventDefinition(event_name=event_name, fields=fields, eventType=evt_type, eventTable=evt_table)
                 doc = event.model_dump()
-                # store created_at as ISO string for consistency with DB format
                 doc['created_at'] = doc['created_at'].isoformat()
                 in_memory_defs.append(doc)
-
             in_memory_data['event_definitions'] = in_memory_defs
-            return {
-                "message": f"Uploaded {len(events_dict)} event definitions to in-memory store",
-                "events": list(events_dict.keys())
-            }
+
+        # ── Store transaction definitions ──────────────────────────────────────
+        try:
+            await db.transaction_definitions.delete_many({})
+            for txn_type in transaction_types:
+                await db.transaction_definitions.insert_one({"transactiontype": txn_type})
+        except Exception as e:
+            logger.warning(f"Could not write transaction definitions to DB: {e}")
+            in_memory_data['transaction_definitions'] = [{"transactiontype": t} for t in transaction_types]
+
+        store_label = "database" if stored_in_db else "in-memory store"
+        return {
+            "message": f"Uploaded {len(events_dict)} event definition(s) and {len(transaction_types)} transaction type(s) to {store_label}",
+            "events": list(events_dict.keys()),
+            "transaction_types": transaction_types,
+        }
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.error(f"Error uploading events: {str(e)}")
+        logger.error(f"Error uploading reference data: {str(e)}")
         raise HTTPException(status_code=400, detail=str(e))
 
 @api_router.get("/events")
@@ -2133,34 +2197,62 @@ async def get_dsl_functions():
 
 
 # Download Event Definitions as CSV
+@api_router.get("/transaction-definitions")
+async def get_transaction_definitions():
+    """Return all loaded transaction types from the Reference Data File."""
+    try:
+        try:
+            docs = await db.transaction_definitions.find({}, {"_id": 0}).to_list(1000)
+        except Exception:
+            docs = in_memory_data.get('transaction_definitions', [])
+        transaction_types = [d.get('transactiontype', '') for d in docs if d.get('transactiontype')]
+        return {"transaction_types": transaction_types}
+    except Exception as e:
+        logger.error(f"Error fetching transaction definitions: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @api_router.get("/events/download")
 async def download_event_definitions():
-    """Download all event definitions as a CSV file"""
+    """Download Reference Data File as .xlsx with two sheets: 'events' and 'transactions'."""
     try:
-        # Try DB first
+        # Load events
         try:
             events = await db.event_definitions.find({}, {"_id": 0}).to_list(1000)
         except Exception:
             events = in_memory_data.get('event_definitions', SAMPLE_EVENTS)
 
-        output = io.StringIO()
-        writer = csv.writer(output)
-        writer.writerow(['EventName', 'EventField', 'DataType', 'EventType', 'EventTable'])
+        # Load transaction definitions
+        try:
+            txn_docs = await db.transaction_definitions.find({}, {"_id": 0}).to_list(1000)
+        except Exception:
+            txn_docs = in_memory_data.get('transaction_definitions', [])
+        transaction_types = [d.get('transactiontype', '') for d in txn_docs if d.get('transactiontype')]
 
+        # Build events rows
+        events_rows = []
         for event in events:
             evt_type = event.get('eventType', 'activity')
             evt_table = event.get('eventTable', 'standard')
             for field in event.get('fields', []):
-                writer.writerow([event.get('event_name'), field.get('name'), field.get('datatype'), evt_type, evt_table])
+                events_rows.append([event.get('event_name'), field.get('name'), field.get('datatype'), evt_type, evt_table])
+
+        import openpyxl
+        output = io.BytesIO()
+        with pd.ExcelWriter(output, engine='openpyxl') as writer:
+            events_df = pd.DataFrame(events_rows, columns=['EventName', 'EventField', 'DataType', 'EventType', 'EventTable'])
+            events_df.to_excel(writer, sheet_name='events', index=False)
+            txn_df = pd.DataFrame({'transactiontype': transaction_types})
+            txn_df.to_excel(writer, sheet_name='transactions', index=False)
 
         output.seek(0)
         return StreamingResponse(
-            iter([output.getvalue()]),
-            media_type='text/csv',
-            headers={"Content-Disposition": "attachment; filename=event_definitions.csv"}
+            iter([output.read()]),
+            media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            headers={"Content-Disposition": "attachment; filename=reference_data.xlsx"}
         )
     except Exception as e:
-        logger.error(f"Error generating events CSV: {e}")
+        logger.error(f"Error generating reference data xlsx: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 # Event Data - Excel Upload (multiple sheets for multiple events)
@@ -4352,6 +4444,12 @@ async def load_template_sample_data(template_id: str):
             "created_at": datetime.utcnow().isoformat(),
         }
         await db.event_data.insert_one(doc)
+
+    # Populate transaction definitions if provided in sample data
+    if sample.get("transaction_types"):
+        await db.transaction_definitions.delete_many({})
+        for txn_type in sample["transaction_types"]:
+            await db.transaction_definitions.insert_one({"transactiontype": txn_type})
 
     events = await db.event_definitions.find({}, {"_id": 0}).to_list(1000)
     return {"success": True, "events": events}

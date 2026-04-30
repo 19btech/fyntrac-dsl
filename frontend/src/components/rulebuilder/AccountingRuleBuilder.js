@@ -631,7 +631,7 @@ const StepModal = ({ open, step, stepType, onClose, onSaveStep, events, definedV
 // ═══════════════════════════════════════════════════════════════════════
 const TXN_COLOR = '#0288D1';
 
-const TransactionModal = ({ open, txn, onClose, onSaveTxn, onTest, amountOptions, subIdOptions, eventFieldOptions, dateOptions }) => {
+const TransactionModal = ({ open, txn, onClose, onSaveTxn, onTest, transactionDefinitions, amountOptions, subIdOptions, eventFieldOptions, dateOptions }) => {
   const [local, setLocal] = useState(txn || {});
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState(null);
@@ -671,6 +671,10 @@ const TransactionModal = ({ open, txn, onClose, onSaveTxn, onTest, amountOptions
       setSaveError('Transaction Type is required.');
       return;
     }
+    if (transactionDefinitions && transactionDefinitions.length > 0 && !transactionDefinitions.includes(local.type)) {
+      setSaveError(`Transaction type "${local.type}" is not in the loaded transaction list. Select a valid type or upload a Reference Data File with the required types.`);
+      return;
+    }
     if (!local.postingDate) {
       setSaveError('Posting Date is required — pick a date-typed event field or variable.');
       return;
@@ -703,13 +707,34 @@ const TransactionModal = ({ open, txn, onClose, onSaveTxn, onTest, amountOptions
       <DialogContent sx={{ pt: 2, overflow: 'auto' }}>
         {/* ── Identity ── */}
         <SectionLabel>Transaction Identity</SectionLabel>
-        <TextField
-          size="small" fullWidth required
-          label="Transaction Type *"
-          value={local.type || ''}
-          onChange={(e) => update('type', e.target.value)}
-          placeholder="e.g., Calculation Result, Interest Accrual"
-          helperText="A short label that identifies this transaction in the ledger."
+        {transactionDefinitions && transactionDefinitions.length === 0 && (
+          <Alert severity="warning" sx={{ mb: 1.5, fontSize: '0.75rem' }}>
+            No transaction types loaded. Upload a Reference Data File (.xlsx) with a <em>transactions</em> sheet to populate this list.
+          </Alert>
+        )}
+        <Autocomplete
+          size="small"
+          fullWidth
+          options={transactionDefinitions || []}
+          value={local.type || null}
+          onChange={(_, val) => update('type', val || '')}
+          onInputChange={(_, val, reason) => { if (reason === 'input') update('type', val); }}
+          isOptionEqualToValue={(opt, val) => opt === val}
+          freeSolo={false}
+          renderInput={(params) => (
+            <TextField {...params}
+              required
+              label="Transaction Type *"
+              placeholder={transactionDefinitions && transactionDefinitions.length > 0 ? 'Select a transaction type' : 'Upload a Reference Data File first'}
+              helperText="A short label that identifies this transaction in the ledger."
+              error={!!saveError && (!local.type || (transactionDefinitions?.length > 0 && !transactionDefinitions.includes(local.type)))}
+            />
+          )}
+          noOptionsText={
+            <Typography variant="caption" color="text.secondary">
+              No transaction types loaded. Upload a Reference Data File first.
+            </Typography>
+          }
           sx={{ mb: 2 }}
         />
 
@@ -841,7 +866,8 @@ const TransactionModal = ({ open, txn, onClose, onSaveTxn, onTest, amountOptions
       <DialogActions sx={{ px: 3, py: 2, borderTop: '1px solid #E9ECEF' }}>
         <Button onClick={onClose} color="inherit">Cancel</Button>
         <Box sx={{ flex: 1 }} />
-        <Button onClick={handleSave} variant="contained" disabled={!local.type}
+        <Button onClick={handleSave} variant="contained"
+          disabled={!local.type || (transactionDefinitions && transactionDefinitions.length > 0 && !transactionDefinitions.includes(local.type))}
           startIcon={<Save size={14} />}>
           Save Transaction
         </Button>
@@ -856,7 +882,7 @@ const TransactionModal = ({ open, txn, onClose, onSaveTxn, onTest, amountOptions
 // The main screen shows a flat list of steps. Clicking "Add Step" opens
 // a modal for calc / condition / iteration. Steps are draggable.
 // ═══════════════════════════════════════════════════════════════════════
-const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialData }) => {
+const AccountingRuleBuilder = ({ events, dslFunctions, transactionDefinitions, onClose, onSave, initialData }) => {
   // ── Rule-level state ──
   const [ruleName, setRuleName] = useState(initialData?.name || '');
   const [rulePriority, setRulePriority] = useState(initialData?.priority ?? '');
@@ -2354,6 +2380,7 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
         onClose={() => { setTxnModalOpen(false); setEditingTxnIndex(null); }}
         onSaveTxn={saveTransactionFromModal}
         onTest={testTransactionDraft}
+        transactionDefinitions={transactionDefinitions || []}
         amountOptions={(() => {
           const varNames = [];
           steps.forEach(s => {

@@ -107,7 +107,7 @@ const FileUploadPanel = ({ onUploadSuccess, events, addConsoleLog, selectedEvent
 
     const eventDefLoadedHandler = (e) => {
       try {
-        const filename = e?.detail?.filename || 'Event.csv';
+        const filename = e?.detail?.filename || 'ReferenceData.xlsx';
         setUploadedEventFileName(filename);
         localStorage.setItem('uploadedEventFileName', filename);
       } catch (err) {}
@@ -280,19 +280,19 @@ const FileUploadPanel = ({ onUploadSuccess, events, addConsoleLog, selectedEvent
 
   const handleDownloadEvents = async () => {
     try {
-      addConsoleLog("Downloading event definitions...", "info");
+      addConsoleLog("Downloading reference data...", "info");
       const response = await axios.get(`${API}/events/download`, { responseType: 'blob' });
-      const url = window.URL.createObjectURL(new Blob([response.data]));
+      const url = window.URL.createObjectURL(new Blob([response.data], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }));
       const link = document.createElement('a');
       link.href = url;
-      link.setAttribute('download', 'event_definitions.csv');
+      link.setAttribute('download', 'reference_data.xlsx');
       document.body.appendChild(link);
       link.click();
       link.remove();
-      toast.success("Event definitions downloaded!");
+      toast.success("Reference data downloaded!");
     } catch (error) {
       const errorMsg = error.response?.data?.detail || error.message;
-      toast.error("Failed to download events");
+      toast.error("Failed to download reference data");
       addConsoleLog(`✗ Error: ${errorMsg}`, "error");
     }
   };
@@ -301,7 +301,7 @@ const FileUploadPanel = ({ onUploadSuccess, events, addConsoleLog, selectedEvent
     <Box sx={{ p: 3, bgcolor: '#F8F9FA', minHeight: '100%' }} data-testid="file-upload-panel">
       <Box sx={{ mb: 3 }}>
         <Typography variant="h3" sx={{ mb: 0.5 }}>Upload Data Files</Typography>
-        <Typography variant="body2" color="text.secondary">Upload event definitions (CSV) and event data (Excel)</Typography>
+        <Typography variant="body2" color="text.secondary">Upload reference data (.xlsx) and event data (Excel)</Typography>
       </Box>
 
       {uploading && (
@@ -318,10 +318,10 @@ const FileUploadPanel = ({ onUploadSuccess, events, addConsoleLog, selectedEvent
               <Box>
                 <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1 }}>
                   <FileText size={20} color="#5B5FED" />
-                  <Typography variant="h5">Event Setup File</Typography>
+                  <Typography variant="h5">Reference Data File</Typography>
                 </Box>
                 <Typography variant="body2" color="text.secondary" sx={{ lineHeight: 1.6 }}>
-                  Upload CSV file with your event structure
+                  Upload .xlsx file with events and transaction types
                 </Typography>
               </Box>
               <Tooltip title="Download">
@@ -342,7 +342,7 @@ const FileUploadPanel = ({ onUploadSuccess, events, addConsoleLog, selectedEvent
             <Box sx={{ mb: 2 }}>
               <input
                 type="file"
-                accept=".csv"
+                accept=".xlsx"
                 onChange={(e) => setEventFile(e.target.files[0])}
                 style={{ display: 'none' }}
                 id="event-file-input"
@@ -356,13 +356,13 @@ const FileUploadPanel = ({ onUploadSuccess, events, addConsoleLog, selectedEvent
                   size="small"
                   sx={{ justifyContent: 'flex-start', py: 1.5, textAlign: 'left' }}
                 >
-                  {eventFile ? eventFile.name : 'Choose CSV file...'}
+                  {eventFile ? eventFile.name : 'Choose .xlsx file...'}
                 </Button>
               </label>
               {uploadedEventFileName && (
                 <Typography variant="caption" color="success.main" sx={{ display: 'flex', alignItems: 'center', gap: 0.5, mt: 1 }}>
                   <CheckCircle size={12} />
-                  {uploadedEventFileName === 'event.csv' ? 'Event.csv' : uploadedEventFileName}
+                  {uploadedEventFileName === 'event.csv' ? 'ReferenceData.xlsx' : uploadedEventFileName}
                 </Typography>
               )}
             </Box>
@@ -375,7 +375,7 @@ const FileUploadPanel = ({ onUploadSuccess, events, addConsoleLog, selectedEvent
               startIcon={<Upload size={16} />}
               data-testid="upload-events-button"
             >
-              Upload Setup File
+              Upload Reference File
             </Button>
           </CardContent>
         </Card>
@@ -465,7 +465,7 @@ const FileUploadPanel = ({ onUploadSuccess, events, addConsoleLog, selectedEvent
         <CardContent sx={{ p: 3 }}>
           <Typography variant="h6" sx={{ mb: 1.5, color: '#5B5FED' }}>Upload Instructions</Typography>
             <Box component="ul" sx={{ m: 0, pl: 2.5, '& li': { mb: 1, fontSize: '0.8125rem', color: '#495057', lineHeight: 1.6 } }}>
-            <li><strong>Event Setup File (CSV):</strong> Columns: Event Name, Field Name, Data Format, Event Type, Event Table</li>
+            <li><strong>Reference Data File (.xlsx):</strong> Two sheets — <em>events</em> (columns: EventName, EventField, DataFormat, EventType, EventTable) and <em>transactions</em> (column: transactiontype)</li>
             <li><strong>Event Table:</strong> <code>standard</code> (always a transaction event) or <code>custom</code> (transaction event or reference table)</li>
             <li><strong>Event Data (Excel):</strong> Sheet name must match event name</li>
             <li><strong>Required Columns (transaction events):</strong> PostingDate, EffectiveDate, InstrumentId + event fields</li>

@@ -54,6 +54,7 @@ const Dashboard = () => {
 
   const [templates, setTemplates] = useState([]);
   const [selectedEvent, setSelectedEvent] = useState("");
+  const [transactionDefinitions, setTransactionDefinitions] = useState([]);
   const [consoleOutput, setConsoleOutput] = useState([]);
   const [tabValue, setTabValue] = useState(0);
   const [showFunctionBrowser, setShowFunctionBrowser] = useState(false);
@@ -86,6 +87,7 @@ const Dashboard = () => {
     loadDslFunctions();
     loadTemplates();
     loadCombinedCode();
+    loadTransactionDefinitions();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -122,6 +124,15 @@ const Dashboard = () => {
       }
     } catch (error) {
       console.error("Error loading events:", error);
+    }
+  };
+
+  const loadTransactionDefinitions = async () => {
+    try {
+      const response = await axios.get(`${API}/transaction-definitions`);
+      setTransactionDefinitions(response.data?.transaction_types || []);
+    } catch (error) {
+      // Non-fatal: leave as empty array
     }
   };
 
@@ -166,6 +177,7 @@ const Dashboard = () => {
           setTemplates([]);
           setSelectedEvent("");
           setDslCode('');
+          setTransactionDefinitions([]);
           setShowEventDataViewer(false);
 
           // Clear console output
@@ -237,7 +249,7 @@ const Dashboard = () => {
           // FileUploadPanel restores these from localStorage on mount, so they
           // survive the hard refresh below.
           try {
-            localStorage.setItem('uploadedEventFileName', 'Event.csv');
+            localStorage.setItem('uploadedEventFileName', 'ReferenceData.xlsx');
             localStorage.setItem('uploadedExcelFileName', 'Activity.xlsx');
             localStorage.setItem('lastEventDataUploadFileName', 'Activity.xlsx');
             localStorage.setItem('lastEventDataUploadStatus', 'success');
@@ -272,14 +284,14 @@ const Dashboard = () => {
       const response = await axios.get(`${API}/events/download`, {
         responseType: 'blob'
       });
-      const url = window.URL.createObjectURL(new Blob([response.data]));
+      const url = window.URL.createObjectURL(new Blob([response.data], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }));
       const link = document.createElement('a');
       link.href = url;
-      link.setAttribute('download', 'event_definitions.csv');
+      link.setAttribute('download', 'reference_data.xlsx');
       document.body.appendChild(link);
       link.click();
       link.remove();
-      toast.success("Event definitions downloaded!");
+      toast.success("Reference data downloaded!");
     } catch (error) {
       toast.error("Failed to download events");
     }
@@ -783,7 +795,7 @@ const Dashboard = () => {
 
             <TabPanel value={tabValue} index={0}>
               <FileUploadPanel 
-                  onUploadSuccess={loadEvents} 
+                  onUploadSuccess={() => { loadEvents(); loadTransactionDefinitions(); }} 
                   events={events}
                   addConsoleLog={addConsoleLog}
                   selectedEvent={selectedEvent}
@@ -993,6 +1005,7 @@ const Dashboard = () => {
                   key={editingRule ? `${editingRule.id}-p${editingRule.priority ?? 0}-u${editingRule.updated_at || ''}` : 'new'}
                   events={events}
                   dslFunctions={dslFunctions}
+                  transactionDefinitions={transactionDefinitions}
                   onGenerate={handleGeneratedCode}
                   onClose={() => { setEditorMode('code'); setEditingRule(null); }}
                   onSave={() => { setSavedRulesRefreshKey(k => k + 1); loadCombinedCode(); }}

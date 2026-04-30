@@ -217,8 +217,8 @@ const LeftSidebar = ({ events, selectedEvent, onEventSelect, onDownloadEvents, o
           toast.success(msg);
           // Show file labels in green in the Event Setup panel
           try {
-            localStorage.setItem('uploadedEventFileName', 'Event.csv');
-            window.dispatchEvent(new CustomEvent('dsl-event-def-loaded', { detail: { filename: 'Event.csv' } }));
+            localStorage.setItem('uploadedEventFileName', 'ReferenceData.xlsx');
+            window.dispatchEvent(new CustomEvent('dsl-event-def-loaded', { detail: { filename: 'ReferenceData.xlsx' } }));
             localStorage.setItem('uploadedExcelFileName', 'ActivityData.xlsx');
             window.dispatchEvent(new CustomEvent('dsl-event-data-imported', { detail: { filename: 'ActivityData.xlsx' } }));
           } catch (e) {}
