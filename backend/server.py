@@ -1616,12 +1616,12 @@ async def load_simple_sample():
         # ── Transaction Definitions ─────────────────────────────────────────
         await db.transaction_definitions.delete_many({})
         sample_txn_types = [
-            "Interest Accrual",
-            "Principal Payment",
-            "Fee Amortization",
+            "InterestAccrual",
+            "PrincipalPayment",
+            "FeeAmortization",
             "Revenue",
-            "Lease Expense",
-            "NPV Analysis",
+            "LeaseExpense",
+            "NPVAnalysis",
         ]
         for txn_type in sample_txn_types:
             await db.transaction_definitions.insert_one({"transactiontype": txn_type})
@@ -1855,11 +1855,11 @@ print(concat("Projected Investment Value: ", future_val))
 ## Use global postingdate and effectivedate (no prefixes needed)
 
 ## Only create fee transaction if the amount is greater than 0
-if(gt(loan_fee, 0), createTransaction(postingdate, effectivedate, "Loan Processing Fee", loan_fee), 0)
+if(gt(loan_fee, 0), createTransaction(postingdate, effectivedate, "LoanProcessingFee", loan_fee), 0)
 
 ## Record the monthly interest accrual
 monthly_interest = multiply(principal, monthly_rate)
-createTransaction(postingdate, effectivedate, "Interest Accrual", monthly_interest)"""
+createTransaction(postingdate, effectivedate, "InterestAccrual", monthly_interest)"""
         
         return {
             "message": "Sample data loaded successfully",
@@ -1928,11 +1928,11 @@ print(concat("Projected Investment Value: ", future_val))
 ## Use global postingdate and effectivedate (no prefixes needed)
 
 ## Only create fee transaction if the amount is greater than 0
-if(gt(loan_fee, 0), createTransaction(postingdate, effectivedate, "Loan Processing Fee", loan_fee), 0)
+if(gt(loan_fee, 0), createTransaction(postingdate, effectivedate, "LoanProcessingFee", loan_fee), 0)
 
 ## Record the monthly interest accrual
 monthly_interest = multiply(principal, monthly_rate)
-createTransaction(postingdate, effectivedate, "Interest Accrual", monthly_interest)"""
+createTransaction(postingdate, effectivedate, "InterestAccrual", monthly_interest)"""
         return {
             "message": "Sample data loaded into memory (DB unavailable)",
             "events": [e['event_name'] for e in SAMPLE_EVENTS],
