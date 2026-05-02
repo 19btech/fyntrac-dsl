@@ -2573,6 +2573,198 @@ async def tool_add_transaction_to_rule(args: dict) -> dict:
     return await _attach_validation(rule, payload)
 
 
+def _resolve_txn_index(txns: list, args: dict) -> int:
+    """Locate one transaction inside outputs.transactions[] by index, by type
+    (+ optional side), or by an exact-match dict on `match`. Raises ToolError
+    with a helpful listing if 0 or >1 candidates are found."""
+    if not txns:
+        raise ToolError("Rule has no transactions to operate on.")
+    if "transaction_index" in args and args["transaction_index"] is not None:
+        idx = int(args["transaction_index"])
+        if idx < 0 or idx >= len(txns):
+            raise ToolError(
+                f"transaction_index {idx} out of range (0..{len(txns)-1}). "
+                f"Current entries: " + ", ".join(
+                    f"[{i}] {t.get('side')} {t.get('type')}" for i, t in enumerate(txns)
+                )
+            )
+        return idx
+    txn_type = (args.get("type") or "").strip()
+    side = (args.get("side") or "").strip().lower()
+    if not txn_type and not args.get("match"):
+        raise ToolError(
+            "Identify the transaction by `transaction_index`, by `type` "
+            "(+ optional `side`), or by an exact-match `match` dict."
+        )
+    candidates: list[int] = []
+    match = args.get("match") or {}
+    for i, t in enumerate(txns):
+        if txn_type and t.get("type") != txn_type:
+            continue
+        if side and (t.get("side") or "").lower() != side:
+            continue
+        if match and not all(t.get(k) == v for k, v in match.items()):
+            continue
+        candidates.append(i)
+    if not candidates:
+        raise ToolError(
+            f"No transaction matched (type={txn_type or '*'}, side={side or '*'}). "
+            f"Current entries: " + ", ".join(
+                f"[{i}] {t.get('side')} {t.get('type')} amount={t.get('amount')}"
+                for i, t in enumerate(txns)
+            )
+        )
+    if len(candidates) > 1:
+        raise ToolError(
+            f"{len(candidates)} transactions matched (type={txn_type or '*'}, "
+            f"side={side or '*'}). Disambiguate by passing `transaction_index` "
+            f"or a more specific `match` dict. Matches: " + ", ".join(
+                f"[{i}] {txns[i].get('side')} {txns[i].get('type')} "
+                f"amount={txns[i].get('amount')}" for i in candidates
+            )
+        )
+    return candidates[0]
+
+
+async def tool_delete_transaction_from_rule(args: dict) -> dict:
+    """Remove one entry from `outputs.transactions[]`. Identify by
+    `transaction_index`, by `type` (+ optional `side`), or by an exact-match
+    `match` dict (e.g. {"type": "X", "side": "debit", "amount": "y"}).
+    Pass `delete_all=true` to clear the entire transactions array."""
+    rule = await _load_rule((args.get("rule_id") or "").strip())
+    outputs = dict(rule.get("outputs") or {})
+    txns = list(outputs.get("transactions") or [])
+    if bool(args.get("delete_all")):
+        removed_count = len(txns)
+        outputs["transactions"] = []
+        outputs["createTransaction"] = False
+        rule["outputs"] = outputs
+        rule = await _save_rule_doc(rule, is_new=False)
+        # Round-trip verification
+        reloaded = await _load_rule(rule["id"])
+        remaining = ((reloaded.get("outputs") or {}).get("transactions") or [])
+        if remaining:
+            raise ToolError(
+                f"Round-trip check failed: delete_all left {len(remaining)} "
+                f"transaction(s) behind. The save did not persist correctly."
+            )
+        payload = {
+            "rule_id": rule["id"],
+            "deleted_count": removed_count,
+            "transaction_count": 0,
+            "next_step_hint": f"Cleared all {removed_count} transaction(s).",
+        }
+        return await _attach_validation(rule, payload)
+
+    idx = _resolve_txn_index(txns, args)
+    removed = txns.pop(idx)
+    outputs["transactions"] = txns
+    outputs["createTransaction"] = len(txns) > 0
+    rule["outputs"] = outputs
+    rule = await _save_rule_doc(rule, is_new=False)
+    # Round-trip verification
+    reloaded = await _load_rule(rule["id"])
+    persisted = ((reloaded.get("outputs") or {}).get("transactions") or [])
+    if len(persisted) != len(txns):
+        raise ToolError(
+            f"Round-trip check failed: expected {len(txns)} transaction(s) "
+            f"after delete, found {len(persisted)}. Save did not persist."
+        )
+    sides = [(t.get("side") or "").lower() for t in txns]
+    balanced = (not txns) or (
+        any(s == "debit" for s in sides) and any(s == "credit" for s in sides)
+    )
+    payload = {
+        "rule_id": rule["id"],
+        "deleted_index": idx,
+        "deleted": {
+            "type": removed.get("type"),
+            "side": removed.get("side"),
+            "amount": removed.get("amount"),
+        },
+        "transaction_count": len(txns),
+        "balanced": balanced,
+        "next_step_hint": (
+            f"Removed [{idx}] {removed.get('side')} {removed.get('type')}. "
+            + (f"{len(txns)} transaction(s) remain." if txns else "Rule now emits no transactions.")
+            + ("" if balanced else " WARNING: remaining entries are NOT balanced (debit/credit pair broken).")
+        ),
+    }
+    return await _attach_validation(rule, payload)
+
+
+async def tool_update_transaction_in_rule(args: dict) -> dict:
+    """Patch one entry in `outputs.transactions[]`. Identify by
+    `transaction_index`, by `type` (+ optional `side`), or by `match` dict.
+    `patch` may set any of: type, amount, side, postingdate / postingDate,
+    effectivedate / effectiveDate, subinstrumentid / subInstrumentId."""
+    rule = await _load_rule((args.get("rule_id") or "").strip())
+    outputs = dict(rule.get("outputs") or {})
+    txns = list(outputs.get("transactions") or [])
+    idx = _resolve_txn_index(txns, args)
+    patch = args.get("patch") or {}
+    if not isinstance(patch, dict) or not patch:
+        # Auto-wrap top-level fields like update_step does
+        _TXN_FIELDS_LC = {
+            "type", "amount", "side",
+            "postingdate", "posting_date", "postingDate",
+            "effectivedate", "effective_date", "effectiveDate",
+            "subinstrumentid", "sub_instrument_id", "subInstrumentId",
+        }
+        flat = {k: v for k, v in (args or {}).items() if k in _TXN_FIELDS_LC}
+        if not flat:
+            raise ToolError(
+                "patch must be a non-empty object. Pass transaction fields "
+                "either wrapped as `patch={...}` or at the top level."
+            )
+        patch = flat
+
+    _CAMEL = {
+        "postingdate": "postingDate", "posting_date": "postingDate",
+        "effectivedate": "effectiveDate", "effective_date": "effectiveDate",
+        "subinstrumentid": "subInstrumentId", "sub_instrument_id": "subInstrumentId",
+    }
+    normalised: dict = {}
+    for k, v in patch.items():
+        normalised[_CAMEL.get(k, k)] = v
+    side_in = normalised.get("side")
+    if side_in is not None:
+        side_in = str(side_in).strip().lower()
+        if side_in not in ("debit", "credit"):
+            raise ToolError("`side` must be 'debit' or 'credit'")
+        normalised["side"] = side_in
+
+    merged = {**txns[idx], **normalised}
+    if not merged.get("type"):
+        raise ToolError("`type` cannot be cleared.")
+    if not merged.get("amount"):
+        raise ToolError("`amount` cannot be cleared.")
+    if not merged.get("side") or merged["side"].lower() not in ("debit", "credit"):
+        raise ToolError("`side` must be 'debit' or 'credit'.")
+    if not merged.get("postingDate") or not merged.get("effectiveDate"):
+        raise ToolError("`postingDate` and `effectiveDate` are required.")
+    txns[idx] = merged
+    outputs["transactions"] = txns
+    outputs["createTransaction"] = True
+    rule["outputs"] = outputs
+    _validate_transaction_outputs(rule.get("steps") or [], outputs)
+    rule = await _save_rule_doc(rule, is_new=False)
+    payload = {
+        "rule_id": rule["id"],
+        "updated_index": idx,
+        "transaction": {
+            "type": merged.get("type"),
+            "side": merged.get("side"),
+            "amount": merged.get("amount"),
+            "postingDate": merged.get("postingDate"),
+            "effectiveDate": merged.get("effectiveDate"),
+            "subInstrumentId": merged.get("subInstrumentId"),
+        },
+        "next_step_hint": f"Updated [{idx}] {merged.get('side')} {merged.get('type')}.",
+    }
+    return await _attach_validation(rule, payload)
+
+
 async def tool_debug_step(args: dict) -> dict:
     """Run the rule's DSL up to and including a chosen step, printing the
     step's variable so the agent can observe its value (and any prior vars
@@ -3548,6 +3740,8 @@ TOOLS: dict[str, Callable[[dict], Awaitable[dict]]] = {
     "update_step": tool_update_step,
     "delete_step": tool_delete_step,
     "add_transaction_to_rule": tool_add_transaction_to_rule,
+    "delete_transaction_from_rule": tool_delete_transaction_from_rule,
+    "update_transaction_in_rule": tool_update_transaction_in_rule,
     "debug_step": tool_debug_step,
     "list_saved_schedules": tool_list_saved_schedules,
     "create_saved_schedule": tool_create_saved_schedule,
@@ -3914,6 +4108,67 @@ TOOL_SCHEMAS.extend([
                 "subinstrumentid": {"type": "string", "description": "Defaults to '1.0' if omitted"},
             },
             "required": ["rule_id", "type", "amount", "side"],
+        },
+    },
+    {
+        "name": "delete_transaction_from_rule",
+        "description": (
+            "Remove ONE entry from a rule's `outputs.transactions[]` array, "
+            "OR clear the whole array via `delete_all=true`. "
+            "Identify a single entry via `transaction_index`, OR `type` "
+            "(+ optional `side`), OR a `match` dict (e.g. "
+            "{type:'X', side:'debit', amount:'y'}). "
+            "If multiple entries match (e.g. you only pass `type` and there "
+            "are duplicates), the tool errors and lists candidates so you "
+            "can disambiguate. Use this for: 'remove duplicate transactions', "
+            "'delete the AccumulatedDepreciation entry', 'remove all "
+            "transactions where postingdate is empty' (call once per offending "
+            "index), or 'delete all transactions' (delete_all=true)."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "rule_id": {"type": "string"},
+                "transaction_index": {"type": "integer", "description": "0-based index inside outputs.transactions[]"},
+                "type": {"type": "string"},
+                "side": {"type": "string", "enum": ["debit", "credit"]},
+                "match": {"type": "object", "description": "Exact-match filter on transaction fields, e.g. {type, side, amount, postingDate}"},
+                "delete_all": {"type": "boolean", "description": "If true, clear the entire transactions array."},
+            },
+            "required": ["rule_id"],
+        },
+    },
+    {
+        "name": "update_transaction_in_rule",
+        "description": (
+            "Patch ONE entry in a rule's `outputs.transactions[]` array. "
+            "Identify it via `transaction_index`, OR `type` (+ optional "
+            "`side`), OR a `match` dict. Pass the new values inside `patch` "
+            "(or at the top level) — supported fields: type, amount, side, "
+            "postingdate, effectivedate, subinstrumentid."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "rule_id": {"type": "string"},
+                "transaction_index": {"type": "integer"},
+                "type": {"type": "string", "description": "Locator: existing type name"},
+                "side": {"type": "string", "enum": ["debit", "credit"], "description": "Locator: existing side"},
+                "match": {"type": "object"},
+                "patch": {
+                    "type": "object",
+                    "description": "Fields to overwrite",
+                    "properties": {
+                        "type": {"type": "string"},
+                        "amount": {"type": "string"},
+                        "side": {"type": "string", "enum": ["debit", "credit"]},
+                        "postingdate": {"type": "string"},
+                        "effectivedate": {"type": "string"},
+                        "subinstrumentid": {"type": "string"},
+                    },
+                },
+            },
+            "required": ["rule_id"],
         },
     },
     {
