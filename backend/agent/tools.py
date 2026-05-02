@@ -1885,6 +1885,19 @@ def _validate_schedule_step_shape(name: str, sc: dict, outputVars: list,
     if not isinstance(sc, dict):
         raise ToolError(f"step '{name}': scheduleConfig must be an object")
 
+    # Auto-coerce periodType: if the agent set startDate* or endDate* keys it
+    # intends date-based scheduling even if it forgot to flip periodType.
+    # (Common after a failed patch where the periodType op was in the dropped
+    # batch but only the corrected field was re-sent on retry.)
+    _DATE_CONFIG_KEYS = {
+        "startDateSource", "startDateField", "startDateFormula",
+        "endDateSource", "endDateField", "endDateFormula",
+    }
+    if (sc.get("periodType", "number") or "number") == "number" and any(
+        sc.get(k) for k in _DATE_CONFIG_KEYS
+    ):
+        sc["periodType"] = "date"
+
     period_type = (sc.get("periodType") or "date").strip()
     if period_type not in _VALID_PERIOD_TYPES:
         raise ToolError(
@@ -3700,6 +3713,22 @@ async def tool_update_step(args: dict) -> dict:
             "scheduleConfig", "outputVars", "inlineComment", "commentText",
             "printResult",
         }
+        # Detect the most common agent mistake: passing `ops=[...]` (the
+        # patch_step / JSON-Pointer format) to update_step, which uses deep-merge.
+        if isinstance(args.get("ops"), list):
+            raise ToolError(
+                "You called `update_step` with `ops=[...]` — that is the "
+                "`patch_step` format. Either:\n"
+                "  (A) Call `patch_step` with your `ops` array as-is, OR\n"
+                "  (B) Rewrite as `update_step` with a `patch` object:\n"
+                "      patch={'scheduleConfig': {'periodType': 'date',\n"
+                "        'startDateSource': 'field',\n"
+                "        'startDateField': 'EVENTNAME.fieldname',\n"
+                "        'endDateSource': 'formula',\n"
+                "        'endDateFormula': '<DSL expr>'}}.\n"
+                "The `update_step` patch is deep-merged so you only need to "
+                "include the keys you want to change."
+            )
         flat = {k: v for k, v in (args or {}).items() if k in _STEP_FIELDS}
         if flat:
             patch = flat
@@ -5807,6 +5836,35 @@ RIGHT — split into two iteration entries:
   ]
 
 SCHEDULE (amortisation, ECL projection, etc.)
+
+⚠️  ALWAYS set periodType explicitly. Financial models almost always use
+"date" so periods align with real loan/contract dates coming from the event.
+Use "number" only when you have a fixed iteration count with no calendar dates.
+
+// DATE-BASED schedule (preferred for loans, fees, amortisation):
+{
+  "name": "amort_schedule",
+  "stepType": "schedule",
+  "scheduleConfig": {
+    "periodType": "date",
+    "startDateSource": "field",
+    "startDateField": "FeeEvent.origination_date",
+    "endDateSource": "field",
+    "endDateField": "FeeEvent.maturity_date",
+    "frequency": "M",
+    "columns": [
+      {"name": "period_date", "formula": "period_date"},
+      {"name": "interest",    "formula": "multiply(balance, monthly_rate)"},
+      {"name": "principal",   "formula": "subtract(payment, interest)"}
+    ],
+    "contextVars": ["balance", "monthly_rate", "payment"]
+  },
+  "outputVars": [
+    {"name": "total_interest", "type": "sum",  "column": "interest"}
+  ]
+}
+
+// COUNT-BASED schedule (fixed number of periods, no real dates):
 {
   "name": "amort_schedule",
   "stepType": "schedule",
