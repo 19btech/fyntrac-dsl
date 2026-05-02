@@ -14,6 +14,7 @@ import pandas as pd
 import json
 import re
 import ast
+from pydantic import BaseModel
 
 
 # ---------------------------------------------------------------------------
@@ -332,6 +333,27 @@ except Exception:
         from .ai_providers import (
             get_provider, PROVIDER_INFO, build_agent_context,
             encrypt_key, decrypt_key, AIError,
+        )
+
+# Autonomous agent runtime (tools + plan/act/observe loop)
+try:
+    from backend.agent import (
+        run_agent as agent_run, submit_approval as agent_submit_approval,
+        cancel_run as agent_cancel_run, configure_bridge as agent_configure_bridge,
+        DESTRUCTIVE_TOOLS as AGENT_DESTRUCTIVE_TOOLS,
+    )
+except Exception:
+    try:
+        from agent import (
+            run_agent as agent_run, submit_approval as agent_submit_approval,
+            cancel_run as agent_cancel_run, configure_bridge as agent_configure_bridge,
+            DESTRUCTIVE_TOOLS as AGENT_DESTRUCTIVE_TOOLS,
+        )
+    except Exception:
+        from .agent import (
+            run_agent as agent_run, submit_approval as agent_submit_approval,
+            cancel_run as agent_cancel_run, configure_bridge as agent_configure_bridge,
+            DESTRUCTIVE_TOOLS as AGENT_DESTRUCTIVE_TOOLS,
         )
 # Support running in different execution contexts: prefer package import, fallback to module-level
 try:
@@ -3893,6 +3915,169 @@ def _validate_imported_events(data: Any) -> str | None:
         if "values" not in item["eventDetail"]:
             return f"Item at index {i}: 'eventDetail' must contain a 'values' field."
     return None
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Autonomous agent endpoints
+# ──────────────────────────────────────────────────────────────────────────
+
+# Wire the agent's late-bound helpers exactly once at import time.
+try:
+    agent_configure_bridge(
+        db=db,
+        in_memory_data=in_memory_data,
+        use_in_memory_getter=lambda: USE_IN_MEMORY,
+        helpers={
+            "EventDefinition": EventDefinition,
+            "EventData": EventData,
+            "DSLTemplate": DSLTemplate,
+            "DSL_FUNCTION_METADATA": DSL_FUNCTION_METADATA,
+            "extract_event_names_from_dsl": extract_event_names_from_dsl,
+            "merge_event_data_by_instrument": merge_event_data_by_instrument,
+            "filter_event_data_by_posting_date": filter_event_data_by_posting_date,
+            "dsl_to_python": dsl_to_python,
+            "dsl_to_python_multi_event": dsl_to_python_multi_event,
+            "dsl_to_python_standalone": dsl_to_python_standalone,
+            "execute_python_template": execute_python_template,
+        },
+    )
+except Exception as _agent_bridge_exc:
+    logger.warning("Agent bridge configuration failed: %s", _agent_bridge_exc)
+
+
+class AgentRunRequest(BaseModel):
+    task: str
+    model: Optional[str] = None
+    max_steps: Optional[int] = 50
+    auto_approve_destructive: Optional[bool] = False
+
+
+class AgentApprovalRequest(BaseModel):
+    decision: str  # "approve" | "deny"
+
+
+@api_router.post("/agent/run")
+async def agent_run_endpoint(req: AgentRunRequest):
+    """SSE stream of an autonomous agent run.
+
+    Each SSE event has `data: <json>\\n\\n`. The terminal event has
+    `data: [DONE]\\n\\n`.
+    """
+    async def event_stream():
+        # 16 KB pad + immediate "connected" event flushes proxy buffers
+        # (including the GitHub Codespaces port-forwarder, which buffers
+        # ~8 KB) so the UI shows progress before the first model call
+        # returns. Repeat the connected event after the pad to be safe.
+        yield ":" + (" " * 16384) + "\n\n"
+        yield f"data: {json.dumps({'type': 'connected', 'ts': datetime.now(timezone.utc).isoformat()})}\n\n"
+        yield ":" + (" " * 4096) + "\n\n"
+        try:
+            try:
+                provider_config = await db.ai_provider_config.find_one({}, {"_id": 0})
+            except Exception:
+                provider_config = None
+            if not provider_config:
+                yield f"data: {json.dumps({'type': 'error', 'error_type': 'no_provider', 'error_message': ERROR_MESSAGES['no_provider']})}\n\n"
+                yield "data: [DONE]\n\n"
+                return
+
+            provider_name = provider_config.get("provider", "")
+            selected_model = req.model or provider_config.get("selected_model", "")
+            try:
+                api_key = decrypt_key(provider_config["encrypted_api_key"])
+            except Exception:
+                yield f"data: {json.dumps({'type': 'error', 'error_type': 'invalid_key', 'error_message': ERROR_MESSAGES['invalid_key']})}\n\n"
+                yield "data: [DONE]\n\n"
+                return
+
+            try:
+                provider = get_provider(provider_name)
+            except Exception as exc:
+                yield f"data: {json.dumps({'type': 'error', 'error_message': f'Unknown provider {provider_name}: {exc}'})}\n\n"
+                yield "data: [DONE]\n\n"
+                return
+
+            try:
+                async for event in agent_run(
+                    task=req.task,
+                    provider=provider,
+                    api_key=api_key,
+                    model=selected_model,
+                    db=db,
+                    in_memory_data=in_memory_data,
+                    max_steps=int(req.max_steps or 50),
+                    auto_approve_destructive=bool(req.auto_approve_destructive),
+                ):
+                    yield f"data: {json.dumps(event, default=str)}\n\n"
+            except AIError as ae:
+                err_type = getattr(ae, "error_type", "network")
+                msg_template = ERROR_MESSAGES.get(err_type, str(ae))
+                msg = msg_template.format(provider=provider_name, model=selected_model)
+                yield f"data: {json.dumps({'type':'error','error_type':err_type,'error_message':msg})}\n\n"
+            except Exception as exc:
+                logger.exception("Agent run failed")
+                yield f"data: {json.dumps({'type':'error','error_message':str(exc)})}\n\n"
+        finally:
+            yield "data: [DONE]\n\n"
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@api_router.post("/agent/runs/{run_id}/approve")
+async def agent_approve(run_id: str, call_id: str, req: AgentApprovalRequest):
+    ok = agent_submit_approval(run_id, call_id, req.decision)
+    if not ok:
+        raise HTTPException(status_code=404, detail="No pending approval for this call_id")
+    return {"ok": True, "run_id": run_id, "call_id": call_id, "decision": req.decision}
+
+
+@api_router.post("/agent/runs/{run_id}/cancel")
+async def agent_cancel(run_id: str):
+    ok = agent_cancel_run(run_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Run not active")
+    return {"ok": True, "run_id": run_id}
+
+
+@api_router.get("/agent/runs")
+async def agent_list_runs(limit: int = 25):
+    try:
+        runs = await db.agent_runs.find({}, {"_id": 0, "history": 0}) \
+                                  .sort("started_at", -1).to_list(limit)
+        if runs:
+            return {"runs": runs}
+    except Exception:
+        pass
+    runs = list(in_memory_data.get("agent_runs") or [])
+    runs.sort(key=lambda r: r.get("started_at", ""), reverse=True)
+    return {"runs": [{k: v for k, v in r.items() if k != "history"} for r in runs[:limit]]}
+
+
+@api_router.get("/agent/runs/{run_id}")
+async def agent_get_run(run_id: str):
+    try:
+        run = await db.agent_runs.find_one({"run_id": run_id}, {"_id": 0})
+        if run:
+            return run
+    except Exception:
+        pass
+    for r in (in_memory_data.get("agent_runs") or []):
+        if r.get("run_id") == run_id:
+            return r
+    raise HTTPException(status_code=404, detail="Run not found")
+
+
+@api_router.get("/agent/destructive-tools")
+async def agent_destructive_tools():
+    return {"destructive_tools": sorted(AGENT_DESTRUCTIVE_TOOLS)}
 
 
 @api_router.post("/import-events/transform")

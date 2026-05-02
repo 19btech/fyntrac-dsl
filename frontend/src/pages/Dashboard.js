@@ -1122,6 +1122,18 @@ const Dashboard = () => {
               editorRef={editorRef}
               monacoRef={monacoRef}
               providerRefreshKey={providerRefreshKey}
+              onAgentDataChange={(toolName) => {
+                // Agent just mutated server state — refresh affected panels.
+                try { loadEvents(); } catch (_) {}
+                try { loadTemplates(); } catch (_) {}
+                try { loadDslFunctions(); } catch (_) {}
+                try { loadTransactionDefinitions(); } catch (_) {}
+                // Rules / schedules list and the combined-code preview.
+                try { setSavedRulesRefreshKey(k => k + 1); } catch (_) {}
+                try { loadCombinedCode(); } catch (_) {}
+                try { window.dispatchEvent(new CustomEvent('dsl-templates-changed', { detail: { source: 'agent', tool: toolName } })); } catch (_) {}
+                addConsoleLog(`Agent updated: ${toolName}`, "info");
+              }}
               uiContext={{
                 mode: editorMode,
                 editingRule: editingRule?.name || editingRule?.ruleName || null,

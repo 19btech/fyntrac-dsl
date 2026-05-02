@@ -1399,6 +1399,13 @@ const TemplateLibrary = ({ events, onLoadTemplate, onClose, inline }) => {
     loadUserTemplates();
   }, [loadUserTemplates]);
 
+  // Refresh when the agent (or anything else) reports template changes.
+  useEffect(() => {
+    const handler = () => loadUserTemplates();
+    window.addEventListener('dsl-templates-changed', handler);
+    return () => window.removeEventListener('dsl-templates-changed', handler);
+  }, [loadUserTemplates]);
+
   const categories = useMemo(() => {
     return ['All', ...new Set(ACCOUNTING_TEMPLATES.map(t => t.category))];
   }, []);

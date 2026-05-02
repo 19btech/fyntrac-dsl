@@ -307,3 +307,102 @@
   0% { opacity: 0; transform: translateY(3px); }
   100% { opacity: 1; transform: translateY(0); }
 }
+
+/* ============================================
+   Autonomous Agent Run timeline
+   ============================================ */
+.agent-run {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  font-size: 12.5px;
+  border: 1px solid #e0e0e0;
+  border-radius: 6px;
+  background: #fafafa;
+  overflow: hidden;
+}
+.agent-run-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 10px;
+  border-bottom: 1px solid #e8e8e8;
+  background: #f3f3f3;
+}
+.agent-run-header-left { display: flex; align-items: center; gap: 6px; }
+.agent-run-title { font-weight: 600; color: #424242; font-size: 12px; }
+.agent-run-title::first-letter { text-transform: uppercase; }
+.agent-run-stop {
+  display: inline-flex; align-items: center; gap: 4px;
+  background: transparent; border: 1px solid #d0d0d0;
+  border-radius: 4px; padding: 2px 8px; cursor: pointer;
+  font-size: 11px; color: #555;
+}
+.agent-run-stop:hover { background: #fff5f5; border-color: #f5a5a5; color: #c0392b; }
+.agent-run-error {
+  display: flex; align-items: center; gap: 6px;
+  padding: 6px 10px; background: #fff4f4; color: #c0392b;
+  border-bottom: 1px solid #f5d5d5; font-size: 12px;
+}
+.agent-run-timeline { padding: 6px 8px; display: flex; flex-direction: column; gap: 2px; }
+.agent-run-row {
+  display: flex; align-items: flex-start; gap: 6px;
+  padding: 3px 4px; border-radius: 4px;
+  font-size: 12px; color: #2b2b2b;
+}
+.agent-run-row.meta { color: #666; font-size: 11px; }
+.agent-run-row.text { color: #1e1e1e; line-height: 1.45; }
+.agent-run-row.text .muted { color: #888; flex-shrink: 0; margin-top: 3px; }
+.agent-run-row.warn { color: #b07c00; background: #fff8e1; }
+.agent-run-row.error { color: #c0392b; background: #fff4f4; }
+.agent-run-row.final { color: #146c2e; background: #ebf6ee; padding: 5px 8px; border-radius: 4px; }
+.agent-run-row.final.failed,
+.agent-run-row.final.cancelled,
+.agent-run-row.final.halted { color: #b07c00; background: #fff8e1; }
+
+.agent-run-row.tool { flex-direction: column; padding: 0; }
+.agent-run-tool-head {
+  display: flex; align-items: center; gap: 6px; width: 100%;
+  background: transparent; border: 0; padding: 4px 6px; cursor: pointer;
+  font: inherit; color: inherit; text-align: left; border-radius: 4px;
+}
+.agent-run-tool-head:hover { background: #eee; }
+.agent-run-row.tool .tool-label { flex: 1; color: #1e1e1e; }
+.agent-run-row.tool .tool-duration { color: #888; font-size: 11px; font-variant-numeric: tabular-nums; }
+.agent-run-row.tool.state-error .tool-label { color: #c0392b; }
+.agent-run-row.tool.state-pending .tool-label { color: #b07c00; }
+
+.agent-run-tool-body {
+  padding: 4px 10px 8px 30px;
+  display: flex; flex-direction: column; gap: 4px;
+  border-top: 1px dashed #e8e8e8;
+}
+.agent-run-tool-body .kv {
+  display: grid; grid-template-columns: 60px 1fr; gap: 8px; align-items: start;
+  font-size: 11.5px;
+}
+.agent-run-tool-body .kv .k { color: #888; text-transform: uppercase; font-size: 10px; padding-top: 2px; }
+.agent-run-tool-body .kv .v {
+  background: #fff; border: 1px solid #ececec; border-radius: 3px;
+  padding: 2px 6px; font-family: 'SF Mono', Menlo, Consolas, monospace;
+  font-size: 11px; color: #333; word-break: break-all; white-space: pre-wrap;
+}
+.agent-run-tool-body .kv.error .v { color: #c0392b; background: #fff4f4; border-color: #f5d5d5; }
+
+.agent-run-approval {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 10px 8px 30px; color: #b07c00; font-size: 12px;
+  background: #fffbeb; border-top: 1px dashed #f0e0a0;
+}
+.agent-run-approval span { flex: 1; }
+.agent-run-approval button {
+  border: 1px solid #d0d0d0; background: #fff; padding: 3px 10px;
+  border-radius: 4px; font-size: 11px; cursor: pointer;
+}
+.agent-run-approval button.approve { background: #146c2e; color: #fff; border-color: #146c2e; }
+.agent-run-approval button.approve:hover { background: #0d5b25; }
+.agent-run-approval button.deny:hover { background: #fff4f4; color: #c0392b; border-color: #f5a5a5; }
+
+.agent-run .ok { color: #146c2e; }
+.agent-run .err { color: #c0392b; }
+.agent-run .warn { color: #b07c00; }
+.agent-run .spin { animation: agentRunSpin 0.9s linear infinite; }
+@keyframes agentRunSpin { from { transform: rotate(0); } to { transform: rotate(360deg); } }

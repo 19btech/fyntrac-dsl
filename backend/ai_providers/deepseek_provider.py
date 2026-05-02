@@ -156,3 +156,19 @@ class DeepSeekProvider(AIProvider):
         except Exception as exc:
             error_type, detail = _classify_error(exc)
             raise AIError(error_type, "deepseek", detail) from exc
+
+    async def chat_with_tools(
+        self,
+        *,
+        api_key: str,
+        model: str,
+        messages: list[dict],
+        tools: list[dict],
+        temperature: float = 0.1,
+    ) -> dict:
+        from .openai_provider import _openai_compatible_chat_with_tools
+        return await _openai_compatible_chat_with_tools(
+            api_key=api_key, model=model, messages=messages,
+            tools=tools, temperature=temperature,
+            base_url=DEEPSEEK_BASE_URL, provider_name="deepseek",
+        )

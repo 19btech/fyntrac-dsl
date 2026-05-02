@@ -9,14 +9,29 @@ module.exports = function(app) {
       target: 'http://localhost:8000',
       changeOrigin: true,
       logLevel: 'debug',
+      // Stream responses immediately (critical for SSE / agent runs).
+      // selfHandleResponse:false (the default) lets node-http-proxy pipe
+      // chunks straight through. We additionally disable timeouts and
+      // buffering on the proxied response.
+      proxyTimeout: 0,
+      timeout: 0,
+      buffer: false,
       // Ensure the /api prefix is preserved when proxying to backend.
-      // Some dev-server integrations may strip the prefix by default; explicitly
-      // rewrite ^/api to /api (no-op) so the backend receives the expected path.
       pathRewrite: {
         '^/api': '/api'
       },
       onProxyReq: (proxyReq, req, res) => {
         console.log('[Proxy] Forwarding:', req.method, req.path);
+      },
+      onProxyRes: (proxyRes, req, res) => {
+        const ct = proxyRes.headers['content-type'] || '';
+        if (ct.includes('text/event-stream')) {
+          // Disable any compression / buffering that webpack-dev-server
+          // or the host platform might otherwise apply to SSE responses.
+          proxyRes.headers['cache-control'] = 'no-cache, no-transform';
+          proxyRes.headers['x-accel-buffering'] = 'no';
+          delete proxyRes.headers['content-length'];
+        }
       },
       onError: (err, req, res) => {
         console.error('[Proxy] Error:', err.message);

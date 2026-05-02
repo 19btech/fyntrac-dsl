@@ -88,15 +88,11 @@ webpackConfig.devServer = (devServerConfig) => {
   // Set up API proxy using webpack devServer proxy configuration
   // Without pathRewrite, webpack strips /api when forwarding
   // With pathRewrite: {'^': ''} we prevent stripping by rewriting nothing to nothing
+  // /api proxy is handled exclusively by setupProxy.js (which has SSE-aware
+  // settings: buffer:false, x-accel-buffering header, no content-length, etc).
+  // Keeping /api here would let webpack-dev-server's built-in proxy intercept
+  // first and buffer SSE responses, breaking real-time agent streaming.
   devServerConfig.proxy = {
-    '/api': {
-      target: 'http://localhost:8000',
-      changeOrigin: true,
-      logLevel: 'debug',
-      pathRewrite: {
-        '^/api': '/api'  // Rewrite /api to /api (essentially no-op, preserves /api)
-      }
-    },
     '/ws': {
       target: 'ws://localhost:8000',
       ws: true,
