@@ -330,7 +330,7 @@ def _error_signature(err: str) -> str:
     return "other"
 
 
-def _build_loop_nudge(tool_name: str, signature: str) -> str:
+def _build_loop_nudge(tool_name: str, signature: str, err_text: str = "") -> str:
     """Construct a forceful steering message when the agent loops on the same
     error category. Tells the agent exactly what to do next."""
     base = (
@@ -375,7 +375,101 @@ def _build_loop_nudge(tool_name: str, signature: str) -> str:
             "FORMULA and DO NOT add `field_name` to contextVars. The simplest "
             "fix is to remove `contextVars` from the schedule step entirely "
             "(it is auto-derived from formulas) — only add a calc step BEFORE "
-            "the schedule step if you need to reuse a computed value."
+            "the schedule step if you need to reuse a computed value.\n"
+            "COMMON MISTAKE: using `iif(cond, a, b)` (Excel syntax) inside a "
+            "column formula. The DSL uses `if(cond, a, b)`. Replace every "
+            "`iif(` with `if(` in your column formulas."
+        )
+    elif signature == "undefined_name" and err_text:
+        import re as _re
+        m = _re.search(r"\b(true|false|null|nil|undefined)\b", err_text)
+        if m:
+            base += (
+                f"\nNote: the offending name `{m.group(1)}` is a JS-style "
+                f"boolean/null literal. The DSL accepts ONLY Python-style "
+                f"`True` / `False` / `None`. Replace `true`→`True`, "
+                f"`false`→`False`, `null`→`None`. Better still, test a "
+                f"boolean field DIRECTLY in a condition without `eq(...)` — "
+                f"e.g. condition: \"EVT.is_impaired\" instead of "
+                f"`eq(EVT.is_impaired, True)`."
+            )
+        # Check for _EVENT_FIELD pattern (EVENT_fieldname) — this means the
+        # event row doesn't have that field in sample data. Fix = regenerate sample.
+        elif tool_name in {"debug_step", "dry_run_rule", "dry_run_template"}:
+            evt_field = _re.search(r"name '([A-Za-z_]\w+)_(\w+)' is not defined", err_text)
+            if evt_field:
+                evt_name = evt_field.group(1)
+                field_name = evt_field.group(2)
+                base += (
+                    f"\nThis error means the event '{evt_name}' does NOT have a "
+                    f"field named '{field_name}' in its sample data. "
+                    f"The DSL engine translates `{evt_name}.{field_name}` in your "
+                    f"formula into `{evt_name}_{field_name}` in the executed code; "
+                    f"if that field is absent from the event rows, execution fails. "
+                    f"\nFIX (two steps):\n"
+                    f"  1. Call `get_event_data(event_name='{evt_name}')` to see "
+                    f"     what fields currently exist.\n"
+                    f"  2. Call `generate_sample_event_data(event_name='{evt_name}', "
+                    f"     field_hints={{'{field_name}': {{'type': 'date', 'range': "
+                    f"['2022-01-01','2024-01-01']}}}})` (adjust type to 'number' if "
+                    f"it is a numeric field) to add the missing field to sample rows.\n"
+                    f"  3. THEN re-run debug_step. Do NOT patch the step formula to "
+                    f"     remove the reference — the field belongs in the data."
+                )
+    # schedule_sum / schedule_last / etc. called with wrong first arg type:
+    # the model passed a regular scalar variable (a list object) instead of
+    # the schedule step output variable. Catches the runtime error form
+    # "'list' object has no attribute 'Schedule'" or similar.
+    if err_text and "'list' object has no attribute" in err_text:
+        import re as _re
+        attr_m = _re.search(r"'list' object has no attribute '([^']+)'", err_text)
+        bad_attr = attr_m.group(1) if attr_m else None
+        base += (
+            "\n\nSCHEDULE ACCESS ERROR: A schedule output is a list of dicts — "
+            "it does NOT support dot-attribute access. "
+            + (f"You wrote something like `<var>.{bad_attr}` — " if bad_attr else "")
+            + "this fails at runtime.\n"
+            "CORRECT PATTERN — use schedule accessor functions:\n"
+            "  schedule_sum(ScheduleStepName, 'column_name')   → scalar (total)\n"
+            "  schedule_last(ScheduleStepName, 'column_name')  → scalar (final period)\n"
+            "  schedule_first(ScheduleStepName, 'column_name') → scalar (first period)\n"
+            "  schedule_column(ScheduleStepName, 'column_name')→ list of scalars\n"
+            "The FIRST argument MUST be the NAME of a schedule step (its `name` field),\n"
+            "NOT a regular calc step variable. E.g.:\n"
+            "  schedule_sum('DepreciationSchedule', 'depreciation_charge')   ← step name as string\n"
+            "  schedule_sum(DepreciationSchedule, 'depreciation_charge')     ← step name as ident\n"
+            "NEVER: schedule_sum(opening_nbv, 'depreciation_charge')  ← `opening_nbv` is a scalar calc step"
+        )
+    # Schedule forward-reference loop: model keeps reordering columns instead
+    # of using lag(). Inject a copy-pasteable canonical reducing-balance
+    # depreciation pattern.
+    if (tool_name in {"create_saved_rule", "add_step_to_rule", "update_step",
+                      "patch_step", "replace_schedule_column"}
+            and err_text and "defined LATER in the schedule" in err_text):
+        import re as _re
+        fwd = _re.search(r"references column\(s\) \[([^\]]+)\]", err_text)
+        fwd_name = (fwd.group(1).strip().strip("'\"") if fwd else "closing_nbv")
+        base += (
+            f"\n\nSCHEDULE RECURSION FIX — STOP REORDERING COLUMNS. The "
+            f"forward reference cannot be resolved by reordering because "
+            f"`opening_<X>` and `closing_<X>` are mutually recursive across "
+            f"periods. Use `lag()` instead. Canonical reducing-balance "
+            f"depreciation schedule (paste this shape directly into your "
+            f"scheduleConfig.columns, in this exact order):\n"
+            f"  columns:\n"
+            f"  - {{name: 'opening_nbv', formula: \"lag('closing_nbv', 1, "
+            f"opening_net_carrying_amount)\"}}\n"
+            f"  - {{name: 'depreciation_charge', formula: "
+            f"\"opening_nbv * reducing_balance_rate\"}}\n"
+            f"  - {{name: 'closing_nbv', formula: "
+            f"\"opening_nbv - depreciation_charge\"}}\n"
+            f"Where `opening_net_carrying_amount` and `reducing_balance_rate` "
+            f"are calc-step variables defined BEFORE the schedule step. The "
+            f"`lag('closing_nbv', 1, <seed>)` call returns the prior period's "
+            f"closing NBV, or the seed value on period 0. This is the ONLY "
+            f"correct pattern for any rolling-balance schedule (depreciation, "
+            f"amortisation, accretion, runoff). Do NOT try to reorder columns "
+            f"or split into multiple schedule steps."
         )
     return base
 
@@ -399,6 +493,27 @@ def _system_prompt() -> str:
         "  • IFRS 16 / ASC 842 (Leases): Right-of-Use (ROU) asset and lease "
         "liability at PV of payments using IBR or implicit rate; subsequent "
         "amortisation of ROU and unwinding of liability with interest.\n"
+        "  • IAS 16 (Property, Plant & Equipment): two measurement models — "
+        "Cost Model (carry at cost less accumulated depreciation less impairment) "
+        "and Revaluation Model (carry at revalued amount = fair value at date of "
+        "revaluation less subsequent accumulated depreciation and impairment). "
+        "DEFAULT ACCOUNTING ENTRIES — apply these WITHOUT asking the user:\n"
+        "    DEPRECIATION (any method):  Dr DepreciationExpense  /  Cr AccumulatedDepreciation\n"
+        "    UPWARD REVALUATION: Dr AssetCarryingAmountAdjustment  /  Cr RevaluationSurplusOCI\n"
+        "      (increase goes to OCI / revaluation surplus, NOT P&L)\n"
+        "    DOWNWARD REVALUATION — reverses prior surplus first:\n"
+        "      Within existing surplus: Dr RevaluationSurplusOCI  /  Cr AssetCarryingAmountAdjustment\n"
+        "      Excess beyond surplus:   Dr RevaluationDecreasePL  /  Cr AssetCarryingAmountAdjustment\n"
+        "    DISPOSAL: Dr AccumulatedDepreciation + Dr<if surplus> RevaluationSurplusOCI\n"
+        "              Cr AssetCostAccount; gain/loss to P&L.\n"
+        "  Depreciation methods available in DSL: straight-line (cost-residual)/useful_life_months\n"
+        "    reducing-balance (opening_nbv * rate) — model as inline schedule step using\n"
+        "    lag('closing_nbv', 1, opening_net_carrying_amount). NEVER ask the user\n"
+        "    which journal entries to use for IAS 16 — apply the above defaults.\n"
+        "  Sample data for IAS 16 MUST include these fields (add via field_hints if needed):\n"
+        "    acquisition_date (date), original_cost (number), useful_life_months (integer),\n"
+        "    reducing_balance_rate (decimal e.g. 0.25), residual_value (number),\n"
+        "    revaluation_date (date), revalued_amount (number).\n"
         "  • IFRS 17 (Insurance Contracts): General Measurement Model (BBA), "
         "Premium Allocation Approach (PAA), Variable Fee Approach (VFA); "
         "Contractual Service Margin (CSM); fulfilment cashflows.\n"
@@ -422,16 +537,47 @@ def _system_prompt() -> str:
         "templates that produce the user's desired transactions.\n\n"
         "FIRST-RESPONSE PROTOCOL: For ANY rule-authoring task, your FIRST "
         "tool batch MUST include ALL of:\n"
+        "  • `find_similar_template` — pass the user intent + keywords to "
+        "    discover the right canonical pattern AND any saved rules to "
+        "    reuse. ALWAYS call this BEFORE picking a pattern.\n"
+        "  • `get_canonical_pattern` — fetch the FULL step scaffold of the "
+        "    pattern A/B/C/D the matcher recommended. Copy its `steps[]` "
+        "    array verbatim into create_saved_rule, substituting only the "
+        "    `parameters` it lists.\n"
+        "  • `submit_plan` — record your chosen pattern, the rules you'll "
+        "    create, and the transactions each rule will emit. This is "
+        "    advisory but mandatory: skipping it is the dominant cause of "
+        "    trial-and-error loops.\n"
         "  • `get_dsl_syntax_guide` — binding constraints + canonical patterns.\n"
         "  • `list_templates` — see what already exists; reuse > rebuild.\n"
-        "  • `get_saved_rule` on the closest existing rule (by name match) — "
-        "    copy its step shapes rather than authoring from scratch. If no "
-        "    saved rule looks close, at minimum read the syntax guide's "
-        "    CANONICAL PATTERNS section and pick A/B/C/D before writing.\n"
+        "  • `get_saved_rule` on the closest existing rule (returned by "
+        "    find_similar_template) — copy its step shapes rather than "
+        "    authoring from scratch.\n"
         "These are cheap, have no side effects, and prevent the dominant "
         "failure modes (multi-line iteration expressions, fictitious "
         "`all_instruments` variable, unsupported `arr[i]` indexing, "
-        "fictitious `outputs.events.push`, picking the wrong pattern).\n\n"
+        "fictitious `outputs.events.push`, picking the wrong pattern, "
+        "schedule columns referencing nonexistent variables).\n\n"
+        "STEP EDITING PROTOCOL — silent updates are now impossible:\n"
+        "  • Every step has an immutable `step_id` (UUID) returned by "
+        "    get_saved_rule. ALWAYS pass `step_id` to update_step / "
+        "    delete_step / patch_step / debug_step / test_schedule_step. "
+        "    `step_name` still works but breaks across renames.\n"
+        "  • `update_step` now performs a DEEP MERGE of `patch` into the "
+        "    existing step doc — patching `scheduleConfig.frequency` no "
+        "    longer wipes the columns. To swap a whole list (e.g. all "
+        "    columns), pass the full new list. To surgically edit ONE leaf "
+        "    (e.g. one column's formula), prefer `patch_step` or the "
+        "    `replace_schedule_column` convenience tool.\n"
+        "  • `patch_step(rule_id, step_id, ops=[{op,path,value}])` uses "
+        "    JSON-Pointer (RFC 6902) — paths look like "
+        "    `/scheduleConfig/columns/2/formula`. Returns "
+        "    `persisted.ok=false` with `mismatches[]` if the requested "
+        "    paths did NOT land in the saved doc. ALWAYS check this field.\n"
+        "  • Every write tool now re-fetches the rule and verifies the "
+        "    requested values persisted. If `persisted.ok` is false, the "
+        "    update DID NOT take effect — read the mismatches[], fix the "
+        "    field name / path, and retry.\n\n"
         "ARCHITECTURE — STEPS → RULES → TEMPLATES:\n"
         "  • A STEP is one calculation, condition, iteration, OR schedule (atomic).\n"
         "  • A RULE is an ordered list of steps with optional output transactions, "
@@ -468,9 +614,12 @@ def _system_prompt() -> str:
         "  8. **TEST EVERY SCHEDULE**: call `debug_schedule` on EACH schedule. "
         "This is the play button on the schedule card. Inspect the materialised "
         "rows in the response.\n"
-        "  9. `create_or_replace_template` to create the template shell (with a "
-        "placeholder DSL like `noop = 0`), then `attach_rules_to_template` to "
-        "populate it with rule_ids and schedule_ids in priority order.\n"
+        "  9. `create_or_replace_template` to create the template shell (pass "
+        "event_name only — do NOT write inline dsl_code by hand, that almost "
+        "always produces syntax errors). Then immediately call "
+        "`attach_rules_to_template` (or `assemble_template_from_rules`) "
+        "passing rule_ids=[<rule_id>] to populate it from the saved rule's "
+        "generated code.\n"
         " 10. `dry_run_template` to verify end-to-end: check transaction counts, "
         "totals by type, that debits equal credits.\n"
         " 11. **READINESS GATE**: for every rule you authored, call "
@@ -506,8 +655,11 @@ def _system_prompt() -> str:
         "re-call those list_* tools just to re-read what's already in your "
         "context. Only refetch a list AFTER you've modified that collection "
         "during this turn.\n"
-        "3. Always call `validate_dsl` before `create_or_replace_template` "
-        "(rules built via `create_saved_rule` are validated automatically).\n"
+        "3. NEVER pass inline `dsl_code` to `create_or_replace_template`. "
+        "Build the rule with `create_saved_rule` / `add_step_to_rule`, then "
+        "call `attach_rules_to_template` passing `rule_ids` to assemble the "
+        "template. `create_or_replace_template` is ONLY for registering the "
+        "template shell (event_name + name, no dsl_code).\n"
         "4. After assembling a template call `dry_run_template` and inspect "
         "the result. If counts/totals look wrong, use `debug_step` to inspect "
         "individual variables, then `update_step` / `update_saved_rule` to fix.\n"
@@ -823,6 +975,26 @@ def _system_prompt() -> str:
         "     have tried 3 distinct fixes and the same error class persists,\n"
         "     call `get_dsl_syntax_guide` and re-read the relevant section\n"
         "     before the 4th attempt.\n"
+        " 19a. DO NOT INVENT RUNTIME LIMITATIONS. The runtime has exactly\n"
+        "      ONE plan-gate (`submit_plan` once per run, then every mutator\n"
+        "      tool works). There is NO 'session gate', NO 'transaction\n"
+        "      edit gate', NO 'normal path vs alternate path'. If you have\n"
+        "      already called `submit_plan` this run, then EVERY write tool\n"
+        "      below — `add_transaction_to_rule`, `update_step`,\n"
+        "      `add_step_to_rule`, `attach_rules_to_template`, etc. — is\n"
+        "      open to you. If a write tool returns a ToolError, READ the\n"
+        "      error text — it always names the missing/invalid arg or the\n"
+        "      exact fix. Do NOT claim 'I'm blocked by plan-gating' or\n"
+        "      'I can't through the normal path' — the runtime will reject\n"
+        "      a `finish` summary containing such language. Fix the args\n"
+        "      and retry the SAME tool.\n"
+        " 19b. NEVER ABANDON A USER-REQUESTED DELIVERABLE. If the user\n"
+        "      asked for stages 1/2/3 with sample data AND balanced ECL\n"
+        "      transactions, finishing with 'I built the event and rule but\n"
+        "      transactions are missing — want me to continue?' is a\n"
+        "      FAILURE, not a partial success. Build EVERYTHING the user\n"
+        "      asked for inside this run. Stopping mid-way and asking the\n"
+        "      user to re-prompt is the worst possible outcome.\n"
         " 20. ONE RULE OR MANY? Default to ONE rule per accounting event\n"
         "     (e.g. one ECL rule, one revenue-recognition rule). Split into\n"
         "     multiple rules ONLY when:\n"
@@ -840,7 +1012,13 @@ def _system_prompt() -> str:
         "      (a) Call `get_dsl_syntax_guide` to read the constraints + examples.\n"
         "      (b) Call `get_saved_rule` on a working rule that uses the same\n"
         "          step type and copy its expression shape.\n"
-        "      (c) Ask the user for clarification (call `finish` with a question).\n"
+        "      (c) Ask the user for clarification ONLY if the question is truly\n"
+        "          business-specific (e.g. unknown threshold value, unknown rate).\n"
+        "          NEVER ask about accounting journal entries or debit/credit\n"
+        "          conventions for a named IFRS/GAAP standard — you know them.\n"
+        "          NEVER ask for sample data — generate it yourself with\n"
+        "          `generate_sample_event_data(field_hints={...})` supplying\n"
+        "          realistic values for every field the rule references.\n"
         "    Do NOT try a third variation of the same broken expression.\n"
         "  • Errors like 'unterminated string literal', 'invalid syntax', and\n"
         "    'unexpected EOF' are almost ALWAYS caused by violating constraint\n"
@@ -983,6 +1161,9 @@ async def run_agent(
                     model=model,
                     api_key=api_key,
                     temperature=0.1,
+                    # I19: force a tool call on step 1 so the agent cannot
+                    # silently bail out before submit_plan / find_similar_template.
+                    tool_choice=("required" if step == 1 else None),
                 )
             )
             try:
@@ -1102,6 +1283,13 @@ async def run_agent(
 
                 t0 = time.time()
                 try:
+                    # Plumb the run_id into tool-side context so dispatch_tool's
+                    # plan-gate can find the active plan in _RUN_PLANS.
+                    try:
+                        from .tools import set_current_run_id as _set_rid
+                        _set_rid(run_id)
+                    except Exception:
+                        pass
                     result = await dispatch_tool(name, args)
                     duration_ms = int((time.time() - t0) * 1000)
                     obs = _truncate_for_observation(result)
@@ -1166,11 +1354,38 @@ async def run_agent(
                     # repeats, hard-abort the run — no point burning steps.
                     if same_count >= 2 and (name, sig) not in nudge_already_sent_for:
                         nudge_already_sent_for.add((name, sig))
-                        pending_nudge = (name, sig, _build_loop_nudge(name, sig))
+                        # E11/E12: append targeted recovery suggestions.
+                        nudge_text = _build_loop_nudge(name, sig, err)
+                        _step_update_tools = {
+                            "update_step", "patch_step", "replace_schedule_column",
+                        }
+                        if name in _step_update_tools and isinstance(args, dict):
+                            sid = (args.get("step_id") or args.get("step_name")
+                                   or "<this step>")
+                            rid_arg = args.get("rule_id") or "<rule_id>"
+                            nudge_text += (
+                                f"\n\nE12 — STEP REWRITE PROTOCOL: stop trying to "
+                                f"patch step `{sid}`. Call `delete_step(rule_id="
+                                f"'{rid_arg}', step_id='{sid}')` then "
+                                f"`add_step_to_rule(rule_id='{rid_arg}', step={{...}})` "
+                                f"with the corrected step shape from scratch. A clean "
+                                f"rewrite is faster than another partial patch."
+                            )
+                        else:
+                            nudge_text += (
+                                "\n\nE11 — PATTERN-MATCH PROTOCOL: call "
+                                "`find_similar_template(intent='<one-line goal>', "
+                                "keywords=[...])` to discover a saved rule of "
+                                "the same shape, or `list_canonical_patterns` to "
+                                "pick A/B/C/D, then `apply_canonical_pattern` to "
+                                "scaffold the rule in one shot instead of "
+                                "hand-authoring it."
+                            )
+                        pending_nudge = (name, sig, nudge_text)
                     elif same_count == 4:
                         pending_nudge = (
                             name, sig,
-                            _build_loop_nudge(name, sig)
+                            _build_loop_nudge(name, sig, err)
                             + "\n\nFINAL WARNING: this is the 4th identical "
                             "failure. If your next attempt produces the same "
                             "error category again the run will be aborted. "
