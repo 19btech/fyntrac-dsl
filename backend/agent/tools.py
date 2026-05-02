@@ -193,6 +193,98 @@ def _name_match(name: str, *needles: str) -> bool:
     return any(n in name for n in needles)
 
 
+# ---------------------------------------------------------------------------
+# Per-use-case recommended field sets.  Keyed by lowercase keyword substrings
+# that appear in an event_name.  If any of those keywords match, the agent
+# receives a hint listing the canonical accounting-standard field names that
+# SHOULD be present in the event definition.
+# ---------------------------------------------------------------------------
+_ACCOUNTING_EVENT_TEMPLATES: list[dict] = [
+    {
+        "keywords": ["fas91", "fee_amort", "amortization", "amortisation",
+                     "loan_fee", "origination_fee", "deferred_fee"],
+        "standard": "FAS 91 / Amortised Cost",
+        "recommended_fields": [
+            "loan_amount", "outstanding_balance", "origination_fee",
+            "amortized_fee", "note_rate", "eir_rate",
+            "origination_date", "maturity_date", "term_months",
+        ],
+    },
+    {
+        "keywords": ["ecl", "ifrs9", "ifrs_9", "credit_risk", "impairment",
+                     "provision", "allowance", "cecl"],
+        "standard": "IFRS 9 / CECL",
+        "recommended_fields": [
+            "pd", "lgd", "ead", "ecl", "stage",
+            "days_past_due", "outstanding_balance", "collateral_value",
+        ],
+    },
+    {
+        "keywords": ["lease", "rou", "ifrs16", "ifrs_16", "asc842",
+                     "asc_842", "right_of_use", "rightofuse"],
+        "standard": "IFRS 16 / ASC 842",
+        "recommended_fields": [
+            "rou_asset", "lease_liability", "lease_payment",
+            "discount_rate", "lease_term",
+            "lease_start_date", "lease_end_date",
+        ],
+    },
+    {
+        "keywords": ["depreciation", "fixed_asset", "ias16", "ias_16",
+                     "asc360", "asc_360", "property_plant"],
+        "standard": "IAS 16 / ASC 360",
+        "recommended_fields": [
+            "acquisition_cost", "residual_value", "useful_life",
+            "accumulated_depreciation", "depreciation_charge",
+            "nbv", "acquisition_date", "depreciation_method",
+        ],
+    },
+    {
+        "keywords": ["revenue", "ifrs15", "ifrs_15", "asc606", "asc_606",
+                     "contract", "performance_obligation"],
+        "standard": "IFRS 15 / ASC 606",
+        "recommended_fields": [
+            "contract_amount", "ssp", "allocated_amount",
+            "recognized_revenue", "deferred_revenue",
+            "contract_start_date", "contract_end_date",
+        ],
+    },
+    {
+        "keywords": ["sbo", "statement_of_obligations", "bond", "security",
+                     "mtm", "fair_value", "market_value"],
+        "standard": "Securities / Fair Value Measurement",
+        "recommended_fields": [
+            "face_value", "book_value", "market_value", "coupon_rate",
+            "maturity_date", "purchase_date", "accrued_interest",
+        ],
+    },
+]
+
+
+def _check_accounting_field_hints(event_name: str, field_names: list[str]) -> dict | None:
+    """Return a hint dict if the event matches a known standard but is missing key fields."""
+    name_lc = event_name.lower()
+    for template in _ACCOUNTING_EVENT_TEMPLATES:
+        if any(kw in name_lc for kw in template["keywords"]):
+            recommended = template["recommended_fields"]
+            field_names_lc = {f.lower() for f in field_names}
+            missing = [f for f in recommended if f not in field_names_lc]
+            if missing:
+                return {
+                    "accounting_standard": template["standard"],
+                    "recommended_fields": recommended,
+                    "missing_standard_fields": missing,
+                    "hint": (
+                        f"This event appears to follow {template['standard']}. "
+                        f"Standard field names are missing: {missing}. "
+                        "Use the exact names above — the sample-data generator and "
+                        "system prompt both key off these names for realistic values."
+                    ),
+                }
+            return None  # all recommended fields present
+    return None  # no matching standard
+
+
 _FIELD_HEURISTICS: list[tuple[Callable[[str], bool], dict, str | None]] = [
     # --- Probabilities & ratios (0..1) -----------------------------------
     (lambda n: _name_match(n, "pd", "prob_default", "probability"),
@@ -273,6 +365,83 @@ _FIELD_HEURISTICS: list[tuple[Callable[[str], bool], dict, str | None]] = [
         {"choices": ["Monthly", "Quarterly", "Annual"]}, "string"),
     (lambda n: _name_match(n, "side", "drcr"),
         {"choices": ["Debit", "Credit"]}, "string"),
+    # --- FAS91 / loan fee amortization ------------------------------------
+    (lambda n: _name_match(n, "origination_fee", "upfront_fee", "loan_fee",
+                            "deferred_fee", "unamortized_fee", "net_fee"),
+        {"range": (500.0, 15_000.0), "decimals": 2}, "decimal"),
+    (lambda n: _name_match(n, "amortized_fee", "period_amortization",
+                            "fee_amortized", "amortization_amount"),
+        {"range": (10.0, 2_000.0), "decimals": 2}, "decimal"),
+    (lambda n: _name_match(n, "note_rate", "contract_rate", "stated_rate", "coupon_rate"),
+        {"range": (0.02, 0.12), "decimals": 6}, "decimal"),
+    (lambda n: _name_match(n, "eir_rate", "effective_interest_rate", "yield_rate"),
+        {"range": (0.02, 0.14), "decimals": 6}, "decimal"),
+    # --- Lease accounting (IFRS 16 / ASC 842) ----------------------------
+    (lambda n: _name_match(n, "rou_asset", "right_of_use", "lease_asset",
+                            "rouasset", "rightofuse"),
+        {"range": (10_000.0, 500_000.0), "decimals": 2}, "decimal"),
+    (lambda n: _name_match(n, "lease_liability", "lease_obligation",
+                            "leaseLiability", "lease_balance"),
+        {"range": (10_000.0, 500_000.0), "decimals": 2}, "decimal"),
+    (lambda n: _name_match(n, "lease_payment", "lease_installment",
+                            "monthly_rent", "annual_rent", "annual_lease"),
+        {"range": (500.0, 20_000.0), "decimals": 2}, "decimal"),
+    (lambda n: _name_match(n, "discount_rate", "incremental_borrowing_rate",
+                            "ibr", "lessee_rate"),
+        {"range": (0.02, 0.10), "decimals": 6}, "decimal"),
+    (lambda n: _name_match(n, "lease_term", "lease_period"),
+        {"range": (12, 120)}, "integer"),
+    # --- Depreciation / fixed assets (IAS 16 / ASC 360) -----------------
+    (lambda n: _name_match(n, "acquisition_cost", "purchase_cost", "gross_cost",
+                            "asset_cost", "historical_cost"),
+        {"range": (5_000.0, 500_000.0), "decimals": 2}, "decimal"),
+    (lambda n: _name_match(n, "residual_value", "salvage_value", "scrap_value"),
+        {"range": (0.0, 50_000.0), "decimals": 2}, "decimal"),
+    (lambda n: _name_match(n, "accumulated_depreciation", "accum_depr"),
+        {"range": (0.0, 400_000.0), "decimals": 2}, "decimal"),
+    (lambda n: _name_match(n, "depreciation_charge", "depreciation_amount",
+                            "annual_depreciation", "period_depreciation",
+                            "depr_amount", "depr_charge"),
+        {"range": (500.0, 50_000.0), "decimals": 2}, "decimal"),
+    (lambda n: _name_match(n, "nbv", "net_book_value", "carrying_value",
+                            "book_value", "carrying_amount"),
+        {"range": (0.0, 500_000.0), "decimals": 2}, "decimal"),
+    # --- Revenue recognition (IFRS 15 / ASC 606) -------------------------
+    (lambda n: _name_match(n, "contract_amount", "transaction_price",
+                            "contract_value", "revenue_amount"),
+        {"range": (1_000.0, 500_000.0), "decimals": 2}, "decimal"),
+    (lambda n: _name_match(n, "ssp", "standalone_selling_price",
+                            "standalone_price", "sspprice"),
+        {"range": (100.0, 50_000.0), "decimals": 2}, "decimal"),
+    (lambda n: _name_match(n, "allocated_amount", "allocated_revenue",
+                            "allocation"),
+        {"range": (500.0, 200_000.0), "decimals": 2}, "decimal"),
+    (lambda n: _name_match(n, "recognized_revenue", "revenue_recognized",
+                            "period_revenue", "recognition_amount"),
+        {"range": (100.0, 50_000.0), "decimals": 2}, "decimal"),
+    (lambda n: _name_match(n, "deferred_revenue", "contract_asset",
+                            "contract_liability"),
+        {"range": (0.0, 200_000.0), "decimals": 2}, "decimal"),
+    # --- IFRS 9 / CECL impairment ----------------------------------------
+    (lambda n: _name_match(n, "ecl", "expected_credit_loss", "allowance",
+                            "impairment", "provision"),
+        {"range": (0.0, 50_000.0), "decimals": 2}, "decimal"),
+    (lambda n: _name_match(n, "collateral_value", "collateral"),
+        {"range": (0.0, 1_000_000.0), "decimals": 2}, "decimal"),
+    (lambda n: _name_match(n, "credit_impaired", "credit_impaired_flag",
+                            "is_defaulted", "in_default"),
+        {"choices": [True, False]}, "boolean"),
+    # --- General product / instrument attributes --------------------------
+    (lambda n: _name_match(n, "instrument_type", "loan_type", "asset_type",
+                            "product_category"),
+        {"choices": ["FixedRate", "VariableRate", "Hybrid", "FloatingRate"]}, "string"),
+    (lambda n: _name_match(n, "industry", "sector", "industry_code"),
+        {"choices": ["Manufacturing", "Retail", "Financial", "Healthcare",
+                     "Technology", "RealEstate", "Construction"]}, "string"),
+    (lambda n: _name_match(n, "region", "geography"),
+        {"choices": ["North", "South", "East", "West", "Central"]}, "string"),
+    (lambda n: _name_match(n, "subinstrumentid", "sub_instrument_id", "sub_id"),
+        {"choices": ["1.0", "2.0", "3.0"]}, "string"),
 ]
 
 
@@ -654,6 +823,11 @@ async def tool_create_event_definitions(args: dict) -> dict:
                 f"'{event_name}'. Reference/lookup tables MUST use these settings "
                 f"so the engine loads them as static tables, not activity streams."
             )
+        # Warn when field names don't match known accounting-standard conventions
+        _field_names = [f["name"] for f in norm_fields]
+        _acct_hint = _check_accounting_field_hints(event_name, _field_names)
+        if _acct_hint:
+            entry["accounting_field_hint"] = _acct_hint
         created.append(entry)
 
     return {"created": created, "skipped": skipped}
@@ -5932,6 +6106,74 @@ RECOGNITION RULE:
     coerced_to_reference=true in the created[] payload — check it.
 
 ------------------------------------------------------------------
+EVENT FIELD NAMING & DATA STANDARDS (ACCOUNTING CONVENTIONS)
+------------------------------------------------------------------
+CRITICAL: Field names in event definitions MUST use the conventional
+terminology of the accounting standard that applies to the use case.
+Generic names like "amount", "rate", "date" MUST be replaced with the
+specific standard-compliant names listed below.  The sample-data
+generator uses these names to produce realistic value ranges
+automatically — wrong names produce wrong data.
+
+FAS 91 / IFRS 9 — AMORTISED COST / LOAN FEE AMORTISATION
+  loan_amount         decimal   50,000 – 500,000        (original loan)
+  outstanding_balance decimal   0 – loan_amount         (current UPB)
+  beginning_balance   decimal   0 – loan_amount
+  ending_balance      decimal   0 – loan_amount
+  origination_fee     decimal   500 – 15,000            (upfront fee booked)
+  amortized_fee       decimal   10 – 2,000              (fee amortised this period)
+  note_rate           decimal   0.02 – 0.12  (annual)   (stated/contract rate)
+  eir_rate            decimal   0.02 – 0.14  (annual)   (effective interest rate)
+  origination_date    date      past
+  maturity_date       date      future (10–30 years from orig)
+  term_months         integer   60 – 360
+
+IFRS 9 / CECL — EXPECTED CREDIT LOSS
+  pd                  decimal   0.001 – 0.30            (probability of default)
+  lgd                 decimal   0.10 – 0.80             (loss given default)
+  ead / outstanding_balance  decimal  10,000 – 500,000  (exposure at default)
+  ecl                 decimal   0 – 50,000              (PD × LGD × EAD)
+  stage               integer   1 / 2 / 3               (IFRS 9 stage)
+  days_past_due       integer   0 – 365
+  collateral_value    decimal   0 – 1,000,000
+
+IFRS 16 / ASC 842 — LEASE ACCOUNTING
+  rou_asset           decimal   10,000 – 500,000        (right-of-use asset)
+  lease_liability     decimal   10,000 – 500,000
+  lease_payment       decimal   500 – 20,000            (periodic payment)
+  discount_rate / incremental_borrowing_rate
+                      decimal   0.02 – 0.10  (annual)
+  lease_term          integer   12 – 120  (months)
+  lease_start_date    date      past
+  lease_end_date      date      future
+
+IAS 16 / ASC 360 — FIXED ASSETS / DEPRECIATION
+  acquisition_cost    decimal   5,000 – 500,000
+  residual_value      decimal   0 – 50,000              (salvage/scrap)
+  accumulated_depreciation  decimal  0 – acquisition_cost
+  depreciation_charge decimal   500 – 50,000            (period charge)
+  nbv / net_book_value decimal  0 – acquisition_cost
+  useful_life         integer   3 – 40  (years)
+  acquisition_date    date      past
+  depreciation_method string    "StraightLine" | "DecliningBalance" | "UnitsOfProduction"
+
+IFRS 15 / ASC 606 — REVENUE RECOGNITION
+  contract_amount / transaction_price  decimal  1,000 – 500,000
+  ssp / standalone_selling_price       decimal  100 – 50,000
+  allocated_amount    decimal   500 – 200,000           (obligation allocation)
+  recognized_revenue  decimal   100 – 50,000            (this-period recognition)
+  deferred_revenue    decimal   0 – 200,000             (unearned balance)
+  contract_start_date / start_date  date  past or today
+  contract_end_date / end_date      date  future
+
+GOOD EXAMPLES VS BAD EXAMPLES:
+  ✗ BAD:  fields: [{name:"amount"}, {name:"rate"}, {name:"date"}]
+  ✓ GOOD: fields: [{name:"loan_amount"}, {name:"note_rate"}, {name:"origination_date"}]
+
+  ✗ BAD:  fields: [{name:"value"}, {name:"percent"}]          (for IFRS9)
+  ✓ GOOD: fields: [{name:"pd"}, {name:"lgd"}, {name:"ead"}, {name:"ecl"}, {name:"stage"}]
+
+------------------------------------------------------------------
 STEP-TYPE DECISION TREE — READ THIS BEFORE PICKING A stepType
 ------------------------------------------------------------------
 For each step you intend to add, walk this tree top-to-bottom and pick
@@ -6961,7 +7203,19 @@ TOOL_SCHEMAS: list[dict] = [
     },
     {
         "name": "generate_sample_event_data",
-        "description": "Generate deterministic synthetic rows for an event definition. Used to seed the workspace before validating rules. Replaces existing data unless append=true.",
+        "description": (
+            "Generate deterministic synthetic rows for an event definition. "
+            "Used to seed the workspace before validating rules. Replaces existing data unless append=true. "
+            "FIELD NAME CONVENTIONS: the generator uses field names to pick realistic value ranges — "
+            "you MUST use accounting-standard field names so the generated data is meaningful. "
+            "Examples: use 'loan_amount' (50k–500k), 'note_rate' (0.02–0.12), 'origination_fee' (500–15k), "
+            "'pd' (0.001–0.30), 'lgd' (0.10–0.80), 'ead'/'outstanding_balance' for IFRS9; "
+            "'rou_asset'/'lease_liability' (10k–500k), 'discount_rate'/'incremental_borrowing_rate' (0.02–0.10) for leases; "
+            "'acquisition_cost' (5k–500k), 'depreciation_charge', 'nbv'/'net_book_value' for fixed assets; "
+            "'contract_amount'/'transaction_price', 'ssp'/'standalone_selling_price', 'recognized_revenue' for revenue. "
+            "Generic names like 'amount', 'rate', 'date' produce random ranges. "
+            "Use field_hints to override any field's range when needed."
+        ),
         "parameters": {
             "type": "object",
             "properties": {
