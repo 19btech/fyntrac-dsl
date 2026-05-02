@@ -2010,7 +2010,11 @@ async def _save_rule_doc(rule: dict, *, is_new: bool) -> dict:
     # subInstrumentId on any transaction entry, regardless of which tool
     # produced this rule. Catches paths that bypass per-tool normalisation.
     try:
-        _normalise_transaction_outputs(rule.get("steps") or [], rule.get("outputs") or {})
+        subid_default, _ = await _resolve_subid_default(rule.get("steps") or [])
+        _normalise_transaction_outputs(
+            rule.get("steps") or [], rule.get("outputs") or {},
+            multi_subid_default=subid_default,
+        )
     except Exception:
         pass
     rule["generatedCode"] = _generate_rule_code(rule)
@@ -2057,7 +2061,8 @@ async def tool_get_saved_rule(args: dict) -> dict:
     return {"rule": rule}
 
 
-def _normalise_transaction_outputs(steps: list[dict], outputs: dict) -> dict:
+def _normalise_transaction_outputs(steps: list[dict], outputs: dict,
+                                    *, multi_subid_default: str | None = None) -> dict:
     """Ensure every entry in `outputs.transactions[]` has the camelCase
     postingDate / effectiveDate / subInstrumentId fields the code generator
     requires. Without this, weak models calling create_saved_rule /
@@ -2068,7 +2073,12 @@ def _normalise_transaction_outputs(steps: list[dict], outputs: dict) -> dict:
     Mutates and returns `outputs`. Defaults:
       • postingDate / effectiveDate ← '<FirstReferencedEvent>.postingdate'
         / '.effectivedate', extracted from the rule's steps.
-      • subInstrumentId ← '1.0' (matches the UI default).
+      • subInstrumentId ← '1.0' (matches the UI default) UNLESS
+        `multi_subid_default` is supplied — then that value (typically the
+        row builtin `subinstrumentid` or a collected variable name) is used
+        AND any existing hardcoded "1" / "1.0" entries are overridden so
+        the rule actually carries the row's per-subid context. Callers
+        determine multi-subid via `_detect_multi_subid_events`.
     Accepts snake_case / lowercase input keys (postingdate, posting_date,
     effective_date, etc.) and rewrites them to canonical camelCase so the
     rest of the pipeline sees a single shape.
@@ -2113,6 +2123,7 @@ def _normalise_transaction_outputs(steps: list[dict], outputs: dict) -> dict:
     }
 
     fixed: list[dict] = []
+    _DEFAULT_SUBIDS = {"", "1", "1.0", "0", "0.0", None}
     for t in txns:
         if not isinstance(t, dict):
             fixed.append(t)
@@ -2125,13 +2136,140 @@ def _normalise_transaction_outputs(steps: list[dict], outputs: dict) -> dict:
             nt["postingDate"] = f"{default_event}.postingdate"
         if not str(nt.get("effectiveDate") or "").strip() and default_event:
             nt["effectiveDate"] = f"{default_event}.effectivedate"
-        if not str(nt.get("subInstrumentId") or "").strip():
+        sid_now = str(nt.get("subInstrumentId") or "").strip()
+        if multi_subid_default:
+            # Multi-subid event detected: ALWAYS prefer the row-level identifier
+            # over the literal default "1" / "1.0", because the data carries
+            # multiple subIds per instrument and a hardcoded value mis-tags
+            # every transaction. Honour explicit non-default agent input.
+            if sid_now in _DEFAULT_SUBIDS:
+                nt["subInstrumentId"] = multi_subid_default
+        elif not sid_now:
             nt["subInstrumentId"] = "1.0"
         fixed.append(nt)
     outputs["transactions"] = fixed
     if fixed and not outputs.get("createTransaction"):
         outputs["createTransaction"] = True
     return outputs
+
+
+async def _detect_multi_subid_events(steps: list[dict]) -> list[str]:
+    """Inspect event_data for every event referenced by the rule's steps.
+    Return the names of events that have ANY instrumentid carrying more than
+    one distinct subinstrumentid value across rows. These are the events
+    where a hardcoded subInstrumentId='1.0' on a transaction is wrong: the
+    txn would mis-tag every per-subid line in the data.
+    """
+    db = _ServerBridge.db
+    if db is None:
+        return []
+    try:
+        extract = _h("extract_event_names_from_dsl")
+    except Exception:
+        return []
+    blob_parts: list[str] = []
+    for s in steps or []:
+        if not isinstance(s, dict):
+            continue
+        for k in ("formula", "value", "eventField"):
+            v = s.get(k)
+            if v:
+                blob_parts.append(str(v))
+        for c in (s.get("conditions") or []):
+            if isinstance(c, dict):
+                for k in ("condition", "thenFormula"):
+                    v = c.get(k)
+                    if v:
+                        blob_parts.append(str(v))
+        if s.get("elseFormula"):
+            blob_parts.append(str(s["elseFormula"]))
+        for it in (s.get("iterations") or []):
+            if isinstance(it, dict):
+                for k in ("expression", "sourceArray", "secondArray"):
+                    v = it.get(k)
+                    if v:
+                        blob_parts.append(str(v))
+        sc = s.get("scheduleConfig") or {}
+        for c in (sc.get("columns") or []):
+            if isinstance(c, dict) and c.get("formula"):
+                blob_parts.append(str(c["formula"]))
+        for k in ("startDateField", "endDateField", "periodCountField",
+                  "startDateFormula", "endDateFormula", "periodCountFormula"):
+            v = sc.get(k)
+            if v:
+                blob_parts.append(str(v))
+    blob = "\n".join(blob_parts)
+    try:
+        names = list(extract(blob) or [])
+    except Exception:
+        names = []
+    # Fallback: harvest event names directly from eventField prefixes and
+    # any "WORD.field" pattern in the blob. The regex-based extractor in
+    # server.py rejects names with leading underscores and other unusual
+    # shapes, so we add a permissive scan here.
+    name_set: set[str] = {str(n) for n in names if n}
+    for s in steps or []:
+        if not isinstance(s, dict):
+            continue
+        ef = s.get("eventField")
+        if isinstance(ef, str) and "." in ef:
+            head = ef.split(".", 1)[0].strip()
+            if head:
+                name_set.add(head)
+    try:
+        for m in re.finditer(r"([A-Za-z_][A-Za-z0-9_]*)\.[A-Za-z_]", blob):
+            name_set.add(m.group(1))
+    except Exception:
+        pass
+    # Drop obvious non-events (DSL function names, builtins, keywords).
+    _NON_EVENT = {
+        "EVT", "EVENT", "self", "math", "datetime", "date", "time",
+        "true", "false", "True", "False", "None", "null",
+    }
+    names = [n for n in name_set if n and n not in _NON_EVENT]
+    if not names:
+        return []
+    multi: list[str] = []
+    for nm in names:
+        try:
+            doc = await db.event_data.find_one(
+                {"event_name": {"$regex": f"^{re.escape(nm)}$", "$options": "i"}},
+                {"_id": 0, "data_rows": 1},
+            )
+        except Exception:
+            doc = None
+        if not doc:
+            continue
+        rows = doc.get("data_rows") or []
+        per_inst: dict[str, set] = {}
+        for r in rows:
+            if not isinstance(r, dict):
+                continue
+            iid = (r.get("instrumentid") or r.get("instrumentID")
+                    or r.get("InstrumentId") or r.get("InstrumentID") or "")
+            sid = (r.get("subinstrumentid") or r.get("subInstrumentId")
+                    or r.get("SubInstrumentId") or "")
+            if iid is None:
+                continue
+            iid = str(iid)
+            sid_str = str(sid).strip() if sid is not None else ""
+            if not sid_str or sid_str.lower() == "none":
+                sid_str = "1"
+            per_inst.setdefault(iid, set()).add(sid_str)
+        if any(len(v) > 1 for v in per_inst.values()):
+            multi.append(nm)
+    return multi
+
+
+async def _resolve_subid_default(steps: list[dict]) -> tuple[str | None, list[str]]:
+    """Return (multi_subid_default_value, [event_names_with_multi_subid]).
+    The value is `subinstrumentid` (the row builtin) when ANY referenced event
+    has multiple subIds per instrument; otherwise None (caller falls back to
+    the literal '1.0')."""
+    multi = await _detect_multi_subid_events(steps)
+    if not multi:
+        return None, []
+    return "subinstrumentid", multi
 
 
 def _validate_transaction_outputs(steps: list[dict], outputs: dict) -> None:
@@ -2554,7 +2692,8 @@ async def tool_create_saved_rule(args: dict) -> dict:
         if clash_s:
             raise ToolError(f"Priority {priority} is already used by schedule '{clash_s['name']}'")
     outputs = args.get("outputs") or {"printResult": True, "createTransaction": False, "transactions": []}
-    _normalise_transaction_outputs(steps, outputs)
+    subid_default, multi_evts = await _resolve_subid_default(steps)
+    _normalise_transaction_outputs(steps, outputs, multi_subid_default=subid_default)
     _validate_transaction_outputs(steps, outputs)
     rule = {
         "name": name,
@@ -2566,6 +2705,16 @@ async def tool_create_saved_rule(args: dict) -> dict:
     }
     rule = await _save_rule_doc(rule, is_new=True)
     payload = {"rule_id": rule["id"], "name": name, "priority": priority, "step_count": len(steps)}
+    if multi_evts:
+        payload["multi_subid_events"] = multi_evts
+        payload["multi_subid_hint"] = (
+            f"Detected multiple subInstrumentIds per instrument in event(s) "
+            f"{multi_evts}. The transaction subInstrumentId default has been "
+            f"set to the row builtin `subinstrumentid` instead of '1.0'. If "
+            f"you need to fan-out across ALL of an instrument's subIds, add "
+            f"a calc step `sub_ids = collect_by_instrument(\"{multi_evts[0]}.subinstrumentid\")` "
+            f"and reference `sub_ids` from your transactions."
+        )
     sched_results = await _auto_test_schedule_steps(rule)
     if sched_results:
         payload["schedule_tests"] = sched_results
@@ -2590,10 +2739,23 @@ async def tool_update_saved_rule(args: dict) -> dict:
             rule[k] = patch[k]
     if "steps" in patch:
         rule["steps"] = [_validate_step_shape(s) for s in (patch["steps"] or [])]
-    _normalise_transaction_outputs(rule.get("steps") or [], rule.get("outputs") or {})
+    subid_default, multi_evts = await _resolve_subid_default(rule.get("steps") or [])
+    _normalise_transaction_outputs(
+        rule.get("steps") or [], rule.get("outputs") or {},
+        multi_subid_default=subid_default,
+    )
     _validate_transaction_outputs(rule.get("steps") or [], rule.get("outputs") or {})
     rule = await _save_rule_doc(rule, is_new=False)
     payload = {"rule_id": rule["id"], "name": rule["name"], "step_count": len(rule.get("steps") or [])}
+    if multi_evts:
+        payload["multi_subid_events"] = multi_evts
+        payload["multi_subid_hint"] = (
+            f"Detected multiple subInstrumentIds per instrument in event(s) "
+            f"{multi_evts}. Transaction subInstrumentId default is the row "
+            f"builtin `subinstrumentid`. To fan-out across ALL subIds, add "
+            f"a calc step `sub_ids = collect_by_instrument(\"{multi_evts[0]}.subinstrumentid\")` "
+            f"and reference `sub_ids` from transactions."
+        )
     sched_results = await _auto_test_schedule_steps(rule)
     if sched_results:
         payload["schedule_tests"] = sched_results
@@ -2813,7 +2975,14 @@ async def tool_add_transaction_to_rule(args: dict) -> dict:
             if not effective_date:
                 effective_date = f"{evt}.effectivedate"
     if not sub_inst:
-        sub_inst = "1.0"
+        # Multi-subid detection: if any event referenced by this rule has
+        # multiple subInstrumentIds per instrument in its data, the row
+        # builtin `subinstrumentid` is far safer than the hardcoded '1.0'.
+        try:
+            multi_default, _ = await _resolve_subid_default(rule.get("steps") or [])
+        except Exception:
+            multi_default = None
+        sub_inst = multi_default or "1.0"
 
     if not posting_date or not effective_date:
         raise ToolError(
@@ -4350,6 +4519,54 @@ RULES:
 - ALWAYS pair debit + credit so the entry balances.
 - The engine emits these transactions ONCE PER ROW automatically — no
   iteration step needed for fan-out across instruments.
+
+------------------------------------------------------------------
+SUB-INSTRUMENTS — when an instrument has MORE THAN ONE subId
+------------------------------------------------------------------
+Most data has one subinstrumentid per (instrumentid × postingdate). For
+that case, transactions just default `subInstrumentId: "1.0"` and the
+engine fans out one txn per instrument-row. Done.
+
+But many models (lease ROU components, POB allocations, multi-tranche
+loans, scheduled draws) have MULTIPLE distinct subInstrumentIds within
+the same instrumentid. The engine's row-merge collapses them: only ONE
+subId survives in the merged row, so a hardcoded `subInstrumentId: "1.0"`
+mis-tags every transaction (or worse, the engine writes everything to
+"1" silently).
+
+THE RULE — when an event has multi-subid data:
+  1. NEVER hardcode `subInstrumentId: "1.0"`. Use the row builtin
+     `subinstrumentid` so each row's transaction carries that row's subId:
+        outputs.transactions: [
+          {type:"X", amount:"v", side:"debit",
+           postingDate:"EVT.postingdate", effectiveDate:"EVT.effectivedate",
+           subInstrumentId:"subinstrumentid"}
+        ]
+     The validator does this for you AUTOMATICALLY: when any event
+     referenced by your rule has >1 subId per instrument in the loaded
+     data, `_normalise_transaction_outputs` overrides any literal
+     "1" / "1.0" / "" with `subinstrumentid` and reports
+     `multi_subid_events` + `multi_subid_hint` in the response.
+  2. To fan out a transaction PER SUB-INSTRUMENT explicitly (i.e. emit N
+     transactions where N = number of subIds for the current instrument),
+     add a calc step:
+        {name:"sub_ids", stepType:"calc", source:"collect",
+         eventField:"EVT.subinstrumentid",
+         collectType:"collect_by_instrument"}
+     Then reference `sub_ids` from the transaction's `subInstrumentId`.
+     The engine will iterate the array and emit one txn per subId.
+  3. To compute a per-subid amount (e.g. allocate by subId), use
+     `collect_by_subinstrument(EVT.field)` — it returns the array of that
+     field's values restricted to the current (instrumentid, subinstrumentid)
+     pair so it does not collapse across subIds.
+
+DETECTION — the validator surfaces multi-subid events automatically:
+  When `tool_create_saved_rule` / `tool_update_saved_rule` returns a
+  payload containing `multi_subid_events: ["EVT", ...]`, the loaded data
+  for those events has >1 subId per instrumentid. Read the
+  `multi_subid_hint` and either accept the auto-defaulted `subinstrumentid`
+  OR add the explicit `sub_ids = collect_by_instrument(...)` step shown
+  above.
 
 ------------------------------------------------------------------
 WHEN A DRY-RUN FAILS WITH "unterminated string literal" OR "invalid syntax"
