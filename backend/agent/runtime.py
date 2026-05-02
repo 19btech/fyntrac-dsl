@@ -279,7 +279,7 @@ def _system_prompt() -> str:
         "`all_instruments` variable, unsupported `arr[i]` indexing, "
         "fictitious `outputs.events.push`, picking the wrong pattern).\n\n"
         "ARCHITECTURE — STEPS → RULES → TEMPLATES:\n"
-        "  • A STEP is one calculation, condition, or iteration (atomic).\n"
+        "  • A STEP is one calculation, condition, iteration, OR schedule (atomic).\n"
         "  • A RULE is an ordered list of steps with optional output transactions, "
         "stored in `saved_rules` and editable in the Rule Builder UI.\n"
         "  • A TEMPLATE/MODEL is a set of rules (and schedules) combined in "
@@ -368,7 +368,21 @@ def _system_prompt() -> str:
         "  • calc:        {name, stepType:'calc', source:'formula', formula:'multiply(a,b)'}\n"
         "                 source can also be 'value' (literal), 'event_field' (Evt.field), 'collect' (collect_by_instrument(Evt.field)).\n"
         "  • condition:   {name, stepType:'condition', conditions:[{condition:'gt(x,0)', thenFormula:'x'}], elseFormula:'0'}\n"
-        "  • iteration:   {name, stepType:'iteration', iterations:[{type:'apply_each', sourceArray:'arr', expression:'multiply(each, 2)', resultVar:'doubled'}]}\n\n"
+        "  • iteration:   {name, stepType:'iteration', iterations:[{type:'apply_each', sourceArray:'arr', expression:'multiply(each, 2)', resultVar:'doubled'}]}\n"
+        "  • schedule:    {name, stepType:'schedule', scheduleConfig:{periodType:'date', frequency:'M',\n"
+        "                  startDateSource:'field', startDateField:'EVT.postingdate',\n"
+        "                  endDateSource:'formula', endDateFormula:'add_months(postingdate, 12)',\n"
+        "                  columns:[{name:'depr', formula:'divide(cost, life_months)'}]},\n"
+        "                  outputVars:[{name:'total_depr', type:'sum', column:'depr'}]}\n"
+        "                 USE schedule FOR: depreciation / amortisation / amortization /\n"
+        "                 accretion / runoff / payment plans / EIR / PIT-PD term-structure /\n"
+        "                 any 'over the life of' calc that produces ONE row per period.\n"
+        "                 Schedule columns CAN reference outer calc-step variables,\n"
+        "                 EVENTNAME.field, prior columns in the same array, and built-ins\n"
+        "                 (period_index, period_date, period_number, total_periods, lag,\n"
+        "                 dcf, days_in_current_period, daily_basis). NEVER substitute a\n"
+        "                 calc step or a standalone create_saved_schedule call for an\n"
+        "                 inline schedule step inside a rule.\n\n"
         "════════════════════════════════════════════════════════════════════\n"
         "DSL CONSTRAINTS — BINDING. Violating any of these causes errors that\n"
         "look like 'unterminated string literal' or 'invalid syntax' but are\n"
@@ -802,6 +816,13 @@ async def run_agent(
 
                 yield {"type": "tool_start", "ts": _now_iso(), "step": step,
                         "call_id": call_id, "name": name, "args": args}
+
+                # Forward the original user prompt to `tool_finish` so it can
+                # gate on user-asked-for-X invariants (e.g. "make sure you
+                # create a schedule for depreciation"). Always overwrite —
+                # the agent must not be able to spoof this field.
+                if name == "finish" and isinstance(args, dict):
+                    args["user_request"] = task
 
                 t0 = time.time()
                 try:

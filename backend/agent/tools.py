@@ -4054,6 +4054,24 @@ async def tool_verify_rule_complete(args: dict) -> dict:
         "detail": (f"{sum(1 for d in debug_results if d['ok'])}/{len(debug_results)} steps debugged successfully"),
     })
 
+    # 7. Schedule-step presence (informational). Agents have been seen to
+    # silently drop a schedule the user asked for. This surfaces it.
+    schedule_step_names = [
+        s.get("name") for s in steps if (s.get("stepType") or "") == "schedule"
+    ]
+    items.append({
+        "check": "schedule_steps_present",
+        "ok": True,  # informational — does not block ready
+        "detail": (
+            f"{len(schedule_step_names)} schedule step(s): {schedule_step_names}"
+            if schedule_step_names else
+            "no stepType='schedule' steps in this rule. If the user asked "
+            "for a depreciation/amortisation/runoff/payment-plan schedule, "
+            "add one via add_step_to_rule with stepType='schedule' BEFORE "
+            "calling finish — a calc-step approximation is not a substitute."
+        ),
+    })
+
     overall_ok = all(it["ok"] for it in items)
     return {
         "rule_id": rule["id"],
@@ -4162,11 +4180,30 @@ _FORBIDDEN_FINISH_PHRASES = (
     "let me know if you would like",
     "if you want me to",
     "if you'd like me to",
+    # Excuse-language for skipping a user-requested deliverable. The agent
+    # has been seen to claim victory while admitting it didn't build what
+    # was asked. These phrases are red flags that finish should refuse.
+    "schedule was requested but",
+    "schedule step was requested",
+    "schedule was not created",
+    "could not create a schedule",
+    "could not create the schedule",
+    "did not create the schedule",
+    "skipped the schedule",
+    "without the schedule",
+    "in lieu of a schedule",
+    "current workspace dsl only",
+    "only exposed standalone schedule",
+    "standalone schedule functions",
+    "the existing rule path was used",
 )
 
 
 async def tool_finish(args: dict) -> dict:
     summary = (args.get("summary") or "").strip() or "Done."
+    # `user_request` is injected by runtime.py from the original task prompt
+    # so this gate cannot be circumvented by the agent omitting the field.
+    user_request = (args.get("user_request") or "").lower()
     # If the caller passes a rule_id, do a final correctness gate: the rule
     # MUST have at least one entry in outputs.transactions[]. A rule with no
     # transactions emits NOTHING — that is never a valid completion state.
@@ -4177,6 +4214,49 @@ async def tool_finish(args: dict) -> dict:
         except ToolError:
             rule = None
         if rule is not None:
+            steps = rule.get("steps") or []
+            # Hard gate: when the user explicitly asked for a schedule
+            # (depreciation / amortisation / runoff / payment plan / EIR
+            # term-structure / "create a schedule for ..."), refuse to
+            # finish unless at least one stepType='schedule' step exists.
+            # Prevents the agent from substituting a calc-step approximation.
+            _SCHEDULE_KEYWORDS = (
+                "schedule", "depreciation", "depreciate",
+                "amortisation", "amortization", "amortise", "amortize",
+                "accretion", "runoff", "run-off", "payment plan",
+                "amortization schedule", "amortisation schedule",
+            )
+            asked_for_schedule = any(k in user_request for k in _SCHEDULE_KEYWORDS)
+            asked_for_schedule = asked_for_schedule or any(
+                k in summary.lower() for k in (
+                    "depreciation", "depreciate", "amortisation",
+                    "amortization", "runoff", "payment plan",
+                )
+            )
+            has_schedule_step = any(
+                (s.get("stepType") or "") == "schedule" for s in steps
+            )
+            if asked_for_schedule and not has_schedule_step:
+                raise ToolError(
+                    f"Rule '{rule.get('name')}' has ZERO stepType='schedule' "
+                    f"steps, but the user's request and/or your summary "
+                    f"explicitly mention a schedule "
+                    f"(depreciation/amortisation/runoff/payment plan). A "
+                    f"calc-step approximation is NOT a substitute and a "
+                    f"standalone create_saved_schedule call is NOT a "
+                    f"substitute either. FIX:\n"
+                    f"  1. call add_step_to_rule with stepType='schedule' and "
+                    f"a populated scheduleConfig (periodType, frequency, "
+                    f"startDate*, endDate*/periodCount*, columns).\n"
+                    f"  2. Schedule columns CAN reference outer calc vars, "
+                    f"EVENTNAME.field, prior columns, and built-ins like "
+                    f"period_index / period_number / lag / dcf.\n"
+                    f"  3. call test_schedule_step until ok=true.\n"
+                    f"  4. THEN add_transaction_to_rule referencing the "
+                    f"schedule's outputVar (e.g. type='last' or 'sum').\n"
+                    f"DO NOT call finish again until a schedule step exists "
+                    f"and passes its preview."
+                )
             txns = ((rule.get("outputs") or {}).get("transactions") or [])
             if not txns:
                 raise ToolError(
