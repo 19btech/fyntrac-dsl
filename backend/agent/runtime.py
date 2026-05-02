@@ -65,6 +65,33 @@ _PENDING: dict[str, dict[str, _PendingApproval]] = {}
 _RUN_STATUS: dict[str, str] = {}      # run_id -> "running" | "cancelled" | ...
 _RUN_LOCK = asyncio.Lock()
 
+# ──────────────────────────────────────────────────────────────────────────
+# Per-chat-session conversation memory.
+# Without this, every agent run starts from a blank slate and re-discovers
+# the workspace from scratch (re-listing events, re-reading rules, retrying
+# duplicate creates). Keyed by the chat session_id supplied by the frontend.
+# ──────────────────────────────────────────────────────────────────────────
+_SESSION_HISTORY: dict[str, list[dict]] = {}
+# Cap kept history per session. Oldest pairs are dropped when exceeded.
+_SESSION_MAX_MESSAGES = 60
+
+
+def reset_session_history(session_id: str) -> bool:
+    """Drop persisted conversation history for the given chat session.
+    Returns True if anything was cleared."""
+    if not session_id:
+        return False
+    return _SESSION_HISTORY.pop(session_id, None) is not None
+
+
+def _trim_history(msgs: list[dict]) -> list[dict]:
+    """Cap stored history to keep token usage bounded. Drops oldest assistant/
+    tool pairs but preserves any leading user message."""
+    if len(msgs) <= _SESSION_MAX_MESSAGES:
+        return msgs
+    # Always keep the most recent _SESSION_MAX_MESSAGES messages.
+    return msgs[-_SESSION_MAX_MESSAGES:]
+
 
 async def _register_pending(run_id: str, call_id: str) -> _PendingApproval:
     async with _RUN_LOCK:
@@ -496,6 +523,46 @@ def _system_prompt() -> str:
         "     If you genuinely need user input (e.g. an ambiguous business\n"
         "     rule), state the SPECIFIC choice you need them to make in one\n"
         "     sentence — never end with 'would you like me to'.\n"
+        " 18. EDIT IN PLACE — NEVER DUPLICATE A RULE. If a rule named X\n"
+        "     already exists and the user wants to change it, you MUST:\n"
+        "       (a) call `update_step` / `add_step_to_rule` / `delete_step` /\n"
+        "           `update_saved_rule` to fix it in place, OR\n"
+        "       (b) call `delete_saved_rule` first (with user approval) and\n"
+        "           then create the replacement under the SAME name X.\n"
+        "     NEVER append `_v2`, `_final`, `_fixed`, `_auto`, `_new` or\n"
+        "     similar suffixes — that just clutters the workspace and means\n"
+        "     the broken original still exists. The `create_saved_rule` tool\n"
+        "     will reject suffixed near-duplicates of an existing rule.\n"
+        "     Same applies to schedules and templates: edit existing first;\n"
+        "     only create new when the use case is genuinely different.\n"
+        " 19. NEVER STOP ON VALIDATION FAILURE. When ANY tool returns an\n"
+        "     `errors` array, an `ok: false` flag, or a ToolError mentioning\n"
+        "     `undefined`, `not defined`, `unbalanced`, `missing`, or\n"
+        "     `failed`, you are NOT done. Your next action MUST be a fix:\n"
+        "       • undefined variable → `add_step_to_rule` to define it\n"
+        "         BEFORE the step that references it, OR `update_step` to\n"
+        "         change the reference to an existing variable.\n"
+        "       • unbalanced transactions → call `add_transaction_to_rule`\n"
+        "         for the missing side.\n"
+        "       • amount_step not in rule → `add_step_to_rule` to compute it,\n"
+        "         OR change the transaction's `amount` to a real step name.\n"
+        "       • undefined function → call `list_dsl_functions` to find\n"
+        "         the correct name, then `update_step` to fix the formula.\n"
+        "     You may NOT call `finish` while ANY rule's\n"
+        "     `verify_rule_complete` returns `overall_ready: false`. If you\n"
+        "     have tried 3 distinct fixes and the same error class persists,\n"
+        "     call `get_dsl_syntax_guide` and re-read the relevant section\n"
+        "     before the 4th attempt.\n"
+        " 20. ONE RULE OR MANY? Default to ONE rule per accounting event\n"
+        "     (e.g. one ECL rule, one revenue-recognition rule). Split into\n"
+        "     multiple rules ONLY when:\n"
+        "       (a) the rules emit different debit/credit transaction pairs\n"
+        "           that should be auditable independently, OR\n"
+        "       (b) different rules need different priorities (run order)\n"
+        "           because one consumes another's transactions, OR\n"
+        "       (c) different rules attach to different event types.\n"
+        "     Two calc steps inside the same rule are almost always better\n"
+        "     than two single-step rules.\n"
         "════════════════════════════════════════════════════════════════════\n"
         "FAILURE LOOP PROTOCOL — IMPORTANT:\n"
         "  • If the SAME tool fails TWICE in a row with what looks like a syntax\n"
@@ -549,9 +616,10 @@ async def run_agent(
     model: str,
     db=None,
     in_memory_data: dict | None = None,
-    max_steps: int = 50,
+    max_steps: int = 80,
     auto_approve_destructive: bool = False,
     approval_timeout: float = 600.0,
+    session_id: str | None = None,
 ) -> AsyncGenerator[dict, None]:
     """Execute the agent loop and stream events.
 
@@ -580,12 +648,25 @@ async def run_agent(
     yield {
         "type": "run_started", "ts": _now_iso(), "run_id": run_id,
         "task": task, "model": model, "max_steps": max_steps,
+        "session_id": session_id,
     }
 
-    messages: list[dict] = [
-        {"role": "system", "content": _system_prompt()},
-        {"role": "user", "content": task.strip()},
-    ]
+    # Load prior conversation history for this chat session (if any). This
+    # lets follow-up turns reference earlier discoveries (events created,
+    # rules saved, transaction types registered) instead of restarting from
+    # scratch every time.
+    prior_history: list[dict] = []
+    if session_id:
+        prior_history = list(_SESSION_HISTORY.get(session_id) or [])
+
+    messages: list[dict] = (
+        [{"role": "system", "content": _system_prompt()}]
+        + prior_history
+        + [{"role": "user", "content": task.strip()}]
+    )
+    # Index where this turn's NEW messages begin — used at the end to
+    # persist only the delta (not the whole transcript).
+    new_msg_start_idx = len(messages) - 1
 
     try:
         for step in range(1, max_steps + 1):
@@ -791,6 +872,18 @@ async def run_agent(
         "status": final_status, "summary": final_summary, "steps": steps_used,
     }
     yield final_event
+
+    # Persist this turn's messages back into the per-session history so the
+    # next user turn in the same chat sees them. We persist regardless of
+    # final_status — even a partial/failed turn left useful tool observations
+    # the next turn should not have to redo (e.g. event listings).
+    if session_id:
+        try:
+            new_msgs = messages[new_msg_start_idx:]
+            updated = list(_SESSION_HISTORY.get(session_id) or []) + new_msgs
+            _SESSION_HISTORY[session_id] = _trim_history(updated)
+        except Exception as exc:
+            logger.warning("Could not persist session history: %s", exc)
 
     # Persist run record (best-effort)
     run_doc = {

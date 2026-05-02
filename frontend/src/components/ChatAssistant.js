@@ -53,6 +53,14 @@ const ChatAssistantComponent = ({ dslFunctions, events, onInsertCode, onOverwrit
 
   React.useImperativeHandle(ref, () => ({
     clearChat: () => {
+      // Best-effort: tell backend to drop any persisted agent memory for this
+      // chat session so a follow-up message starts from a clean slate.
+      const sid = sessionId;
+      if (sid) {
+        try {
+          fetch(`/api/agent/sessions/${encodeURIComponent(sid)}/reset`, { method: 'POST' }).catch(() => {});
+        } catch (e) { /* ignore */ }
+      }
       setMessages([]);
       setSessionId(null);
       try {
@@ -143,6 +151,20 @@ const ChatAssistantComponent = ({ dslFunctions, events, onInsertCode, onOverwrit
     // Agent mode: spawn an autonomous run instead of the explanation pipeline.
     if (agentMode) {
       const runKey = generateMessageId();
+      // Ensure a stable session_id exists so the agent runtime can persist
+      // conversation history across runs in the same chat.
+      let sid = sessionId;
+      if (!sid) {
+        try {
+          sid = (window.crypto && window.crypto.randomUUID)
+            ? window.crypto.randomUUID()
+            : `s_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+        } catch (e) {
+          sid = `s_${Date.now()}`;
+        }
+        setSessionId(sid);
+        try { localStorage.setItem('chatSessionId', sid); } catch (e) { /* ignore */ }
+      }
       setMessages(prev => [...prev, { role: 'agent-run', runKey, task: userMessage, model: selectedModel || undefined }]);
       // The AgentRunMessage component manages its own lifecycle; we just
       // need to clear the typing indicator once the SSE stream resolves.
@@ -344,6 +366,7 @@ const ChatAssistantComponent = ({ dslFunctions, events, onInsertCode, onOverwrit
                   key={msg.runKey || idx}
                   task={msg.task}
                   model={msg.model}
+                  sessionId={sessionId}
                   initialEvents={isHistorical ? msg.events : undefined}
                   initialStatus={isHistorical ? (msg.finalStatus || 'done') : undefined}
                   onAgentDataChange={onAgentDataChange}

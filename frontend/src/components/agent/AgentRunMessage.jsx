@@ -55,7 +55,7 @@ function shortenJSON(value, maxLen = 320) {
   return s.length > maxLen ? s.slice(0, maxLen) + "…" : s;
 }
 
-const AgentRunMessage = ({ task, model, autoApproveDestructive = false, onComplete, initialEvents, initialStatus, onAgentDataChange }) => {
+const AgentRunMessage = ({ task, model, autoApproveDestructive = false, onComplete, initialEvents, initialStatus, onAgentDataChange, sessionId }) => {
   const isReplay = Array.isArray(initialEvents) && initialEvents.length > 0;
   const [events, setEvents] = useState(isReplay ? initialEvents : []);
   const eventsRef = useRef(events);
@@ -178,6 +178,7 @@ const AgentRunMessage = ({ task, model, autoApproveDestructive = false, onComple
             task,
             model: model || undefined,
             auto_approve_destructive: autoApproveDestructive,
+            session_id: sessionId || undefined,
           }),
           signal: ctrl.signal,
         });

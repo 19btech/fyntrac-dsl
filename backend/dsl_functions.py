@@ -3631,3 +3631,108 @@ DSL_FUNCTION_METADATA = [
 ]
 
 print(f"Loaded {len(DSL_FUNCTIONS)} functions across {len(set(f['category'] for f in DSL_FUNCTION_METADATA))} categories")
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Per-function worked examples. The agent uses these via list_dsl_functions
+# to ground formula authoring in concrete syntax instead of guessing.
+# Examples are SINGLE-LINE expressions matching the rule-builder constraints.
+# ──────────────────────────────────────────────────────────────────────────
+DSL_FUNCTION_EXAMPLES = {
+    # Arithmetic
+    "add":        "add(LoanEvent.principal, LoanEvent.fees)",
+    "subtract":   "subtract(opening_balance, payment)",
+    "multiply":   "multiply(LoanEvent.principal, LoanEvent.rate)",
+    "divide":     "divide(annual_rate, 12)",
+    "power":      "power(add(1, monthly_rate), nper)",
+    "abs":        "abs(subtract(actual, expected))",
+    "round":      "round(interest, 2)",
+    "floor":      "floor(divide(days, 30))",
+    "ceil":       "ceil(divide(amount, 1000))",
+    "percentage": "percentage(paid_amount, total_due)",
+    # Comparison / logical
+    "eq":  "eq(stage, 1)",
+    "neq": "neq(status, \"closed\")",
+    "gt":  "gt(days_overdue, 90)",
+    "gte": "gte(LoanEvent.balance, 1000)",
+    "lt":  "lt(LoanEvent.rate, 0.05)",
+    "lte": "lte(ltv, 0.8)",
+    "between": "between(days_overdue, 30, 89)",
+    "is_null": "is_null(LoanEvent.maturity_date)",
+    "and": "and(gt(days_overdue, 30), lt(days_overdue, 90))",
+    "or":  "or(eq(stage, 2), eq(stage, 3))",
+    "not": "not(is_null(rating))",
+    "if":  "if(gt(days_overdue, 90), 3, if(gt(days_overdue, 30), 2, 1))",
+    "coalesce": "coalesce(LoanEvent.override_rate, LoanEvent.rate, 0.0)",
+    "switch":   "switch(rating, {\"A\":0.005,\"B\":0.02,\"C\":0.08}, 0.15)",
+    # Date
+    "days_between":   "days_between(LoanEvent.origination_date, postingdate)",
+    "months_between": "months_between(LoanEvent.origination_date, postingdate)",
+    "add_months":     "add_months(postingdate, 1)",
+    "start_of_month": "start_of_month(postingdate)",
+    "end_of_month":   "end_of_month(postingdate)",
+    "normalize_date": "normalize_date(LoanEvent.maturity_date)",
+    "day_count_fraction": "day_count_fraction(prior_date, postingdate, \"ACT/365\")",
+    # Financial
+    "pv":   "pv(divide(rate, 12), term, payment)",
+    "fv":   "fv(divide(rate, 12), term, payment, principal)",
+    "pmt":  "pmt(divide(LoanEvent.rate, 12), LoanEvent.term_months, LoanEvent.principal)",
+    "npv":  "npv(0.05, cashflows)",
+    "irr":  "irr(cashflows)",
+    "discount_factor": "discount_factor(rate, dcf)",
+    "effective_rate":  "effective_rate(0.06, 12)",
+    # Schedule
+    "period":   "period(LoanEvent.term_months, \"M\")",
+    "schedule": (
+        "schedule(p, {\"interest\":\"multiply(balance, monthly_rate)\","
+        "\"principal\":\"subtract(payment, interest)\","
+        "\"balance\":\"subtract(balance, principal)\"},"
+        " {\"balance\":LoanEvent.principal,\"monthly_rate\":divide(LoanEvent.rate,12),"
+        "\"payment\":pmt(divide(LoanEvent.rate,12),LoanEvent.term_months,LoanEvent.principal)})"
+    ),
+    "schedule_sum":    "schedule_sum(amort, \"interest\")",
+    "schedule_last":   "schedule_last(amort, \"balance\")",
+    "schedule_first":  "schedule_first(amort, \"balance\")",
+    "schedule_column": "schedule_column(amort, \"balance\")",
+    "schedule_filter": "schedule_filter(amort, \"period_date\", postingdate, \"balance\")",
+    # Aggregation
+    "sum":           "sum(all_principals)",
+    "sum_field":     "sum_field(amort, \"interest\")",
+    "avg":           "avg(rate_history)",
+    "min":           "min(balance_history)",
+    "max":           "max(balance_history)",
+    "count":         "count(payment_history)",
+    "weighted_avg":  "weighted_avg(prices, weights)",
+    "cumulative_sum":"cumulative_sum(monthly_amounts)",
+    # Lookup / array
+    "lookup":      "lookup(reference_balances, instrumentid)",
+    "array_get":   "array_get(history, i, 0)",
+    "array_first": "array_first(balance_history, 0)",
+    "array_last":  "array_last(balance_history, 0)",
+    "array_length":"array_length(balance_history)",
+    "array_slice": "array_slice(balance_history, 0, 12)",
+    # Collection
+    "collect_by_instrument":         "collect_by_instrument(\"EOD_BALANCES.upb\")",
+    "collect_all":                   "collect_all(\"PDCurve.pd\")",
+    "collect_by_subinstrument":      "collect_by_subinstrument(\"REV.amount\")",
+    # Iteration
+    "apply_each":          "apply_each(prices, \"divide(each, total_price)\")",
+    "for_each":            "for_each(dates, amounts, \"d\", \"a\", \"createTransaction(d, d, \\\"REV\\\", a)\")",
+    "for_each_with_index": "for_each_with_index(items, \"x\", \"multiply(x, weight)\")",
+    "array_filter":        "array_filter(items, \"x\", \"gt(x, 0)\")",
+    # String
+    "concat":   "concat(\"Loan_\", instrumentid)",
+    "lower":    "lower(rating)",
+    "contains": "contains(LoanEvent.notes, \"impaired\")",
+    "eq_ignore_case": "eq_ignore_case(status, \"ACTIVE\")",
+    # Transaction (informational — prefer outputs.transactions[])
+    "createTransaction": (
+        "createTransaction(postingdate, effectivedate, \"ECLAllowance\", ecl_amount)"
+    ),
+}
+
+# Merge examples into the metadata so list_dsl_functions returns them.
+for _m in DSL_FUNCTION_METADATA:
+    _ex = DSL_FUNCTION_EXAMPLES.get(_m.get("name"))
+    if _ex:
+        _m["example"] = _ex

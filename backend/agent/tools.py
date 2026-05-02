@@ -418,16 +418,22 @@ async def tool_list_events(_args: dict) -> dict:
 async def tool_list_dsl_functions(args: dict) -> dict:
     metadata = list(_ServerBridge.helpers.get("DSL_FUNCTION_METADATA", []) or [])
     category_filter = (args.get("category") or "").strip().lower()
+    name_filter = (args.get("name") or "").strip().lower()
     out = []
     for m in metadata:
         if category_filter and (m.get("category") or "").lower() != category_filter:
             continue
-        out.append({
+        if name_filter and name_filter not in (m.get("name") or "").lower():
+            continue
+        entry = {
             "name": m.get("name"),
             "params": m.get("params"),
             "description": m.get("description"),
             "category": m.get("category"),
-        })
+        }
+        if m.get("example"):
+            entry["example"] = m["example"]
+        out.append(entry)
     return {"count": len(out), "functions": out}
 
 
@@ -1867,6 +1873,277 @@ def _validate_transaction_outputs(steps: list[dict], outputs: dict) -> None:
                 )
 
 
+# ──────────────────────────────────────────────────────────────────────────
+# Static rule validator — used by tool_validate_rule and auto-attached to
+# the response of every mutation tool so the agent SEES validation errors
+# in the same turn it caused them.
+# ──────────────────────────────────────────────────────────────────────────
+
+# Identifiers we should NOT flag as undefined: control words, common Python
+# builtins that survive translation, the always-injected globals, and DSL
+# loop-locals.
+_VALIDATOR_BUILTINS: set[str] = {
+    "True", "False", "None", "and", "or", "not", "in", "is",
+    "if", "else", "for", "while", "return", "lambda",
+    "len", "str", "int", "float", "bool", "list", "dict", "tuple", "set",
+    "range", "min", "max", "sum", "abs", "round", "any", "all", "print",
+    "postingdate", "effectivedate", "instrumentid", "subinstrumentid",
+    "each", "second", "first", "i", "idx", "index", "row",
+    "createTransaction",
+}
+
+_IDENT_RE = re.compile(r"\b([A-Za-z_]\w*)\b")
+_DOTTED_RE = re.compile(r"\b([A-Za-z_]\w*)\.[A-Za-z_]\w*")
+
+
+def _step_defined_names(step: dict) -> set[str]:
+    """Names that this step CONTRIBUTES to the variable scope."""
+    out: set[str] = set()
+    nm = (step.get("name") or "").strip()
+    if nm:
+        out.add(nm)
+    if step.get("stepType") == "iteration":
+        for it in step.get("iterations") or []:
+            rv = (it.get("resultVar") or "").strip()
+            if rv:
+                out.add(rv)
+    if step.get("stepType") == "schedule":
+        for ov in step.get("outputVars") or []:
+            ovn = (ov.get("name") or "").strip()
+            if ovn:
+                out.add(ovn)
+    return out
+
+
+def _step_referenced_names(step: dict) -> list[tuple[str, str]]:
+    """Identifiers this step REFERENCES, paired with a `where` label so
+    error messages can point at the offending field."""
+    refs: list[tuple[str, str]] = []
+    nm = step.get("name") or "?"
+    st = step.get("stepType")
+    if st == "calc":
+        src = step.get("source") or "formula"
+        if src == "formula":
+            f = step.get("formula") or ""
+            if f:
+                refs.append((f"step '{nm}'.formula", f))
+        elif src == "value":
+            v = step.get("value") or ""
+            if v:
+                refs.append((f"step '{nm}'.value", v))
+    elif st == "condition":
+        for i, c in enumerate(step.get("conditions") or []):
+            for k in ("condition", "thenFormula"):
+                v = c.get(k) or ""
+                if v:
+                    refs.append((f"step '{nm}'.conditions[{i}].{k}", v))
+        ef = step.get("elseFormula") or ""
+        if ef:
+            refs.append((f"step '{nm}'.elseFormula", ef))
+    elif st == "iteration":
+        for i, it in enumerate(step.get("iterations") or []):
+            for k in ("sourceArray", "secondArray", "expression"):
+                v = it.get(k) or ""
+                if v:
+                    refs.append((f"step '{nm}'.iterations[{i}].{k}", v))
+    elif st == "schedule":
+        sc = step.get("scheduleConfig") or {}
+        for c in sc.get("columns") or []:
+            f = c.get("formula") or ""
+            if f:
+                refs.append((f"step '{nm}'.scheduleConfig.columns['{c.get('name')}'].formula", f))
+        for k in ("periodCountFormula", "startDateFormula", "endDateFormula"):
+            v = sc.get(k) or ""
+            if v:
+                refs.append((f"step '{nm}'.scheduleConfig.{k}", v))
+        # contextVars are required to have been defined before
+        for cv in sc.get("contextVars") or []:
+            cv = (cv or "").strip()
+            if cv:
+                refs.append((f"step '{nm}'.scheduleConfig.contextVars", cv))
+    return refs
+
+
+def _extract_identifiers(expr: str) -> set[str]:
+    """Return bare identifiers used in an expression, EXCLUDING anything that
+    appears as the LHS of a `.` (event-field access) and excluding tokens
+    that are immediately followed by `(` (function calls — those are
+    already validated by `_check_function_calls`)."""
+    if not isinstance(expr, str) or not expr:
+        return set()
+    # Strip string literals so identifiers inside strings aren't flagged
+    stripped = re.sub(r"'(?:[^'\\]|\\.)*'", "''", expr)
+    stripped = re.sub(r'"(?:[^"\\]|\\.)*"', '""', stripped)
+    # Track identifiers that are LHS of a dot (event-name prefix) — those
+    # are validated separately against the event registry, not the step scope.
+    dotted_lhs = set(m.group(1) for m in _DOTTED_RE.finditer(stripped))
+    # Strip dotted attribute access entirely so the rhs isn't flagged
+    no_dotted = re.sub(r"\b[A-Za-z_]\w*\.[A-Za-z_]\w*", "", stripped)
+    # Strip function-call names: foo(  → leave the args, drop the name
+    no_calls = re.sub(r"\b([A-Za-z_]\w*)\s*\(", "(", no_dotted)
+    out = set()
+    for m in _IDENT_RE.finditer(no_calls):
+        tok = m.group(1)
+        if tok and tok not in dotted_lhs:
+            out.add(tok)
+    return out
+
+
+async def _validate_rule_static(rule: dict) -> list[dict]:
+    """Walk the rule's steps in order, building the variable scope and
+    flagging any reference to an identifier that isn't defined yet, isn't
+    a global, isn't a known DSL function, and isn't an event-table prefix.
+
+    Returns a list of {step, kind, name, where, fix_hint} error dicts.
+    Empty list = clean.
+    """
+    steps = rule.get("steps") or []
+    # Build event-name lookup (case-insensitive)
+    db = _ServerBridge.db
+    event_names: set[str] = set()
+    try:
+        if db is not None:
+            async for d in db.event_definitions.find({}, {"_id": 0, "event_name": 1}):
+                if d.get("event_name"):
+                    event_names.add(str(d["event_name"]).lower())
+    except Exception:
+        pass
+    for e in (_ServerBridge.in_memory_data or {}).get("event_definitions") or []:
+        if e.get("event_name"):
+            event_names.add(str(e["event_name"]).lower())
+    # The translation layer also accepts `EVENTNAME_field` flattened form
+    flat_event_names = {nm.replace(" ", "_") for nm in event_names}
+
+    known_fns = _known_dsl_function_names()
+
+    scope: set[str] = set()
+    errors: list[dict] = []
+
+    for step in steps:
+        # Validate references BEFORE adding this step's defined names
+        # (a step cannot reference its own name on the RHS).
+        for where, expr in _step_referenced_names(step):
+            idents = _extract_identifiers(expr)
+            for tok in sorted(idents):
+                if tok in scope:
+                    continue
+                if tok in _VALIDATOR_BUILTINS:
+                    continue
+                if tok in known_fns:
+                    continue
+                if tok.lower() in event_names or tok.lower() in flat_event_names:
+                    continue
+                # Numeric literal? extract_identifiers already excludes those
+                # (Python identifiers don't start with a digit).
+                # Otherwise it's an undefined reference — flag it.
+                import difflib as _dl
+                sug = _dl.get_close_matches(tok, sorted(scope), n=2, cutoff=0.6)
+                fix = (
+                    f"Add a step named '{tok}' BEFORE step '{step.get('name')}', "
+                    f"OR change this expression to use one of the variables "
+                    f"already defined: {sorted(scope) or '[]'}."
+                )
+                if sug:
+                    fix += f" Did you mean: {', '.join(sug)}?"
+                errors.append({
+                    "step": step.get("name"),
+                    "kind": "undefined_variable",
+                    "name": tok,
+                    "where": where,
+                    "fix_hint": fix,
+                })
+        # Now add this step's contributions to scope for subsequent steps
+        scope |= _step_defined_names(step)
+
+    # Validate outputs.transactions[].amount references
+    outputs = rule.get("outputs") or {}
+    for i, t in enumerate(outputs.get("transactions") or []):
+        if not isinstance(t, dict):
+            continue
+        amt = (t.get("amount") or "").strip()
+        if not amt:
+            continue
+        try:
+            float(amt)
+            continue
+        except ValueError:
+            pass
+        # Check identifiers in the amount expression
+        for tok in sorted(_extract_identifiers(amt)):
+            if tok in scope or tok in _VALIDATOR_BUILTINS or tok in known_fns:
+                continue
+            if tok.lower() in event_names or tok.lower() in flat_event_names:
+                continue
+            import difflib as _dl
+            sug = _dl.get_close_matches(tok, sorted(scope), n=2, cutoff=0.6)
+            fix = (
+                f"`amount` must reference a step variable or numeric literal. "
+                f"Add a calc step named '{tok}' that computes the amount, OR "
+                f"change `amount` to one of the existing variables: "
+                f"{sorted(scope) or '[]'}."
+            )
+            if sug:
+                fix += f" Did you mean: {', '.join(sug)}?"
+            errors.append({
+                "step": "outputs.transactions",
+                "kind": "undefined_variable",
+                "name": tok,
+                "where": f"outputs.transactions[{i}].amount",
+                "fix_hint": fix,
+            })
+    return errors
+
+
+async def tool_validate_rule(args: dict) -> dict:
+    """Static-analyse a saved rule for the most common authoring mistakes:
+    undefined variable references, transaction amount fields that point at
+    nonexistent steps, and missing event prefixes. Returns ok + errors[]."""
+    rule = await _load_rule((args.get("rule_id") or "").strip())
+    errors = await _validate_rule_static(rule)
+    return {
+        "rule_id": rule.get("id"),
+        "rule_name": rule.get("name"),
+        "ok": not errors,
+        "error_count": len(errors),
+        "errors": errors,
+        "next_action": (
+            "Rule passes static validation. Proceed to debug_step / "
+            "verify_rule_complete."
+            if not errors else
+            "Fix the listed errors via update_step / add_step_to_rule / "
+            "delete_step BEFORE calling finish."
+        ),
+    }
+
+
+async def _attach_validation(rule: dict, payload: dict) -> dict:
+    """Run the static validator on `rule` and merge any errors into `payload`
+    so the agent observes them in the same turn it made the mutation. Used by
+    create_saved_rule / update_saved_rule / add_step_to_rule / update_step /
+    delete_step / add_transaction_to_rule."""
+    try:
+        errs = await _validate_rule_static(rule)
+    except Exception as exc:
+        logger.warning("Rule static validation failed unexpectedly: %s", exc)
+        return payload
+    if errs:
+        payload["validation"] = {
+            "ok": False,
+            "error_count": len(errs),
+            "errors": errs[:20],
+            "fix_now": (
+                "⚠️ The rule was saved but has static-validation errors that "
+                "will fail at dry-run. You MUST fix these BEFORE calling "
+                "finish. Use update_step / add_step_to_rule / delete_step. "
+                "DO NOT call finish or attach_rules_to_template until "
+                "validate_rule returns ok=true."
+            ),
+        }
+    else:
+        payload["validation"] = {"ok": True, "error_count": 0}
+    return payload
+
+
 async def tool_create_saved_rule(args: dict) -> dict:
     name = (args.get("name") or "").strip()
     if not name:
@@ -1879,7 +2156,83 @@ async def tool_create_saved_rule(args: dict) -> dict:
         {"_id": 0, "id": 1},
     )
     if existing:
-        raise ToolError(f"A rule named '{name}' already exists. Use update_saved_rule or pick a different name.")
+        raise ToolError(
+            f"A rule named '{name}' already exists (id={existing.get('id')}). "
+            f"DO NOT create a duplicate. Either:\n"
+            f"  • Call `update_saved_rule(rule_id='{existing.get('id')}', "
+            f"patch={{...}})` to fix it in place, OR\n"
+            f"  • Call `delete_saved_rule(rule_id='{existing.get('id')}', "
+            f"confirm=true)` first (with user approval) and recreate under "
+            f"the SAME name '{name}'.\n"
+            f"NEVER append _v2/_final/_fixed/_auto suffixes — see system "
+            f"rule #18."
+        )
+    # Fuzzy duplicate guard: reject obvious near-duplicates of an existing
+    # rule (suffixed names, near-identical step shapes). Forces the agent to
+    # edit the existing rule instead of cluttering the workspace.
+    try:
+        all_rules = await db.saved_rules.find(
+            {}, {"_id": 0, "id": 1, "name": 1, "steps": 1}
+        ).to_list(2000)
+    except Exception:
+        all_rules = []
+    if all_rules:
+        import difflib as _dl
+
+        def _strip_suffix(s: str) -> str:
+            return re.sub(
+                r"[_\-\s](?:v\d+|final|fixed|auto|new|copy|temp|tmp|attempt\d*)\b",
+                "",
+                s,
+                flags=re.IGNORECASE,
+            ).strip()
+
+        target_stem = _strip_suffix(name).lower()
+        steps_in = args.get("steps") or []
+        target_sig = sorted(
+            (s.get("stepType") or "calc", (s.get("name") or "").lower())
+            for s in steps_in if isinstance(s, dict)
+        )
+        for r in all_rules:
+            other = (r.get("name") or "").strip()
+            if not other:
+                continue
+            other_stem = _strip_suffix(other).lower()
+            # Stem collision (e.g. "ECL_v2" vs existing "ECL")
+            if target_stem and other_stem and target_stem == other_stem:
+                raise ToolError(
+                    f"'{name}' is a near-duplicate of existing rule '{other}' "
+                    f"(id={r.get('id')}) — same root name with a suffix. "
+                    f"DO NOT create a parallel rule. Use update_saved_rule on "
+                    f"the existing one (or delete it first and recreate under "
+                    f"the original name). System rule #18: never append "
+                    f"_v2/_final/_fixed/_auto."
+                )
+            # Strong fuzzy similarity on the cleaned name
+            if (
+                target_stem
+                and other_stem
+                and _dl.SequenceMatcher(None, target_stem, other_stem).ratio() >= 0.88
+            ):
+                raise ToolError(
+                    f"'{name}' is very similar to existing rule '{other}' "
+                    f"(id={r.get('id')}). If you intend to modify '{other}', "
+                    f"call update_saved_rule. If you intend to replace it, "
+                    f"call delete_saved_rule first then recreate under the "
+                    f"original name."
+                )
+            # Identical step-shape signature (same names + types in same set)
+            other_sig = sorted(
+                (s.get("stepType") or "calc", (s.get("name") or "").lower())
+                for s in (r.get("steps") or []) if isinstance(s, dict)
+            )
+            if target_sig and target_sig == other_sig:
+                raise ToolError(
+                    f"'{name}' has the same step shape as existing rule "
+                    f"'{other}' (id={r.get('id')}) — identical step names + "
+                    f"types. This is almost certainly a duplicate. Use "
+                    f"update_saved_rule on '{other}' instead."
+                )
     steps_in = args.get("steps") or []
     steps = [_validate_step_shape(s) for s in steps_in]
     priority = args.get("priority")
@@ -1905,7 +2258,8 @@ async def tool_create_saved_rule(args: dict) -> dict:
         "commentText": "",
     }
     rule = await _save_rule_doc(rule, is_new=True)
-    return {"rule_id": rule["id"], "name": name, "priority": priority, "step_count": len(steps)}
+    payload = {"rule_id": rule["id"], "name": name, "priority": priority, "step_count": len(steps)}
+    return await _attach_validation(rule, payload)
 
 
 async def tool_update_saved_rule(args: dict) -> dict:
@@ -1921,7 +2275,8 @@ async def tool_update_saved_rule(args: dict) -> dict:
         rule["steps"] = [_validate_step_shape(s) for s in (patch["steps"] or [])]
     _validate_transaction_outputs(rule.get("steps") or [], rule.get("outputs") or {})
     rule = await _save_rule_doc(rule, is_new=False)
-    return {"rule_id": rule["id"], "name": rule["name"], "step_count": len(rule.get("steps") or [])}
+    payload = {"rule_id": rule["id"], "name": rule["name"], "step_count": len(rule.get("steps") or [])}
+    return await _attach_validation(rule, payload)
 
 
 async def tool_delete_saved_rule(args: dict) -> dict:
@@ -1972,7 +2327,8 @@ async def tool_add_step_to_rule(args: dict) -> dict:
     rule["steps"] = steps
     _validate_transaction_outputs(steps, rule.get("outputs") or {})
     rule = await _save_rule_doc(rule, is_new=False)
-    return {"rule_id": rule["id"], "step_name": step["name"], "step_count": len(steps)}
+    payload = {"rule_id": rule["id"], "step_name": step["name"], "step_count": len(steps)}
+    return await _attach_validation(rule, payload)
 
 
 async def tool_update_step(args: dict) -> dict:
@@ -1986,7 +2342,8 @@ async def tool_update_step(args: dict) -> dict:
     rule["steps"][idx] = merged
     _validate_transaction_outputs(rule["steps"], rule.get("outputs") or {})
     rule = await _save_rule_doc(rule, is_new=False)
-    return {"rule_id": rule["id"], "step_index": idx, "step_name": merged["name"]}
+    payload = {"rule_id": rule["id"], "step_index": idx, "step_name": merged["name"]}
+    return await _attach_validation(rule, payload)
 
 
 async def tool_delete_step(args: dict) -> dict:
@@ -1994,7 +2351,8 @@ async def tool_delete_step(args: dict) -> dict:
     idx = _resolve_step_index(rule, args)
     removed = rule["steps"].pop(idx)
     rule = await _save_rule_doc(rule, is_new=False)
-    return {"rule_id": rule["id"], "deleted_step": removed.get("name"), "step_count": len(rule["steps"])}
+    payload = {"rule_id": rule["id"], "deleted_step": removed.get("name"), "step_count": len(rule["steps"])}
+    return await _attach_validation(rule, payload)
 
 
 async def tool_add_transaction_to_rule(args: dict) -> dict:
@@ -2066,7 +2424,27 @@ async def tool_add_transaction_to_rule(args: dict) -> dict:
     rule = await _save_rule_doc(rule, is_new=False)
     sides = [(t.get("side") or "").lower() for t in txns]
     balanced = any(s == "debit" for s in sides) and any(s == "credit" for s in sides)
-    return {
+    # Round-trip verification: re-load the rule from storage and confirm the
+    # transaction landed exactly as expected. Catches silent persistence
+    # failures and gives the agent positive proof of success.
+    try:
+        reloaded = await _load_rule(rule["id"])
+        persisted = ((reloaded.get("outputs") or {}).get("transactions") or [])
+        if not any(
+            (t.get("type") == txn_type and (t.get("side") or "").lower() == side
+             and str(t.get("amount") or "").strip() == amount)
+            for t in persisted
+        ):
+            raise ToolError(
+                f"Round-trip check failed: transaction "
+                f"({side} {txn_type} amount={amount}) was not found in the "
+                f"reloaded rule. The save did not persist correctly."
+            )
+    except ToolError:
+        raise
+    except Exception as exc:
+        logger.warning("Transaction round-trip verification skipped: %s", exc)
+    payload = {
         "rule_id": rule["id"],
         "transaction_count": len(txns),
         "balanced": balanced,
@@ -2079,6 +2457,7 @@ async def tool_add_transaction_to_rule(args: dict) -> dict:
                f"NOT balanced — add the matching {'credit' if side == 'debit' else 'debit'} entry next.")
         ),
     }
+    return await _attach_validation(rule, payload)
 
 
 async def tool_debug_step(args: dict) -> dict:
@@ -2585,6 +2964,25 @@ async def tool_finish(args: dict) -> dict:
                     f"the missing side via `add_transaction_to_rule` before "
                     f"calling `finish`."
                 )
+            # Static-validation hard gate (rule #19): refuse to finish while
+            # the rule has any undefined-variable references etc.
+            try:
+                static_errs = await _validate_rule_static(rule)
+            except Exception:
+                static_errs = []
+            if static_errs:
+                preview = "; ".join(
+                    f"{e['where']}: undefined '{e['name']}'"
+                    for e in static_errs[:5]
+                )
+                raise ToolError(
+                    f"Rule '{rule.get('name')}' has {len(static_errs)} "
+                    f"static-validation error(s) that will fail at dry-run: "
+                    f"{preview}. FIX with update_step / add_step_to_rule, "
+                    f"then call validate_rule to confirm ok=true BEFORE "
+                    f"calling finish. (Rule #19: NEVER stop on validation "
+                    f"failure.)"
+                )
     low = summary.lower()
     for phrase in _FORBIDDEN_FINISH_PHRASES:
         if phrase in low:
@@ -2617,6 +3015,71 @@ FYNTRAC DSL — SYNTAX & STRUCTURE GUIDE
 This DSL is a Python-like EXPRESSION language. It is NOT a general-purpose
 language. The constraints below are BINDING — violating them produces
 errors that look like "unterminated string literal" or "invalid syntax".
+
+------------------------------------------------------------------
+STEP-TYPE DECISION TREE — READ THIS BEFORE PICKING A stepType
+------------------------------------------------------------------
+For each step you intend to add, walk this tree top-to-bottom and pick
+the FIRST type that fits. Picking the wrong type is the #1 source of
+authoring failure.
+
+  Q1. Is the result a TABLE OF TIME-SERIES ROWS (amortisation, ECL
+      projection, payment runoff, lease ROU, depreciation)?
+        → use stepType = "schedule" (NOT iteration, NOT calc).
+        → Configure scheduleConfig.columns + contextVars; expose values
+          via outputVars or schedule_filter / schedule_last in a later
+          calc step.
+
+  Q2. Do you need to APPLY THE SAME EXPRESSION TO EACH ELEMENT of an
+      array that already exists in scope (e.g. a collected time-series
+      from collect_by_instrument)?
+        → use stepType = "iteration" with iterations[].type="apply_each".
+        → sourceArray must be the NAME of a previously-defined array
+          variable. NEVER "all_instruments" / "all_loans" — those do not
+          exist; the engine already runs your rule once per instrument.
+
+  Q3. Do you need MULTI-BRANCH IF/ELSE on a value (e.g. stage = 1/2/3
+      based on days_overdue)?
+        → use stepType = "condition" with conditions[] + elseFormula.
+        → For ONE-LEVEL ternary INSIDE an expression you can also use
+          if(cond, then, else) inline; reach for stepType="condition"
+          when you have 2+ branches you want to read clearly.
+
+  Q4. Otherwise — single value derived from event fields, prior steps,
+      and DSL functions?
+        → use stepType = "calc". Pick `source`:
+            • "event_field"  → just copy a field. eventField = "EVT.fld".
+            • "collect"      → collect_by_instrument / collect_all /
+                                collect_by_subinstrument with eventField.
+            • "value"        → numeric / date literal.
+            • "formula"      → anything else; formula = "fn(a, b)".
+
+  ❌ NEVER use stepType = "custom_code". The validator rejects it.
+  ❌ NEVER create a calc step named "outputs_transactions",
+     "transactions", "transaction", "output", "txns", "txn",
+     "create_transaction", "emit_transactions", "post_transactions".
+     Steps cannot emit transactions — only the rule's
+     `outputs.transactions[]` array does. Use add_transaction_to_rule
+     (twice — one debit + one credit) to populate it.
+
+------------------------------------------------------------------
+ONE RULE OR MANY? — DECIDE BEFORE YOU BUILD
+------------------------------------------------------------------
+Default: ONE rule per accounting event. A "rule" represents one
+debit/credit pair (or set of pairs) tied to a single business event.
+
+Split into multiple rules ONLY when ANY of these is true:
+  • The rules emit different transaction-type pairs that the user wants
+    auditable independently (e.g. ECL recognition vs. interest accrual).
+  • The rules need different priorities because one consumes another's
+    transactions (Rule B at priority 20 reads what Rule A at priority 10
+    posted).
+  • The rules attach to different event types (ECL → LoanCreditRiskData,
+    revenue → SaleEvent).
+
+Two calc steps inside the SAME rule are almost always better than two
+single-step rules. Splitting unrelated logic into separate rules is OK;
+splitting steps that share variables is NOT.
 
 ------------------------------------------------------------------
 HOW THE ENGINE EXECUTES YOUR RULE  (READ THIS FIRST)
@@ -2958,6 +3421,7 @@ TOOLS: dict[str, Callable[[dict], Awaitable[dict]]] = {
     "verify_rule_complete": tool_verify_rule_complete,
     "attach_rules_to_template": tool_attach_rules_to_template,
     "finish": tool_finish,
+    "validate_rule": tool_validate_rule,
 }
 
 
@@ -2970,11 +3434,12 @@ TOOL_SCHEMAS: list[dict] = [
     },
     {
         "name": "list_dsl_functions",
-        "description": "List available DSL functions. Optionally filter by category. Use this to discover the exact function names available before writing rules.",
+        "description": "List available DSL functions with worked single-line examples. Optionally filter by category or name substring. Use this to discover the exact function names AND see how to use them before writing rules.",
         "parameters": {
             "type": "object",
             "properties": {
                 "category": {"type": "string", "description": "Optional category filter (e.g. 'Math', 'Date', 'Schedule')"},
+                "name": {"type": "string", "description": "Optional name substring filter (e.g. 'collect' or 'schedule')"},
             },
             "additionalProperties": False,
         },
@@ -3406,6 +3871,23 @@ TOOL_SCHEMAS.extend([
                 "rule_id": {"type": "string"},
                 "posting_date": {"type": "integer"},
             },
+            "required": ["rule_id"],
+        },
+    },
+    {
+        "name": "validate_rule",
+        "description": (
+            "Static-analyse a saved rule for the most common authoring "
+            "mistakes WITHOUT executing it: undefined variable references, "
+            "transaction `amount` fields that point at nonexistent steps, "
+            "missing event prefixes. FAST and SAFE — call after every "
+            "mutation to catch errors immediately. Returns ok + errors[] "
+            "with a fix_hint per error. You MUST resolve all errors before "
+            "calling finish."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {"rule_id": {"type": "string"}},
             "required": ["rule_id"],
         },
     },

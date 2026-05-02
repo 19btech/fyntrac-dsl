@@ -11,6 +11,7 @@ from .tools import (
 from .runtime import (
     AgentRunError,
     cancel_run,
+    reset_session_history,
     run_agent,
     submit_approval,
 )
@@ -25,5 +26,6 @@ __all__ = [
     "run_agent",
     "submit_approval",
     "cancel_run",
+    "reset_session_history",
     "AgentRunError",
 ]

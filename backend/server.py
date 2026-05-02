@@ -3950,6 +3950,7 @@ class AgentRunRequest(BaseModel):
     model: Optional[str] = None
     max_steps: Optional[int] = 50
     auto_approve_destructive: Optional[bool] = False
+    session_id: Optional[str] = None
 
 
 class AgentApprovalRequest(BaseModel):
@@ -4007,6 +4008,7 @@ async def agent_run_endpoint(req: AgentRunRequest):
                     in_memory_data=in_memory_data,
                     max_steps=int(req.max_steps or 50),
                     auto_approve_destructive=bool(req.auto_approve_destructive),
+                    session_id=req.session_id,
                 ):
                     yield f"data: {json.dumps(event, default=str)}\n\n"
             except AIError as ae:
@@ -4078,6 +4080,21 @@ async def agent_get_run(run_id: str):
 @api_router.get("/agent/destructive-tools")
 async def agent_destructive_tools():
     return {"destructive_tools": sorted(AGENT_DESTRUCTIVE_TOOLS)}
+
+
+@api_router.post("/agent/sessions/{session_id}/reset")
+async def agent_reset_session(session_id: str):
+    """Drop the agent's persisted conversation memory for a chat session.
+    The next agent run for this session_id starts from a clean slate."""
+    try:
+        from backend.agent import reset_session_history
+    except Exception:
+        try:
+            from .agent import reset_session_history  # type: ignore
+        except Exception:
+            from agent import reset_session_history  # type: ignore
+    cleared = reset_session_history(session_id)
+    return {"ok": True, "session_id": session_id, "cleared": cleared}
 
 
 @api_router.post("/import-events/transform")
