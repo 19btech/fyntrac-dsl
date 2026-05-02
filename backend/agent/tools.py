@@ -577,6 +577,39 @@ async def tool_generate_sample_event_data(args: dict) -> dict:
         )
     instrument_count = int(args.get("instrument_count") or 0)
     instrument_ids = args.get("instrument_ids") or []
+    reused_from: str | None = None
+    if not instrument_ids and instrument_count <= 0:
+        # Auto-reuse: if any prior event_data exists, pick its instrument
+        # IDs so cross-event lookups work. This is the #1 cause of "all
+        # lookups return null" in multi-event templates.
+        candidate_doc = None
+        try:
+            if db is not None:
+                cursor = db.event_data.find({}, {"_id": 0, "event_name": 1, "data_rows": 1})
+                async for d in cursor:
+                    if d.get("event_name", "").lower() == event_name.lower():
+                        continue  # skip self if regenerating
+                    rows = d.get("data_rows") or []
+                    ids = sorted({str(r.get("instrumentid")) for r in rows if r.get("instrumentid")})
+                    if ids:
+                        candidate_doc = (d.get("event_name"), ids)
+                        break
+        except Exception:
+            pass
+        if candidate_doc is None:
+            for d in (_ServerBridge.in_memory_data or {}).get("event_data") or []:
+                if d.get("event_name", "").lower() == event_name.lower():
+                    continue
+                rows = d.get("data_rows") or []
+                ids = sorted({str(r.get("instrumentid")) for r in rows if r.get("instrumentid")})
+                if ids:
+                    candidate_doc = (d.get("event_name"), ids)
+                    break
+        if candidate_doc:
+            reused_from, instrument_ids = candidate_doc
+        else:
+            # Sensible default: 2 instruments matches the standard-template convention
+            instrument_count = 2
     if not instrument_ids:
         if instrument_count <= 0 or instrument_count > 200:
             raise ToolError("Provide instrument_ids OR instrument_count (1..200)")
@@ -625,6 +658,7 @@ async def tool_generate_sample_event_data(args: dict) -> dict:
         "rows_inserted": len(new_rows),
         "rows_total": len(final_rows),
         "instruments": instrument_ids,
+        "instrument_ids_reused_from": reused_from,
         "posting_dates": posting_dates,
         "sample_row": new_rows[0] if new_rows else None,
         "data_quality_warnings": _audit_sample_rows(new_rows, event_def),
@@ -1131,6 +1165,30 @@ async def tool_dry_run_template(args: dict) -> dict:
             })
 
     sanity_warnings: list[str] = []
+    # Cross-event instrument-ID overlap check. If two activity events have
+    # ZERO instruments in common, every cross-event lookup will return null
+    # and the rule will silently emit no transactions. This is the #1 cause
+    # of "dry-run produced 0 rows" bugs in multi-event templates.
+    if len(activity_with_data) >= 2:
+        per_event_ids: dict[str, set[str]] = {}
+        for evname in activity_with_data:
+            ids: set[str] = set()
+            for r in event_data_dict.get(evname) or []:
+                iid = r.get("instrumentid")
+                if iid is not None:
+                    ids.add(str(iid))
+            per_event_ids[evname] = ids
+        names = list(per_event_ids.keys())
+        for i in range(len(names)):
+            for j in range(i + 1, len(names)):
+                a, b = names[i], names[j]
+                if per_event_ids[a] and per_event_ids[b] and not (per_event_ids[a] & per_event_ids[b]):
+                    sanity_warnings.append(
+                        f"events '{a}' and '{b}' have ZERO instrument IDs in common "
+                        f"({sorted(per_event_ids[a])[:3]} vs {sorted(per_event_ids[b])[:3]}) "
+                        f"— cross-event lookups will return null. Regenerate one event "
+                        f"with `instrument_ids` matching the other."
+                    )
     if absurd_txns:
         sanity_warnings.append(
             f"{len(absurd_txns)} transaction(s) have amount > $1B — almost "
@@ -1585,6 +1643,27 @@ def _validate_step_shape(step: dict) -> dict:
                     f"VARIABLE NAME (a previously-defined collection), not a "
                     f"literal array. Got: {sa[:80]!r}. To iterate over a fresh "
                     f"list, define it in a prior calc step first."
+                )
+            # HARD-BLOCK the most common hallucination: `all_instruments`.
+            # The engine already runs the rule body once per instrument-row, so
+            # there is no such collection to iterate over.
+            if isinstance(sa, str) and sa.strip().lower() in {
+                "all_instruments", "allinstruments", "all_loans", "allloans",
+                "all_accounts", "allaccounts", "instruments", "loans",
+            }:
+                raise ToolError(
+                    f"step '{name}'.iterations[{i}].sourceArray='{sa}' is NOT a "
+                    f"valid variable. There is no `all_instruments` (or similar) "
+                    f"collection — the engine ALREADY runs your rule body once "
+                    f"per instrument-row automatically.\n"
+                    f"FIX: DELETE this iteration step entirely and replace it "
+                    f"with a `calc` step whose formula references the merged "
+                    f"event field directly (e.g. `EVENTNAME.fieldname`). "
+                    f"Transactions in `outputs.transactions[]` are also emitted "
+                    f"once per row — no manual fan-out needed.\n"
+                    f"Use iteration ONLY for arrays that genuinely have multiple "
+                    f"values within a single row (e.g. a time-series collected "
+                    f"via `collect_by_instrument`)."
                 )
             for k in ("expression", "sourceArray", "secondArray"):
                 v = it.get(k)
@@ -2272,6 +2351,110 @@ FYNTRAC DSL — SYNTAX & STRUCTURE GUIDE
 This DSL is a Python-like EXPRESSION language. It is NOT a general-purpose
 language. The constraints below are BINDING — violating them produces
 errors that look like "unterminated string literal" or "invalid syntax".
+
+------------------------------------------------------------------
+HOW THE ENGINE EXECUTES YOUR RULE  (READ THIS FIRST)
+------------------------------------------------------------------
+THE ENGINE ALREADY ITERATES PER ROW. Your rule body runs inside an
+implicit `for row in merged_event_data:` loop. Each row represents
+ONE (instrumentid × postingdate) tuple, and ALL referenced activity-
+event fields are already JOINED onto that row.
+
+You DO NOT iterate over instruments yourself. There is NO `all_instruments`
+variable. There is NO `all_loans` variable. If you write
+`sourceArray: "all_instruments"` the validator will reject it.
+
+Three ways to access related data within a rule:
+
+  1. ACTIVITY-EVENT field on the SAME row → reference DIRECTLY:
+        formula: "LoanCreditRiskData.credit_impaired_flag"
+     NOT:
+        formula: "lookup(LoanCreditRiskData.credit_impaired_flag, instrumentid)"
+
+  2. REFERENCE TABLE (small lookup) → collect_all + lookup/element_at:
+        principals = collect_all('LoanRef_principal')
+        rate       = lookup(principals, instrumentid)
+
+  3. PER-INSTRUMENT TIME-SERIES (multiple postingdates of the same event)
+     → collect_by_instrument:
+        history = collect_by_instrument('UPB_balance')
+        prior   = element_at(history, subtract(length(history), 1))
+
+`outputs.transactions[]` are emitted ONCE PER ROW automatically. You do
+NOT need an iteration step to fan them out per instrument.
+
+WORKED EXAMPLE — IFRS9 Stage Assignment + ECL (no iteration needed):
+  Steps:
+    {name:"days_overdue",  stepType:"calc", source:"event_field",
+                            eventField:"LoanCreditRiskData.days_past_due"},
+    {name:"stage", stepType:"condition",
+       conditions:[
+         {condition:"gte(days_overdue, 90)", thenFormula:"3"},
+         {condition:"gte(days_overdue, 30)", thenFormula:"2"}],
+       elseFormula:"1"},
+    {name:"pd",  stepType:"calc", source:"formula",
+                  formula:"if(eq(stage,1), 0.01, if(eq(stage,2), 0.05, 1.0))"},
+    {name:"lgd", stepType:"calc", source:"event_field",
+                  eventField:"LoanCreditRiskData.lgd"},
+    {name:"ead", stepType:"calc", source:"event_field",
+                  eventField:"EOD_BALANCES_BEGINNINGBALANCE.upb"},
+    {name:"ecl", stepType:"calc", source:"formula",
+                  formula:"multiply(multiply(pd, lgd), ead)"}
+  outputs.transactions:
+    [{type:"ECLAllowance", amount:"ecl", side:"credit"},
+     {type:"ECLExpense",   amount:"ecl", side:"debit"}]
+  → The engine runs this once per (loan × postingdate). Done.
+
+------------------------------------------------------------------
+CANONICAL PATTERNS — pick ONE before authoring
+------------------------------------------------------------------
+~95% of accounting models in this codebase fit one of four patterns.
+Call `list_templates` and `get_saved_rule` on the closest match before
+writing anything from scratch.
+
+PATTERN A — SCHEDULE + ROW EXTRACTION FOR postingdate
+  Use for: amortisation, interest accrual, fee amortisation, lease ROU,
+           IFRS9 stage projection, any tabular monthly time-series.
+  Skeleton:
+    1. calc steps capture inputs (principal, rate, term, …) from event fields
+    2. schedule step produces N periodic rows (columns = period, balance,
+       principal, interest, …) with contextVars listing the inputs
+    3. calc step uses schedule_filter or lookup(scheduleColumn, periodColumn,
+       postingdate) to pick THIS PERIOD'S row
+    4. outputs.transactions[] emit debit/credit using the picked values
+  Reference templates: loan_amortization, interest_accrual, fee_amortization,
+                       lease_accounting, IFRSStage3.
+
+PATTERN B — COLLECT + apply_each + AGGREGATE
+  Use for: revenue recognition (POB allocation), weighted-average pricing,
+           portfolio-level aggregation across collected values.
+  Skeleton:
+    1. calc step uses collect_by_instrument('EVT_field') → per-instrument array
+    2. calc step computes denominator (e.g. sum(prices))
+    3. iteration step (apply_each) computes per-element ratio/share
+    4. calc step aggregates (sum/avg) the result
+    5. outputs.transactions[] emit using the aggregate
+  Reference templates: revenue_recognition, RevenueFinal111.
+
+PATTERN C — REPLAY + LAG SCHEDULE + DELTA
+  Use for: SBO replay, period-over-period adjustments, true-up postings.
+  Skeleton:
+    1. schedule step recomputes the FULL historical series with current inputs
+    2. calc step uses lag('column', n) inside schedule columns to get prior period
+    3. calc step subtracts prior posted amount from new amount → delta
+    4. outputs.transactions[] post ONLY the delta
+  Reference templates: SBO_Replay_M1, SBO_REPLAY_M2.
+
+PATTERN D — SCALAR FINANCE
+  Use for: NPV, IRR, single-row valuation where there is no schedule.
+  Skeleton:
+    1. calc steps read cash flows + discount rate from event fields
+    2. calc step calls npv(rate, cashflow_array) or irr(cashflow_array)
+    3. outputs.transactions[] post the resulting scalar
+  Reference template: npv_analysis.
+
+If your model does not fit A/B/C/D, STOP and ask the user — do not
+invent a 5th pattern.
 
 ------------------------------------------------------------------
 ABSOLUTE RULES
