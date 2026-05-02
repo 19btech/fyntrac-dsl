@@ -2451,7 +2451,80 @@ async def tool_add_transaction_to_rule(args: dict) -> dict:
             auto_registered = True
     outputs = dict(rule.get("outputs") or {})
     txns = list(outputs.get("transactions") or [])
-    txns.append({"type": txn_type, "amount": amount, "side": side})
+
+    # Posting/effective date and sub-instrument id are REQUIRED by the code
+    # generator (`_generate_rule_code` skips any txn missing postingDate or
+    # effectiveDate, which silently drops the transaction at runtime). Default
+    # them from any event referenced in the rule's steps so that the agent
+    # rarely needs to think about them, but allow explicit override.
+    def _first_event_name() -> str | None:
+        try:
+            extract = _h("extract_event_names_from_dsl")
+        except Exception:
+            extract = None
+        if extract:
+            blob = "\n".join(
+                str(s.get("formula") or "") + "\n" + str(s.get("value") or "")
+                + "\n" + str(s.get("eventField") or "")
+                for s in (rule.get("steps") or [])
+            )
+            try:
+                names = list(extract(blob) or [])
+                if names:
+                    return names[0]
+            except Exception:
+                pass
+        # Fall back: pluck the leading identifier from the first eventField that
+        # looks like `EVENT.field`.
+        for s in rule.get("steps") or []:
+            ef = (s.get("eventField") or "").strip()
+            if "." in ef:
+                head = ef.split(".", 1)[0].strip()
+                if head:
+                    return head
+        return None
+
+    def _arg(*keys: str) -> str:
+        for k in keys:
+            v = args.get(k)
+            if v is None:
+                continue
+            sv = str(v).strip()
+            if sv:
+                return sv
+        return ""
+
+    posting_date = _arg("postingdate", "posting_date", "postingDate")
+    effective_date = _arg("effectivedate", "effective_date", "effectiveDate")
+    sub_inst = _arg("subinstrumentid", "sub_instrument_id", "subInstrumentId")
+
+    if not posting_date or not effective_date:
+        evt = _first_event_name()
+        if evt:
+            if not posting_date:
+                posting_date = f"{evt}.postingdate"
+            if not effective_date:
+                effective_date = f"{evt}.effectivedate"
+    if not sub_inst:
+        sub_inst = "1.0"
+
+    if not posting_date or not effective_date:
+        raise ToolError(
+            "Could not determine postingdate/effectivedate for the transaction. "
+            "Either reference an event in a prior step (so 'EVENT.postingdate' "
+            "can be inferred), or pass the `postingdate` and `effectivedate` "
+            "arguments explicitly (e.g. 'EOD.postingdate', 'EOD.effectivedate')."
+        )
+
+    txn_doc = {
+        "type": txn_type,
+        "amount": amount,
+        "side": side,
+        "postingDate": posting_date,
+        "effectiveDate": effective_date,
+        "subInstrumentId": sub_inst,
+    }
+    txns.append(txn_doc)
     outputs["transactions"] = txns
     outputs["createTransaction"] = True
     rule["outputs"] = outputs
@@ -2469,12 +2542,15 @@ async def tool_add_transaction_to_rule(args: dict) -> dict:
         persisted = ((reloaded.get("outputs") or {}).get("transactions") or [])
         if not any(
             (t.get("type") == txn_type and (t.get("side") or "").lower() == side
-             and str(t.get("amount") or "").strip() == amount)
+             and str(t.get("amount") or "").strip() == amount
+             and str(t.get("postingDate") or "").strip() == posting_date
+             and str(t.get("effectiveDate") or "").strip() == effective_date)
             for t in persisted
         ):
             raise ToolError(
                 f"Round-trip check failed: transaction "
-                f"({side} {txn_type} amount={amount}) was not found in the "
+                f"({side} {txn_type} amount={amount} postingDate={posting_date} "
+                f"effectiveDate={effective_date}) was not found in the "
                 f"reloaded rule. The save did not persist correctly."
             )
     except ToolError:
@@ -3814,7 +3890,10 @@ TOOL_SCHEMAS.extend([
             "Always call this tool TWICE in a row to add a balanced debit + credit pair. "
             "`amount` must be the NAME of a prior calc-step variable that holds the "
             "computed amount (or a numeric literal). The transaction `type` must already "
-            "be registered via `add_transaction_types`."
+            "be registered via `add_transaction_types`. "
+            "`postingdate`/`effectivedate` should be event-field references such as "
+            "'EOD.postingdate' — if omitted they are inferred from the first event "
+            "referenced in the rule's steps. `subinstrumentid` defaults to '1.0'."
         ),
         "parameters": {
             "type": "object",
@@ -3823,6 +3902,9 @@ TOOL_SCHEMAS.extend([
                 "type": {"type": "string", "description": "Registered transaction type name"},
                 "amount": {"type": "string", "description": "Name of a prior calc-step variable, or a numeric literal"},
                 "side": {"type": "string", "enum": ["debit", "credit"]},
+                "postingdate": {"type": "string", "description": "e.g. 'EOD.postingdate' — inferred if omitted"},
+                "effectivedate": {"type": "string", "description": "e.g. 'EOD.effectivedate' — inferred if omitted"},
+                "subinstrumentid": {"type": "string", "description": "Defaults to '1.0' if omitted"},
             },
             "required": ["rule_id", "type", "amount", "side"],
         },
