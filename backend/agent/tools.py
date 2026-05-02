@@ -2601,6 +2601,67 @@ def _validate_schedule_step_shape(name: str, sc: dict, outputVars: list,
             + "\n  - ".join(errs)
         )
 
+    # ── Auto-generate outputVars when the agent omitted them ──────────────
+    # A schedule step with NO outputVars is invisible to downstream steps and
+    # to the frontend modal — none of the computed columns can be referenced.
+    # We auto-generate at least one sensible outputVar so the step is always
+    # immediately usable.  Priority:
+    #   1. filter type  (→ schedule_filter match on period_date = postingdate)
+    #      — preferred for date-range schedules; picks the first non-date /
+    #      non-index value column.
+    #   2. last  type   (→ schedule_last)
+    #      — preferred for number-period schedules; picks the first value col.
+    #   3. sum   type   (→ schedule_sum) as a final fallback.
+    if not norm_outs and seen_col_names:
+        _NON_VALUE_COLS = {
+            "period_date", "period_index", "period_number", "period_start",
+            "s_no", "index", "item_name", "subinstrument_id",
+        }
+        # Value columns: anything that isn't a built-in bookkeeping column.
+        _value_cols = [
+            c for c in (cc.get("name", "") for cc in (sc.get("columns") or []))
+            if c and c not in _NON_VALUE_COLS
+        ]
+        # If all columns are bookkeeping columns, fall back to the last one.
+        if not _value_cols:
+            _value_cols = [
+                c for c in (cc.get("name", "") for cc in (sc.get("columns") or []))
+                if c
+            ]
+        _primary_col = _value_cols[0] if _value_cols else next(iter(seen_col_names))
+        _safe_name = re.sub(r"[^a-z0-9_]", "_", name.lower())
+
+        _has_period_date = "period_date" in seen_col_names
+        if period_type == "date" and _has_period_date:
+            # filter: match the row where period_date equals the posting date
+            norm_outs.append({
+                "name": f"{_safe_name}_current",
+                "type": "filter",
+                "column": _primary_col,
+                "matchCol": "period_date",
+                "matchValue": "postingdate",
+            })
+            # Also emit a last var for the terminal/closing value
+            if len(_value_cols) > 0:
+                norm_outs.append({
+                    "name": f"{_safe_name}_last",
+                    "type": "last",
+                    "column": _primary_col,
+                })
+        else:
+            # number-period schedule: last + sum are most useful
+            norm_outs.append({
+                "name": f"{_safe_name}_last",
+                "type": "last",
+                "column": _primary_col,
+            })
+            norm_outs.append({
+                "name": f"{_safe_name}_total",
+                "type": "sum",
+                "column": _primary_col,
+            })
+        sc["_auto_generated_outputVars"] = True
+
     return sc, norm_outs
 
 
@@ -3733,6 +3794,21 @@ async def tool_create_saved_rule(args: dict) -> dict:
     }
     rule = await _save_rule_doc(rule, is_new=True)
     payload = {"rule_id": rule["id"], "name": name, "priority": priority, "step_count": len(steps)}
+    # Warn about any auto-generated outputVars
+    _auto_ov_steps = [
+        s["name"] for s in steps
+        if s.get("stepType") == "schedule"
+        and (s.get("scheduleConfig") or {}).get("_auto_generated_outputVars")
+    ]
+    if _auto_ov_steps:
+        payload["auto_generated_outputVars_steps"] = _auto_ov_steps
+        payload["auto_generated_outputVars_hint"] = (
+            f"⚠️ Schedule step(s) {_auto_ov_steps} had no outputVars supplied — "
+            "defaults were auto-generated. Review the outputVars on each schedule "
+            "step (via get_saved_rule) and patch via update_step if the generated "
+            "names or types don't match your column names. filter→schedule_filter "
+            "(preferred for date-range), last→schedule_last, sum→schedule_sum."
+        )
     if multi_evts:
         payload["multi_subid_events"] = multi_evts
         payload["multi_subid_hint"] = (
@@ -4117,6 +4193,18 @@ async def tool_add_step_to_rule(args: dict) -> dict:
                 f"to get all subId values as an array, or "
                 f"'collect_by_subinstrument' for the current subId's values."
             )
+    # Surface auto-generated outputVars hint
+    if step.get("stepType") == "schedule" and (
+        step.get("scheduleConfig") or {}
+    ).get("_auto_generated_outputVars"):
+        payload["auto_generated_outputVars"] = step.get("outputVars", [])
+        payload["auto_generated_outputVars_hint"] = (
+            "⚠️ You did not supply outputVars for this schedule step — they were "
+            "auto-generated so the step is usable. Review the generated names below "
+            "and patch them via update_step if they don't match your column names or "
+            "intended usage. Remember: filter type uses schedule_filter (preferred for "
+            "date-range), last uses schedule_last, sum uses schedule_sum."
+        )
     return await _attach_validation(rule, payload)
 
 
@@ -6185,14 +6273,80 @@ authoring failure.
         → use stepType = "schedule" (NOT iteration, NOT calc).
         → Add it via `add_step_to_rule` with `step.stepType='schedule'`
           and a populated `scheduleConfig` (periodType, frequency, columns,
-          contextVars). Expose values via outputVars or a later calc step
-          using schedule_filter / schedule_last / schedule_sum.
+          contextVars). ALWAYS include outputVars (see OUTPUT VARIABLE RULES
+          below) — a schedule step without outputVars is invisible to the
+          modal and to downstream steps.
         → ⚠️ DO NOT use `create_saved_schedule` for typical user requests
           like "create a depreciation schedule". That tool produces a
           standalone DSL-only schedule with NO visual editor; the user
           will see an unfilled card. ALWAYS prefer the schedule STEP path
           unless the user explicitly asks for a shared/reusable library
           schedule.
+
+  SCHEDULE STEP — OUTPUT VARIABLE RULES (mandatory):
+  ────────────────────────────────────────────────────
+  Every schedule step MUST have at least one entry in `outputVars`.
+  Without outputVars the values inside the schedule cannot be referenced
+  by transactions, other steps, or the visual modal.
+
+  PRIORITY ORDER — use the highest priority that fits the use case:
+
+  1. filter (PREFERRED for date-range schedules) — schedule_filter
+     Picks the single row where a date column matches, e.g. the row
+     for the current reporting period.
+     Schema: {name, type:"filter", column:<value-col>,
+               matchCol:"period_date", matchValue:"postingdate"}
+     Example:
+       outputVars: [
+         {name:"depr_current",   type:"filter",  column:"depreciation_charge",
+          matchCol:"period_date", matchValue:"postingdate"},
+         {name:"depr_last",      type:"last",    column:"closing_nbv"}
+       ]
+     ALWAYS include a filter var for date-range schedules so the
+     current-period amount is available for transactions.
+
+  2. last (use when you need the FINAL / CLOSING value)
+     Schema: {name, type:"last", column:<value-col>}
+     Use for: closing balance, ending NBV, final liability balance etc.
+     schedule_last(StepName, 'col') — retrieves the last row's value.
+
+  3. sum (use when you need the LIFETIME TOTAL across all periods)
+     Schema: {name, type:"sum", column:<value-col>}
+     schedule_sum(StepName, 'col') — totals the column over all rows.
+
+  4. first (use when you need the OPENING / FIRST value)
+     Schema: {name, type:"first", column:<value-col>}
+
+  5. column (use when you need the ENTIRE ARRAY of values)
+     Schema: {name, type:"column", column:<col>}
+
+  ❌ NEVER submit a schedule step with outputVars=[] or without outputVars.
+  ✅ If in doubt, always include a filter var + a last var as defaults.
+
+  FULL EXAMPLE:
+    {
+      "stepType": "schedule",
+      "name": "dep_schedule",
+      "scheduleConfig": {
+        "periodType": "date",
+        "startDateSource": "formula", "startDateFormula": "acquisition_date",
+        "endDateSource": "formula",   "endDateFormula": "dispose_date",
+        "frequency": "M",
+        "columns": [
+          {"name": "period_date",          "formula": "period_date"},
+          {"name": "depreciation_charge",  "formula": "divide(cost_minus_residual, useful_life_periods)"},
+          {"name": "accumulated_depr",     "formula": "cumulative_sum('depreciation_charge')"},
+          {"name": "closing_nbv",          "formula": "subtract(acquisition_cost, accumulated_depr)"}
+        ]
+      },
+      "outputVars": [
+        {"name": "depr_current", "type": "filter",
+         "column": "depreciation_charge",
+         "matchCol": "period_date", "matchValue": "postingdate"},
+        {"name": "closing_nbv",  "type": "last",   "column": "closing_nbv"},
+        {"name": "total_depr",   "type": "sum",     "column": "depreciation_charge"}
+      ]
+    }
 
   Q2. Do you need to APPLY THE SAME EXPRESSION TO EACH ELEMENT of an
       array that already exists in scope (e.g. a collected time-series
@@ -7357,7 +7511,22 @@ _STEP_SCHEMA = {
         "elseFormula": {"type": "string"},
         "iterations": {"type": "array", "items": {"type": "object"}},
         "scheduleConfig": {"type": "object", "description": "For stepType:'schedule'. {periodType:'number'|'date_range', frequency:'D'|'M'|'Y', periodCount?:int, startDate?, endDate?, columns:[{name, formula}], contextVars?:[varname], convention?}"},
-        "outputVars": {"type": "array", "items": {"type": "object"}, "description": "For stepType:'schedule'. [{name, type:'first'|'last'|'sum'|'column'|'filter', column, matchCol?, matchValue?}]"},
+        "outputVars": {
+            "type": "array",
+            "items": {"type": "object"},
+            "description": (
+                "REQUIRED for stepType:'schedule'. Must contain at least one entry — a schedule step "
+                "without outputVars is invisible in the modal and cannot be referenced by downstream steps. "
+                "PRIORITY ORDER: "
+                "1) filter (preferred for date-range schedules) — picks the row matching a date: "
+                "{name, type:'filter', column:<value-col>, matchCol:'period_date', matchValue:'postingdate'}. "
+                "2) last — final/closing value: {name, type:'last', column:<col>}. "
+                "3) sum — lifetime total: {name, type:'sum', column:<col>}. "
+                "4) first — opening value: {name, type:'first', column:<col>}. "
+                "5) column — full array: {name, type:'column', column:<col>}. "
+                "Always include a filter+last pair for date-range schedules, last+sum for number-period."
+            ),
+        },
         "printResult": {"type": "boolean"},
         "inlineComment": {"type": "boolean"},
         "commentText": {"type": "string"},
