@@ -2879,6 +2879,74 @@ async def _resolve_subid_default(steps: list[dict]) -> tuple[str | None, list[st
     return "subinstrumentid", multi
 
 
+def _scalar_event_field_warnings(steps: list[dict],
+                                  multi_evt_set: set[str]) -> list[dict]:
+    """Scan `steps` for calc steps using source='event_field' that reference
+    an event in `multi_evt_set` (i.e. the event has multiple subInstrumentIds
+    per instrument in the loaded data).
+
+    For those steps, a scalar event_field read returns only ONE subId's value
+    because the engine merges multiple subId rows into a single row per
+    instrument before executing the rule body.
+
+    Returns a list of warning dicts (may be empty). Callers add these to the
+    tool payload so the agent knows to switch to collect_by_instrument or
+    collect_by_subinstrument where per-subId values are needed.
+    """
+    warnings: list[dict] = []
+    for s in steps or []:
+        if not isinstance(s, dict):
+            continue
+        if (s.get("stepType") or "calc") != "calc":
+            continue
+        if (s.get("source") or "formula") != "event_field":
+            continue
+        ef = (s.get("eventField") or "").strip()
+        if not ef or "." not in ef:
+            continue
+        evt_name = ef.split(".", 1)[0].strip()
+        field_name = ef.split(".", 1)[1].strip()
+        # Case-insensitive match against multi-subid event set
+        matched = next((e for e in multi_evt_set
+                        if e.lower() == evt_name.lower()), None)
+        if not matched:
+            continue
+        # Shared / identifier fields are safe as scalars even in multi-subid
+        # events (they carry the same value on every subId row).
+        _SAFE_SCALAR_FIELDS = {
+            "postingdate", "effectivedate", "instrumentid", "subinstrumentid",
+            "postingDate", "effectiveDate", "instrumentId", "subInstrumentId",
+        }
+        if field_name in _SAFE_SCALAR_FIELDS:
+            continue
+        step_name = s.get("name") or "<unnamed>"
+        warnings.append({
+            "step_name": step_name,
+            "event": matched,
+            "field": field_name,
+            "issue": (
+                f"Step '{step_name}' reads {ef!r} as a scalar but event "
+                f"'{matched}' has multiple subInstrumentIds per instrument. "
+                f"The engine collapses multi-subId rows before rule execution, "
+                f"so this step sees only ONE subId's '{field_name}' value "
+                f"(the last row that survived the merge)."
+            ),
+            "fix": (
+                f"If you need the '{field_name}' value for EACH subId, change "
+                f"this step to:\n"
+                f"  {{name: '{step_name}', stepType: 'calc', source: 'collect',\n"
+                f"   eventField: '{ef}',\n"
+                f"   collectType: 'collect_by_instrument'}}         # → array of values, one per subId\n"
+                f"Then use apply_each / lookup to process each element, or\n"
+                f"use collectType: 'collect_by_subinstrument' if you want the\n"
+                f"values restricted to the current (instrumentid, subinstrumentid) pair.\n"
+                f"If '{field_name}' is the SAME across all subIds for an instrument\n"
+                f"(e.g. a shared attribute), the scalar read is fine — ignore this warning."
+            ),
+        })
+    return warnings
+
+
 def _validate_transaction_outputs(steps: list[dict], outputs: dict) -> None:
     """Pre-flight check: every `outputs.transactions[].amount` must be either
     a numeric literal or the name of a variable defined by a prior step.
@@ -3459,6 +3527,19 @@ async def tool_create_saved_rule(args: dict) -> dict:
             f"a calc step `sub_ids = collect_by_instrument(\"{multi_evts[0]}.subinstrumentid\")` "
             f"and reference `sub_ids` from your transactions."
         )
+        _scalar_warns = _scalar_event_field_warnings(steps, set(multi_evts))
+        if _scalar_warns:
+            payload["multi_subid_scalar_warnings"] = _scalar_warns
+            payload["multi_subid_scalar_hint"] = (
+                f"⚠️ {len(_scalar_warns)} calc step(s) read event fields as "
+                f"scalars from multi-subId event(s) {multi_evts}. The engine "
+                f"merges rows before execution, so only ONE subId's value "
+                f"survives. If you need per-subId values, change those steps "
+                f"to source='collect' with collectType='collect_by_instrument' "
+                f"(returns array, one value per subId) or "
+                f"'collect_by_subinstrument' (returns array for current subId "
+                f"only). See multi_subid_scalar_warnings[] for affected steps."
+            )
     sched_results = await _auto_test_schedule_steps(rule)
     if sched_results:
         payload["schedule_tests"] = sched_results
@@ -3513,6 +3594,19 @@ async def tool_update_saved_rule(args: dict) -> dict:
             f"a calc step `sub_ids = collect_by_instrument(\"{multi_evts[0]}.subinstrumentid\")` "
             f"and reference `sub_ids` from transactions."
         )
+        _scalw = _scalar_event_field_warnings(rule.get("steps") or [], set(multi_evts))
+        if _scalw:
+            payload["multi_subid_scalar_warnings"] = _scalw
+            payload["multi_subid_scalar_hint"] = (
+                f"⚠️ {len(_scalw)} calc step(s) read event fields as "
+                f"scalars from multi-subId event(s) {multi_evts}. The engine "
+                f"merges rows before execution, so only ONE subId's value "
+                f"survives. If you need per-subId values, change those steps "
+                f"to source='collect' with collectType='collect_by_instrument' "
+                f"(returns array, one value per subId) or "
+                f"'collect_by_subinstrument' (returns array for current subId "
+                f"only). See multi_subid_scalar_warnings[] for affected steps."
+            )
     sched_results = await _auto_test_schedule_steps(rule)
     if sched_results:
         payload["schedule_tests"] = sched_results
@@ -3793,6 +3887,20 @@ async def tool_add_step_to_rule(args: dict) -> dict:
     _validate_transaction_outputs(steps, rule.get("outputs") or {})
     rule = await _save_rule_doc(rule, is_new=False)
     payload = {"rule_id": rule["id"], "step_name": step["name"], "step_count": len(steps)}
+    # Warn if new step reads a scalar event_field from a multi-subId event.
+    _add_multi_evts = await _detect_multi_subid_events(steps)
+    if _add_multi_evts:
+        _add_scalw = _scalar_event_field_warnings([step], set(_add_multi_evts))
+        if _add_scalw:
+            payload["multi_subid_scalar_warnings"] = _add_scalw
+            payload["multi_subid_scalar_hint"] = (
+                f"⚠️ Step '{step['name']}' reads an event field as a scalar "
+                f"but event(s) {_add_multi_evts} have multiple subInstrumentIds "
+                f"per instrument. Only ONE subId's value survives the row merge. "
+                f"Switch to source='collect', collectType='collect_by_instrument' "
+                f"to get all subId values as an array, or "
+                f"'collect_by_subinstrument' for the current subId's values."
+            )
     return await _attach_validation(rule, payload)
 
 
@@ -3864,6 +3972,20 @@ async def tool_update_step(args: dict) -> dict:
         "step_name": merged["name"],
         "merge_mode": "deep",
     }
+    # Warn if the (updated) step reads a scalar event_field from a multi-subId event.
+    _upd_multi_evts = await _detect_multi_subid_events(rule.get("steps") or [])
+    if _upd_multi_evts:
+        _upd_scalw = _scalar_event_field_warnings([merged], set(_upd_multi_evts))
+        if _upd_scalw:
+            payload["multi_subid_scalar_warnings"] = _upd_scalw
+            payload["multi_subid_scalar_hint"] = (
+                f"⚠️ Step '{merged['name']}' reads an event field as a scalar "
+                f"but event(s) {_upd_multi_evts} have multiple subInstrumentIds "
+                f"per instrument. Only ONE subId's value survives the row merge. "
+                f"Switch to source='collect', collectType='collect_by_instrument' "
+                f"to get all subId values as an array, or "
+                f"'collect_by_subinstrument' for the current subId's values."
+            )
     # Read-back: re-fetch and confirm the patched fields actually persisted.
     if merged.get("id"):
         verify = await _verify_step_persisted(rule["id"], merged["id"], patch)
@@ -6253,7 +6375,22 @@ THE RULE — when an event has multi-subid data:
      data, `_normalise_transaction_outputs` overrides any literal
      "1" / "1.0" / "" with `subinstrumentid` and reports
      `multi_subid_events` + `multi_subid_hint` in the response.
-  2. To fan out a transaction PER SUB-INSTRUMENT explicitly (i.e. emit N
+  2. NEVER use source='event_field' (scalar read) for amount or
+     subId-specific fields when the event has multiple subIds per
+     instrument. The engine merges multi-subId rows into ONE row before
+     rule execution — so a scalar read only sees ONE subId's value (the
+     last row in the merge). Instead:
+       • Use source='collect', collectType='collect_by_instrument' to get
+         ALL subId values for the current instrument as an array:
+           {name:"balances", stepType:"calc", source:"collect",
+            eventField:"EVT.balance", collectType:"collect_by_instrument"}
+         Then iterate or index: apply_each(balances, "multiply(each, rate)")
+       • Use collectType='collect_by_subinstrument' to get values for the
+         (instrumentid, subinstrumentid) pair of the CURRENT row only.
+     Fields that are identical across all subIds (postingdate, effectivedate,
+     instrumentid, subinstrumentid, and shared attributes) are safe as
+     scalars — the warning does not apply to those.
+  3. To fan out a transaction PER SUB-INSTRUMENT explicitly (i.e. emit N
      transactions where N = number of subIds for the current instrument),
      add a calc step:
         {name:"sub_ids", stepType:"calc", source:"collect",
@@ -6261,18 +6398,20 @@ THE RULE — when an event has multi-subid data:
          collectType:"collect_by_instrument"}
      Then reference `sub_ids` from the transaction's `subInstrumentId`.
      The engine will iterate the array and emit one txn per subId.
-  3. To compute a per-subid amount (e.g. allocate by subId), use
+  4. To compute a per-subid amount (e.g. allocate by subId), use
      `collect_by_subinstrument(EVT.field)` — it returns the array of that
      field's values restricted to the current (instrumentid, subinstrumentid)
      pair so it does not collapse across subIds.
 
 DETECTION — the validator surfaces multi-subid events automatically:
-  When `tool_create_saved_rule` / `tool_update_saved_rule` returns a
-  payload containing `multi_subid_events: ["EVT", ...]`, the loaded data
-  for those events has >1 subId per instrumentid. Read the
-  `multi_subid_hint` and either accept the auto-defaulted `subinstrumentid`
-  OR add the explicit `sub_ids = collect_by_instrument(...)` step shown
-  above.
+  When `tool_create_saved_rule` / `tool_update_saved_rule` /
+  `tool_add_step_to_rule` / `tool_update_step` returns a payload
+  containing `multi_subid_events: ["EVT", ...]`, read both:
+  • `multi_subid_hint` — transaction subId fix (auto-applied)
+  • `multi_subid_scalar_warnings[]` — list of calc steps using scalar
+    event_field reads against a multi-subId event, with step-by-step
+    fix instructions. Check each warning and convert the flagged steps
+    to source='collect' where per-subId values are needed.
 
 ------------------------------------------------------------------
 WHEN A DRY-RUN FAILS WITH "unterminated string literal" OR "invalid syntax"
