@@ -1215,6 +1215,42 @@ async def tool_dry_run_template(args: dict) -> dict:
             f"for {len(unbalanced)} instrument(s) — double-entry may be incomplete"
         )
 
+    # Zero-transactions despite declared transactions: catches the silent
+    # "rule looks correct but nothing posts" failure mode (e.g. amount field
+    # references an undefined variable, condition gate filters everything out,
+    # createTransaction flag is false).
+    if len(txn_dicts) == 0:
+        declared_total = 0
+        declared_per_rule: list[str] = []
+        try:
+            rule_ids = list(template.get("rule_ids") or [])
+            if rule_ids and db is not None:
+                attached = await db.saved_rules.find(
+                    {"id": {"$in": rule_ids}},
+                    {"_id": 0, "name": 1, "outputs": 1},
+                ).to_list(200)
+                for r in attached:
+                    rt = ((r.get("outputs") or {}).get("transactions") or [])
+                    rt = [t for t in rt if t and t.get("type")]
+                    if rt:
+                        declared_total += len(rt)
+                        declared_per_rule.append(f"{r.get('name')}({len(rt)})")
+        except Exception:
+            pass
+        if declared_total > 0:
+            sanity_warnings.append(
+                f"Rules attached to this template declare {declared_total} "
+                f"transaction(s) ({', '.join(declared_per_rule)}) in their "
+                f"outputs.transactions[], but dry-run produced ZERO. Likely "
+                f"causes: (a) the `amount` variable evaluates to 0/None — run "
+                f"`debug_step` on the calc step that defines it; (b) a "
+                f"condition gate filters out every row — check the `condition` "
+                f"step's elseFormula and the rule's runConditions; (c) "
+                f"`outputs.createTransaction` is false on the rule. DO NOT "
+                f"call finish until this is resolved — do NOT blame a 'sync "
+                f"issue' or 'registration' problem."
+            )
+
     return {
         "template_id": template.get("id"),
         "template_name": template.get("name"),
@@ -1760,6 +1796,51 @@ async def tool_get_saved_rule(args: dict) -> dict:
     return {"rule": rule}
 
 
+def _validate_transaction_outputs(steps: list[dict], outputs: dict) -> None:
+    """Pre-flight check: every `outputs.transactions[].amount` must be either
+    a numeric literal or the name of a variable defined by a prior step.
+    Catches the dominant `name 'amount' is not defined` dry-run failure."""
+    txns = (outputs or {}).get("transactions") or []
+    if not txns:
+        return
+    defined: set[str] = set()
+    for s in steps or []:
+        if isinstance(s, dict) and s.get("name"):
+            defined.add(s["name"])
+        for ov in (s.get("outputVars") or []):
+            if isinstance(ov, dict) and ov.get("name"):
+                defined.add(ov["name"])
+    import difflib
+    for i, t in enumerate(txns):
+        if not isinstance(t, dict):
+            continue
+        amt_raw = t.get("amount")
+        if amt_raw is None:
+            continue
+        amt = str(amt_raw).strip()
+        if not amt:
+            continue
+        # numeric literal is fine
+        try:
+            float(amt)
+            continue
+        except ValueError:
+            pass
+        # bare identifier must resolve to a known step var
+        if re.fullmatch(r"[A-Za-z_]\w*", amt):
+            if amt not in defined:
+                sug = difflib.get_close_matches(amt, sorted(defined), n=2, cutoff=0.5)
+                hint = f" Did you mean: {', '.join(sug)}?" if sug else ""
+                raise ToolError(
+                    f"outputs.transactions[{i}].amount='{amt}' does not match "
+                    f"any step variable name in this rule. Defined: "
+                    f"{sorted(defined) or '[]'}. The `amount` field is "
+                    f"evaluated as a Python expression at dry-run time, NOT a "
+                    f"label — set it to the name of the calc step that holds "
+                    f"the computed amount, or to a numeric literal.{hint}"
+                )
+
+
 async def tool_create_saved_rule(args: dict) -> dict:
     name = (args.get("name") or "").strip()
     if not name:
@@ -1787,11 +1868,13 @@ async def tool_create_saved_rule(args: dict) -> dict:
         clash_s = await db.saved_schedules.find_one({"priority": priority}, {"_id": 0, "name": 1})
         if clash_s:
             raise ToolError(f"Priority {priority} is already used by schedule '{clash_s['name']}'")
+    outputs = args.get("outputs") or {"printResult": True, "createTransaction": False, "transactions": []}
+    _validate_transaction_outputs(steps, outputs)
     rule = {
         "name": name,
         "priority": priority,
         "steps": steps,
-        "outputs": args.get("outputs") or {"printResult": True, "createTransaction": False, "transactions": []},
+        "outputs": outputs,
         "inlineComment": False,
         "commentText": "",
     }
@@ -1810,6 +1893,7 @@ async def tool_update_saved_rule(args: dict) -> dict:
             rule[k] = patch[k]
     if "steps" in patch:
         rule["steps"] = [_validate_step_shape(s) for s in (patch["steps"] or [])]
+    _validate_transaction_outputs(rule.get("steps") or [], rule.get("outputs") or {})
     rule = await _save_rule_doc(rule, is_new=False)
     return {"rule_id": rule["id"], "name": rule["name"], "step_count": len(rule.get("steps") or [])}
 
@@ -1860,6 +1944,7 @@ async def tool_add_step_to_rule(args: dict) -> dict:
     else:
         steps.insert(max(0, int(pos)), step)
     rule["steps"] = steps
+    _validate_transaction_outputs(steps, rule.get("outputs") or {})
     rule = await _save_rule_doc(rule, is_new=False)
     return {"rule_id": rule["id"], "step_name": step["name"], "step_count": len(steps)}
 
@@ -1873,6 +1958,7 @@ async def tool_update_step(args: dict) -> dict:
     merged = {**rule["steps"][idx], **patch}
     merged = _validate_step_shape(merged)
     rule["steps"][idx] = merged
+    _validate_transaction_outputs(rule["steps"], rule.get("outputs") or {})
     rule = await _save_rule_doc(rule, is_new=False)
     return {"rule_id": rule["id"], "step_index": idx, "step_name": merged["name"]}
 
@@ -2334,8 +2420,42 @@ async def tool_attach_rules_to_template(args: dict) -> dict:
     }
 
 
+_FORBIDDEN_FINISH_PHRASES = (
+    "would you like me to",
+    "would you like to",
+    "would you like further",
+    "shall i",
+    "should i proceed",
+    "should i continue",
+    "do you want me to",
+    "do you want to",
+    "let me know if you want",
+    "let me know if you'd like",
+    "let me know if you would like",
+    "if you want me to",
+    "if you'd like me to",
+)
+
+
 async def tool_finish(args: dict) -> dict:
     summary = (args.get("summary") or "").strip() or "Done."
+    low = summary.lower()
+    for phrase in _FORBIDDEN_FINISH_PHRASES:
+        if phrase in low:
+            raise ToolError(
+                f"`finish` summary contains the phrase '{phrase}', which means "
+                f"the task is NOT actually complete — you are asking the user "
+                f"to authorise more work. Two valid paths forward:\n"
+                f"  (a) DO that work yourself NOW (call the relevant tools), "
+                f"then call `finish` ONLY after `verify_rule_complete` returns "
+                f"overall_ready=true AND `dry_run_template` returns balanced "
+                f"transactions with no sanity_warnings.\n"
+                f"  (b) If you genuinely need a business decision from the user "
+                f"(e.g. an ambiguous threshold), state the SPECIFIC choice in "
+                f"ONE declarative sentence — no questions, no offers, no "
+                f"'would you like'. Example: 'Need the user to confirm whether "
+                f"the PD floor is 0.0001 or 0.001 before continuing.'"
+            )
     return {"summary": summary, "done": True}
 
 
@@ -2480,6 +2600,24 @@ ABSOLUTE RULES
    instrumentid, subinstrumentid (lowercase, no event prefix).
 9. Event fields: EVENTNAME.fieldname — case-insensitive but the event
    must exist (verify with list_events).
+10. BOOLEAN LITERALS are Python-style: `True` and `False` (capitalised
+    first letter). NOT `true`, NOT `TRUE`, NOT `"true"` / `"false"`.
+       WRONG: eq(LoanCreditRiskData.flag, true)
+       WRONG: eq(LoanCreditRiskData.flag, TRUE)
+       WRONG: eq(LoanCreditRiskData.flag, "true")
+       RIGHT: eq(LoanCreditRiskData.flag, True)
+    A boolean field can also be used directly in a condition:
+       RIGHT: condition: "LoanCreditRiskData.is_impaired"
+11. TRANSACTION `amount` FIELD — when you put a transaction in
+    `outputs.transactions[]`, the `amount` value is interpolated as a
+    raw expression. It MUST be EITHER:
+       (a) a numeric literal: `"100.0"`, OR
+       (b) the NAME of a variable defined by a prior step:
+              steps: [{name:"ecl", stepType:"calc", formula:"…"}]
+              outputs.transactions: [{type:"X", amount:"ecl", side:"credit"}]
+    Writing `amount: "amount"` (the literal word) fails at dry-run with
+    `name 'amount' is not defined`. The string is NOT a label — it is
+    the expression that gets evaluated.
 
 ------------------------------------------------------------------
 STEP SHAPES — copy these exactly when authoring rules
