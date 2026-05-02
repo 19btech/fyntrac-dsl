@@ -177,7 +177,11 @@ _DATATYPE_DEFAULTS: dict[str, Callable[[random.Random, dict], Any]] = {
     "int": lambda rng, hints: rng.randint(*hints.get("range", (1, 1000))),
     "boolean": lambda rng, hints: rng.choice([True, False]),
     "string": lambda rng, hints: rng.choice(hints.get("choices", ["A", "B", "C"])),
-    "date": lambda rng, hints: hints.get("default_date", "2026-01-01"),
+    "date": lambda rng, hints: hints.get(
+        "default_date",
+        # If a start/end range is provided use it, otherwise fall back to 2026-01-01
+        hints.get("value", "2026-01-01"),
+    ),
 }
 
 
@@ -318,6 +322,53 @@ def _enforce_sanity_bounds(field_name: str, hints: dict) -> None:
             return
 
 
+def _date_heuristic(name: str, rng: random.Random) -> str | None:
+    """Return a plausible date string for common date field names.
+
+    Origination / inception / issue dates → a past date within the last 2 yrs.
+    Maturity / expiry / end dates         → a future date 1-5 years from today.
+    Purchase / settlement / trade dates   → yesterday-ish.
+    Reporting / posting / effective dates → today (2026-01-31) by default.
+    Unknown                               → None (caller uses fallback).
+    """
+    from datetime import date as _date, timedelta as _td
+    today = _date(2026, 1, 31)  # stable reference — matches typical posting date in tests
+
+    ORIGINATION = ("origination", "inception", "issue", "start", "acquisition",
+                   "booking", "drawdown", "open", "funded", "disbursement")
+    MATURITY     = ("maturity", "expiry", "expiration", "end", "close", "final",
+                    "term_end", "redemption")
+    TRADE        = ("trade", "settlement", "value", "purchase", "sale")
+    REPORTING    = ("report", "posting", "effective", "period", "as_of", "asof",
+                    "entry", "record")
+
+    if any(k in name for k in ORIGINATION):
+        # Random date 3-24 months before today
+        days_back = rng.randint(90, 730)
+        d = today - _td(days=days_back)
+        # Snap to month-end: last day of that month
+        import calendar as _cal
+        last = _cal.monthrange(d.year, d.month)[1]
+        return _date(d.year, d.month, last).isoformat()
+
+    if any(k in name for k in MATURITY):
+        # Random date 12-60 months after today
+        days_fwd = rng.randint(365, 1825)
+        d = today + _td(days=days_fwd)
+        import calendar as _cal
+        last = _cal.monthrange(d.year, d.month)[1]
+        return _date(d.year, d.month, last).isoformat()
+
+    if any(k in name for k in TRADE):
+        days_back = rng.randint(1, 10)
+        return (today - _td(days=days_back)).isoformat()
+
+    if any(k in name for k in REPORTING):
+        return today.isoformat()
+
+    return None  # let caller fall back to 2026-01-01
+
+
 def _generate_value(field: dict, rng: random.Random, field_hints: dict) -> Any:
     name = (field.get("name") or "").lower()
     dtype = (field.get("datatype") or "decimal").lower()
@@ -334,6 +385,13 @@ def _generate_value(field: dict, rng: random.Random, field_hints: dict) -> Any:
                 if dtype_override:
                     chosen_dtype = dtype_override
                 break
+
+    # Date fields: apply name-based heuristics so origination/start dates
+    # are earlier than maturity/end dates and values look realistic.
+    if chosen_dtype == "date" and "default_date" not in user_hints and "value" not in user_hints:
+        _date_val = _date_heuristic(name, rng)
+        if _date_val:
+            chosen_hints["default_date"] = _date_val
 
     # User hints win over heuristics
     chosen_hints.update(user_hints)

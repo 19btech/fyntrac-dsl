@@ -37,6 +37,8 @@ const TOOL_LABELS = {
   add_step_to_rule: "Adding step",
   update_step: "Updating step",
   delete_step: "Deleting step",
+  patch_step: "Patching step",
+  replace_schedule_column: "Replacing schedule column",
   debug_step: "Debugging step",
   list_saved_schedules: "Listing saved schedules",
   create_saved_schedule: "Creating schedule",
@@ -118,6 +120,7 @@ const AgentRunMessage = ({ task, model, autoApproveDestructive = false, onComple
     // Rule / step / schedule / template assembly
     "create_saved_rule", "update_saved_rule", "delete_saved_rule",
     "add_step_to_rule", "update_step", "delete_step",
+    "patch_step", "replace_schedule_column",
     "create_saved_schedule", "delete_saved_schedule",
     "attach_rules_to_template",
   ])).current;
@@ -263,8 +266,7 @@ const AgentRunMessage = ({ task, model, autoApproveDestructive = false, onComple
                       "add_step_to_rule", "update_step", "delete_step",
                       "patch_step", "replace_schedule_column",
                     ]);
-                    if (RULE_MUTATING.has(ev.name)) {
-                      const ruleId = ev.result?.rule_id ?? ev.result?.id;
+                    if (RULE_MUTATING.has(ev.name)) {                      const ruleId = ev.result?.rule_id ?? ev.result?.id;
                       if (ruleId) {
                         setMutatedRuleIds(prev =>
                           prev.includes(ruleId) ? prev : [...prev, ruleId]
@@ -451,6 +453,16 @@ const AgentRunMessage = ({ task, model, autoApproveDestructive = false, onComple
             );
           }
           if (row.kind === "warning") {
+            // "Loop detected" nudges are internal steering signals — show them
+            // as a small, muted note rather than a prominent orange warning.
+            const isLoopNudge = row.content && row.content.startsWith("Loop detected");
+            if (isLoopNudge) {
+              return (
+                <div key={idx} className="agent-run-row meta" style={{ fontStyle: 'italic', opacity: 0.7 }}>
+                  ↺ Retrying with different approach…
+                </div>
+              );
+            }
             return (
               <div key={idx} className="agent-run-row warn">
                 <AlertTriangle size={12} /> {row.content}

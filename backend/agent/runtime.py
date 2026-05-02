@@ -86,11 +86,42 @@ def reset_session_history(session_id: str) -> bool:
 
 def _trim_history(msgs: list[dict]) -> list[dict]:
     """Cap stored history to keep token usage bounded. Drops oldest assistant/
-    tool pairs but preserves any leading user message."""
+    tool pairs but preserves any leading user message.
+
+    Also sanitizes the retained slice so it never starts with an orphaned
+    `tool` message (which OpenAI rejects with 'messages with role tool must
+    be a response to a preceding message with tool_calls'). After trimming
+    we advance past any leading tool/assistant-tool-response messages until
+    the first `user` or a clean `assistant` without tool-call residue.
+    """
     if len(msgs) <= _SESSION_MAX_MESSAGES:
-        return msgs
-    # Always keep the most recent _SESSION_MAX_MESSAGES messages.
-    return msgs[-_SESSION_MAX_MESSAGES:]
+        trimmed = msgs
+    else:
+        # Always keep the most recent _SESSION_MAX_MESSAGES messages.
+        trimmed = msgs[-_SESSION_MAX_MESSAGES:]
+
+    # Sanitize: drop any leading messages that would violate OpenAI's
+    # role-ordering invariant (tool must follow assistant-with-tool_calls).
+    # Walk forward until we find a safe starting point.
+    start = 0
+    while start < len(trimmed):
+        role = trimmed[start].get("role", "")
+        if role == "tool":
+            # Orphaned tool message — skip it.
+            start += 1
+            continue
+        if role == "assistant":
+            # Only safe to start on an assistant message if it has no
+            # tool_calls (otherwise the matching tool responses are gone).
+            if trimmed[start].get("tool_calls"):
+                # Skip this assistant + all its tool responses.
+                start += 1
+                while start < len(trimmed) and trimmed[start].get("role") == "tool":
+                    start += 1
+                continue
+        break  # user message or clean assistant — safe to start here
+
+    return trimmed[start:]
 
 
 async def _build_workspace_context(*, db, in_memory_data: dict | None) -> str:
