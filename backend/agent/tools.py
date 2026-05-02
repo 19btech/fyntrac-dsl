@@ -1112,23 +1112,26 @@ async def tool_create_or_replace_template(args: dict) -> dict:
             "(create_saved_rule / add_step_to_rule) instead."
         )
 
-    _enforce_dsl_guardrails(dsl_code)
-
     event = await _find_event_def(event_name)
     if not event:
         raise ToolError(f"Event '{event_name}' not found")
 
-    # Translate using the same path as save_template
-    dsl_to_python = _h("dsl_to_python")
-    try:
-        python_code = dsl_to_python(dsl_code, event["fields"])
-    except Exception as exc:
-        raise ToolError(f"DSL translation failed: {exc}") from exc
+    # When dsl_code is empty this is a shell-creation call (correct usage).
+    # Skip translation — attach_rules_to_template will populate the code later.
+    if not dsl_code.strip():
+        python_code = "# template shell — populated by attach_rules_to_template\n_noop = 0\n"
+    else:
+        _enforce_dsl_guardrails(dsl_code)
+        # Translate using the same path as save_template
+        dsl_to_python = _h("dsl_to_python")
+        try:
+            python_code = dsl_to_python(dsl_code, event["fields"])
+        except Exception as exc:
+            raise ToolError(f"DSL translation failed: {exc}") from exc
 
-    # Compile-check the generated Python immediately so syntax errors are
-    # caught here (in the same turn) rather than surfacing at dry_run_template
-    # one turn later.
-    if dsl_code.strip():
+        # Compile-check the generated Python immediately so syntax errors are
+        # caught here (in the same turn) rather than surfacing at dry_run_template
+        # one turn later.
         try:
             compile(python_code, "<dsl_template_validate>", "exec")
         except SyntaxError as se:
