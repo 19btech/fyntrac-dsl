@@ -575,6 +575,37 @@ async def tool_create_event_definitions(args: dict) -> dict:
             raise ToolError(f"Invalid eventType '{event_type}' for {event_name}")
         if event_table not in ("standard", "custom"):
             raise ToolError(f"Invalid eventTable '{event_table}' for {event_name}")
+
+        # ── Reference-table auto-coerce ──────────────────────────────────
+        # If the event name strongly suggests a static lookup / reference
+        # table (catalog, ref, lookup, master, mapping, …) but the caller
+        # forgot to set eventType='reference' / eventTable='custom', fix
+        # it automatically and record it in `coerced_to_reference` so the
+        # caller knows.
+        _REF_KEYWORDS = {
+            "catalog", "catalogue", "catalogue", "ref", "reference",
+            "lookup", "lookup_table", "lut", "master", "mapping",
+            "static", "rate_table", "rates_table", "ssptable", "ssp_table",
+            "product_table", "product_list", "chart_of_accounts",
+            "coa", "tariff", "schedule_of_rates",
+        }
+        _name_lower = event_name.lower()
+        _name_parts = set(re.split(r"[_\-\s]", _name_lower))
+        _is_ref_by_name = bool(_name_parts & _REF_KEYWORDS or
+                               any(_name_lower.endswith(k) for k in _REF_KEYWORDS) or
+                               any(_name_lower.startswith(k) for k in _REF_KEYWORDS))
+        _coerced = False
+        if event_type == "reference" and event_table != "custom":
+            # Hard rule: reference type MUST use custom table.
+            event_table = "custom"
+            _coerced = True
+        elif event_type == "activity" and event_table == "standard" and _is_ref_by_name:
+            # Agent forgot to label a reference table — fix silently.
+            event_type = "reference"
+            event_table = "custom"
+            _coerced = True
+        # ── End auto-coerce ──────────────────────────────────────────────
+
         if event_table == "standard" and event_type != "activity":
             raise ToolError(
                 f"Event '{event_name}': standard eventTable requires eventType=activity"
@@ -612,7 +643,18 @@ async def tool_create_event_definitions(args: dict) -> dict:
             logger.warning("Could not insert event def to DB: %s", exc)
         if not wrote_db:
             (_ServerBridge.in_memory_data.setdefault("event_definitions", [])).append(doc)
-        created.append({"event_name": event_name, "fields": norm_fields, "eventType": event_type})
+        entry: dict = {
+            "event_name": event_name, "fields": norm_fields,
+            "eventType": event_type, "eventTable": event_table,
+        }
+        if _coerced:
+            entry["coerced_to_reference"] = True
+            entry["coercion_note"] = (
+                f"Auto-set eventType='reference' and eventTable='custom' for "
+                f"'{event_name}'. Reference/lookup tables MUST use these settings "
+                f"so the engine loads them as static tables, not activity streams."
+            )
+        created.append(entry)
 
     return {"created": created, "skipped": skipped}
 
@@ -5854,6 +5896,42 @@ language. The constraints below are BINDING — violating them produces
 errors that look like "unterminated string literal" or "invalid syntax".
 
 ------------------------------------------------------------------
+EVENT DEFINITION TYPES — SET THESE CORRECTLY BEFORE ANYTHING ELSE
+------------------------------------------------------------------
+Every event must be created via create_event_definitions. The two fields
+`eventType` and `eventTable` determine how the engine ingests and joins data.
+
+ACTIVITY EVENTS (the default — transactional data):
+  eventType = "activity"   eventTable = "standard"
+  Use for: day-end balances, loan originations, payment events, credit risk
+  snapshots — any data that arrives with a new row EACH posting date.
+  The engine runs your rule ONCE PER (instrumentid × postingdate) row.
+  Example:
+    {event_name:"EOD_BALANCES", eventType:"activity", eventTable:"standard",
+     fields:[{name:"upb",datatype:"decimal"}, {name:"rate",datatype:"decimal"}]}
+
+REFERENCE TABLES (static lookup data — catalogs, rate tables, mappings):
+  eventType = "reference"  eventTable = "custom"
+  BOTH fields are REQUIRED together. A reference event with eventTable ≠ "custom"
+  is invalid and will be auto-corrected by the validator.
+  Use for: product catalogs, SSP/price tables, chart of accounts, rate lookup
+  tables, country/currency mappings, any table that does NOT change per
+  posting date and is JOINed into a rule via collect_all() + lookup().
+  Example:
+    {event_name:"PRODUCT_CATALOG", eventType:"reference", eventTable:"custom",
+     fields:[{name:"product_id",datatype:"string"},
+             {name:"ssp",datatype:"decimal"},
+             {name:"product_name",datatype:"string"}]}
+
+RECOGNITION RULE:
+  • Name ends/starts with: catalog, ref, reference, lookup, lut, master,
+    mapping, static, rate_table, ssp_table, product_table, chart_of_accounts
+    → ALWAYS set eventType="reference" + eventTable="custom".
+  • Anything else (balances, transactions, snapshots, originations) → activity.
+  • The validator auto-corrects obvious mismatches and reports
+    coerced_to_reference=true in the created[] payload — check it.
+
+------------------------------------------------------------------
 STEP-TYPE DECISION TREE — READ THIS BEFORE PICKING A stepType
 ------------------------------------------------------------------
 For each step you intend to add, walk this tree top-to-bottom and pick
@@ -6828,7 +6906,16 @@ TOOL_SCHEMAS: list[dict] = [
     },
     {
         "name": "create_event_definitions",
-        "description": "Create one or more event definitions with their fields. Idempotent: existing names are skipped.",
+        "description": (
+            "Create one or more event definitions with their fields. Idempotent: existing names are skipped. "
+            "REQUIRED RULES for eventType / eventTable: "
+            "(1) ACTIVITY events (transactional, one row per posting date): eventType='activity', eventTable='standard'. "
+            "(2) REFERENCE / LOOKUP TABLES (catalogs, rate tables, product lists, SSP tables, chart of accounts, "
+            "any static lookup): eventType='reference', eventTable='custom'. BOTH fields are mandatory together — "
+            "never set eventType='reference' with eventTable='standard'. "
+            "The validator auto-corrects obvious name-based mismatches (catalog/ref/lookup/master/mapping in the "
+            "event name) and reports coerced_to_reference=true in the response."
+        ),
         "parameters": {
             "type": "object",
             "properties": {
@@ -6838,8 +6925,10 @@ TOOL_SCHEMAS: list[dict] = [
                         "type": "object",
                         "properties": {
                             "event_name": {"type": "string"},
-                            "eventType": {"type": "string", "enum": ["activity", "reference"]},
-                            "eventTable": {"type": "string", "enum": ["standard", "custom"]},
+                            "eventType": {"type": "string", "enum": ["activity", "reference"],
+                                          "description": "activity = transactional (default). reference = static lookup table (must pair with eventTable='custom')."},
+                            "eventTable": {"type": "string", "enum": ["standard", "custom"],
+                                           "description": "standard = activity events (default). custom = reference/lookup tables (must pair with eventType='reference')."},
                             "fields": {
                                 "type": "array",
                                 "items": {
