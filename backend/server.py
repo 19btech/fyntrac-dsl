@@ -4212,6 +4212,67 @@ async def delete_saved_rule(rule_id: str):
         raise HTTPException(status_code=404, detail="Rule not found.")
     return {"success": True, "message": "Rule deleted."}
 
+@api_router.post("/saved-rules/{rule_id}/revert")
+async def revert_saved_rule(rule_id: str):
+    """Restore the most recent pre-save snapshot for a rule.
+
+    Every time the agent saves a rule (update_step, patch_step, update_saved_rule,
+    etc.) the previous version is saved to the rule_history collection.
+    This endpoint pops the newest snapshot and restores it so the user can
+    undo the last agent change.
+    """
+    # Find the most recent snapshot for this rule.
+    snap = await db.rule_history.find_one(
+        {"rule_id": rule_id},
+        sort=[("snapshot_at", -1)],
+    )
+    if not snap:
+        raise HTTPException(status_code=404, detail="No history found for this rule.")
+    rule_doc = snap.get("rule_doc")
+    if not rule_doc:
+        raise HTTPException(status_code=500, detail="Snapshot has no rule document.")
+    rule_doc.pop("_id", None)
+    # Before restoring, snapshot the CURRENT state so the revert itself is
+    # also reversible (undo-undo).
+    current = await db.saved_rules.find_one({"id": rule_id}, {"_id": 0})
+    if current:
+        current.pop("_id", None)
+        await db.rule_history.insert_one({
+            "rule_id": rule_id,
+            "snapshot_at": datetime.now(timezone.utc).isoformat(),
+            "rule_doc": current,
+        })
+    # Restore the snapshot.
+    await db.saved_rules.replace_one({"id": rule_id}, rule_doc, upsert=True)
+    # Remove the snapshot we just restored (it's now the live doc).
+    await db.rule_history.delete_one({"_id": snap["_id"]})
+    # Prune: keep only the 20 most recent snapshots for this rule.
+    try:
+        all_snaps = await db.rule_history.find(
+            {"rule_id": rule_id}, {"_id": 1}
+        ).sort("snapshot_at", -1).to_list(None)
+        if len(all_snaps) > 20:
+            ids_to_delete = [s["_id"] for s in all_snaps[20:]]
+            await db.rule_history.delete_many({"_id": {"$in": ids_to_delete}})
+    except Exception:
+        pass
+    rule_doc.pop("_id", None)
+    return {
+        "success": True,
+        "message": f"Rule '{rule_doc.get('name', rule_id)}' reverted to snapshot from {snap.get('snapshot_at', '?')}",
+        "rule": rule_doc,
+    }
+
+@api_router.get("/saved-rules/{rule_id}/history")
+async def get_rule_history(rule_id: str):
+    """Return the list of available revert snapshots for a rule (newest first)."""
+    snaps = await db.rule_history.find(
+        {"rule_id": rule_id},
+        {"_id": 0, "rule_doc": 0},
+        sort=[("snapshot_at", -1)],
+    ).to_list(20)
+    return {"rule_id": rule_id, "snapshots": snaps}
+
 @api_router.get("/saved-rules/{rule_id}")
 async def get_saved_rule(rule_id: str):
     """Fetch a single saved rule by id (used by the Rule Builder to refresh

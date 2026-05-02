@@ -2554,6 +2554,29 @@ async def _save_rule_doc(rule: dict, *, is_new: bool) -> dict:
         rule.setdefault("customCode", "")
         await db.saved_rules.insert_one(rule)
     else:
+        # Snapshot the CURRENT version before overwriting so the user can
+        # revert to it. We keep up to 20 snapshots per rule (the newest 20).
+        try:
+            existing = await db.saved_rules.find_one(
+                {"id": rule["id"]}, {"_id": 0}
+            )
+            if existing:
+                existing.pop("_id", None)
+                snap = {
+                    "rule_id": rule["id"],
+                    "snapshot_at": rule["updated_at"],
+                    "rule_doc": existing,
+                }
+                await db.rule_history.insert_one(snap)
+                # Prune: keep only the 20 most recent snapshots for this rule.
+                all_snaps = await db.rule_history.find(
+                    {"rule_id": rule["id"]}, {"_id": 1}
+                ).sort("snapshot_at", -1).to_list(None)
+                if len(all_snaps) > 20:
+                    ids_to_delete = [s["_id"] for s in all_snaps[20:]]
+                    await db.rule_history.delete_many({"_id": {"$in": ids_to_delete}})
+        except Exception:
+            pass  # Never block a save because of snapshot failure
         await db.saved_rules.replace_one({"id": rule["id"]}, rule, upsert=True)
     rule.pop("_id", None)
     return rule

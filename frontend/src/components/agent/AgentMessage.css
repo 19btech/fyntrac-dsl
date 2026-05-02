@@ -337,6 +337,26 @@
   font-size: 11px; color: #555;
 }
 .agent-run-stop:hover { background: #fff5f5; border-color: #f5a5a5; color: #c0392b; }
+.agent-run-undo {
+  display: inline-flex; align-items: center; gap: 4px;
+  background: transparent; border: 1px solid #c5b4e3;
+  border-radius: 4px; padding: 2px 8px; cursor: pointer;
+  font-size: 11px; color: #6b46c1;
+}
+.agent-run-undo:hover:not(:disabled) { background: #f5f0ff; border-color: #9f7aea; color: #553c9a; }
+.agent-run-undo:disabled { opacity: 0.5; cursor: not-allowed; }
+.agent-run-undo.loading { opacity: 0.7; }
+.agent-run-undo-msg {
+  display: flex; align-items: center; gap: 5px;
+  padding: 5px 10px; font-size: 11px; margin: 0 8px 4px;
+  border-radius: 4px; border: 1px solid;
+}
+.agent-run-undo-msg.done {
+  color: #146c2e; background: #ebf6ee; border-color: #b7dfbf;
+}
+.agent-run-undo-msg.error {
+  color: #c0392b; background: #fff4f4; border-color: #f5d5d5;
+}
 .agent-run-error {
   display: flex; align-items: center; gap: 6px;
   padding: 6px 10px; background: #fff4f4; color: #c0392b;

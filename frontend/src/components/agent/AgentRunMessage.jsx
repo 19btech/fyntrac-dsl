@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   CheckCircle2, AlertTriangle, Loader2, Wrench, Sparkles,
-  StopCircle, ChevronDown, ChevronRight, ShieldAlert, Brain,
+  StopCircle, ChevronDown, ChevronRight, ShieldAlert, Brain, Undo2,
 } from "lucide-react";
 import { API } from "../../config";
 import "./AgentMessage.css";
@@ -65,6 +65,42 @@ const AgentRunMessage = ({ task, model, autoApproveDestructive = false, onComple
   const [errorMsg, setErrorMsg] = useState(null);
   const [pending, setPending] = useState({}); // call_id -> {name, args, decided}
   const [expanded, setExpanded] = useState({}); // call_id -> bool
+
+  // Track rule IDs mutated by this run so we can offer an Undo button.
+  const [mutatedRuleIds, setMutatedRuleIds] = useState([]);
+  const [undoState, setUndoState] = useState("idle"); // idle | loading | done | error
+  const [undoMsg, setUndoMsg] = useState("");
+
+  const handleUndo = async () => {
+    const ruleId = mutatedRuleIds[mutatedRuleIds.length - 1];
+    if (!ruleId) return;
+    setUndoState("loading");
+    setUndoMsg("");
+    try {
+      const resp = await fetch(`${API}/saved-rules/${ruleId}/revert`, { method: "POST" });
+      const data = await resp.json();
+      if (resp.ok && data.success) {
+        setUndoState("done");
+        setUndoMsg(data.message || "Reverted successfully.");
+        // Remove this rule from the undo stack so the button disappears or
+        // reflects the next-older mutation.
+        setMutatedRuleIds(prev => prev.slice(0, -1));
+        try { onAgentDataChangeRef.current?.("revert"); } catch (_) {}
+      } else {
+        setUndoState("error");
+        setUndoMsg(data.detail || data.error || "Revert failed.");
+      }
+    } catch (e) {
+      setUndoState("error");
+      setUndoMsg(e.message || "Network error.");
+    }
+    // Auto-clear the message after 4 s.
+    setTimeout(() => {
+      setUndoState(s => (s !== "loading" ? "idle" : s));
+      setUndoMsg("");
+    }, 4000);
+  };
+
   const abortRef = useRef(null);
   // Stash the latest onComplete in a ref so the streaming effect doesn't
   // need it in its dependency array. Otherwise every parent re-render
@@ -221,6 +257,20 @@ const AgentRunMessage = ({ task, model, autoApproveDestructive = false, onComple
                   });
                   if (ev.type === "tool_done" && MUTATING_TOOLS.has(ev.name)) {
                     try { onAgentDataChangeRef.current?.(ev.name, ev); } catch (_) {}
+                    // Track the rule_id so we can offer Undo.
+                    const RULE_MUTATING = new Set([
+                      "create_saved_rule", "update_saved_rule",
+                      "add_step_to_rule", "update_step", "delete_step",
+                      "patch_step", "replace_schedule_column",
+                    ]);
+                    if (RULE_MUTATING.has(ev.name)) {
+                      const ruleId = ev.result?.rule_id ?? ev.result?.id;
+                      if (ruleId) {
+                        setMutatedRuleIds(prev =>
+                          prev.includes(ruleId) ? prev : [...prev, ruleId]
+                        );
+                      }
+                    }
                   }
                 }
                 if (ev.type === "final") {
@@ -326,7 +376,27 @@ const AgentRunMessage = ({ task, model, autoApproveDestructive = false, onComple
             <StopCircle size={12} /> Stop
           </button>
         )}
+        {status !== "running" && mutatedRuleIds.length > 0 && (
+          <button
+            className={`agent-run-undo${undoState === "loading" ? " loading" : ""}`}
+            onClick={handleUndo}
+            disabled={undoState === "loading"}
+            title="Undo last agent change to this rule"
+          >
+            {undoState === "loading"
+              ? <Loader2 size={12} className="spin" />
+              : <Undo2 size={12} />}
+            Undo
+          </button>
+        )}
       </div>
+
+      {undoMsg && (
+        <div className={`agent-run-undo-msg ${undoState}`}>
+          {undoState === "error" ? <AlertTriangle size={11} /> : <CheckCircle2 size={11} />}
+          {undoMsg}
+        </div>
+      )}
 
       {errorMsg && (
         <div className="agent-run-error">
