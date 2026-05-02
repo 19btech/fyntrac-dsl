@@ -2022,18 +2022,38 @@ async def tool_add_transaction_to_rule(args: dict) -> dict:
                         "calc-step variable, or a numeric literal")
     if side not in ("debit", "credit"):
         raise ToolError("`side` must be 'debit' or 'credit'")
-    # Verify the transaction type is registered.
+    # Ensure the transaction type is registered. Use the SAME collection +
+    # field that `add_transaction_types` writes: db.transaction_definitions,
+    # field `transactiontype`. (Earlier this looked at db.transaction_types /
+    # `name`, which never matched and produced an unbreakable loop.) If the
+    # type is missing, AUTO-REGISTER it here rather than erroring — the
+    # registry is freeform and forcing the agent to call a separate tool only
+    # creates failure loops when lookup misses.
     db = _ServerBridge.db
+    auto_registered = False
+    registered = False
     if db is not None:
-        reg = await db.transaction_types.find_one(
-            {"name": {"$regex": f"^{re.escape(txn_type)}$", "$options": "i"}},
-            {"_id": 0, "name": 1},
-        )
-        if not reg:
-            raise ToolError(
-                f"Transaction type '{txn_type}' is not registered. Call "
-                f"`add_transaction_types` with [{{\"name\": \"{txn_type}\"}}] first."
+        try:
+            reg = await db.transaction_definitions.find_one(
+                {"transactiontype": {"$regex": f"^{re.escape(txn_type)}$", "$options": "i"}},
+                {"_id": 0, "transactiontype": 1},
             )
+            if reg:
+                registered = True
+            else:
+                await db.transaction_definitions.insert_one({"transactiontype": txn_type})
+                auto_registered = True
+                registered = True
+        except Exception as exc:
+            logger.warning("DB lookup/insert txn type failed: %s", exc)
+    if not registered:
+        mem = _ServerBridge.in_memory_data.setdefault("transaction_definitions", [])
+        if not any(
+            (d.get("transactiontype") or "").lower() == txn_type.lower()
+            for d in mem
+        ):
+            mem.append({"transactiontype": txn_type})
+            auto_registered = True
     outputs = dict(rule.get("outputs") or {})
     txns = list(outputs.get("transactions") or [])
     txns.append({"type": txn_type, "amount": amount, "side": side})
@@ -2050,8 +2070,11 @@ async def tool_add_transaction_to_rule(args: dict) -> dict:
         "rule_id": rule["id"],
         "transaction_count": len(txns),
         "balanced": balanced,
+        "auto_registered_type": txn_type if auto_registered else None,
         "next_step_hint": (
-            f"Added {side} '{txn_type}' for amount={amount}. "
+            f"Added {side} '{txn_type}' for amount={amount}"
+            + (" (auto-registered the transaction type)." if auto_registered else ".")
+            + " "
             + ("Pair is balanced." if balanced else
                f"NOT balanced — add the matching {'credit' if side == 'debit' else 'debit'} entry next.")
         ),
@@ -2356,12 +2379,16 @@ async def tool_verify_rule_complete(args: dict) -> dict:
     registered: set[str] = set()
     if db is not None:
         try:
-            async for d in db.transaction_types.find({}, {"_id": 0, "name": 1}):
-                if d.get("name"):
-                    registered.add(d["name"])
+            async for d in db.transaction_definitions.find({}, {"_id": 0, "transactiontype": 1}):
+                if d.get("transactiontype"):
+                    registered.add(d["transactiontype"].lower())
         except Exception:
             pass
-    missing_types = [t for t in txn_types_used if t and t not in registered]
+    if not registered:
+        for d in (_ServerBridge.in_memory_data.get("transaction_definitions") or []):
+            if d.get("transactiontype"):
+                registered.add(d["transactiontype"].lower())
+    missing_types = [t for t in txn_types_used if t and t.lower() not in registered]
     items.append({
         "check": "transaction_types_registered",
         "ok": not missing_types,

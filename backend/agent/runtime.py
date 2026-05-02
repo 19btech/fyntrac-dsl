@@ -669,6 +669,12 @@ async def run_agent(
 
             # Process every tool call the model emitted this step.
             should_finish = False
+            # Loop-nudge MUST be appended only AFTER every tool_call_id in this
+            # assistant message has its `tool` response, otherwise OpenAI's
+            # invariant ("an assistant message with tool_calls must be followed
+            # by tool messages responding to each tool_call_id") is violated
+            # and the next request 400s. Defer until after the for-loop.
+            pending_nudge: tuple[str, str, str] | None = None
             for call in tool_calls:
                 call_id = call.get("id") or uuid.uuid4().hex
                 name = call.get("name") or ""
@@ -746,12 +752,7 @@ async def run_agent(
                     same = [e for e in recent_errors if e == (name, sig)]
                     if len(same) >= 2 and (name, sig) not in nudge_already_sent_for:
                         nudge_already_sent_for.add((name, sig))
-                        nudge_text = _build_loop_nudge(name, sig)
-                        messages.append({"role": "user", "content": nudge_text})
-                        yield {"type": "warning", "ts": _now_iso(),
-                                "message": f"Loop detected on {name} ({sig}); "
-                                           f"steering agent toward syntax guide / "
-                                           f"existing rule lookup."}
+                        pending_nudge = (name, sig, _build_loop_nudge(name, sig))
                 except Exception as exc:
                     logger.exception("Tool '%s' raised", name)
                     err = f"Internal tool error: {exc}"
@@ -762,6 +763,17 @@ async def run_agent(
                                       "content": json.dumps({"error": err})})
                     history.append({"step": step, "type": "tool_error",
                                      "call_id": call_id, "name": name, "error": err})
+
+            # All tool_call_ids in this assistant message now have their
+            # `tool` responses. Safe to inject the deferred loop-nudge as a
+            # follow-up user message without breaking OpenAI's invariant.
+            if pending_nudge is not None:
+                _ln_name, _ln_sig, _ln_text = pending_nudge
+                messages.append({"role": "user", "content": _ln_text})
+                yield {"type": "warning", "ts": _now_iso(),
+                        "message": f"Loop detected on {_ln_name} ({_ln_sig}); "
+                                   f"steering agent toward syntax guide / "
+                                   f"existing rule lookup."}
 
             if should_finish:
                 break
