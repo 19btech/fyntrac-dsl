@@ -1805,6 +1805,13 @@ async def _save_rule_doc(rule: dict, *, is_new: bool) -> dict:
         raise ToolError("Database is not available")
     legacy = _rule_to_legacy_payload(rule)
     rule.update(legacy)
+    # Final safety net: backfill missing postingDate/effectiveDate/
+    # subInstrumentId on any transaction entry, regardless of which tool
+    # produced this rule. Catches paths that bypass per-tool normalisation.
+    try:
+        _normalise_transaction_outputs(rule.get("steps") or [], rule.get("outputs") or {})
+    except Exception:
+        pass
     rule["generatedCode"] = _generate_rule_code(rule)
     rule["updated_at"] = datetime.now(timezone.utc).isoformat()
     if is_new:
@@ -1847,6 +1854,83 @@ async def tool_list_saved_rules(args: dict) -> dict:
 async def tool_get_saved_rule(args: dict) -> dict:
     rule = await _load_rule((args.get("rule_id") or "").strip())
     return {"rule": rule}
+
+
+def _normalise_transaction_outputs(steps: list[dict], outputs: dict) -> dict:
+    """Ensure every entry in `outputs.transactions[]` has the camelCase
+    postingDate / effectiveDate / subInstrumentId fields the code generator
+    requires. Without this, weak models calling create_saved_rule /
+    update_saved_rule with `outputs={transactions:[{type, amount, side}]}`
+    silently produce rules that emit ZERO transactions because
+    `_generate_rule_code` skips entries missing those fields.
+
+    Mutates and returns `outputs`. Defaults:
+      • postingDate / effectiveDate ← '<FirstReferencedEvent>.postingdate'
+        / '.effectivedate', extracted from the rule's steps.
+      • subInstrumentId ← '1.0' (matches the UI default).
+    Accepts snake_case / lowercase input keys (postingdate, posting_date,
+    effective_date, etc.) and rewrites them to canonical camelCase so the
+    rest of the pipeline sees a single shape.
+    """
+    if not outputs:
+        return outputs
+    txns = outputs.get("transactions") or []
+    if not txns:
+        return outputs
+
+    # Resolve a default event name once
+    default_event: str | None = None
+    try:
+        extract = _h("extract_event_names_from_dsl")
+    except Exception:
+        extract = None
+    if extract:
+        blob = "\n".join(
+            str(s.get("formula") or "") + "\n" + str(s.get("value") or "")
+            + "\n" + str(s.get("eventField") or "")
+            for s in (steps or [])
+        )
+        try:
+            names = list(extract(blob) or [])
+            if names:
+                default_event = names[0]
+        except Exception:
+            pass
+    if not default_event:
+        for s in steps or []:
+            ef = (s.get("eventField") or "").strip()
+            if "." in ef:
+                head = ef.split(".", 1)[0].strip()
+                if head:
+                    default_event = head
+                    break
+
+    _ALIASES = {
+        "postingdate": "postingDate", "posting_date": "postingDate",
+        "effectivedate": "effectiveDate", "effective_date": "effectiveDate",
+        "subinstrumentid": "subInstrumentId", "sub_instrument_id": "subInstrumentId",
+    }
+
+    fixed: list[dict] = []
+    for t in txns:
+        if not isinstance(t, dict):
+            fixed.append(t)
+            continue
+        # Rewrite alias keys → canonical
+        nt: dict = {}
+        for k, v in t.items():
+            nt[_ALIASES.get(k, k)] = v
+        if not str(nt.get("postingDate") or "").strip() and default_event:
+            nt["postingDate"] = f"{default_event}.postingdate"
+        if not str(nt.get("effectiveDate") or "").strip() and default_event:
+            nt["effectiveDate"] = f"{default_event}.effectivedate"
+        if not str(nt.get("subInstrumentId") or "").strip():
+            nt["subInstrumentId"] = "1.0"
+        fixed.append(nt)
+    outputs["transactions"] = fixed
+    if fixed and not outputs.get("createTransaction"):
+        outputs["createTransaction"] = True
+    return outputs
 
 
 def _validate_transaction_outputs(steps: list[dict], outputs: dict) -> None:
@@ -2269,6 +2353,7 @@ async def tool_create_saved_rule(args: dict) -> dict:
         if clash_s:
             raise ToolError(f"Priority {priority} is already used by schedule '{clash_s['name']}'")
     outputs = args.get("outputs") or {"printResult": True, "createTransaction": False, "transactions": []}
+    _normalise_transaction_outputs(steps, outputs)
     _validate_transaction_outputs(steps, outputs)
     rule = {
         "name": name,
@@ -2294,6 +2379,7 @@ async def tool_update_saved_rule(args: dict) -> dict:
             rule[k] = patch[k]
     if "steps" in patch:
         rule["steps"] = [_validate_step_shape(s) for s in (patch["steps"] or [])]
+    _normalise_transaction_outputs(rule.get("steps") or [], rule.get("outputs") or {})
     _validate_transaction_outputs(rule.get("steps") or [], rule.get("outputs") or {})
     rule = await _save_rule_doc(rule, is_new=False)
     payload = {"rule_id": rule["id"], "name": rule["name"], "step_count": len(rule.get("steps") or [])}

@@ -4160,6 +4160,15 @@ async def save_rule(request: dict):
         "updated_at": now,
     }
 
+    # Backfill missing postingDate/effectiveDate/subInstrumentId on every
+    # transaction entry, mirroring the agent-side normaliser, so that UI
+    # saves don't bypass the date-defaulting logic.
+    try:
+        from backend.agent.tools import _normalise_transaction_outputs
+        _normalise_transaction_outputs(doc.get("steps") or [], doc.get("outputs") or {})
+    except Exception as _norm_err:
+        logger.warning(f"transaction normalisation skipped: {_norm_err}")
+
     if rule_id:
         doc["id"] = rule_id
         await db.saved_rules.replace_one({"id": rule_id}, doc, upsert=True)
