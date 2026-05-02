@@ -3463,12 +3463,24 @@ async def tool_create_saved_rule(args: dict) -> dict:
     if sched_results:
         payload["schedule_tests"] = sched_results
         if any(not r.get("ok") for r in sched_results):
-            payload["schedule_tests_hint"] = (
-                "⚠️ one or more schedule steps failed their automatic "
-                "preview test. Fix the failing column/output via update_step "
-                "or call test_schedule_step directly to iterate. The rule "
-                "is saved but is NOT runnable yet."
-            )
+            if any(r.get("failed_at") == "no_event_data" for r in sched_results):
+                missing_hints = [
+                    r["fix_hint"] for r in sched_results
+                    if r.get("failed_at") == "no_event_data" and r.get("fix_hint")
+                ]
+                payload["schedule_tests_hint"] = (
+                    "⚠️ Schedule step has no sample event data — formula is NOT broken. "
+                    + (missing_hints[0] if missing_hints else
+                       "Call generate_sample_event_data for each referenced activity event, "
+                       "then re-run test_schedule_step. DO NOT patch formulas.")
+                )
+            else:
+                payload["schedule_tests_hint"] = (
+                    "⚠️ one or more schedule steps failed their automatic "
+                    "preview test. Fix the failing column/output via update_step "
+                    "or call test_schedule_step directly to iterate. The rule "
+                    "is saved but is NOT runnable yet."
+                )
     return await _attach_validation(rule, payload)
 
 
@@ -3505,12 +3517,24 @@ async def tool_update_saved_rule(args: dict) -> dict:
     if sched_results:
         payload["schedule_tests"] = sched_results
         if any(not r.get("ok") for r in sched_results):
-            payload["schedule_tests_hint"] = (
-                "⚠️ one or more schedule steps failed their automatic "
-                "preview test. Fix the failing column/output via update_step "
-                "or call test_schedule_step directly to iterate. The rule "
-                "is saved but is NOT runnable yet."
-            )
+            if any(r.get("failed_at") == "no_event_data" for r in sched_results):
+                missing_hints = [
+                    r["fix_hint"] for r in sched_results
+                    if r.get("failed_at") == "no_event_data" and r.get("fix_hint")
+                ]
+                payload["schedule_tests_hint"] = (
+                    "⚠️ Schedule step has no sample event data — formula is NOT broken. "
+                    + (missing_hints[0] if missing_hints else
+                       "Call generate_sample_event_data for each referenced activity event, "
+                       "then re-run test_schedule_step. DO NOT patch formulas.")
+                )
+            else:
+                payload["schedule_tests_hint"] = (
+                    "⚠️ one or more schedule steps failed their automatic "
+                    "preview test. Fix the failing column/output via update_step "
+                    "or call test_schedule_step directly to iterate. The rule "
+                    "is saved but is NOT runnable yet."
+                )
     return await _attach_validation(rule, payload)
 
 
@@ -4769,6 +4793,60 @@ async def tool_test_schedule_step(args: dict) -> dict:
     prior_rule = {**rule, "steps": steps[:idx], "outputs": {}}
     prior_code = _generate_rule_code(prior_rule)
 
+    # ── Early guard: detect missing event sample data ──────────────────────
+    # If the activity events referenced by this schedule step have no data
+    # rows, the schedule will produce 0 rows regardless of formula correctness.
+    # Return a specific diagnostic so the agent calls generate_sample_event_data
+    # instead of endlessly patching formulas.
+    _extract_evts = _h("extract_event_names_from_dsl")
+    _full_sched_rule = {**rule, "steps": steps[:idx + 1], "outputs": {}}
+    _full_sched_code = _generate_rule_code(_full_sched_rule)
+    _all_refs = list(_extract_evts(prior_code + " " + _full_sched_code) or [])
+    _missing_data: list[str] = []
+    for _nm in _all_refs:
+        _evt_def = await _find_event_def(_nm)
+        if not _evt_def or (_evt_def.get("eventType") or "activity") != "activity":
+            continue
+        _evt_rows: list = []
+        _edb = _ServerBridge.db
+        if _edb is not None:
+            _edoc = await _edb.event_data.find_one(
+                {"event_name": {"$regex": f"^{re.escape(_nm)}$", "$options": "i"}},
+                {"_id": 0, "data_rows": {"$slice": 1}},
+            )
+            if _edoc:
+                _evt_rows = _edoc.get("data_rows") or []
+        if not _evt_rows:
+            for _d in (_ServerBridge.in_memory_data or {}).get("event_data") or []:
+                if str(_d.get("event_name", "")).lower() == _nm.lower():
+                    _evt_rows = _d.get("data_rows") or []
+                    break
+        if not _evt_rows:
+            _missing_data.append(_nm)
+    if _missing_data:
+        _first_missing = _missing_data[0]
+        return {
+            "rule_id": rule["id"],
+            "step_name": target.get("name"),
+            "ok": False,
+            "failed_at": "no_event_data",
+            "error": (
+                f"Activity event(s) {_missing_data} have no sample data. "
+                f"The schedule will produce 0 rows regardless of formula. "
+                f"The DSL formula is NOT broken — data is missing."
+            ),
+            "fix_hint": (
+                f"MANDATORY NEXT STEPS — in order:\n"
+                f"1. Call generate_sample_event_data(event_name='{_first_missing}', "
+                f"instrument_ids=['LOAN-001'], posting_dates=['2024-12-31']) "
+                f"for EACH missing event: {_missing_data}.\n"
+                f"2. Then call test_schedule_step again.\n"
+                f"DO NOT patch or update the schedule step formula — it is not "
+                f"broken. The only issue is absent sample data."
+            ),
+        }
+    # ── End early guard ────────────────────────────────────────────────────
+
     # Incremental column tests: replace the schedule step with one that has
     # only columns 1..k, then re-run. Fail fast on the first column that
     # errors out.
@@ -4906,6 +4984,7 @@ async def _auto_test_schedule_steps(rule: dict) -> list[dict]:
                 "failed_at": r.get("failed_at"),
                 "error": r.get("error"),
                 "failed_column": r.get("failed_column"),
+                "fix_hint": r.get("fix_hint"),
             })
         except ToolError as exc:
             results.append({"step_name": s.get("name"), "ok": False, "error": str(exc)})
@@ -5572,13 +5651,28 @@ async def tool_finish(args: dict) -> dict:
                 sched_results = []
             sched_failures = [r for r in sched_results if not r.get("ok")]
             if sched_failures:
+                no_data_failures = [r for r in sched_failures
+                                    if r.get("failed_at") == "no_event_data"]
+                formula_failures = [r for r in sched_failures
+                                    if r.get("failed_at") != "no_event_data"]
+                if no_data_failures:
+                    _hints = [r.get("fix_hint") for r in no_data_failures if r.get("fix_hint")]
+                    raise ToolError(
+                        f"Rule '{rule.get('name')}' has {len(no_data_failures)} "
+                        f"schedule step(s) with no sample event data. The formula "
+                        f"is NOT broken — data is missing. "
+                        + (_hints[0] if _hints else
+                           "Call generate_sample_event_data for each referenced "
+                           "activity event, then re-run test_schedule_step until "
+                           "ok=true BEFORE calling finish.")
+                    )
                 preview2 = "; ".join(
                     f"{r.get('step_name')}: "
                     f"{r.get('error') or 'failed'}"
-                    for r in sched_failures[:5]
+                    for r in formula_failures[:5]
                 )
                 raise ToolError(
-                    f"Rule '{rule.get('name')}' has {len(sched_failures)} "
+                    f"Rule '{rule.get('name')}' has {len(formula_failures)} "
                     f"schedule step(s) that fail their preview test: "
                     f"{preview2}. FIX each failing column/output via "
                     f"`update_step` and re-run `test_schedule_step` until "

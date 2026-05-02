@@ -1123,6 +1123,9 @@ async def run_agent(
     # appears N+ times we inject a nudge into the conversation.
     recent_errors: list[tuple[str, str]] = []
     nudge_already_sent_for: set[tuple[str, str]] = set()
+    # Soft-loop detector: track ok=False tool results (not ToolErrors) and
+    # alternating patch↔test cycles. Uses the last-N tool call names.
+    recent_tool_calls: list[str] = []   # last 10 successful tool call names
     # Track every rule the agent has touched (created/updated/added steps to)
     # during this run so `finish` can gate on ALL of them, not just one the
     # agent happens to pass an id for. Maps rule_id -> last-known name.
@@ -1335,6 +1338,70 @@ async def run_agent(
                                      "result_preview": obs[:1000]})
                     # Success — reset loop tracking for this tool
                     recent_errors = [e for e in recent_errors if e[0] != name]
+                    # ── Soft-loop detection ───────────────────────────────
+                    # Track this call name for alternating-cycle detection.
+                    recent_tool_calls.append(name)
+                    recent_tool_calls[:] = recent_tool_calls[-10:]
+                    # (A) ok=False result repeated 2+ times on the same tool
+                    if isinstance(result, dict) and result.get("ok") is False:
+                        _sfail_at = (result.get("failed_at") or
+                                     result.get("error") or "ok_false")
+                        _sfail_sig = _sfail_at[:60]
+                        _soft_key = (name, f"soft:{_sfail_sig}")
+                        recent_errors.append(_soft_key)
+                        recent_errors = recent_errors[-12:]
+                        _soft_count = sum(
+                            1 for e in recent_errors if e == _soft_key
+                        )
+                        if (_soft_count >= 2
+                                and _soft_key not in nudge_already_sent_for):
+                            nudge_already_sent_for.add(_soft_key)
+                            _fh = (result.get("fix_hint") or "")
+                            _soft_nudge = (
+                                f"SOFT-LOOP DETECTED: `{name}` has returned "
+                                f"ok=false (failed_at='{_sfail_sig}') "
+                                f"{_soft_count} times in a row. "
+                            )
+                            if _fh:
+                                _soft_nudge += f"The tool says: {_fh}"
+                            else:
+                                _soft_nudge += (
+                                    "Stop repeating the same call. "
+                                    "Try a different approach."
+                                )
+                            pending_nudge = (_soft_key[0], _soft_key[1],
+                                             _soft_nudge)
+                    # (B) patch/update → test_schedule_step alternating cycle
+                    _PATCH_TOOLS = {
+                        "patch_step", "update_step", "add_step_to_rule",
+                        "replace_schedule_column",
+                    }
+                    if len(recent_tool_calls) >= 4:
+                        _alts = sum(
+                            1 for _i in range(len(recent_tool_calls) - 1)
+                            if (recent_tool_calls[_i] in _PATCH_TOOLS
+                                and recent_tool_calls[_i + 1]
+                                == "test_schedule_step")
+                        )
+                        _cycle_key: tuple[str, str] = (
+                            "patch_test_cycle", "schedule_loop"
+                        )
+                        if (_alts >= 3
+                                and _cycle_key not in nudge_already_sent_for):
+                            nudge_already_sent_for.add(_cycle_key)
+                            pending_nudge = (
+                                _cycle_key[0], _cycle_key[1],
+                                "LOOP DETECTED: you have alternated between "
+                                "patching/updating the schedule step and calling "
+                                "test_schedule_step at least 3 times without "
+                                "convergence. The most common root cause is "
+                                "MISSING SAMPLE DATA, not a broken formula. "
+                                "MANDATORY: call generate_sample_event_data for "
+                                "each activity event referenced by the schedule "
+                                "step, then call test_schedule_step. "
+                                "Do NOT patch formulas again until you have data."
+                            )
+                    # ── End soft-loop detection ───────────────────────────
                     # Track rule-touching tools so the finish gate sees them.
                     _RULE_TOUCHING_TOOLS = {
                         "create_saved_rule", "update_saved_rule",
