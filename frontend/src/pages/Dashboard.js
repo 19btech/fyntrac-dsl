@@ -1048,9 +1048,16 @@ const Dashboard = () => {
                     setEditorMode('ruleBuilder');
                   }}
                   onEditSchedule={(sched) => {
-                    setEditingRule(sched);
-                    setEditingSchedule(null);
-                    setEditorMode('ruleBuilder');
+                    // Schedules are stored in db.saved_schedules and have no
+                    // visual editor mounted in this build — load their
+                    // generatedCode into the code editor so the user can at
+                    // least inspect / tweak / run them.
+                    setEditingRule(null);
+                    setEditingSchedule(sched);
+                    if (sched?.generatedCode) {
+                      setDslCode(sched.generatedCode);
+                    }
+                    setEditorMode('code');
                   }}
                   onPlayAll={(result) => {
                     setLastExecutionResult(result);

@@ -926,10 +926,18 @@ const AccountingRuleBuilder = ({ events, dslFunctions, transactionDefinitions, o
   // ── Output options ──
   // Transactions are first-class; the legacy `createTransaction` boolean is kept
   // for backward compat only — the UI now treats `transactions.length > 0` as truth.
-  const [outputs, setOutputs] = useState(
-    initialData?.outputs?.printResult !== undefined ? initialData.outputs :
-    { printResult: true, createTransaction: false, transactions: [] }
-  );
+  // NOTE: Always merge initialData.outputs (don't gate on `printResult`) — the
+  // agent's `add_transaction_to_rule` writes only `transactions` + `createTransaction`
+  // and never sets `printResult`, so the previous gated init silently dropped
+  // agent-added transactions when the rule was reopened.
+  const [outputs, setOutputs] = useState(() => {
+    const src = initialData?.outputs || {};
+    return {
+      printResult: src.printResult !== undefined ? src.printResult : true,
+      createTransaction: src.createTransaction ?? ((src.transactions || []).length > 0),
+      transactions: Array.isArray(src.transactions) ? src.transactions : [],
+    };
+  });
   const [inlineComment, setInlineComment] = useState(initialData?.inlineComment || false);
   const [commentText, setCommentText] = useState(initialData?.commentText || '');
 

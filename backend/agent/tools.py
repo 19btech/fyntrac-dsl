@@ -2642,7 +2642,22 @@ async def tool_create_saved_schedule(args: dict) -> dict:
         "updated_at": now,
     }
     await db.saved_schedules.insert_one(doc)
-    return {"schedule_id": doc["id"], "name": name, "priority": priority}
+    has_config = bool(args.get("config"))
+    return {
+        "schedule_id": doc["id"],
+        "name": name,
+        "priority": priority,
+        "next_action_hint": (
+            "Schedule saved. NOTE: this build has no standalone visual schedule "
+            "editor — clicking the schedule in the Rule Manager will open it in "
+            "the code editor showing its generatedCode. If the user needs a "
+            "visually-editable schedule, instead add a `stepType:'schedule'` "
+            "step to a saved rule via add_step_to_rule (with a populated "
+            "scheduleConfig)."
+            if not has_config
+            else "Schedule saved with config; safe for visual rendering."
+        ),
+    }
 
 
 async def tool_delete_saved_schedule(args: dict) -> dict:
