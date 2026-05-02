@@ -4,7 +4,7 @@ import {
   Box, Button, Dialog, DialogTitle, DialogContent, DialogActions,
   Typography, CircularProgress, Alert, Divider,
 } from "@mui/material";
-import { Upload, FileJson, FileSpreadsheet, CheckCircle2 } from "lucide-react";
+import { Upload, FileJson, CheckCircle2 } from "lucide-react";
 import { API } from "../config";
 
 const SLOTS = [
@@ -25,16 +25,6 @@ const SLOTS = [
     endpoint: "/import/event-configurations",
     hint: "JSON array of EventConfiguration objects → Event Definitions.",
     summary: (r) => `${r.count} event definition(s) loaded: ${(r.names || []).join(", ")}`,
-  },
-  {
-    key: "event_data",
-    label: "Event Data",
-    accept: ".xlsx,.xls",
-    Icon: FileSpreadsheet,
-    endpoint: "/import/event-data",
-    hint: "Excel workbook with one sheet per event (sheet name = event id).",
-    summary: (r) =>
-      `${r.total_rows} row(s) loaded across ${(r.events || []).length} event(s): ${(r.events || []).join(", ")}`,
   },
 ];
 

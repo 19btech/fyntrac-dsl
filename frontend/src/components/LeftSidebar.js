@@ -267,11 +267,6 @@ const LeftSidebar = ({ events, selectedEvent, onEventSelect, onDownloadEvents, o
               toast.success(`${data.count} event definition(s) loaded${names ? `: ${names}` : ''}.`);
               localStorage.setItem('uploadedEventFileName', 'EventConfigurations.json');
               window.dispatchEvent(new CustomEvent('dsl-event-def-loaded', { detail: { filename: 'EventConfigurations.json' } }));
-            } else if (slot === 'event_data') {
-              const events = (data.events || []).join(', ');
-              toast.success(`${data.total_rows} row(s) loaded${events ? ` across ${events}` : ''}.`);
-              localStorage.setItem('uploadedExcelFileName', 'EventData.xlsx');
-              window.dispatchEvent(new CustomEvent('dsl-event-data-imported', { detail: { filename: 'EventData.xlsx' } }));
             }
           } catch (e) {}
           if (onImportSuccess) onImportSuccess();
