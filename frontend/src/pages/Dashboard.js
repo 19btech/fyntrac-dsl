@@ -78,6 +78,8 @@ const Dashboard = () => {
   const chatAssistantRef = useRef(null);
   const editorRef = useRef(null);
   const monacoRef = useRef(null);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [chatCollapsed, setChatCollapsed] = useState(false);
   const toast = useToast();
   const { confirmProps, openConfirm, promptProps, openPrompt } = useAppDialog();
 
@@ -648,7 +650,7 @@ const Dashboard = () => {
   };
 
   return (
-    <div className="flex h-screen bg-[#F8F9FA] overflow-auto" style={{ minWidth: '1400px' }} data-testid="dashboard-container">
+    <div className="flex h-screen bg-[#F8F9FA] overflow-auto" style={{ minWidth: '900px' }} data-testid="dashboard-container">
       {/* Left Sidebar */}
         <div className="sidebar-enter">
         <LeftSidebar 
@@ -657,6 +659,8 @@ const Dashboard = () => {
           onEventSelect={setSelectedEvent}
           onDownloadEvents={handleDownloadEvents}
           onViewEventData={() => setShowEventDataViewer(true)}
+          collapsed={sidebarCollapsed}
+          onToggleCollapsed={() => setSidebarCollapsed(c => !c)}
           onImportSuccess={() => {
             loadEvents();
             window.dispatchEvent(new CustomEvent('dsl-event-data-refresh'));
@@ -1115,6 +1119,8 @@ const Dashboard = () => {
               ref={chatAssistantRef}
               dslFunctions={dslFunctions} 
               events={events}
+              collapsed={chatCollapsed}
+              onToggleCollapsed={() => setChatCollapsed(c => !c)}
               onInsertCode={(code) => setDslCode(prev => prev + "\n" + code)}
               onOverwriteCode={(code) => setDslCode(code)}
               editorCode={dslCode}

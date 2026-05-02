@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect, useCallback } from "react";
 import { useToast } from "./ToastProvider";
-import { Send, RotateCcw, AlertTriangle, Square, Sparkles, Bot, MessageSquare } from "lucide-react";
+import { Send, RotateCcw, AlertTriangle, Square, Sparkles, Bot, MessageSquare, PanelRightClose, PanelRightOpen } from "lucide-react";
 import ModelSelector from "./ModelSelector";
 import AgentMessage from "./agent/AgentMessage";
 import AgentRunMessage from "./agent/AgentRunMessage";
@@ -8,7 +8,7 @@ import { runAgentPipeline, generateMessageId } from "../agent/agentPipeline";
 import { detectFunctionMention, getExplanation, formatForChat, detectConceptMention, getConcept, formatConceptForChat } from "../agent/testing/explanationStore";
 import "./ChatAssistant.css";
 
-const ChatAssistantComponent = ({ dslFunctions, events, onInsertCode, onOverwriteCode, editorCode, consoleOutput, editorRef, monacoRef, providerRefreshKey, uiContext, onAgentDataChange }, ref) => {
+const ChatAssistantComponent = ({ dslFunctions, events, onInsertCode, onOverwriteCode, editorCode, consoleOutput, editorRef, monacoRef, providerRefreshKey, uiContext, onAgentDataChange, collapsed = false, onToggleCollapsed }, ref) => {
   const toast = useToast();
 
   const [messages, setMessages] = useState(() => {
@@ -232,7 +232,42 @@ const ChatAssistantComponent = ({ dslFunctions, events, onInsertCode, onOverwrit
   };
 
   return (
-    <div className="vsc-chat" data-testid="chat-assistant">
+    collapsed ? (
+      <div
+        className="vsc-chat vsc-chat-collapsed"
+        data-testid="chat-assistant-collapsed"
+        style={{
+          width: 44,
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'center',
+          padding: '8px 0',
+          gap: 8,
+          transition: 'width 200ms ease',
+        }}
+      >
+        <button
+          className="vsc-icon-btn"
+          onClick={onToggleCollapsed}
+          title="Expand AI Assistant"
+          aria-label="Expand AI Assistant"
+        >
+          <PanelRightOpen size={18} />
+        </button>
+        <div title="AI Assistant" style={{ color: '#6C757D', marginTop: 4 }}>
+          <Sparkles size={18} />
+        </div>
+        {messages.filter(m => !m._hidden).length > 0 && (
+          <div
+            title={`${messages.filter(m => !m._hidden).length} message(s)`}
+            style={{ color: '#6C757D', marginTop: 4 }}
+          >
+            <MessageSquare size={16} />
+          </div>
+        )}
+      </div>
+    ) : (
+    <div className="vsc-chat" data-testid="chat-assistant" style={{ transition: 'width 200ms ease' }}>
       {/* Header - Fyntrac style */}
       <div className="vsc-chat-header">
         <div className="vsc-header-left">
@@ -241,11 +276,23 @@ const ChatAssistantComponent = ({ dslFunctions, events, onInsertCode, onOverwrit
           </div>
           <span className="vsc-chat-title">AI Assistant</span>
         </div>
-        {messages.filter(m => !m._hidden).length > 0 && (
-          <button className="vsc-icon-btn" onClick={handleClearChat} title="New conversation" disabled={loading}>
-            <RotateCcw size={14} />
-          </button>
-        )}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+          {messages.filter(m => !m._hidden).length > 0 && (
+            <button className="vsc-icon-btn" onClick={handleClearChat} title="New conversation" disabled={loading}>
+              <RotateCcw size={14} />
+            </button>
+          )}
+          {onToggleCollapsed && (
+            <button
+              className="vsc-icon-btn"
+              onClick={onToggleCollapsed}
+              title="Collapse AI Assistant"
+              aria-label="Collapse AI Assistant"
+            >
+              <PanelRightClose size={14} />
+            </button>
+          )}
+        </div>
       </div>
 
       {/* Messages */}
@@ -399,6 +446,7 @@ const ChatAssistantComponent = ({ dslFunctions, events, onInsertCode, onOverwrit
         </div>
       </div>
     </div>
+    )
   );
 };
 

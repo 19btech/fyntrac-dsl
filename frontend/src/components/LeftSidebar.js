@@ -1,6 +1,6 @@
 import React from "react";
 import { Box, Button, Card, Collapse, List, ListItemButton, ListItemIcon, ListItemText, Tooltip, IconButton } from '@mui/material';
-import { FileText, RefreshCw, ChevronDown, ChevronRight, Upload, Eye } from "lucide-react";
+import { FileText, RefreshCw, ChevronDown, ChevronRight, ChevronLeft, Upload, Eye, PanelLeftClose, PanelLeftOpen } from "lucide-react";
 import { useToast } from "./ToastProvider";
 import ImportEventsModal from "./ImportEventsModal";
 
@@ -11,7 +11,7 @@ const formatDataType = (dt) => {
 const formatEventTable = (t) => t;
 const formatEventType = (t) => t;
 
-const LeftSidebar = ({ events, selectedEvent, onEventSelect, onDownloadEvents, onImportSuccess, onViewEventData }) => {
+const LeftSidebar = ({ events, selectedEvent, onEventSelect, onDownloadEvents, onImportSuccess, onViewEventData, collapsed = false, onToggleCollapsed }) => {
   const [expandedEvent, setExpandedEvent] = React.useState(null);
   const [importModalOpen, setImportModalOpen] = React.useState(false);
   const toast = useToast();
@@ -19,6 +19,36 @@ const LeftSidebar = ({ events, selectedEvent, onEventSelect, onDownloadEvents, o
   const toggleExpand = (eventName) => {
     setExpandedEvent(prev => (prev === eventName ? null : eventName));
   };
+
+  if (collapsed) {
+    return (
+      <Box
+        sx={{
+          width: 44,
+          bgcolor: '#FFFFFF',
+          borderRight: '1px solid #E9ECEF',
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'center',
+          height: '100vh',
+          py: 1,
+          transition: 'width 200ms ease',
+        }}
+        data-testid="left-sidebar-collapsed"
+      >
+        <Tooltip title="Expand events panel" placement="right">
+          <IconButton size="small" onClick={onToggleCollapsed} aria-label="Expand sidebar">
+            <PanelLeftOpen size={18} />
+          </IconButton>
+        </Tooltip>
+        <Tooltip title={`${events?.length || 0} events`} placement="right">
+          <Box sx={{ mt: 1, color: '#6C757D' }}>
+            <FileText size={18} />
+          </Box>
+        </Tooltip>
+      </Box>
+    );
+  }
 
   return (
     <Box 
@@ -28,10 +58,31 @@ const LeftSidebar = ({ events, selectedEvent, onEventSelect, onDownloadEvents, o
         borderRight: '1px solid #E9ECEF', 
         display: 'flex', 
         flexDirection: 'column',
-        height: '100vh'
+        height: '100vh',
+        transition: 'width 200ms ease',
+        position: 'relative',
       }} 
       data-testid="left-sidebar"
     >
+      {onToggleCollapsed && (
+        <Tooltip title="Collapse events panel" placement="right">
+          <IconButton
+            size="small"
+            onClick={onToggleCollapsed}
+            aria-label="Collapse sidebar"
+            sx={{
+              position: 'absolute',
+              top: 8,
+              right: 4,
+              zIndex: 2,
+              bgcolor: 'rgba(255,255,255,0.85)',
+              '&:hover': { bgcolor: '#F1F3F5' },
+            }}
+          >
+            <PanelLeftClose size={16} />
+          </IconButton>
+        </Tooltip>
+      )}
       <Box sx={{ p: 3, borderBottom: '1px solid #E9ECEF', display: 'flex', justifyContent: 'center' }}>
         <img
           src={process.env.PUBLIC_URL + '/logo.png'}
