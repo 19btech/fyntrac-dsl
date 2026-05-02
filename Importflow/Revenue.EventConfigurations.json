@@ -1,0 +1,215 @@
+[{
+  "_id": {
+    "$oid": "69133f0b2192e4551b0dc217"
+  },
+  "eventId": "REV",
+  "eventName": "Revenue Event",
+  "eventPriority": 1,
+  "description": "To calculate revenue for each event",
+  "triggerSetup": {
+    "triggerType": "ON_MODEL_EXECUTION",
+    "triggerCondition": "",
+    "triggerSource": []
+  },
+  "sourceMappings": [
+    {
+      "sourceTable": "ATTRIBUTE",
+      "sourceColumns": [
+        {
+          "label": "PRODUCT_ID",
+          "value": "PRODUCT_ID"
+        },
+        {
+          "label": "ITEM_STARTDATE",
+          "value": "ITEM_STARTDATE"
+        },
+        {
+          "label": "ITEM_ENDDATE",
+          "value": "ITEM_ENDDATE"
+        },
+        {
+          "label": "SALE_PRICE",
+          "value": "SALE_PRICE"
+        },
+        {
+          "label": "QUANTITY",
+          "value": "QUANTITY"
+        }
+      ],
+      "versionType": [
+        {
+          "label": "Current",
+          "value": "Current"
+        }
+      ],
+      "dataMapping": [],
+      "fieldType": "NONE"
+    }
+  ],
+  "createdBy": "67171f54dcbd9e7e9a527801",
+  "updatedBy": "67171f54dcbd9e7e9a527801",
+  "isActive": true,
+  "isDeleted": false,
+  "_class": "com.fyntrac.common.entity.EventConfiguration"
+},
+{
+  "_id": {
+    "$oid": "69133f7f2192e4551b0dc218"
+  },
+  "eventId": "INV",
+  "eventName": "Invoice Event",
+  "eventPriority": 2,
+  "description": "To calculate Deferred Revenue",
+  "triggerSetup": {
+    "triggerType": "ON_TRANSACTION_POST",
+    "triggerCondition": "",
+    "triggerSource": [
+      {
+        "label": "NEW_BILLING",
+        "value": "NEW_BILLING"
+      },
+      {
+        "label": "CREDIT_NOTE",
+        "value": "CREDIT_NOTE"
+      }
+    ]
+  },
+  "sourceMappings": [
+    {
+      "sourceTable": "TRANSACTIONS",
+      "sourceColumns": [
+        {
+          "label": "Amount",
+          "value": "Amount"
+        }
+      ],
+      "versionType": [],
+      "dataMapping": [
+        {
+          "label": "NEW_BILLING",
+          "value": "NEW_BILLING"
+        },
+        {
+          "label": "CREDIT_NOTE",
+          "value": "CREDIT_NOTE"
+        }
+      ],
+      "fieldType": "AGGREGATED"
+    }
+  ],
+  "createdBy": "67171f54dcbd9e7e9a527801",
+  "updatedBy": "67171f54dcbd9e7e9a527801",
+  "isActive": true,
+  "isDeleted": false,
+  "_class": "com.fyntrac.common.entity.EventConfiguration"
+},
+{
+  "_id": {
+    "$oid": "69133fd42192e4551b0dc219"
+  },
+  "eventId": "EOD",
+  "eventName": "End of Day Event",
+  "eventPriority": 3,
+  "description": "Calculate End of Day Activities",
+  "triggerSetup": {
+    "triggerType": "ON_MODEL_EXECUTION",
+    "triggerCondition": "",
+    "triggerSource": []
+  },
+  "sourceMappings": [
+    {
+      "sourceTable": "BALANCES",
+      "sourceColumns": [
+        {
+          "label": "EndingBalance",
+          "value": "EndingBalance"
+        }
+      ],
+      "versionType": [],
+      "dataMapping": [
+        {
+          "label": "BILLING",
+          "value": "BILLING"
+        },
+        {
+          "label": "UNBILLED",
+          "value": "UNBILLED"
+        },
+        {
+          "label": "REVENUE",
+          "value": "REVENUE"
+        },
+        {
+          "label": "DEFERRED_REVENUE",
+          "value": "DEFERRED_REVENUE"
+        }
+      ],
+      "fieldType": "NONE"
+    }
+  ],
+  "updatedAt": {
+    "$date": "2025-11-17T19:11:28.325Z"
+  },
+  "createdBy": "67171f54dcbd9e7e9a527801",
+  "updatedBy": "67171f54dcbd9e7e9a527802",
+  "isActive": true,
+  "isDeleted": false,
+  "_class": "com.fyntrac.common.entity.EventConfiguration"
+},
+{
+  "_id": {
+    "$oid": "6940ee6c02e0500bad25b08f"
+  },
+  "eventId": "CATALOG",
+  "eventName": "Product Catalog",
+  "eventPriority": 5,
+  "description": "",
+  "triggerSetup": {
+    "triggerType": "ON_CUSTOM_DATA_TRIGGER",
+    "triggerCondition": "",
+    "triggerSource": [
+      {
+        "label": "Reference Table",
+        "value": "reference_table"
+      }
+    ]
+  },
+  "sourceMappings": [
+    {
+      "sourceTable": "CATALOG",
+      "sourceColumns": [
+        {
+          "label": "ProductId",
+          "value": "ProductId"
+        },
+        {
+          "label": "ProductName",
+          "value": "ProductName"
+        },
+        {
+          "label": "SSP",
+          "value": "SSP"
+        },
+        {
+          "label": "RevRec_Method",
+          "value": "RevRec_Method"
+        },
+        {
+          "label": "Amount",
+          "value": "Amount"
+        }
+      ],
+      "versionType": [],
+      "dataMapping": [],
+      "fieldType": "NONE"
+    }
+  ],
+  "updatedAt": {
+    "$date": "2025-12-16T06:32:45.863Z"
+  },
+  "createdBy": "67171f54dcbd9e7e9a527801",
+  "updatedBy": "67171f54dcbd9e7e9a527801",
+  "isActive": true,
+  "isDeleted": false,
+  "_class": "com.fyntrac.common.entity.EventConfiguration"
+}]

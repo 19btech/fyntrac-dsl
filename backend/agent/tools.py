@@ -1257,6 +1257,26 @@ async def tool_dry_run_template(args: dict) -> dict:
                 f"issue' or 'registration' problem."
             )
 
+    # Hard next-action when the rule declared transactions but emitted none.
+    # `sanity_warnings` alone is too easy for the agent to ignore — surface
+    # it as a structured imperative so rule #19 (NEVER STOP ON …) fires.
+    next_action = None
+    if len(txn_dicts) == 0 and declared_total > 0:
+        next_action = (
+            "ZERO_TRANSACTIONS_BUT_DECLARED: dry-run produced 0 transactions "
+            "even though the rule(s) declare {n} in outputs.transactions[]. "
+            "DO NOT finish and DO NOT ask the user. Required next step: "
+            "(1) call `debug_step` on the calc step that holds each "
+            "transaction's `amount` to see what value it evaluates to; "
+            "(2) if it evaluates to 0/None, regenerate sample event data "
+            "with field_hints that force the upstream inputs to non-zero "
+            "values (e.g. for ECL: ensure ecl_delta > 0 between successive "
+            "posting dates by varying pd/lgd/ead, or pre-seed prior_ecl < "
+            "current_ecl); (3) if a condition gate is the culprit, relax "
+            "or fix the gate; (4) re-run dry_run_template. Iterate until "
+            "transaction_count > 0."
+        ).format(n=declared_total)
+
     return {
         "template_id": template.get("id"),
         "template_name": template.get("name"),
@@ -1270,6 +1290,7 @@ async def tool_dry_run_template(args: dict) -> dict:
         "sample_transactions": txn_dicts[:sample_limit],
         "print_outputs": (result.get("print_outputs") or [])[:10],
         "sanity_warnings": sanity_warnings,
+        "next_action": next_action,
     }
 
 
@@ -2335,8 +2356,24 @@ async def tool_update_step(args: dict) -> dict:
     rule = await _load_rule((args.get("rule_id") or "").strip())
     idx = _resolve_step_index(rule, args)
     patch = args.get("patch") or {}
+    # Auto-wrap: weaker models (gpt-4.1-mini) reliably forget the nested
+    # `patch` envelope and emit step fields at the top level. Accept both.
     if not isinstance(patch, dict) or not patch:
-        raise ToolError("patch must be a non-empty object")
+        _STEP_FIELDS = {
+            "name", "stepType", "source", "formula", "value", "eventField",
+            "collectType", "conditions", "elseFormula", "iterations",
+            "scheduleConfig", "outputVars", "inlineComment", "commentText",
+            "printResult",
+        }
+        flat = {k: v for k, v in (args or {}).items() if k in _STEP_FIELDS}
+        if flat:
+            patch = flat
+        else:
+            raise ToolError(
+                "patch must be a non-empty object. Pass step fields either "
+                "wrapped as `patch={...}` OR at the top level alongside "
+                "rule_id/step_name (e.g. {rule_id, step_name, formula})."
+            )
     merged = {**rule["steps"][idx], **patch}
     merged = _validate_step_shape(merged)
     rule["steps"][idx] = merged

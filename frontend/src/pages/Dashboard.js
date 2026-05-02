@@ -1129,7 +1129,7 @@ const Dashboard = () => {
               editorRef={editorRef}
               monacoRef={monacoRef}
               providerRefreshKey={providerRefreshKey}
-              onAgentDataChange={(toolName) => {
+              onAgentDataChange={(toolName, ev) => {
                 // Agent just mutated server state — refresh affected panels.
                 try { loadEvents(); } catch (_) {}
                 try { loadTemplates(); } catch (_) {}
@@ -1139,6 +1139,17 @@ const Dashboard = () => {
                 try { setSavedRulesRefreshKey(k => k + 1); } catch (_) {}
                 try { loadCombinedCode(); } catch (_) {}
                 try { window.dispatchEvent(new CustomEvent('dsl-templates-changed', { detail: { source: 'agent', tool: toolName } })); } catch (_) {}
+                // Targeted refresh for an open Rule Builder when the agent
+                // mutated a specific rule (add_transaction_to_rule, update_step,
+                // add_step_to_rule, delete_step, update_saved_rule, ...).
+                try {
+                  const ruleId = ev?.result?.rule_id || ev?.args?.rule_id || null;
+                  if (ruleId) {
+                    window.dispatchEvent(new CustomEvent('dsl-rule-changed', {
+                      detail: { rule_id: ruleId, tool: toolName, source: 'agent' },
+                    }));
+                  }
+                } catch (_) {}
                 addConsoleLog(`Agent updated: ${toolName}`, "info");
               }}
               uiContext={{

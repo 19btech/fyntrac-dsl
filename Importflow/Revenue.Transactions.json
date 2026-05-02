@@ -1,0 +1,40 @@
+[{
+  "_id": {
+    "$oid": "69f5151dc0f24468835336f6"
+  },
+  "name": "UNBILLED_CHARGE",
+  "exclusive": 1,
+  "isGL": 1,
+  "isReplayable": 0,
+  "_class": "com.fyntrac.common.entity.Transactions"
+},
+{
+  "_id": {
+    "$oid": "69f5151dc0f24468835336f7"
+  },
+  "name": "REVENUE",
+  "exclusive": 1,
+  "isGL": 1,
+  "isReplayable": 0,
+  "_class": "com.fyntrac.common.entity.Transactions"
+},
+{
+  "_id": {
+    "$oid": "69f5151dc0f24468835336f8"
+  },
+  "name": "NEW_BILLING",
+  "exclusive": 1,
+  "isGL": 1,
+  "isReplayable": 0,
+  "_class": "com.fyntrac.common.entity.Transactions"
+},
+{
+  "_id": {
+    "$oid": "69f5151dc0f24468835336f9"
+  },
+  "name": "CREDIT_NOTE",
+  "exclusive": 1,
+  "isGL": 1,
+  "isReplayable": 0,
+  "_class": "com.fyntrac.common.entity.Transactions"
+}]

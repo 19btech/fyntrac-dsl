@@ -220,7 +220,7 @@ const AgentRunMessage = ({ task, model, autoApproveDestructive = false, onComple
                     return next;
                   });
                   if (ev.type === "tool_done" && MUTATING_TOOLS.has(ev.name)) {
-                    try { onAgentDataChangeRef.current?.(ev.name); } catch (_) {}
+                    try { onAgentDataChangeRef.current?.(ev.name, ev); } catch (_) {}
                   }
                 }
                 if (ev.type === "final") {

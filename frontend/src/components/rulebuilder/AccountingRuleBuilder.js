@@ -944,6 +944,41 @@ const AccountingRuleBuilder = ({ events, dslFunctions, transactionDefinitions, o
   const [savedRulesVarNames, setSavedRulesVarNames] = useState([]);
   const [savedRulesVars, setSavedRulesVars] = useState([]);
   const [savedRulesRaw, setSavedRulesRaw] = useState([]);
+
+  // ── Listen for agent-driven rule mutations and re-fetch the open rule.
+  // Fixes the "Transactions panel stays empty even though the agent added
+  // 6 entries" bug — the agent writes straight to the DB, the open builder
+  // never knew about it.
+  useEffect(() => {
+    if (!ruleId) return undefined;
+    const handler = async (evt) => {
+      try {
+        const detail = evt?.detail || {};
+        if (detail.rule_id && detail.rule_id !== ruleId) return;
+        const res = await fetch(`${API}/saved-rules/${ruleId}`);
+        if (!res.ok) return;
+        const fresh = await res.json();
+        if (!fresh || !fresh.id) return;
+        setRuleName(fresh.name || '');
+        setRulePriority(fresh.priority ?? '');
+        setInlineComment(!!fresh.inlineComment);
+        setCommentText(fresh.commentText || '');
+        if (fresh.outputs && fresh.outputs.printResult !== undefined) {
+          setOutputs(fresh.outputs);
+        } else if (fresh.outputs) {
+          setOutputs({
+            printResult: fresh.outputs.printResult ?? true,
+            createTransaction: fresh.outputs.createTransaction ?? false,
+            transactions: fresh.outputs.transactions || [],
+          });
+        }
+        setSteps(convertInitialDataToSteps(fresh));
+      } catch (_) { /* ignore */ }
+    };
+    window.addEventListener('dsl-rule-changed', handler);
+    return () => window.removeEventListener('dsl-rule-changed', handler);
+  }, [ruleId]);
+
   useEffect(() => {
     (async () => {
       try {
