@@ -208,6 +208,19 @@ _FIELD_HEURISTICS: list[tuple[Callable[[str], bool], dict, str | None]] = [
     (lambda n: n.endswith("_amount") or n.endswith("amount") or n == "amount",
         {"range": (100.0, 100_000.0), "decimals": 2}, "decimal"),
     # --- Counts & terms --------------------------------------------------
+    # IMPORTANT: useful_life / asset_life / depreciation_years and friends
+    # MUST be matched BEFORE the generic 'term_months' / 'term' / 'tenor'
+    # patterns. Without this guard the agent has been seen to generate
+    # 74,180-year asset lives, which propagate into add_months() and blow
+    # the date arithmetic past the proleptic Gregorian range.
+    (lambda n: _name_match(n, "useful_life_months", "life_months",
+                            "asset_life_months", "depreciation_months",
+                            "amortization_months", "amortisation_months"),
+        {"range": (12, 480)}, "integer"),
+    (lambda n: _name_match(n, "useful_life", "asset_life", "life_years",
+                            "depreciation_years", "amortization_years",
+                            "amortisation_years"),
+        {"range": (3, 40)}, "integer"),
     (lambda n: _name_match(n, "term_months", "tenor_months", "n_periods", "num_periods"),
         {"range": (12, 360)}, "integer"),
     (lambda n: _name_match(n, "term", "tenor"),
@@ -252,6 +265,19 @@ _SANITY_BOUNDS: list[tuple[Callable[[str], bool], tuple[float, float], str]] = [
         (0.0, 1.0), "annualised rate fields must be in [0, 1] (5% = 0.05, NOT 5)"),
     (lambda n: _name_match(n, "principal", "notional", "balance", "ead", "exposure"),
         (0.0, 1_000_000_000.0), "principal/balance must be < $1B per row"),
+    # Asset / loan life caps. Without these, a hint of (1, 100000) on
+    # `useful_life_years` produces dates beyond year 9999 when fed into
+    # add_months / add_years. Cap years at 100, months at 1200.
+    (lambda n: _name_match(n, "useful_life_years", "asset_life", "life_years",
+                            "term_years", "tenor_years",
+                            "depreciation_years", "amortization_years",
+                            "amortisation_years"),
+        (0.0, 100.0), "asset/loan life in YEARS must be in [0, 100]"),
+    (lambda n: _name_match(n, "useful_life_months", "life_months",
+                            "asset_life_months", "term_months", "tenor_months",
+                            "depreciation_months", "amortization_months",
+                            "amortisation_months", "n_periods", "num_periods"),
+        (0.0, 1200.0), "asset/loan life in MONTHS must be in [0, 1200]"),
 ]
 
 
@@ -1687,43 +1713,97 @@ def _validate_schedule_step_shape(name: str, sc: dict, outputVars: list) -> tupl
         )
     sc["convention"] = convention
 
+    # Aggregate errors so the agent sees ALL schedule-config problems in one
+    # turn instead of one-error-per-round-trip. Synonym aliases (eg. the
+    # agent setting `startDateSource='event_field'`) and obvious source-kind
+    # mismatches (eg. value="EVENTNAME.field" → coerce to field) are silently
+    # rewritten before validation so the agent doesn't burn a turn on each.
+    errs: list[str] = []
+
+    _SOURCE_ALIASES = {
+        "event_field": "field", "eventfield": "field",
+        "event": "field", "col": "field", "column": "field",
+        "expr": "formula", "expression": "formula",
+        "calc": "formula", "compute": "formula",
+        "literal": "value", "const": "value", "constant": "value",
+    }
+    _CALL_HINT_RE = re.compile(r"[A-Za-z_]\w*\s*\(")
+
     def _check_tri_source(prefix: str) -> None:
-        """One of value / field / formula must yield a non-empty expression."""
-        src = (sc.get(f"{prefix}Source") or "value").strip()
+        """One of value / field / formula must yield a non-empty expression.
+        Auto-coerces the obvious agent mistakes:
+          - source='value' but the value is 'EVENTNAME.field'  -> field
+          - source='value' but the value contains 'foo(...)'   -> formula
+          - source aliases like 'event_field', 'expression'    -> canonical
+        Errors are appended to the outer `errs` list so the agent sees
+        every problem in one round-trip.
+        """
+        raw_src = (sc.get(f"{prefix}Source") or "value").strip()
+        src = _SOURCE_ALIASES.get(raw_src.lower(), raw_src)
         if src not in _VALID_SOURCE_TYPES:
-            raise ToolError(
-                f"step '{name}': scheduleConfig.{prefix}Source='{src}' is "
-                f"invalid. Must be one of {sorted(_VALID_SOURCE_TYPES)}."
+            errs.append(
+                f"scheduleConfig.{prefix}Source='{raw_src}' is invalid. "
+                f"Must be one of {sorted(_VALID_SOURCE_TYPES)} "
+                f"(value | field | formula)."
             )
+            return
+        # Auto-coerce 'value' -> 'field' or 'formula' when the literal value
+        # is obviously the wrong kind.
+        if src == "value":
+            v = sc.get(prefix)
+            if isinstance(v, str):
+                vs = v.strip()
+                if _CALL_HINT_RE.search(vs):
+                    src = "formula"
+                    sc[f"{prefix}Formula"] = vs
+                    sc[prefix] = None
+                elif (
+                    "." in vs
+                    and " " not in vs
+                    and re.fullmatch(r"[A-Za-z_]\w*\.[A-Za-z_]\w*", vs)
+                ):
+                    src = "field"
+                    sc[f"{prefix}Field"] = vs
+                    sc[prefix] = None
         sc[f"{prefix}Source"] = src
         if src == "value":
             v = sc.get(prefix)
             if v in (None, ""):
-                raise ToolError(
-                    f"step '{name}': scheduleConfig.{prefix} is required when "
-                    f"{prefix}Source='value'."
+                errs.append(
+                    f"scheduleConfig.{prefix} is required when "
+                    f"{prefix}Source='value'. Set {prefix}=<literal>, "
+                    f"OR switch {prefix}Source to 'field' (then set "
+                    f"{prefix}Field='EVENTNAME.fieldname') or 'formula' "
+                    f"(then set {prefix}Formula='<DSL expression>')."
                 )
         elif src == "field":
             v = (sc.get(f"{prefix}Field") or "").strip()
             if not v:
-                raise ToolError(
-                    f"step '{name}': scheduleConfig.{prefix}Field is required "
-                    f"when {prefix}Source='field'."
+                errs.append(
+                    f"scheduleConfig.{prefix}Field is required when "
+                    f"{prefix}Source='field'. Use 'EVENTNAME.fieldname'."
                 )
-            if "." not in v:
-                raise ToolError(
-                    f"step '{name}': scheduleConfig.{prefix}Field='{v}' must "
-                    f"be 'EVENTNAME.fieldname'."
+            elif "." not in v:
+                errs.append(
+                    f"scheduleConfig.{prefix}Field='{v}' must be "
+                    f"'EVENTNAME.fieldname'. Bare field names are not "
+                    f"resolved by the schedule engine."
                 )
         elif src == "formula":
             v = (sc.get(f"{prefix}Formula") or "").strip()
             if not v:
-                raise ToolError(
-                    f"step '{name}': scheduleConfig.{prefix}Formula is "
-                    f"required when {prefix}Source='formula'."
+                errs.append(
+                    f"scheduleConfig.{prefix}Formula is required when "
+                    f"{prefix}Source='formula'."
                 )
-            _enforce_dsl_guardrails(v)
-            _check_formula_expression(v, where=f"step '{name}'.scheduleConfig.{prefix}Formula")
+            else:
+                try:
+                    _enforce_dsl_guardrails(v)
+                    _check_formula_expression(
+                        v, where=f"step '{name}'.scheduleConfig.{prefix}Formula"
+                    )
+                except ToolError as e:
+                    errs.append(str(e))
 
     if period_type == "date":
         _check_tri_source("startDate")
@@ -1733,31 +1813,34 @@ def _validate_schedule_step_shape(name: str, sc: dict, outputVars: list) -> tupl
 
     cols = sc.get("columns") or []
     if not cols:
-        raise ToolError(
-            f"step '{name}': scheduleConfig.columns is empty. A schedule "
-            f"must have at least one column. Each column needs "
-            f"{{name, formula}}. Built-in identifiers available inside "
-            f"column formulas: {sorted(_SCHEDULE_COLUMN_BUILTINS)}."
+        errs.append(
+            "scheduleConfig.columns is empty. A schedule must have at "
+            f"least one column. Each column needs {{name, formula}}. "
+            f"Built-in identifiers available inside column formulas: "
+            f"{sorted(_SCHEDULE_COLUMN_BUILTINS)}."
         )
     seen_col_names: set[str] = set()
     for c in cols:
         cname = (c.get("name") or "").strip()
         formula = (c.get("formula") or "").strip()
         if not cname or not formula:
-            raise ToolError(
-                f"step '{name}': every schedule column needs a non-empty "
-                f"name + formula. Got name={cname!r}, formula={formula!r}."
+            errs.append(
+                "every schedule column needs a non-empty name + formula. "
+                f"Got name={cname!r}, formula={formula!r}."
             )
+            continue
         if cname in seen_col_names:
-            raise ToolError(
-                f"step '{name}': duplicate schedule column name '{cname}'."
-            )
+            errs.append(f"duplicate schedule column name '{cname}'.")
+            continue
         seen_col_names.add(cname)
-        _enforce_dsl_guardrails(formula)
-        _check_formula_expression(
-            formula,
-            where=f"step '{name}'.scheduleConfig.columns['{cname}'].formula",
-        )
+        try:
+            _enforce_dsl_guardrails(formula)
+            _check_formula_expression(
+                formula,
+                where=f"step '{name}'.scheduleConfig.columns['{cname}'].formula",
+            )
+        except ToolError as e:
+            errs.append(str(e))
 
     # Auto-derive contextVars: any identifier used in a column formula that
     # is NOT a built-in, NOT a DSL function name, and NOT another column
@@ -1796,37 +1879,46 @@ def _validate_schedule_step_shape(name: str, sc: dict, outputVars: list) -> tupl
     seen_out_names: set[str] = set()
     for ov in outputVars or []:
         if not isinstance(ov, dict):
-            raise ToolError(f"step '{name}': each outputVar must be an object")
+            errs.append("each outputVar must be an object")
+            continue
         ov_name = (ov.get("name") or "").strip()
         ov_type = (ov.get("type") or "").strip()
         if not ov_name:
-            raise ToolError(f"step '{name}': outputVar.name is required")
+            errs.append("outputVar.name is required")
+            continue
         if not ov_name.replace("_", "").isalnum() or ov_name[:1].isdigit():
-            raise ToolError(
-                f"step '{name}': outputVar.name='{ov_name}' must be a valid "
-                f"Python identifier."
+            errs.append(
+                f"outputVar.name='{ov_name}' must be a valid Python identifier."
             )
+            continue
         if ov_name in seen_out_names:
-            raise ToolError(f"step '{name}': duplicate outputVar name '{ov_name}'")
+            errs.append(f"duplicate outputVar name '{ov_name}'")
+            continue
         seen_out_names.add(ov_name)
         if ov_type not in _VALID_OUTPUT_VAR_TYPES:
-            raise ToolError(
-                f"step '{name}': outputVar '{ov_name}'.type='{ov_type}' is "
-                f"invalid. Must be one of {sorted(_VALID_OUTPUT_VAR_TYPES)}: "
+            errs.append(
+                f"outputVar '{ov_name}'.type='{ov_type}' is invalid. "
+                f"Must be one of {sorted(_VALID_OUTPUT_VAR_TYPES)}: "
                 f"first / last / sum / column / filter."
             )
+            continue
         col = (ov.get("column") or "").strip()
         if not col:
-            raise ToolError(
-                f"step '{name}': outputVar '{ov_name}' (type={ov_type}) needs "
-                f"a `column` referring to one of {sorted(seen_col_names)}."
+            errs.append(
+                f"outputVar '{ov_name}' (type={ov_type}) needs a `column` "
+                f"referring to one of {sorted(seen_col_names)}."
             )
+            continue
         if col not in seen_col_names:
-            raise ToolError(
-                f"step '{name}': outputVar '{ov_name}'.column='{col}' does "
-                f"not match any defined schedule column. Defined columns: "
-                f"{sorted(seen_col_names)}."
+            import difflib as _dl
+            sug = _dl.get_close_matches(col, sorted(seen_col_names), n=2, cutoff=0.5)
+            hint = f" Did you mean: {', '.join(sug)}?" if sug else ""
+            errs.append(
+                f"outputVar '{ov_name}'.column='{col}' does not match any "
+                f"defined schedule column. Defined columns: "
+                f"{sorted(seen_col_names)}.{hint}"
             )
+            continue
         entry: dict = {"name": ov_name, "type": ov_type, "column": col}
         if ov_type == "filter":
             mc = (ov.get("matchCol") or "").strip()
@@ -1834,13 +1926,20 @@ def _validate_schedule_step_shape(name: str, sc: dict, outputVars: list) -> tupl
             if mv is not None:
                 mv = str(mv).strip()
             if not mc or mv in (None, ""):
-                raise ToolError(
-                    f"step '{name}': outputVar '{ov_name}' (type=filter) "
-                    f"requires both matchCol and matchValue."
+                errs.append(
+                    f"outputVar '{ov_name}' (type=filter) requires both "
+                    f"matchCol and matchValue."
                 )
+                continue
             entry["matchCol"] = mc
             entry["matchValue"] = mv
         norm_outs.append(entry)
+
+    if errs:
+        raise ToolError(
+            f"step '{name}': {len(errs)} schedule-config error(s):\n  - "
+            + "\n  - ".join(errs)
+        )
 
     return sc, norm_outs
 
@@ -2017,6 +2116,34 @@ async def _save_rule_doc(rule: dict, *, is_new: bool) -> dict:
         )
     except Exception:
         pass
+    # HARD GATE: refuse to persist a rule whose static validator reports
+    # undefined-variable errors. Without this, the agent has been seen to
+    # save a rule whose `outputs.transactions[].amount` references a
+    # variable like `depreciation_expense` that no step ever defines, then
+    # iterate on update_saved_rule (which silently re-saves the same
+    # broken rule). Better to force a fix in the same turn.
+    try:
+        _verrs = await _validate_rule_static(rule)
+    except Exception:
+        _verrs = []
+    _undef = [e for e in _verrs if e.get("kind") == "undefined_variable"]
+    if _undef:
+        bullets = "\n  - ".join(
+            f"{e.get('where')}: '{e.get('name')}' is not defined. "
+            f"{e.get('fix_hint')}"
+            for e in _undef[:8]
+        )
+        more = (
+            f"\n  ... and {len(_undef) - 8} more"
+            if len(_undef) > 8 else ""
+        )
+        raise ToolError(
+            f"Refusing to save rule '{rule.get('name')}': "
+            f"{len(_undef)} undefined-variable error(s):\n  - {bullets}{more}\n"
+            f"Fix every reference (add the missing calc step, OR change the "
+            f"expression to use an existing variable / event field) and "
+            f"resubmit."
+        )
     rule["generatedCode"] = _generate_rule_code(rule)
     rule["updated_at"] = datetime.now(timezone.utc).isoformat()
     if is_new:
@@ -2442,19 +2569,31 @@ async def _validate_rule_static(rule: dict) -> list[dict]:
     Empty list = clean.
     """
     steps = rule.get("steps") or []
-    # Build event-name lookup (case-insensitive)
+    # Build event-name lookup (case-insensitive). Also collect a
+    # field -> [event names] map so an undefined identifier that happens
+    # to match a known event field can be suggested as 'EVENTNAME.field'.
     db = _ServerBridge.db
     event_names: set[str] = set()
+    event_field_index: dict[str, list[str]] = {}
+
+    def _index_event(ev: dict) -> None:
+        nm = ev.get("event_name")
+        if not nm:
+            return
+        event_names.add(str(nm).lower())
+        for f in (ev.get("fields") or []):
+            fn = (f.get("name") or "").strip() if isinstance(f, dict) else ""
+            if fn:
+                event_field_index.setdefault(fn.lower(), []).append(str(nm))
+
     try:
         if db is not None:
-            async for d in db.event_definitions.find({}, {"_id": 0, "event_name": 1}):
-                if d.get("event_name"):
-                    event_names.add(str(d["event_name"]).lower())
+            async for d in db.event_definitions.find({}, {"_id": 0, "event_name": 1, "fields": 1}):
+                _index_event(d)
     except Exception:
         pass
     for e in (_ServerBridge.in_memory_data or {}).get("event_definitions") or []:
-        if e.get("event_name"):
-            event_names.add(str(e["event_name"]).lower())
+        _index_event(e)
     # The translation layer also accepts `EVENTNAME_field` flattened form
     flat_event_names = {nm.replace(" ", "_") for nm in event_names}
 
@@ -2467,6 +2606,12 @@ async def _validate_rule_static(rule: dict) -> list[dict]:
         # Validate references BEFORE adding this step's defined names
         # (a step cannot reference its own name on the RHS).
         for where, expr in _step_referenced_names(step):
+            # Schedule column formulas have an extra layer of injected
+            # builtins (period_index, period_date, etc.) — exempt those
+            # from the undefined-variable check; otherwise the validator
+            # double-flags identifiers that the schedule engine actually
+            # provides at runtime.
+            in_schedule_col = ".scheduleConfig.columns[" in where
             idents = _extract_identifiers(expr)
             for tok in sorted(idents):
                 if tok in scope:
@@ -2474,6 +2619,8 @@ async def _validate_rule_static(rule: dict) -> list[dict]:
                 if tok in _VALIDATOR_BUILTINS:
                     continue
                 if tok in known_fns:
+                    continue
+                if in_schedule_col and tok in _SCHEDULE_COLUMN_BUILTINS:
                     continue
                 if tok.lower() in event_names or tok.lower() in flat_event_names:
                     continue
@@ -2489,6 +2636,24 @@ async def _validate_rule_static(rule: dict) -> list[dict]:
                 )
                 if sug:
                     fix += f" Did you mean: {', '.join(sug)}?"
+                # Suggest event-prefix form when the bare identifier matches
+                # a known event field.
+                ev_hits = event_field_index.get(tok.lower()) or []
+                if ev_hits:
+                    fix += (
+                        f" Or reference the event field directly: "
+                        f"{', '.join(f'{e}.{tok}' for e in ev_hits[:3])}."
+                    )
+                # Suggest schedule builtin when close to one.
+                if in_schedule_col:
+                    sb_sug = _dl.get_close_matches(
+                        tok, sorted(_SCHEDULE_COLUMN_BUILTINS), n=2, cutoff=0.6
+                    )
+                    if sb_sug:
+                        fix += (
+                            f" Or use a schedule built-in: "
+                            f"{', '.join(sb_sug)}."
+                        )
                 errors.append({
                     "step": step.get("name"),
                     "kind": "undefined_variable",
@@ -4447,6 +4612,20 @@ or invalid values are rejected by `_validate_schedule_step_shape`.
                  and pulls in any identifier that is not (a)/(b)/(c) above.
                  You DO NOT need to populate this manually; whatever you
                  supply is merged with the auto-derived set.
+
+  IMPORTANT — what schedule column formulas CAN reference:
+    • Schedule built-ins (period_index, period_date, period_number,
+      period_start, total_periods, dcf, lag, days_in_current_period,
+      daily_basis, item_name, subinstrument_id, s_no, index,
+      start_date, end_date) — auto-injected, do NOT define them.
+    • EVENTNAME.field directly — eg.  multiply(FixedAssetData.acquisition_cost, 0.1)
+    • Any variable defined by a calc / iteration / condition step BEFORE
+      this schedule step. These are auto-pulled into contextVars.
+    • Any DSL function name.
+    • Any column DEFINED ABOVE the current one in the same `columns` array.
+  Schedule column formulas CANNOT reference: another schedule's outputVars,
+    a calc step that comes AFTER this schedule, or anything you wrote inside
+    a transaction's `amount` field.
 
   outputVars: [{name, type, column, ...}, ...]
     type ∈ {"first","last","sum","column","filter"}.
