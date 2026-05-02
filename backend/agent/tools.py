@@ -5598,7 +5598,8 @@ async def tool_finish(args: dict) -> dict:
                     f"period_index / period_number / lag / dcf.\n"
                     f"  3. call test_schedule_step until ok=true.\n"
                     f"  4. THEN add_transaction_to_rule referencing the "
-                    f"schedule's outputVar (e.g. type='last' or 'sum').\n"
+                    f"schedule's outputVar (e.g. type='filter' with matchCol=\"<period_end_col>\" "
+                    f"matchValue=\"<postingdate>\", or type='last' for closing balance).\n"
                     f"DO NOT call finish again until a schedule step exists "
                     f"and passes its preview."
                 )
@@ -5863,15 +5864,17 @@ Call `list_templates` and `get_saved_rule` on the closest match before
 writing anything from scratch.
 
 PATTERN A — SCHEDULE + ROW EXTRACTION FOR postingdate
-  Use for: amortisation, interest accrual, fee amortisation, lease ROU,
-           IFRS9 stage projection, any tabular monthly time-series.
+  Use for: amortisation, interest accrual, fee amortisation (FAS91/IFRS9),
+           lease ROU, ECL projection, any tabular monthly time-series.
   Skeleton:
     1. calc steps capture inputs (principal, rate, term, …) from event fields
-    2. schedule step produces N periodic rows (columns = period, balance,
-       principal, interest, …) with contextVars listing the inputs
-    3. calc step uses schedule_filter or lookup(scheduleColumn, periodColumn,
-       postingdate) to pick THIS PERIOD'S row
-    4. outputs.transactions[] emit debit/credit using the picked values
+    2. schedule step produces N periodic rows (columns = period_date,
+       month_end, balance, principal, interest, fee_amort, …) with
+       contextVars listing the inputs
+    3. outputVar type='filter' with matchCol='month_end' (or your period-end
+       column) and matchValue='postingdate' extracts THIS PERIOD'S row.
+       ★ Prefer filter over sum — sum gives the lifetime total, not one period.
+    4. outputs.transactions[] emit debit/credit using the filtered values
   Reference templates: loan_amortization, interest_accrual, fee_amortization,
                        lease_accounting, IFRSStage3.
 
@@ -6133,14 +6136,34 @@ or invalid values are rejected by `_validate_schedule_step_shape`.
 
   outputVars: [{name, type, column, ...}, ...]
     type ∈ {"first","last","sum","column","filter"}.
-      • first   → schedule_first(sched, "<column>")    ⇒ scalar
-      • last    → schedule_last(sched, "<column>")     ⇒ scalar
-      • sum     → schedule_sum(sched, "<column>")      ⇒ scalar
-      • column  → schedule_column(sched, "<column>")   ⇒ array
       • filter  → schedule_filter(sched, "<matchCol>", <matchValue>, "<column>")
                   REQUIRES matchCol + matchValue + column.
+                  ★ PREFERRED for amortisation/fee/accrual rules: use
+                  matchCol='<period_end_column>' and matchValue='posting_date'
+                  (or 'postingdate') to extract THIS PERIOD'S value.
+                  Returns a list; if only one match is expected, the engine
+                  will unwrap it to a scalar automatically.
+                  Example: {name:'period_amount', type:'filter',
+                            column:'interest', matchCol:'month_end',
+                            matchValue:'postingdate'}
+      • first   → schedule_first(sched, "<column>")    ⇒ scalar
+                  Use when you need the opening-period value (e.g. initial balance).
+      • last    → schedule_last(sched, "<column>")     ⇒ scalar
+                  Use when you need the closing value at end of full schedule.
+      • sum     → schedule_sum(sched, "<column>")      ⇒ scalar
+                  Sums ALL rows — use for lifetime totals only (e.g. total
+                  interest paid). Do NOT use sum to extract the current
+                  period's value; use filter instead.
+      • column  → schedule_column(sched, "<column>")   ⇒ array
     Every `column` MUST be the name of a defined column in
     scheduleConfig.columns. The validator rejects unknown column names.
+
+  IMPORTANT — for FAS91, IFRS9, interest accrual, fee amortisation, and
+  any rule where the transaction amount = the CURRENT PERIOD'S schedule
+  row (not the lifetime sum), ALWAYS use type='filter' with
+  matchCol='<your month-end date column>' and matchValue='postingdate'.
+  Using type='sum' in these cases will post the TOTAL of ALL periods to
+  every single posting date, which is wrong.
 
 SCHEDULE COLUMN BUILT-INS (auto-injected into every column expression;
 do NOT put them in contextVars):
