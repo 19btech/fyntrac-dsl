@@ -2577,10 +2577,26 @@ def _step_referenced_names(step: dict) -> list[tuple[str, str]]:
                     refs.append((f"step '{nm}'.iterations[{i}].{k}", v))
     elif st == "schedule":
         sc = step.get("scheduleConfig") or {}
+        # Track column names defined SO FAR within this schedule. Each
+        # column formula can reference any column declared earlier in the
+        # same `columns` array — the schedule engine evaluates them in
+        # order. Tag refs with a marker (`@col=`) so the validator can
+        # extend its scope per-column.
+        prior_cols: list[str] = []
         for c in sc.get("columns") or []:
+            cname = (c.get("name") or "").strip()
             f = c.get("formula") or ""
             if f:
-                refs.append((f"step '{nm}'.scheduleConfig.columns['{c.get('name')}'].formula", f))
+                marker = (
+                    f"@cols={','.join(prior_cols)}"
+                    if prior_cols else "@cols="
+                )
+                refs.append((
+                    f"step '{nm}'.scheduleConfig.columns['{cname}'].formula{marker}",
+                    f,
+                ))
+            if cname:
+                prior_cols.append(cname)
         for k in ("periodCountFormula", "startDateFormula", "endDateFormula"):
             v = sc.get(k) or ""
             if v:
@@ -2670,6 +2686,16 @@ async def _validate_rule_static(rule: dict) -> list[dict]:
             # double-flags identifiers that the schedule engine actually
             # provides at runtime.
             in_schedule_col = ".scheduleConfig.columns[" in where
+            # Pull the prior-column allowlist out of the marker that
+            # _step_referenced_names appended to the `where` label, so a
+            # later column can reference earlier columns in the same
+            # schedule. The marker has the form `…@cols=a,b,c`.
+            prior_col_names: set[str] = set()
+            if "@cols=" in where:
+                where, _, marker = where.partition("@cols=")
+                prior_col_names = {
+                    n.strip() for n in marker.split(",") if n.strip()
+                }
             idents = _extract_identifiers(expr)
             for tok in sorted(idents):
                 if tok in scope:
@@ -2679,6 +2705,8 @@ async def _validate_rule_static(rule: dict) -> list[dict]:
                 if tok in known_fns:
                     continue
                 if in_schedule_col and tok in _SCHEDULE_COLUMN_BUILTINS:
+                    continue
+                if in_schedule_col and tok in prior_col_names:
                     continue
                 if tok.lower() in event_names or tok.lower() in flat_event_names:
                     continue
