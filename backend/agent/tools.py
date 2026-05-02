@@ -3154,9 +3154,16 @@ authoring failure.
   Q1. Is the result a TABLE OF TIME-SERIES ROWS (amortisation, ECL
       projection, payment runoff, lease ROU, depreciation)?
         → use stepType = "schedule" (NOT iteration, NOT calc).
-        → Configure scheduleConfig.columns + contextVars; expose values
-          via outputVars or schedule_filter / schedule_last in a later
-          calc step.
+        → Add it via `add_step_to_rule` with `step.stepType='schedule'`
+          and a populated `scheduleConfig` (periodType, frequency, columns,
+          contextVars). Expose values via outputVars or a later calc step
+          using schedule_filter / schedule_last / schedule_sum.
+        → ⚠️ DO NOT use `create_saved_schedule` for typical user requests
+          like "create a depreciation schedule". That tool produces a
+          standalone DSL-only schedule with NO visual editor; the user
+          will see an unfilled card. ALWAYS prefer the schedule STEP path
+          unless the user explicitly asks for a shared/reusable library
+          schedule.
 
   Q2. Do you need to APPLY THE SAME EXPRESSION TO EACH ELEMENT of an
       array that already exists in scope (e.g. a collected time-series
@@ -3936,15 +3943,22 @@ TOOL_SCHEMAS.extend([
     {
         "name": "create_saved_schedule",
         "description": (
-            "Create a standalone saved schedule. Provide a `dsl_code` block that defines a period "
-            "and a schedule, e.g.:\n"
-            "  p = period(LoanEvent.term_months, \"M\")\n"
-            "  amort = schedule(p, {\n"
-            "      \"interest\": \"multiply(balance, rate)\",\n"
-            "      \"principal\": \"subtract(payment, interest)\",\n"
-            "      \"balance\":   \"subtract(balance, principal)\"\n"
-            "  }, {\"balance\": LoanEvent.principal, \"rate\": LoanEvent.rate, \"payment\": pmt(LoanEvent.rate, LoanEvent.term_months, LoanEvent.principal)})\n"
-            "The schedule then becomes available to attach to a template via attach_rules_to_template."
+            "⚠️ USE SPARINGLY — prefer `add_step_to_rule` with stepType='schedule' instead.\n"
+            "\n"
+            "This tool creates a STANDALONE schedule in the saved_schedules collection. "
+            "In the current build there is NO standalone visual schedule editor mounted, so "
+            "a schedule created here will only be viewable as raw DSL in the code editor and "
+            "will NOT show up as an editable card in the Rule Builder UI.\n"
+            "\n"
+            "DEFAULT PATH for ANY 'create a depreciation/amortization/ECL/runoff schedule' "
+            "request from the user: call `add_step_to_rule` with step.stepType='schedule' "
+            "and a populated `scheduleConfig` (periodType, frequency, columns, contextVars, "
+            "outputVars). That renders inside the visual Schedule Step Modal where every "
+            "column, period setting and output is editable.\n"
+            "\n"
+            "Use THIS tool ONLY when the user explicitly asks for a SHARED, REUSABLE schedule "
+            "that they want attached to multiple templates via `attach_rules_to_template` and "
+            "are happy editing the raw DSL."
         ),
         "parameters": {
             "type": "object",
