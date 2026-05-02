@@ -809,6 +809,7 @@ const Dashboard = () => {
               <FileUploadPanel 
                   onUploadSuccess={() => { loadEvents(); loadTransactionDefinitions(); }} 
                   events={events}
+                  transactions={transactionDefinitions}
                   addConsoleLog={addConsoleLog}
                   selectedEvent={selectedEvent}
                   onViewEvent={(eventName) => { setSelectedEvent(eventName); setShowEventDataViewer(true); }}

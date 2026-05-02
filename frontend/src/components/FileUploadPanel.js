@@ -1,11 +1,12 @@
 import React, { useState, useEffect } from "react";
 import axios from "axios";
 import { useToast } from "./ToastProvider";
-import { Upload, FileText, FileSpreadsheet, Download, CheckCircle, Eye, X } from "lucide-react";
+import { Upload, FileText, FileSpreadsheet, Download, CheckCircle, Eye, X, Info } from "lucide-react";
 import { Button, Card, CardContent, Box, Typography, LinearProgress, IconButton, Tooltip } from '@mui/material';
 import { API } from '../config';
+import DataPreviewPanel from './DataPreviewPanel';
 
-const FileUploadPanel = ({ onUploadSuccess, events, addConsoleLog, selectedEvent, onViewEvent }) => {
+const FileUploadPanel = ({ onUploadSuccess, events, transactions = [], addConsoleLog, selectedEvent, onViewEvent }) => {
   const [eventFile, setEventFile] = useState(null);
   const [excelDataFile, setExcelDataFile] = useState(null);
   const [uploadedEventFileName, setUploadedEventFileName] = useState('');
@@ -319,6 +320,53 @@ const FileUploadPanel = ({ onUploadSuccess, events, addConsoleLog, selectedEvent
                 <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1 }}>
                   <FileText size={20} color="#5B5FED" />
                   <Typography variant="h5">Reference Data File</Typography>
+                  <Tooltip
+                    arrow
+                    placement="right"
+                    componentsProps={{
+                      tooltip: {
+                        sx: {
+                          bgcolor: '#1A1D23',
+                          color: '#F8F9FA',
+                          maxWidth: 460,
+                          p: 2,
+                          fontSize: '0.78rem',
+                          lineHeight: 1.55,
+                          borderRadius: 1.5,
+                          boxShadow: 4,
+                          '& code': {
+                            bgcolor: 'rgba(255,255,255,0.08)',
+                            px: 0.5,
+                            py: 0.1,
+                            borderRadius: 0.5,
+                            fontSize: '0.72rem',
+                          },
+                          '& strong': { color: '#A5B4FC' },
+                          '& em': { color: '#F8F9FA', fontStyle: 'normal' },
+                        },
+                      },
+                      arrow: { sx: { color: '#1A1D23' } },
+                    }}
+                    title={(
+                      <Box>
+                        <Typography variant="caption" sx={{ display: 'block', fontWeight: 700, mb: 1, color: '#A5B4FC', textTransform: 'uppercase', letterSpacing: '0.06em', fontSize: '0.68rem' }}>
+                          Upload Instructions
+                        </Typography>
+                        <Box component="ul" sx={{ m: 0, pl: 2, '& li': { mb: 0.75 } }}>
+                          <li><strong>Reference Data File (Excel):</strong> Two sheets — <em>events</em> (columns: EventName, EventField, DataType, EventType, EventTable) and <em>transactions</em> (column: transactiontype, no spaces e.g. <code>InterestAccrual</code>)</li>
+                          <li><strong>Event Table:</strong> <code>standard</code> (always a transaction event) or <code>custom</code> (transaction event or reference table)</li>
+                          <li><strong>Event Data (Excel):</strong> Sheet name must match event name</li>
+                          <li><strong>Required Columns (transaction events):</strong> PostingDate, EffectiveDate, InstrumentId + event fields</li>
+                          <li><strong>Reference table events (custom):</strong> Tenant-level data — no PostingDate, EffectiveDate, or InstrumentId needed</li>
+                          <li><strong>Financial Formulas:</strong> 100+ built-in financial calculation formulas are available</li>
+                        </Box>
+                      </Box>
+                    )}
+                  >
+                    <IconButton size="small" sx={{ p: 0.25, color: '#5B5FED' }} aria-label="Upload instructions" data-testid="reference-data-info">
+                      <Info size={15} />
+                    </IconButton>
+                  </Tooltip>
                 </Box>
                 <Typography variant="body2" color="text.secondary" sx={{ lineHeight: 1.6 }}>
                   Upload .xlsx file with events and transaction types
@@ -460,20 +508,8 @@ const FileUploadPanel = ({ onUploadSuccess, events, addConsoleLog, selectedEvent
         </Card>
       </Box>
 
-      {/* Instructions */}
-      <Card sx={{ mt: 3, bgcolor: '#EEF0FE', border: '1px solid #D4D6FA' }}>
-        <CardContent sx={{ p: 3 }}>
-          <Typography variant="h6" sx={{ mb: 1.5, color: '#5B5FED' }}>Upload Instructions</Typography>
-            <Box component="ul" sx={{ m: 0, pl: 2.5, '& li': { mb: 1, fontSize: '0.8125rem', color: '#495057', lineHeight: 1.6 } }}>
-            <li><strong>Reference Data File (Excel):</strong> Two sheets — <em>events</em> (columns: EventName, EventField, DataType, EventType, EventTable) and <em>transactions</em> (column: transactiontype, no spaces e.g. <code>InterestAccrual</code>)</li>
-            <li><strong>Event Table:</strong> <code>standard</code> (always a transaction event) or <code>custom</code> (transaction event or reference table)</li>
-            <li><strong>Event Data (Excel):</strong> Sheet name must match event name</li>
-            <li><strong>Required Columns (transaction events):</strong> PostingDate, EffectiveDate, InstrumentId + event fields</li>
-            <li><strong>Reference table events (custom):</strong> Tenant-level data — no PostingDate, EffectiveDate, or InstrumentId needed</li>
-            <li><strong>Financial Formulas:</strong> 100+ built-in financial calculation formulas are available</li>
-          </Box>
-        </CardContent>
-      </Card>
+      {/* Live data preview */}
+      <DataPreviewPanel events={events} transactions={transactions} />
     </Box>
   );
 };
