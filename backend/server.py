@@ -3649,273 +3649,6 @@ async def chat_stream(message: ChatMessage):
 
 REQUIRED_EVENT_FIELDS = {"instrumentId", "eventId", "eventName", "postingDate", "effectiveDate", "status", "eventDetail", "_class"}
 
-# ---------------------------------------------------------------------------
-# Import transformation helpers
-# ---------------------------------------------------------------------------
-# Fixed/system fields — both PascalCase (EOD-style) and camelCase (inner-row style)
-# must be excluded from dynamic columns and handled explicitly.
-_IMPORT_FIXED_KEYS = {
-    "PostingDate", "EffectiveDate", "InstrumentId", "AttributeId",
-    "postingDate", "effectiveDate", "instrumentId", "attributeId",
-    "_id", "_metadata_version", "_imported_at",
-}
-
-
-def _infer_field_datatype(values: list) -> str:
-    """Infer the best datatype for a field from a list of sample values.
-    Scans all non-null values; the first conclusive type wins (boolean > date > string > decimal).
-    Numeric strings (e.g. "1250.50", "42") are treated as decimal.
-    """
-    for v in values:
-        if v is None:
-            continue
-        if isinstance(v, bool):
-            return "boolean"
-        if isinstance(v, dict) and "$date" in v:
-            return "date"
-        if isinstance(v, str):
-            if re.match(r"^\d{4}-\d{2}-\d{2}", v):
-                return "date"
-            # Check if the string is a numeric value (handles "1250.50", "-42", "1,234.56")
-            stripped = v.strip().lstrip('-').replace(',', '')
-            if stripped.replace('.', '', 1).isdigit():
-                return "decimal"
-            return "string"
-        if isinstance(v, (int, float)):
-            return "decimal"
-    return "decimal"  # all-null or empty → decimal (financial default)
-
-
-def _parse_import_date(val) -> str:
-    """Normalise a date value from an imported event record to YYYY-MM-DD."""
-    if val is None:
-        return ""
-    if isinstance(val, dict) and "$date" in val:
-        return str(val["$date"])[:10]
-    if isinstance(val, int):
-        s = str(val)
-        if len(s) == 8:
-            return f"{s[:4]}-{s[4:6]}-{s[6:8]}"
-        return s
-    try:
-        return normalize_date(str(val))
-    except Exception:
-        return str(val)
-
-
-# Sentinel for "system" / placeholder instrument IDs with no real business meaning
-def _is_custom_event(records: list, event_id: str) -> bool:
-    """
-    Return True if the event has no real InstrumentId.
-
-    Rule (no hardcoding of names or placeholder strings):
-      An event is 'standard' only when at least one inner value row contains
-      an instrumentId that matches the outer instrumentId of the same event
-      record — i.e. the inner rows are genuinely tied to a specific instrument.
-      If no inner row matches its enclosing record's outer instrumentId, the
-      event carries no instrument-specific data and is classified as
-      eventTable='custom', eventType='reference'.
-    """
-    for event in records:
-        if event.get("eventId") != event_id:
-            continue
-        outer = (event.get("instrumentId") or event.get("InstrumentId") or "").strip()
-        if not outer:
-            continue  # outer has no instrumentId — skip this record
-        for row_val in event.get("eventDetail", {}).get("values", {}).values():
-            if not isinstance(row_val, dict):
-                continue
-            inner = (row_val.get("instrumentId") or row_val.get("InstrumentId") or "").strip()
-            if inner and inner == outer:
-                return False  # inner instrumentId matches outer → real instrument event
-    return True  # no inner row matched its enclosing event's instrumentId → custom
-
-
-def _select_instruments(records: list, max_count: int = 2) -> list:
-    """
-    Collect all unique instrument IDs that appear in standard (non-custom) event records
-    and randomly return up to max_count of them.
-    Custom/reference events are excluded — they carry no real instrument.
-    Returns a sorted (deterministic within selection) list of instrument IDs.
-    """
-    import random
-    seen: set = set()
-    for event in records:
-        instrument = (event.get("instrumentId") or event.get("InstrumentId") or "").strip()
-        if not instrument:
-            continue
-        event_id = event.get("eventId", "")
-        # Only count instruments from standard (non-custom) events
-        if not _is_custom_event(records, event_id):
-            seen.add(instrument)
-    population = sorted(seen)  # sort for reproducibility of the pool
-    count = min(max_count, len(population))
-    if count == 0:
-        return []
-    return random.sample(population, count)
-
-
-def _build_event_definitions_from_import(records: list, allowed_instruments: set | None = None) -> list:
-    """
-    Derive unique event definitions from the imported records.
-    Groups by eventId, collects dynamic field names and infers datatypes.
-    Excludes all fixed/system fields (both PascalCase and camelCase) and meta keys.
-    Events with no real instrumentId are classified as custom/reference.
-    If allowed_instruments is given, standard event records whose outer instrumentId
-    is not in that set are skipped (custom/reference events are never filtered).
-    Returns a list of dicts compatible with EventDefinition.model_dump().
-    """
-    from collections import defaultdict
-    event_fields: dict = defaultdict(lambda: defaultdict(list))
-
-    for event in records:
-        event_id = event.get("eventId", "")
-        outer_instrument = (event.get("instrumentId") or event.get("InstrumentId") or "").strip()
-        is_custom = _is_custom_event(records, event_id)
-        # Filter standard events by allowed instrument list
-        if not is_custom and allowed_instruments is not None and outer_instrument not in allowed_instruments:
-            continue
-        for row_val in event.get("eventDetail", {}).get("values", {}).values():
-            if not isinstance(row_val, dict):
-                continue
-            for key, value in row_val.items():
-                if key not in _IMPORT_FIXED_KEYS:
-                    event_fields[event_id][key].append(value)
-
-    definitions = []
-    ts = datetime.now(timezone.utc).isoformat()
-    for event_id, fields in event_fields.items():
-        field_list = [
-            {"name": fn, "datatype": _infer_field_datatype(sv)}
-            for fn, sv in fields.items()
-        ]
-        is_custom = _is_custom_event(records, event_id)
-        definitions.append({
-            "id": str(uuid.uuid4()),
-            "event_name": event_id,
-            "fields": field_list,
-            "eventType": "reference" if is_custom else "activity",
-            "eventTable": "custom" if is_custom else "standard",
-            "created_at": ts,
-        })
-    return definitions
-
-
-def _build_event_data_from_import(records: list, allowed_instruments: set | None = None) -> list:
-    """
-    Build event data rows from imported records.
-    Groups rows by eventId. Each value entry in eventDetail.values becomes one data row.
-    Handles both PascalCase (EOD) and camelCase inner row keys.
-    Maps attributeId (either case) to SubInstrumentId — for standard events only.
-    Custom/reference events (no instrumentId in inner rows) omit all standard fields.
-    Normalises all date values to YYYY-MM-DD.
-    If allowed_instruments is given, standard event records whose outer instrumentId
-    is not in that set are skipped. Custom/reference events are never filtered.
-    """
-    from collections import defaultdict
-
-    # Pre-classify each event_id so we only scan once
-    event_ids = list({evt.get("eventId", "") for evt in records})
-    custom_events = {eid for eid in event_ids if _is_custom_event(records, eid)}
-
-    event_rows: dict = defaultdict(list)
-    # For custom/reference events, dedup by inner value-id so repeated event records
-    # (same data across different posting dates / instruments) don't multiply rows.
-    seen_custom_value_ids: dict = defaultdict(set)
-
-    for event in records:
-        event_id = event.get("eventId", "")
-        is_custom = event_id in custom_events
-
-        # Outer event-level fallbacks (always camelCase at top level)
-        outer_posting = _parse_import_date(event.get("postingDate") or event.get("PostingDate", ""))
-        outer_effective = _parse_import_date(event.get("effectiveDate") or event.get("EffectiveDate", ""))
-        outer_instrument = (event.get("instrumentId") or event.get("InstrumentId", "")).strip()
-
-        # Filter standard events by allowed instrument list
-        if not is_custom and allowed_instruments is not None and outer_instrument not in allowed_instruments:
-            continue
-
-        raw_values = event.get("eventDetail", {}).get("values", {})
-        for value_id, row_val in raw_values.items():
-            # Dedup: skip this inner row if we've already emitted it for this custom event
-            if is_custom:
-                if value_id in seen_custom_value_ids[event_id]:
-                    continue
-                seen_custom_value_ids[event_id].add(value_id)
-
-            if not isinstance(row_val, dict):
-                continue
-
-            if is_custom:
-                # Custom/reference events: no standard fields at all
-                row: dict = {}
-            else:
-                # Standard events: include the four standard fields
-                inner_posting = _parse_import_date(
-                    row_val.get("PostingDate") or row_val.get("postingDate")
-                ) or outer_posting
-                inner_effective = _parse_import_date(
-                    row_val.get("EffectiveDate") or row_val.get("effectiveDate")
-                ) or outer_effective
-                inner_instrument = (
-                    row_val.get("InstrumentId") or row_val.get("instrumentId") or outer_instrument
-                )
-                # attributeId (either case) maps to SubInstrumentId
-                inner_subinstr = str(
-                    row_val.get("AttributeId") or row_val.get("attributeId") or ""
-                )
-                row = {
-                    "PostingDate":     inner_posting,
-                    "EffectiveDate":   inner_effective,
-                    "InstrumentId":    inner_instrument,
-                    "SubInstrumentId": inner_subinstr,
-                }
-
-            for key, value in row_val.items():
-                if key in _IMPORT_FIXED_KEYS:
-                    continue
-                if isinstance(value, dict) and "$date" in value:
-                    row[key] = _parse_import_date(value)
-                elif isinstance(value, dict) and "$oid" in value:
-                    # Skip embedded object-id fields
-                    continue
-                else:
-                    row[key] = value
-
-            event_rows[event_id].append(row)
-
-    ts = datetime.now(timezone.utc).isoformat()
-    # Activity-data only: enforce canonical sort
-    # (instrumentid ASC, postingdate ASC, effectivedate ASC, subinstrumentid ASC)
-    # for every non-custom event. Custom/reference events are left untouched —
-    # they have no instrumentid/postingdate/effectivedate/subinstrumentid axis.
-    for _eid, _rows in event_rows.items():
-        if _eid not in custom_events:
-            _sort_activity_rows(_rows)
-    return [
-        {"id": str(uuid.uuid4()), "event_name": eid, "data_rows": rows, "created_at": ts}
-        for eid, rows in event_rows.items()
-    ]
-
-def _validate_imported_events(data: Any) -> str | None:
-    """Return an error string if data does not match the required format, else None."""
-    if not isinstance(data, list):
-        return "File must contain a JSON array of event objects."
-    if len(data) == 0:
-        return "The JSON array is empty — no events to import."
-    for i, item in enumerate(data):
-        if not isinstance(item, dict):
-            return f"Item at index {i} is not a JSON object."
-        missing = REQUIRED_EVENT_FIELDS - item.keys()
-        if missing:
-            return f"Item at index {i} is missing required fields: {', '.join(sorted(missing))}."
-        if not isinstance(item.get("eventDetail"), dict):
-            return f"Item at index {i}: 'eventDetail' must be a JSON object."
-        if "values" not in item["eventDetail"]:
-            return f"Item at index {i}: 'eventDetail' must contain a 'values' field."
-    return None
-
 
 # ──────────────────────────────────────────────────────────────────────────
 # Autonomous agent endpoints
@@ -4097,114 +3830,365 @@ async def agent_reset_session(session_id: str):
     return {"ok": True, "session_id": session_id, "cleared": cleared}
 
 
-@api_router.post("/import-events/transform")
-async def import_and_transform_events(file: UploadFile = File(...)):
+@api_router.post("/import/transactions")
+async def import_transactions(file: UploadFile = File(...)):
+    """Load transaction definitions from a JSON array.
+
+    Each entry is shaped like:
+        { "name": "PAYMENT_UPB", "exclusive": 1, "isGL": 1, "isReplayable": 0 }
+
+    Replaces the entire `transaction_definitions` collection.
     """
-    Full import pipeline: validate JSON → persist raw → transform to
-    event definitions + event data and persist both.
-    Returns a structured result with success/failure details for each step.
-    """
-    # ---- Read and validate file ----
     if not file.filename or not file.filename.lower().endswith(".json"):
         raise HTTPException(status_code=400, detail="Only .json files are accepted.")
+    try:
+        content = await file.read()
+        records = json.loads(content.decode("utf-8"))
+    except Exception:
+        raise HTTPException(status_code=400, detail="The file is not valid JSON.")
+    if not isinstance(records, list):
+        raise HTTPException(status_code=422, detail="File must contain a JSON array.")
+
+    docs = []
+    for i, item in enumerate(records):
+        if not isinstance(item, dict):
+            raise HTTPException(status_code=422, detail=f"Item at index {i} is not an object.")
+        name = (item.get("name") or item.get("transactiontype") or "").strip()
+        if not name:
+            raise HTTPException(status_code=422, detail=f"Item at index {i} is missing 'name'.")
+        docs.append({
+            "transactiontype": name,
+            "exclusive": item.get("exclusive", 1),
+            "isGL": item.get("isGL", 1),
+            "isReplayable": item.get("isReplayable", 0),
+        })
+
+    try:
+        await db.transaction_definitions.delete_many({})
+        if docs:
+            await db.transaction_definitions.insert_many([dict(d) for d in docs])
+    except Exception as e:
+        logger.error(f"Failed to persist transaction definitions: {e}")
+        raise HTTPException(status_code=500, detail=f"Could not save transaction definitions: {e}")
+
+    return {
+        "success": True,
+        "count": len(docs),
+        "transaction_types": [d["transactiontype"] for d in docs],
+    }
+
+
+# ---------------------------------------------------------------------------
+# Event Configuration → Event Definition transformer
+# ---------------------------------------------------------------------------
+
+# Keywords that mark a field name as numeric (decimal). Lookup is case-
+# insensitive and substring-based on the assembled UPPERCASE field name.
+_DECIMAL_KEYWORDS = (
+    "AMOUNT", "BALANCE", "PRINCIPAL", "RATE", "INTEREST", "PRICE",
+    "QUANTITY", "TERM", "COUPON", "YIELD", "SPREAD", "FEE", "PAYMENT",
+    "CASH", "ACCRUAL", "RECEIVABLE", "CF", "LOAN",
+)
+_DECIMAL_NAME_SUFFIXES = ("_ID", "ID")  # ProductId / customer_id → decimal
+
+
+def _infer_field_dt(name: str) -> str:
+    """Infer datatype from the assembled (already prefixed) field name."""
+    n = name.upper()
+    if "DATE" in n:
+        return "date"
+    if any(k in n for k in _DECIMAL_KEYWORDS):
+        return "decimal"
+    # Treat *Id / *_ID / *_ID_* as decimal (matches sample reference data:
+    # ProductId, ATTRIBUTE_PRODUCT_ID_CURRENT, etc.)
+    if n.endswith("ID") or n.endswith("_ID") or "_ID_" in n:
+        return "decimal"
+    return "string"
+
+
+# `MeasurementType` is a Fyntrac convention: when an operational-trigger event
+# exposes a column literally named `MeasurementType`, the column is also
+# lifted into its own reference event (a measurement-type lookup table).
+_LIFTED_REFERENCE_FIELD_NAMES = {"measurementtype"}
+
+
+def _transform_event_configurations(records: list) -> list:
+    """Convert an EventConfiguration JSON array into EventDefinition docs.
+
+    Naming rules (validated against the sample reference data in
+    `Importflow/`):
+
+    * Reference event (triggerSource includes `reference_table`):
+      eventType=reference, eventTable=custom; field name = bare
+      `sourceColumns[].value`.
+    * Operational-trigger event (triggerSource includes `operational_table`):
+      eventType=activity, eventTable=standard; field name = bare
+      `sourceColumns[].value`. If a column is `MeasurementType`, also emit
+      a separate reference event for it.
+    * Otherwise (model-execution / replay / transaction-post triggers):
+      - If `versionType` is non-empty: name =
+        `{TABLE}_{COLUMN}_{VERSIONTYPE}` for each (column, version) pair.
+      - Else if table is `Balances`: emit three phases per dataMapping —
+        `BALANCES_BEGINNINGBALANCE_{DM}`,
+        `BALANCES_ENDINGBALANCE_{DM}`,
+        `BALANCES_ACTIVITY_{DM}` (decimal).
+      - Else if `dataMapping` is non-empty: name =
+        `{TABLE}_{COLUMN}_{DM}` per dataMapping value. When
+        `fieldType=AGGREGATED`, only the first dataMapping is emitted.
+      - Else: name = `{TABLE}_{COLUMN}`.
+    """
+    out: list = []
+    ts = datetime.now(timezone.utc).isoformat()
+    lifted_refs: dict = {}  # event_name -> list[(field_name, datatype)]
+
+    for cfg in records:
+        if not isinstance(cfg, dict):
+            continue
+        eid = (cfg.get("eventId") or cfg.get("eventName") or "UNKNOWN").strip() or "UNKNOWN"
+
+        trig = cfg.get("triggerSetup") or {}
+        trig_sources = [
+            ((s.get("value") or "").strip().lower())
+            for s in (trig.get("triggerSource") or []) if isinstance(s, dict)
+        ]
+        is_reference = "reference_table" in trig_sources
+        is_operational = "operational_table" in trig_sources
+
+        evt_type = "reference" if is_reference else "activity"
+        evt_table = "custom" if is_reference else "standard"
+
+        ordered_fields: list = []
+        seen_names: set = set()
+
+        def _add(name: str, dt: str) -> None:
+            if not name or name in seen_names:
+                return
+            seen_names.add(name)
+            ordered_fields.append({"name": name, "datatype": dt})
+
+        for sm in (cfg.get("sourceMappings") or []):
+            if not isinstance(sm, dict):
+                continue
+            table_up = ((sm.get("sourceTable") or "").strip()).upper()
+            cols = sm.get("sourceColumns") or []
+            ver_types = sm.get("versionType") or []
+            data_map = sm.get("dataMapping") or []
+            field_type = (sm.get("fieldType") or "NONE").upper()
+
+            for col in cols:
+                if not isinstance(col, dict):
+                    continue
+                col_val = (col.get("value") or "").strip()
+                if not col_val:
+                    continue
+                col_up = col_val.upper()
+
+                if is_reference or is_operational:
+                    _add(col_val, _infer_field_dt(col_val))
+                    if is_operational and col_val.lower() in _LIFTED_REFERENCE_FIELD_NAMES:
+                        lifted_refs.setdefault(col_val, []).append((col_val, _infer_field_dt(col_val)))
+                    continue
+
+                if ver_types:
+                    for vt in ver_types:
+                        suf = ((vt.get("value") or "").strip()).upper()
+                        name = f"{table_up}_{col_up}_{suf}" if suf else f"{table_up}_{col_up}"
+                        _add(name, _infer_field_dt(name))
+                    continue
+
+                if data_map:
+                    targets = data_map[:1] if field_type == "AGGREGATED" else data_map
+                    if table_up == "BALANCES":
+                        phases = ("BEGINNINGBALANCE", "ENDINGBALANCE", "ACTIVITY")
+                        for dm in targets:
+                            dm_v = ((dm.get("value") or "").strip()).upper()
+                            for ph in phases:
+                                _add(f"{table_up}_{ph}_{dm_v}", "decimal")
+                    else:
+                        for dm in targets:
+                            dm_v = ((dm.get("value") or "").strip()).upper()
+                            _add(f"{table_up}_{col_up}_{dm_v}", _infer_field_dt(f"{table_up}_{col_up}_{dm_v}"))
+                    continue
+
+                _add(f"{table_up}_{col_up}", _infer_field_dt(f"{table_up}_{col_up}"))
+
+        out.append({
+            "id": str(uuid.uuid4()),
+            "event_name": eid,
+            "fields": ordered_fields,
+            "eventType": evt_type,
+            "eventTable": evt_table,
+            "created_at": ts,
+        })
+
+    for name, items in lifted_refs.items():
+        seen2: set = set()
+        unique: list = []
+        for fn, dt in items:
+            if fn in seen2:
+                continue
+            seen2.add(fn)
+            unique.append({"name": fn, "datatype": dt})
+        out.append({
+            "id": str(uuid.uuid4()),
+            "event_name": name,
+            "fields": unique,
+            "eventType": "reference",
+            "eventTable": "custom",
+            "created_at": ts,
+        })
+
+    return out
+
+
+@api_router.post("/import/event-configurations")
+async def import_event_configurations(file: UploadFile = File(...)):
+    """Load event definitions from an EventConfiguration JSON array.
+
+    See `_transform_event_configurations` for naming rules. Replaces the
+    entire `event_definitions` collection.
+    """
+    if not file.filename or not file.filename.lower().endswith(".json"):
+        raise HTTPException(status_code=400, detail="Only .json files are accepted.")
+    try:
+        content = await file.read()
+        records = json.loads(content.decode("utf-8"))
+    except Exception:
+        raise HTTPException(status_code=400, detail="The file is not valid JSON.")
+    if not isinstance(records, list) or not records:
+        raise HTTPException(status_code=422, detail="File must contain a non-empty JSON array.")
+
+    try:
+        defs = _transform_event_configurations(records)
+        if not defs:
+            raise HTTPException(status_code=422, detail="No event definitions could be derived from the file.")
+        await db.event_definitions.delete_many({})
+        await db.event_definitions.insert_many([dict(d) for d in defs])
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Event configuration import failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Could not import event configurations: {e}")
+
+    return {
+        "success": True,
+        "count": len(defs),
+        "names": [d["event_name"] for d in defs],
+        "types": {d["event_name"]: d["eventTable"] for d in defs},
+    }
+
+
+@api_router.post("/import/event-data")
+async def import_event_data(file: UploadFile = File(...)):
+    """Load event data from a multi-sheet Excel workbook.
+
+    Convention: one sheet per event_id (sheet name == event_name). The first
+    row is the header, every other row is a data row. Recognised standard
+    columns (case-insensitive): InstrumentId, PostingDate, EffectiveDate,
+    SubInstrumentId — all other columns become event-specific fields.
+    Replaces the entire `event_data` collection.
+    """
+    fname = (file.filename or "").lower()
+    if not (fname.endswith(".xlsx") or fname.endswith(".xls")):
+        raise HTTPException(status_code=400, detail="Only .xlsx / .xls files are accepted.")
     try:
         content = await file.read()
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Could not read file: {e}")
 
     try:
-        records = json.loads(content.decode("utf-8"))
-    except Exception:
-        raise HTTPException(status_code=400, detail="The file is not valid JSON. Please check the file and try again.")
+        import io
+        import openpyxl
+        wb = openpyxl.load_workbook(io.BytesIO(content), data_only=True)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Could not parse workbook: {e}")
 
-    validation_error = _validate_imported_events(records)
-    if validation_error:
-        raise HTTPException(status_code=422, detail=validation_error)
+    def _norm_header(h: Any) -> str:
+        return str(h or "").strip()
 
-    import_ts = datetime.now(timezone.utc).isoformat()
-    # ---- Instrument selection (1–2 instruments for activity data) ----
-    selected_instruments = _select_instruments(records, max_count=2)
-    allowed_instruments_set = set(selected_instruments) if selected_instruments else None
-
-    result = {
-        "imported_count": len(records),
-        "selected_instruments": selected_instruments,
-        "event_definitions": None,
-        "event_data": None,
+    _STD_COL_MAP = {
+        "instrumentid": "InstrumentId",
+        "postingdate": "PostingDate",
+        "effectivedate": "EffectiveDate",
+        "subinstrumentid": "SubInstrumentId",
+        "attributeid": "SubInstrumentId",
     }
 
-    # ---- Step 1: Persist raw to imported_events ----
+    def _coerce(v: Any) -> Any:
+        if v is None:
+            return ""
+        if isinstance(v, datetime):
+            return v.strftime("%Y-%m-%d")
+        try:
+            from datetime import date as _date
+            if isinstance(v, _date):
+                return v.strftime("%Y-%m-%d")
+        except Exception:
+            pass
+        return v
+
+    out: list = []
+    ts = datetime.now(timezone.utc).isoformat()
+    total_rows = 0
+    by_event: dict = {}
+
+    for sn in wb.sheetnames:
+        ws = wb[sn]
+        if ws.max_row is None or ws.max_row < 2:
+            continue
+        rows = ws.iter_rows(values_only=True)
+        try:
+            header = [_norm_header(h) for h in next(rows)]
+        except StopIteration:
+            continue
+        if not any(header):
+            continue
+        canonical = []
+        for h in header:
+            key = h.replace(" ", "").lower()
+            canonical.append(_STD_COL_MAP.get(key, h))
+
+        data_rows: list = []
+        for r in rows:
+            if r is None or all(c is None or c == "" for c in r):
+                continue
+            row_dict: dict = {}
+            for col_name, raw in zip(canonical, r):
+                if not col_name:
+                    continue
+                row_dict[col_name] = _coerce(raw)
+            if row_dict:
+                data_rows.append(row_dict)
+
+        if not data_rows:
+            continue
+
+        out.append({
+            "id": str(uuid.uuid4()),
+            "event_name": sn,
+            "data_rows": data_rows,
+            "created_at": ts,
+        })
+        by_event[sn] = len(data_rows)
+        total_rows += len(data_rows)
+
+    if not out:
+        raise HTTPException(status_code=422, detail="No data rows found in the workbook.")
+
     try:
-        docs = []
-        for item in records:
-            doc = dict(item)
-            doc["_imported_at"] = import_ts
-            doc.pop("_id", None)
-            docs.append(doc)
-        await db.imported_events.insert_many(docs)
+        await db.event_data.delete_many({})
+        for doc in out:
+            await db.event_data.insert_one(dict(doc))
     except Exception as e:
-        logger.warning(f"Could not persist raw events to imported_events: {e}")
-        # Non-fatal — continue with transformation
+        logger.error(f"Event data import failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Could not save event data: {e}")
 
-    # ---- Step 2: Transform → Event Definitions (MUST complete before Event Data) ----
-    def_error = None
-    definitions = []
-    try:
-        definitions = _build_event_definitions_from_import(records, allowed_instruments=allowed_instruments_set)
-        if not definitions:
-            def_error = "No event types could be extracted from the uploaded file."
-        else:
-            await db.event_definitions.delete_many({})
-            await db.event_definitions.insert_many([dict(d) for d in definitions])
-            result["event_definitions"] = {
-                "success": True,
-                "count": len(definitions),
-                "names": [d["event_name"] for d in definitions],
-                "types": {d["event_name"]: d["eventTable"] for d in definitions},
-            }
-    except Exception as e:
-        logger.error(f"Event definition transformation failed: {e}")
-        def_error = f"Could not build event definitions: {e}"
-
-    if def_error:
-        result["event_definitions"] = {"success": False, "error": def_error}
-
-    # ---- Step 3: Transform → Event Data (uses classification from Step 2) ----
-    data_error = None
-    try:
-        event_data_list = _build_event_data_from_import(records, allowed_instruments=allowed_instruments_set)
-        if not event_data_list:
-            data_error = "No event data rows could be extracted from the uploaded file."
-        else:
-            await db.event_data.delete_many({})
-            rows_by_event = {}
-            for ed in event_data_list:
-                await db.event_data.insert_one(dict(ed))
-                rows_by_event[ed["event_name"]] = len(ed["data_rows"])
-            result["event_data"] = {
-                "success": True,
-                "total_rows": sum(rows_by_event.values()),
-                "by_event": rows_by_event,
-            }
-    except Exception as e:
-        logger.error(f"Event data transformation failed: {e}")
-        data_error = f"Could not build event data: {e}"
-
-    if data_error:
-        result["event_data"] = {"success": False, "error": data_error}
-
-    # If BOTH transformations failed, surface as a 500
-    if not result["event_definitions"]["success"] and not result["event_data"]["success"]:
-        raise HTTPException(
-            status_code=500,
-            detail=(
-                f"Both transformations failed. "
-                f"Event definitions: {result['event_definitions']['error']}. "
-                f"Event data: {result['event_data']['error']}."
-            ),
-        )
-
-    return result
+    return {
+        "success": True,
+        "total_rows": total_rows,
+        "by_event": by_event,
+        "events": list(by_event.keys()),
+    }
 
 
 # ── Saved Rules CRUD ────────────────────────────────────────────────────

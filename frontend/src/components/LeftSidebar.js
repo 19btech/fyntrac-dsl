@@ -258,20 +258,21 @@ const LeftSidebar = ({ events, selectedEvent, onEventSelect, onDownloadEvents, o
       <ImportEventsModal
         open={importModalOpen}
         onClose={() => setImportModalOpen(false)}
-        onSuccess={(result) => {
-          setImportModalOpen(false);
-          const defNames = result?.event_definitions?.names?.join(', ');
-          const rowTotal = result?.event_data?.total_rows ?? 0;
-          const msg = defNames
-            ? `Events imported: ${defNames} — ${rowTotal} data row(s) loaded.`
-            : 'Events imported successfully.';
-          toast.success(msg);
-          // Show file labels in green in the Event Setup panel
+        onSuccess={({ slot, data }) => {
           try {
-            localStorage.setItem('uploadedEventFileName', 'ReferenceData.xlsx');
-            window.dispatchEvent(new CustomEvent('dsl-event-def-loaded', { detail: { filename: 'ReferenceData.xlsx' } }));
-            localStorage.setItem('uploadedExcelFileName', 'ActivityData.xlsx');
-            window.dispatchEvent(new CustomEvent('dsl-event-data-imported', { detail: { filename: 'ActivityData.xlsx' } }));
+            if (slot === 'transactions') {
+              toast.success(`${data.count} transaction type(s) loaded.`);
+            } else if (slot === 'event_configurations') {
+              const names = (data.names || []).join(', ');
+              toast.success(`${data.count} event definition(s) loaded${names ? `: ${names}` : ''}.`);
+              localStorage.setItem('uploadedEventFileName', 'EventConfigurations.json');
+              window.dispatchEvent(new CustomEvent('dsl-event-def-loaded', { detail: { filename: 'EventConfigurations.json' } }));
+            } else if (slot === 'event_data') {
+              const events = (data.events || []).join(', ');
+              toast.success(`${data.total_rows} row(s) loaded${events ? ` across ${events}` : ''}.`);
+              localStorage.setItem('uploadedExcelFileName', 'EventData.xlsx');
+              window.dispatchEvent(new CustomEvent('dsl-event-data-imported', { detail: { filename: 'EventData.xlsx' } }));
+            }
           } catch (e) {}
           if (onImportSuccess) onImportSuccess();
         }}
