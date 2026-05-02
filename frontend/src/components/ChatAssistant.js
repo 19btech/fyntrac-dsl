@@ -29,6 +29,9 @@ const ChatAssistantComponent = ({ dslFunctions, events, onInsertCode, onOverwrit
   });
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
+  // When an agent run is active, AgentRunMessage publishes its stop handler
+  // here so the chat input's send button can double as a Stop button.
+  const [stopHandler, setStopHandler] = useState(null);
   const [sessionId, setSessionId] = useState(() => {
     try {
       return localStorage.getItem('chatSessionId') || null;
@@ -370,8 +373,10 @@ const ChatAssistantComponent = ({ dslFunctions, events, onInsertCode, onOverwrit
                   initialEvents={isHistorical ? msg.events : undefined}
                   initialStatus={isHistorical ? (msg.finalStatus || 'done') : undefined}
                   onAgentDataChange={onAgentDataChange}
+                  onStopHandleReady={(fn) => setStopHandler(() => fn)}
                   onComplete={(finalEv, allEvents) => {
                     setLoading(false);
+                    setStopHandler(null);
                     // Persist the completed run so a refresh keeps it visible.
                     setMessages(prev => prev.map((m, i) =>
                       i === idx && m.role === 'agent-run'
@@ -459,12 +464,13 @@ const ChatAssistantComponent = ({ dslFunctions, events, onInsertCode, onOverwrit
             data-testid="chat-input"
           />
           <button
-            onClick={handleSendMessage}
-            disabled={!input.trim() || loading}
+            onClick={stopHandler ? () => { try { stopHandler(); } catch (_) {} setStopHandler(null); } : handleSendMessage}
+            disabled={stopHandler ? false : (!input.trim() || loading)}
             className="vsc-send-btn"
-            data-testid="send-message-button"
+            data-testid={stopHandler ? "stop-agent-button" : "send-message-button"}
+            title={stopHandler ? "Stop agent" : "Send"}
           >
-            {loading ? <Square size={14} /> : <Send size={14} />}
+            {stopHandler || loading ? <Square size={14} /> : <Send size={14} />}
           </button>
         </div>
       </div>

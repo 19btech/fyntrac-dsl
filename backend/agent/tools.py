@@ -829,6 +829,56 @@ def _check_formula_expression(expr: str, *, where: str) -> None:
             f"an expression. Use stepType='iteration' with sourceArray instead. "
             f"Got: {expr[:120]!r}"
         )
+    # Curly braces in a formula are ALWAYS a mistake — the DSL has no dict /
+    # set literals and no f-strings. Weak models occasionally emit
+    # `if(cond, {field: value}, ...)` or `f"{x}"` which trips the Python
+    # tokenizer with a cryptic "closing parenthesis '}' does not match
+    # opening parenthesis '('" message at code-gen time. Reject up front.
+    if "{" in expr or "}" in expr:
+        raise ToolError(
+            f"In {where}: curly braces `{{` `}}` are not allowed in DSL "
+            f"expressions. The DSL has NO dict/set literals and NO f-strings. "
+            f"For multi-branch logic use stepType='condition'. For string "
+            f"concatenation use the `concat(a, b, ...)` DSL function. "
+            f"Got: {expr[:160]!r}"
+        )
+    # Sanity: balanced parentheses (the actual culprit behind the cryptic
+    # tokenizer error in the screenshot the user reported). We do this in a
+    # token-aware way that ignores parens inside string literals.
+    depth = 0
+    in_str: str | None = None
+    i = 0
+    while i < len(expr):
+        ch = expr[i]
+        if in_str is not None:
+            if ch == "\\" and i + 1 < len(expr):
+                i += 2
+                continue
+            if ch == in_str:
+                in_str = None
+        else:
+            if ch in ('"', "'"):
+                in_str = ch
+            elif ch == "(":
+                depth += 1
+            elif ch == ")":
+                depth -= 1
+                if depth < 0:
+                    raise ToolError(
+                        f"In {where}: unbalanced parentheses — extra `)` at "
+                        f"position {i}. Got: {expr[:160]!r}"
+                    )
+        i += 1
+    if depth > 0:
+        raise ToolError(
+            f"In {where}: unbalanced parentheses — {depth} unclosed `(`. "
+            f"Got: {expr[:160]!r}"
+        )
+    if in_str is not None:
+        raise ToolError(
+            f"In {where}: unterminated string literal (missing closing "
+            f"`{in_str}`). Got: {expr[:160]!r}"
+        )
 
 
 def _known_dsl_function_names() -> set[str]:
@@ -1847,9 +1897,17 @@ def _validate_schedule_step_shape(name: str, sc: dict, outputVars: list) -> tupl
     # name must be a context variable from outer scope. The schedule engine
     # also exposes each context array as `<name>_full`, so strip that suffix
     # before resolving. Mirrors ScheduleStepModal autoDetectedVars.
+    #
+    # IMPORTANT: We deliberately IGNORE any contextVars the agent declared.
+    # Weak models often dump bare event-field names (e.g. `revaluation_date`)
+    # into contextVars even when the column formulas reference them via the
+    # dotted form (`MyEvent.revaluation_date`). Trusting the declared list
+    # caused a degenerate loop where every retry re-introduced the same
+    # bogus bare names and the static validator kept rejecting them. The
+    # only contextVars that should survive are those actually referenced
+    # as bare identifiers in some column formula.
     dsl_fn_names = _known_dsl_function_names()
-    declared_ctx = {v for v in (sc.get("contextVars") or []) if isinstance(v, str)}
-    derived_ctx: set[str] = set(declared_ctx)
+    derived_ctx: set[str] = set()
     for c in cols:
         ids = _IDENT_FOR_CTX_RE.findall(c.get("formula") or "")
         for raw in ids:
@@ -4204,11 +4262,22 @@ async def tool_finish(args: dict) -> dict:
     # `user_request` is injected by runtime.py from the original task prompt
     # so this gate cannot be circumvented by the agent omitting the field.
     user_request = (args.get("user_request") or "").lower()
-    # If the caller passes a rule_id, do a final correctness gate: the rule
-    # MUST have at least one entry in outputs.transactions[]. A rule with no
-    # transactions emits NOTHING — that is never a valid completion state.
-    rule_id = (args.get("rule_id") or "").strip()
-    if rule_id:
+    # `rule_ids` is injected by runtime.py and contains every rule the agent
+    # created/updated this turn. Combined with the agent-supplied `rule_id`,
+    # this lets the gate check ALL touched rules instead of letting the
+    # agent silently bypass the transaction/schedule check by omitting an id.
+    rule_ids: list[str] = []
+    raw_rids = args.get("rule_ids")
+    if isinstance(raw_rids, list):
+        for rid in raw_rids:
+            rid_s = str(rid or "").strip()
+            if rid_s and rid_s not in rule_ids:
+                rule_ids.append(rid_s)
+    single_rid = (args.get("rule_id") or "").strip()
+    if single_rid and single_rid not in rule_ids:
+        rule_ids.append(single_rid)
+
+    for rule_id in rule_ids:
         try:
             rule = await _load_rule(rule_id)
         except ToolError:
@@ -5084,15 +5153,22 @@ TOOL_SCHEMAS: list[dict] = [
         "name": "finish",
         "description": (
             "Signal that the task is complete. Provide a short user-facing summary. "
-            "If you built or modified a rule, ALSO pass `rule_id` so the runtime can "
-            "verify the rule has at least one balanced debit/credit pair in "
-            "`outputs.transactions[]` before accepting completion."
+            "If you built or modified one or more rules, ALSO pass `rule_id` (single) "
+            "OR `rule_ids` (list) so the runtime can verify each rule has at least "
+            "one balanced debit/credit pair in `outputs.transactions[]` before "
+            "accepting completion. The runtime auto-injects every rule it has seen "
+            "you touch this turn, so the gate runs even if you forget to pass an id."
         ),
         "parameters": {
             "type": "object",
             "properties": {
                 "summary": {"type": "string"},
                 "rule_id": {"type": "string"},
+                "rule_ids": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Optional list of rule ids to gate (in addition to rule_id).",
+                },
             },
             "required": ["summary"],
         },

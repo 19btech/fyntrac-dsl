@@ -55,7 +55,7 @@ function shortenJSON(value, maxLen = 320) {
   return s.length > maxLen ? s.slice(0, maxLen) + "…" : s;
 }
 
-const AgentRunMessage = ({ task, model, autoApproveDestructive = false, onComplete, initialEvents, initialStatus, onAgentDataChange, sessionId }) => {
+const AgentRunMessage = ({ task, model, autoApproveDestructive = false, onComplete, initialEvents, initialStatus, onAgentDataChange, sessionId, onStopHandleReady }) => {
   const isReplay = Array.isArray(initialEvents) && initialEvents.length > 0;
   const [events, setEvents] = useState(isReplay ? initialEvents : []);
   const eventsRef = useRef(events);
@@ -288,6 +288,24 @@ const AgentRunMessage = ({ task, model, autoApproveDestructive = false, onComple
                       summary: "Stopped by user.", steps: 0 });
     } catch (_) {}
   };
+
+  // Expose the stop handler upward so the chat input bar can show a Stop
+  // button. Re-publish whenever runId changes so the cancel POST has the
+  // right id; clear when the run is no longer running.
+  const onStopHandleReadyRef = useRef(onStopHandleReady);
+  useEffect(() => { onStopHandleReadyRef.current = onStopHandleReady; }, [onStopHandleReady]);
+  useEffect(() => {
+    if (isReplay) return;
+    if (status === "running") {
+      try { onStopHandleReadyRef.current?.(handleStop); } catch (_) {}
+    } else {
+      try { onStopHandleReadyRef.current?.(null); } catch (_) {}
+    }
+    return () => {
+      try { onStopHandleReadyRef.current?.(null); } catch (_) {}
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [status, runId, isReplay]);
 
   const toggle = (id) => setExpanded(e => ({ ...e, [id]: !e[id] }));
 

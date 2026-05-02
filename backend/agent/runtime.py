@@ -93,6 +93,146 @@ def _trim_history(msgs: list[dict]) -> list[dict]:
     return msgs[-_SESSION_MAX_MESSAGES:]
 
 
+async def _build_workspace_context(*, db, in_memory_data: dict | None) -> str:
+    """Snapshot the workspace BEFORE the agent's first turn so it can plan
+    against real state instead of re-discovering everything from scratch
+    (and without making collisions with existing rules / events / txn types).
+
+    Returns a markdown-ish string suitable for a system message. Always
+    succeeds — falls back to "(unavailable)" lines on any error so a flaky
+    Mongo never blocks a run.
+    """
+    from .tools import (
+        tool_list_events,
+        tool_list_saved_rules,
+        tool_list_templates,
+        tool_list_dsl_functions,
+    )
+
+    parts: list[str] = [
+        "WORKSPACE SNAPSHOT (taken just before this turn). Use these names "
+        "BEFORE creating new ones so you don't duplicate or collide. If "
+        "what the user asked for already exists, prefer get_saved_rule + "
+        "update_saved_rule over create_saved_rule.\n"
+    ]
+
+    # Events
+    try:
+        ev = await tool_list_events({})
+        events = ev.get("events") or []
+        if events:
+            parts.append(f"EVENTS ({len(events)}):")
+            for e in events[:50]:
+                fields = e.get("fields") or []
+                fnames = ", ".join(
+                    (f.get("name") if isinstance(f, dict) else str(f))
+                    for f in fields[:30]
+                )
+                more = "" if len(fields) <= 30 else f", …(+{len(fields)-30})"
+                parts.append(
+                    f"  • {e.get('event_name')} "
+                    f"[{e.get('eventType')}/{e.get('eventTable')}]: "
+                    f"{fnames}{more}"
+                )
+            if len(events) > 50:
+                parts.append(f"  • …(+{len(events)-50} more events)")
+        else:
+            parts.append("EVENTS: (none defined yet)")
+    except Exception:
+        parts.append("EVENTS: (unavailable)")
+
+    # Saved rules
+    try:
+        sr = await tool_list_saved_rules({})
+        rules = sr.get("rules") or []
+        if rules:
+            parts.append(f"\nSAVED RULES ({len(rules)}):")
+            for r in rules[:40]:
+                parts.append(
+                    f"  • {r.get('name')} (id={r.get('id')}, "
+                    f"priority={r.get('priority')}, "
+                    f"steps={r.get('step_count')})"
+                )
+            if len(rules) > 40:
+                parts.append(f"  • …(+{len(rules)-40} more rules)")
+        else:
+            parts.append("\nSAVED RULES: (none)")
+    except Exception:
+        parts.append("\nSAVED RULES: (unavailable)")
+
+    # Templates
+    try:
+        tpl = await tool_list_templates({})
+        tpls = tpl.get("templates") or []
+        if tpls:
+            parts.append(f"\nTEMPLATES ({len(tpls)}):")
+            for t in tpls[:25]:
+                marker = " [deployed]" if t.get("deployed") else ""
+                parts.append(f"  • {t.get('name')} (id={t.get('id')}){marker}")
+            if len(tpls) > 25:
+                parts.append(f"  • …(+{len(tpls)-25} more templates)")
+        else:
+            parts.append("\nTEMPLATES: (none)")
+    except Exception:
+        parts.append("\nTEMPLATES: (unavailable)")
+
+    # Transaction types
+    try:
+        tx_types: list[str] = []
+        if db is not None:
+            cursor = db.transaction_definitions.find(
+                {}, {"_id": 0, "transactiontype": 1}
+            )
+            async for d in cursor:
+                if d.get("transactiontype"):
+                    tx_types.append(d["transactiontype"])
+        for d in (in_memory_data or {}).get("transaction_definitions", []) or []:
+            if d.get("transactiontype") and d["transactiontype"] not in tx_types:
+                tx_types.append(d["transactiontype"])
+        if tx_types:
+            parts.append(
+                f"\nREGISTERED TRANSACTION TYPES ({len(tx_types)}): "
+                + ", ".join(sorted(set(tx_types))[:80])
+            )
+        else:
+            parts.append("\nREGISTERED TRANSACTION TYPES: (none)")
+    except Exception:
+        parts.append("\nREGISTERED TRANSACTION TYPES: (unavailable)")
+
+    # DSL function index — names only, by category, to keep it cheap
+    try:
+        fns = await tool_list_dsl_functions({})
+        flist = fns.get("functions") or []
+        if flist:
+            by_cat: dict[str, list[str]] = {}
+            for f in flist:
+                by_cat.setdefault(f.get("category") or "other", []).append(
+                    f.get("name") or ""
+                )
+            parts.append(f"\nAVAILABLE DSL FUNCTIONS ({len(flist)}, by category):")
+            for cat in sorted(by_cat):
+                names = sorted(n for n in by_cat[cat] if n)
+                parts.append(f"  • {cat}: {', '.join(names)}")
+            parts.append(
+                "  (call list_dsl_functions with category= or name= filters "
+                "for full signatures + examples)"
+            )
+    except Exception:
+        parts.append("\nAVAILABLE DSL FUNCTIONS: (unavailable — call list_dsl_functions)")
+
+    parts.append(
+        "\nUSE THIS CONTEXT to: (a) reuse existing event names/fields rather "
+        "than recreating them, (b) avoid priority collisions with existing "
+        "saved rules, (c) reuse already-registered transaction types when "
+        "their names match, (d) skip redundant list_* calls — only refetch "
+        "if you specifically modify one of these collections during this "
+        "turn. If the user's request requires something NOT listed above, "
+        "create it; if a sufficiently similar item exists, prefer to update "
+        "or extend it."
+    )
+    return "\n".join(parts)
+
+
 async def _register_pending(run_id: str, call_id: str) -> _PendingApproval:
     async with _RUN_LOCK:
         _PENDING.setdefault(run_id, {})[call_id] = _PendingApproval()
@@ -167,6 +307,8 @@ _ERROR_SIGNATURE_PATTERNS: list[tuple[str, str]] = [
      "synthetic_event_push"),
     (r"is not a known DSL function|Did you mean:",
      "unknown_function"),
+    (r"contextVars",
+     "schedule_contextvars"),
     (r"is not defined|NameError|not found",
      "undefined_name"),
     (r"DSL translation failed",
@@ -222,6 +364,18 @@ def _build_loop_nudge(tool_name: str, signature: str) -> str:
         base += (
             "\nNote: `arr[i]` bracket indexing is not supported. Use "
             "lookup(arr, idx) or element_at(arr, idx)."
+        )
+    elif signature == "schedule_contextvars":
+        base += (
+            "\nNote: this error is about `scheduleConfig.contextVars`. "
+            "`contextVars` MUST list ONLY names of variables defined by "
+            "EARLIER calc/condition/iteration steps in the SAME rule. They "
+            "are NOT for event fields. If your column formula references an "
+            "event field, use the dotted form `EventName.field_name` IN THE "
+            "FORMULA and DO NOT add `field_name` to contextVars. The simplest "
+            "fix is to remove `contextVars` from the schedule step entirely "
+            "(it is auto-derived from formulas) — only add a calc step BEFORE "
+            "the schedule step if you need to reuse a computed value."
         )
     return base
 
@@ -345,7 +499,13 @@ def _system_prompt() -> str:
         "logic with built-in DSL functions only.\n"
         "2. Discover before you act: call `list_events`, `list_dsl_functions`, "
         "`list_templates`, `list_saved_rules` early so you reuse existing "
-        "primitives and avoid name/priority clashes.\n"
+        "primitives and avoid name/priority clashes. EXCEPTION: if a "
+        "WORKSPACE SNAPSHOT system message was already injected at the start "
+        "of this turn, you ALREADY HAVE the lists of events, saved rules, "
+        "templates, transaction types, and DSL function names — DO NOT "
+        "re-call those list_* tools just to re-read what's already in your "
+        "context. Only refetch a list AFTER you've modified that collection "
+        "during this turn.\n"
         "3. Always call `validate_dsl` before `create_or_replace_template` "
         "(rules built via `create_saved_rule` are validated automatically).\n"
         "4. After assembling a template call `dry_run_template` and inspect "
@@ -363,7 +523,26 @@ def _system_prompt() -> str:
         "`delete_saved_schedule`, `clear_all_data`) require user approval — "
         "only call them when the user explicitly asks.\n"
         "9. End the run with `finish(summary=...)` describing what you built "
-        "and the verified results.\n\n"
+        "and the verified results.\n"
+        " 10. TRANSACTIONS ARE THE OUTPUT. A rule with zero entries in "
+        "`outputs.transactions[]` produces NOTHING and is never complete. "
+        "Every accounting rule MUST end with at least one balanced "
+        "debit/credit pair in `outputs.transactions[]`. Use "
+        "`add_transaction_to_rule` (twice — one debit, one credit per "
+        "economic event) AFTER your calc/schedule steps compute the amount. "
+        "The Transactions panel reads ONLY from `outputs.transactions[]` — "
+        "calc steps named 'transactions' / 'outputs_transactions' do "
+        "nothing. The `finish` gate will reject your run if any rule you "
+        "touched lacks balanced transactions.\n"
+        " 11. EXPRESSIONS NEVER USE CURLY BRACES `{` `}`. The DSL has NO "
+        "dict literals, NO set literals, NO f-strings. For multi-branch "
+        "logic use stepType='condition'. For string concatenation use "
+        "`concat(a, b, ...)`. Putting `{...}` in a formula causes a "
+        "cryptic 'closing parenthesis }' does not match opening "
+        "parenthesis (' error at code-gen time.\n"
+        " 12. PARENTHESES MUST BALANCE in every formula. Count `(` and `)` "
+        "before submitting. Unbalanced parens are the #1 source of the "
+        "'Failed' badge users see in the Rule Builder.\n\n"
         "STEP DATA SHAPE (for create_saved_rule / add_step_to_rule):\n"
         "  • calc:        {name, stepType:'calc', source:'formula', formula:'multiply(a,b)'}\n"
         "                 source can also be 'value' (literal), 'event_field' (Evt.field), 'collect' (collect_by_instrument(Evt.field)).\n"
@@ -425,6 +604,74 @@ def _system_prompt() -> str:
         "     Use `iteration` ONLY for operating on an array within a single\n"
         "     row (e.g. doubling each element of a collected time-series),\n"
         "     or when an array genuinely has multiple values per row.\n"
+        "  0a. AUTHORING PATTERN — ALWAYS DO THIS FIRST:\n"
+        "     Before writing any calculation, derivation, or schedule step,\n"
+        "     enumerate EVERY field your model will need and create ONE named\n"
+        "     calc step per field at the TOP of the rule. Then reference those\n"
+        "     variable NAMES (not the raw EVENTNAME.field expression) in every\n"
+        "     downstream step. This eliminates typo-driven undefined-variable\n"
+        "     errors, makes debug_step actually useful, and matches how the\n"
+        "     visual Rule Builder presents rules to users.\n"
+        "       • Include the implicit globals too if the model uses them:\n"
+        "             postingdate, effectivedate, instrumentid, subinstrumentid.\n"
+        "         (Each becomes a calc step with source='value', value='postingdate'\n"
+        "          — i.e. a one-liner that aliases the global.)\n"
+        "       • SCALAR field on the current row (one value per\n"
+        "         instrumentid×postingdate) → calc step:\n"
+        "             {name:'cost', stepType:'calc', source:'event_field',\n"
+        "              eventField:'AssetEvent.original_cost'}\n"
+        "         OR equivalently source:'formula', formula:'AssetEvent.original_cost'.\n"
+        "       • PER-INSTRUMENT TIME-SERIES (e.g. multiple sub-instruments\n"
+        "         under one instrumentid, or multiple postingdates of the\n"
+        "         same activity event for one instrument) → calc step:\n"
+        "             {name:'subinstrument_ids', stepType:'calc', source:'collect',\n"
+        "              collectType:'collect_by_instrument',\n"
+        "              eventField:'AssetEvent.subinstrumentid'}\n"
+        "       • REFERENCE / LOOKUP TABLE (small, instrument-independent) →\n"
+        "             {name:'rate_table', stepType:'calc', source:'formula',\n"
+        "              formula:\"collect_all('RATES.rate')\"}\n"
+        "       • Heuristic for picking collect_all vs collect_by_instrument:\n"
+        "         • If the field varies per instrument (e.g. subinstrumentid,\n"
+        "           historical balances for THIS instrument) → collect_by_instrument.\n"
+        "         • If the field is a global lookup table shared across all\n"
+        "           instruments (e.g. PD curves, FX rates, region codes) →\n"
+        "           collect_all.\n"
+        "       • Naming convention: snake_case, descriptive, matches the\n"
+        "         business term (e.g. `original_cost`, `revaluation_date`,\n"
+        "         `reducing_balance_rate`, `subinstrument_ids`). Do NOT prefix\n"
+        "         with the event name — the calc step IS the alias.\n"
+        "       • After this 'inputs block' of calc steps, every subsequent\n"
+        "         calc/condition/iteration/schedule step MUST reference these\n"
+        "         variable names. Schedule columns reference them as bare\n"
+        "         identifiers; the validator will auto-derive contextVars\n"
+        "         from them — you do NOT need to fill in contextVars yourself.\n"
+        "     Why this matters: weak models that try to inline EVENTNAME.field\n"
+        "     references everywhere routinely produce undefined-variable loops\n"
+        "     because they then ALSO list bare field names in scheduleConfig.\n"
+        "     contextVars. Following this pattern makes that mistake impossible.\n"
+        "  0b. CLOSE EVERY RULE WITH TRANSACTIONS — NON-NEGOTIABLE.\n"
+        "     A rule is INCOMPLETE until `outputs.transactions[]` contains\n"
+        "     at least one balanced debit/credit pair. The Transactions panel\n"
+        "     in the UI reads ONLY from this array. The `finish` tool will\n"
+        "     refuse to accept your run otherwise.\n"
+        "       • After your calc/schedule steps compute the amounts, call\n"
+        "         `add_transaction_to_rule` ONCE PER SIDE per economic event:\n"
+        "             { type:'DepreciationExpense', amount:'depreciation_charge', side:'debit' }\n"
+        "             { type:'AccumulatedDepreciation', amount:'depreciation_charge', side:'credit' }\n"
+        "       • `amount` MUST be the NAME of a calc step (or a schedule\n"
+        "         outputVar). It cannot be an inline expression and cannot\n"
+        "         reference a step that doesn't exist.\n"
+        "       • Register every transaction type via `add_transaction_types`\n"
+        "         BEFORE referencing it.\n"
+        "       • For schedule-driven amounts, expose the period total via\n"
+        "         scheduleConfig.outputVars (type='sum' or 'last') and use\n"
+        "         that outputVar's name as `amount`.\n"
+        "       • Multi-leg accounting events (e.g. revaluation surplus to\n"
+        "         OCI + accumulated dep reset + period depreciation) need\n"
+        "         MULTIPLE pairs — one debit/credit per leg.\n"
+        "       • Once you call `finish`, the runtime auto-injects every\n"
+        "         rule_id you've touched and re-runs the transaction /\n"
+        "         schedule / static-validation gates against ALL of them.\n"
         "  1. EVERY expression in a step is SINGLE-LINE, SINGLE-EXPRESSION.\n"
         "     - No `let` bindings. No `;` separators. No newlines.\n"
         "     - Do NOT write multi-statement expressions in iteration.expression,\n"
@@ -667,6 +914,10 @@ async def run_agent(
     # appears N+ times we inject a nudge into the conversation.
     recent_errors: list[tuple[str, str]] = []
     nudge_already_sent_for: set[tuple[str, str]] = set()
+    # Track every rule the agent has touched (created/updated/added steps to)
+    # during this run so `finish` can gate on ALL of them, not just one the
+    # agent happens to pass an id for. Maps rule_id -> last-known name.
+    touched_rules: dict[str, str] = {}
 
     yield {
         "type": "run_started", "ts": _now_iso(), "run_id": run_id,
@@ -682,8 +933,26 @@ async def run_agent(
     if session_id:
         prior_history = list(_SESSION_HISTORY.get(session_id) or [])
 
+    # Preflight: snapshot the workspace on the FIRST turn of a session so the
+    # model plans against real state and doesn't waste steps re-listing
+    # events / rules / functions / transaction types. On subsequent turns
+    # the history already contains those discoveries — don't re-inject.
+    preflight_msgs: list[dict] = []
+    if not prior_history:
+        try:
+            ctx = await _build_workspace_context(
+                db=db, in_memory_data=in_memory_data
+            )
+            preflight_msgs.append({"role": "system", "content": ctx})
+            yield {"type": "warning", "ts": _now_iso(),
+                    "message": "Loaded workspace context (events, rules, "
+                               "templates, transaction types, DSL functions)."}
+        except Exception as exc:
+            logger.warning("Workspace preflight failed: %s", exc)
+
     messages: list[dict] = (
         [{"role": "system", "content": _system_prompt()}]
+        + preflight_msgs
         + prior_history
         + [{"role": "user", "content": task.strip()}]
     )
@@ -823,6 +1092,13 @@ async def run_agent(
                 # the agent must not be able to spoof this field.
                 if name == "finish" and isinstance(args, dict):
                     args["user_request"] = task
+                    # Inject every rule_id we've seen the agent create or
+                    # mutate this turn so finish can gate them ALL — not
+                    # just one the agent remembers to pass. Without this,
+                    # weak models call finish with no rule_id and the
+                    # transactions/schedule gates are silently skipped.
+                    if touched_rules and not args.get("rule_ids"):
+                        args["rule_ids"] = list(touched_rules.keys())
 
                 t0 = time.time()
                 try:
@@ -840,6 +1116,27 @@ async def run_agent(
                                      "result_preview": obs[:1000]})
                     # Success — reset loop tracking for this tool
                     recent_errors = [e for e in recent_errors if e[0] != name]
+                    # Track rule-touching tools so the finish gate sees them.
+                    _RULE_TOUCHING_TOOLS = {
+                        "create_saved_rule", "update_saved_rule",
+                        "add_step_to_rule", "update_step", "delete_step",
+                        "add_transaction_to_rule", "update_transaction",
+                        "delete_transaction_from_rule",
+                    }
+                    if name in _RULE_TOUCHING_TOOLS and isinstance(result, dict):
+                        rid = (result.get("rule_id")
+                               or (result.get("rule") or {}).get("id")
+                               or (isinstance(args, dict) and args.get("rule_id"))
+                               or "")
+                        rname = ((result.get("rule") or {}).get("name")
+                                 or result.get("name")
+                                 or (isinstance(args, dict) and args.get("name"))
+                                 or "")
+                        if rid:
+                            touched_rules[str(rid)] = str(rname or touched_rules.get(str(rid), ""))
+                    if name == "delete_saved_rule" and isinstance(args, dict):
+                        rid = str(args.get("rule_id") or "")
+                        touched_rules.pop(rid, None)
                     if name == "finish":
                         final_status = "completed"
                         final_summary = (result or {}).get("summary") or ""
@@ -858,12 +1155,40 @@ async def run_agent(
                     # Loop-detector: track this error and nudge if needed
                     sig = _error_signature(err)
                     recent_errors.append((name, sig))
-                    # Keep only the most recent 6 entries
-                    recent_errors = recent_errors[-6:]
+                    # Keep only the most recent 12 entries so we can detect
+                    # protracted loops (some weak models retry 5+ times).
+                    recent_errors = recent_errors[-12:]
                     same = [e for e in recent_errors if e == (name, sig)]
-                    if len(same) >= 2 and (name, sig) not in nudge_already_sent_for:
+                    same_count = len(same)
+                    # First nudge after 2 repeats; re-fire once at 4 repeats
+                    # with stronger framing so a model that ignored the first
+                    # nudge gets a second chance to course-correct. After 6+
+                    # repeats, hard-abort the run — no point burning steps.
+                    if same_count >= 2 and (name, sig) not in nudge_already_sent_for:
                         nudge_already_sent_for.add((name, sig))
                         pending_nudge = (name, sig, _build_loop_nudge(name, sig))
+                    elif same_count == 4:
+                        pending_nudge = (
+                            name, sig,
+                            _build_loop_nudge(name, sig)
+                            + "\n\nFINAL WARNING: this is the 4th identical "
+                            "failure. If your next attempt produces the same "
+                            "error category again the run will be aborted. "
+                            "Do something materially different — read the "
+                            "syntax guide, inspect a working rule, or call "
+                            "`finish` and ask the user for help.",
+                        )
+                    elif same_count >= 6:
+                        final_status = "halted"
+                        final_summary = (
+                            f"Aborted after {same_count} consecutive "
+                            f"`{name}` failures with the same error category "
+                            f"(`{sig}`). The model is stuck in a loop and "
+                            f"could not self-correct. Last error: {err[:400]}"
+                        )
+                        yield {"type": "warning", "ts": _now_iso(),
+                                "message": final_summary}
+                        should_finish = True
                 except Exception as exc:
                     logger.exception("Tool '%s' raised", name)
                     err = f"Internal tool error: {exc}"
