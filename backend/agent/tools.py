@@ -22,6 +22,7 @@ DESIGN RULES
 
 from __future__ import annotations
 
+import json
 import logging
 import random
 import re
@@ -1626,6 +1627,224 @@ async def _next_priority() -> int:
     return p
 
 
+# ──────────────────────────────────────────────────────────────────────────
+# Schedule-step deep validator
+# ──────────────────────────────────────────────────────────────────────────
+# Identifiers the schedule engine auto-injects into every column-expression
+# scope (mirrors SCHEDULE_BUILTINS in ScheduleStepModal.js). Anything in this
+# set is NOT pulled into contextVars and is NOT flagged as undefined.
+_SCHEDULE_COLUMN_BUILTINS: set[str] = {
+    "period_date", "period_index", "period_start", "period_number",
+    "dcf", "lag", "days_in_current_period", "total_periods",
+    "daily_basis", "item_name", "subinstrument_id", "s_no",
+    "index", "start_date", "end_date",
+}
+
+_VALID_FREQUENCIES = {"D", "W", "M", "Q", "Y"}
+_VALID_DC_CONVENTIONS = {
+    "", "30/360", "Actual/360", "Actual/365", "Actual/Actual", "30E/360",
+}
+_VALID_PERIOD_TYPES = {"date", "number"}
+_VALID_SOURCE_TYPES = {"value", "field", "formula"}
+_VALID_OUTPUT_VAR_TYPES = {"first", "last", "sum", "column", "filter"}
+
+_IDENT_FOR_CTX_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+
+
+def _validate_schedule_step_shape(name: str, sc: dict, outputVars: list) -> tuple[dict, list]:
+    """Deep validate a stepType='schedule' configuration. Mirrors the
+    field-by-field rules of ScheduleStepModal.js so the agent cannot save a
+    schedule that the visual modal would reject. Auto-derives contextVars
+    from the column formulas (the modal's `autoDetectedVars` useMemo) so the
+    agent never has to remember to populate it.
+
+    Returns the (possibly amended) (scheduleConfig, outputVars) tuple.
+    """
+    if not isinstance(sc, dict):
+        raise ToolError(f"step '{name}': scheduleConfig must be an object")
+
+    period_type = (sc.get("periodType") or "date").strip()
+    if period_type not in _VALID_PERIOD_TYPES:
+        raise ToolError(
+            f"step '{name}': scheduleConfig.periodType='{period_type}' is "
+            f"invalid. Must be one of {sorted(_VALID_PERIOD_TYPES)}."
+        )
+    sc["periodType"] = period_type
+
+    freq = (sc.get("frequency") or "M").strip().upper()
+    if freq not in _VALID_FREQUENCIES:
+        raise ToolError(
+            f"step '{name}': scheduleConfig.frequency='{freq}' is invalid. "
+            f"Must be one of {sorted(_VALID_FREQUENCIES)} (D/W/M/Q/Y)."
+        )
+    sc["frequency"] = freq
+
+    convention = (sc.get("convention") or "").strip()
+    if convention and convention not in _VALID_DC_CONVENTIONS:
+        raise ToolError(
+            f"step '{name}': scheduleConfig.convention='{convention}' is "
+            f"invalid. Must be one of {sorted(_VALID_DC_CONVENTIONS - {''})}."
+        )
+    sc["convention"] = convention
+
+    def _check_tri_source(prefix: str) -> None:
+        """One of value / field / formula must yield a non-empty expression."""
+        src = (sc.get(f"{prefix}Source") or "value").strip()
+        if src not in _VALID_SOURCE_TYPES:
+            raise ToolError(
+                f"step '{name}': scheduleConfig.{prefix}Source='{src}' is "
+                f"invalid. Must be one of {sorted(_VALID_SOURCE_TYPES)}."
+            )
+        sc[f"{prefix}Source"] = src
+        if src == "value":
+            v = sc.get(prefix)
+            if v in (None, ""):
+                raise ToolError(
+                    f"step '{name}': scheduleConfig.{prefix} is required when "
+                    f"{prefix}Source='value'."
+                )
+        elif src == "field":
+            v = (sc.get(f"{prefix}Field") or "").strip()
+            if not v:
+                raise ToolError(
+                    f"step '{name}': scheduleConfig.{prefix}Field is required "
+                    f"when {prefix}Source='field'."
+                )
+            if "." not in v:
+                raise ToolError(
+                    f"step '{name}': scheduleConfig.{prefix}Field='{v}' must "
+                    f"be 'EVENTNAME.fieldname'."
+                )
+        elif src == "formula":
+            v = (sc.get(f"{prefix}Formula") or "").strip()
+            if not v:
+                raise ToolError(
+                    f"step '{name}': scheduleConfig.{prefix}Formula is "
+                    f"required when {prefix}Source='formula'."
+                )
+            _enforce_dsl_guardrails(v)
+            _check_formula_expression(v, where=f"step '{name}'.scheduleConfig.{prefix}Formula")
+
+    if period_type == "date":
+        _check_tri_source("startDate")
+        _check_tri_source("endDate")
+    else:  # number
+        _check_tri_source("periodCount")
+
+    cols = sc.get("columns") or []
+    if not cols:
+        raise ToolError(
+            f"step '{name}': scheduleConfig.columns is empty. A schedule "
+            f"must have at least one column. Each column needs "
+            f"{{name, formula}}. Built-in identifiers available inside "
+            f"column formulas: {sorted(_SCHEDULE_COLUMN_BUILTINS)}."
+        )
+    seen_col_names: set[str] = set()
+    for c in cols:
+        cname = (c.get("name") or "").strip()
+        formula = (c.get("formula") or "").strip()
+        if not cname or not formula:
+            raise ToolError(
+                f"step '{name}': every schedule column needs a non-empty "
+                f"name + formula. Got name={cname!r}, formula={formula!r}."
+            )
+        if cname in seen_col_names:
+            raise ToolError(
+                f"step '{name}': duplicate schedule column name '{cname}'."
+            )
+        seen_col_names.add(cname)
+        _enforce_dsl_guardrails(formula)
+        _check_formula_expression(
+            formula,
+            where=f"step '{name}'.scheduleConfig.columns['{cname}'].formula",
+        )
+
+    # Auto-derive contextVars: any identifier used in a column formula that
+    # is NOT a built-in, NOT a DSL function name, and NOT another column
+    # name must be a context variable from outer scope. The schedule engine
+    # also exposes each context array as `<name>_full`, so strip that suffix
+    # before resolving. Mirrors ScheduleStepModal autoDetectedVars.
+    dsl_fn_names = _known_dsl_function_names()
+    declared_ctx = {v for v in (sc.get("contextVars") or []) if isinstance(v, str)}
+    derived_ctx: set[str] = set(declared_ctx)
+    for c in cols:
+        ids = _IDENT_FOR_CTX_RE.findall(c.get("formula") or "")
+        for raw in ids:
+            ident = raw[:-5] if raw.endswith("_full") else raw
+            if not ident:
+                continue
+            if ident in _VALIDATOR_BUILTINS:
+                continue
+            if ident in _SCHEDULE_COLUMN_BUILTINS:
+                continue
+            if ident in dsl_fn_names:
+                continue
+            if ident in seen_col_names:
+                continue
+            if ident == name:
+                # The step's own variable (sched = schedule(...)) — skip.
+                continue
+            if ident.isdigit() or ident in {"True", "False", "None"}:
+                continue
+            derived_ctx.add(ident)
+    # Never pull the step's own name into contextVars
+    derived_ctx.discard(name)
+    sc["contextVars"] = sorted(derived_ctx)
+
+    # outputVars: validate against the final column set.
+    norm_outs: list[dict] = []
+    seen_out_names: set[str] = set()
+    for ov in outputVars or []:
+        if not isinstance(ov, dict):
+            raise ToolError(f"step '{name}': each outputVar must be an object")
+        ov_name = (ov.get("name") or "").strip()
+        ov_type = (ov.get("type") or "").strip()
+        if not ov_name:
+            raise ToolError(f"step '{name}': outputVar.name is required")
+        if not ov_name.replace("_", "").isalnum() or ov_name[:1].isdigit():
+            raise ToolError(
+                f"step '{name}': outputVar.name='{ov_name}' must be a valid "
+                f"Python identifier."
+            )
+        if ov_name in seen_out_names:
+            raise ToolError(f"step '{name}': duplicate outputVar name '{ov_name}'")
+        seen_out_names.add(ov_name)
+        if ov_type not in _VALID_OUTPUT_VAR_TYPES:
+            raise ToolError(
+                f"step '{name}': outputVar '{ov_name}'.type='{ov_type}' is "
+                f"invalid. Must be one of {sorted(_VALID_OUTPUT_VAR_TYPES)}: "
+                f"first / last / sum / column / filter."
+            )
+        col = (ov.get("column") or "").strip()
+        if not col:
+            raise ToolError(
+                f"step '{name}': outputVar '{ov_name}' (type={ov_type}) needs "
+                f"a `column` referring to one of {sorted(seen_col_names)}."
+            )
+        if col not in seen_col_names:
+            raise ToolError(
+                f"step '{name}': outputVar '{ov_name}'.column='{col}' does "
+                f"not match any defined schedule column. Defined columns: "
+                f"{sorted(seen_col_names)}."
+            )
+        entry: dict = {"name": ov_name, "type": ov_type, "column": col}
+        if ov_type == "filter":
+            mc = (ov.get("matchCol") or "").strip()
+            mv = ov.get("matchValue")
+            if mv is not None:
+                mv = str(mv).strip()
+            if not mc or mv in (None, ""):
+                raise ToolError(
+                    f"step '{name}': outputVar '{ov_name}' (type=filter) "
+                    f"requires both matchCol and matchValue."
+                )
+            entry["matchCol"] = mc
+            entry["matchValue"] = mv
+        norm_outs.append(entry)
+
+    return sc, norm_outs
+
+
 def _validate_step_shape(step: dict) -> dict:
     """Normalise & lightly validate a step dict provided by the agent."""
     if not isinstance(step, dict):
@@ -1767,28 +1986,10 @@ def _validate_step_shape(step: dict) -> dict:
                                        extra_names={"each", "second", it.get("resultVar") or ""})
     elif st == "schedule":
         sc = step.get("scheduleConfig") or {}
-        if not isinstance(sc, dict):
-            raise ToolError("schedule.scheduleConfig must be an object")
-        if not sc.get("columns"):
-            raise ToolError("schedule must define at least one column in scheduleConfig.columns")
-        for c in sc.get("columns") or []:
-            if not c.get("name") or not c.get("formula"):
-                raise ToolError("each schedule column needs name + formula")
-            _enforce_dsl_guardrails(c["formula"])
-            _check_formula_expression(c["formula"],
-                                       where=f"step '{name}'.scheduleConfig.columns['{c.get('name')}'].formula")
-        for k in ("periodCountFormula", "startDateFormula", "endDateFormula"):
-            v = sc.get(k)
-            if isinstance(v, str) and v:
-                _enforce_dsl_guardrails(v)
-                _check_formula_expression(v, where=f"step '{name}'.scheduleConfig.{k}")
+        outputVars = step.get("outputVars") or []
+        sc, outputVars = _validate_schedule_step_shape(name, sc, outputVars)
         out["scheduleConfig"] = sc
-        out["outputVars"] = step.get("outputVars") or []
-        for ov in out["outputVars"]:
-            if not ov.get("name") or not ov.get("type"):
-                raise ToolError("schedule outputVar requires name + type")
-            if ov["type"] not in ("first", "last", "sum", "column", "filter"):
-                raise ToolError(f"unknown outputVar type '{ov['type']}'")
+        out["outputVars"] = outputVars
     if step.get("inlineComment"):
         out["inlineComment"] = True
         out["commentText"] = step.get("commentText") or ""
@@ -2365,6 +2566,16 @@ async def tool_create_saved_rule(args: dict) -> dict:
     }
     rule = await _save_rule_doc(rule, is_new=True)
     payload = {"rule_id": rule["id"], "name": name, "priority": priority, "step_count": len(steps)}
+    sched_results = await _auto_test_schedule_steps(rule)
+    if sched_results:
+        payload["schedule_tests"] = sched_results
+        if any(not r.get("ok") for r in sched_results):
+            payload["schedule_tests_hint"] = (
+                "⚠️ one or more schedule steps failed their automatic "
+                "preview test. Fix the failing column/output via update_step "
+                "or call test_schedule_step directly to iterate. The rule "
+                "is saved but is NOT runnable yet."
+            )
     return await _attach_validation(rule, payload)
 
 
@@ -2383,6 +2594,16 @@ async def tool_update_saved_rule(args: dict) -> dict:
     _validate_transaction_outputs(rule.get("steps") or [], rule.get("outputs") or {})
     rule = await _save_rule_doc(rule, is_new=False)
     payload = {"rule_id": rule["id"], "name": rule["name"], "step_count": len(rule.get("steps") or [])}
+    sched_results = await _auto_test_schedule_steps(rule)
+    if sched_results:
+        payload["schedule_tests"] = sched_results
+        if any(not r.get("ok") for r in sched_results):
+            payload["schedule_tests_hint"] = (
+                "⚠️ one or more schedule steps failed their automatic "
+                "preview test. Fix the failing column/output via update_step "
+                "or call test_schedule_step directly to iterate. The rule "
+                "is saved but is NOT runnable yet."
+            )
     return await _attach_validation(rule, payload)
 
 
@@ -2932,6 +3153,263 @@ async def tool_debug_step(args: dict) -> dict:
     }
 
 
+async def _execute_dsl_for_rule(rule: dict, code: str, posting_date: str | None,
+                                effective_date: str | None) -> tuple[dict, int]:
+    """Resolve event data for a rule, translate DSL → Python, execute. Helper
+    for schedule-step testing. Returns (execution_result, row_count)."""
+    dsl_to_python_multi_event = _h("dsl_to_python_multi_event")
+    execute_python_template = _h("execute_python_template")
+    merge_event_data_by_instrument = _h("merge_event_data_by_instrument")
+    filter_event_data_by_posting_date = _h("filter_event_data_by_posting_date")
+    extract_event_names_from_dsl = _h("extract_event_names_from_dsl")
+    referenced = list(extract_event_names_from_dsl(code) or [])
+    all_event_fields: dict[str, Any] = {}
+    event_data: dict[str, list[dict]] = {}
+    for nm in referenced:
+        evt = await _find_event_def(nm)
+        if not evt:
+            raise ToolError(f"Event '{nm}' referenced by schedule not found")
+        all_event_fields[nm] = {"fields": evt.get("fields", []),
+                                 "eventType": evt.get("eventType", "activity")}
+        rows: list = []
+        db = _ServerBridge.db
+        if db is not None:
+            doc = await db.event_data.find_one(
+                {"event_name": {"$regex": f"^{re.escape(nm)}$", "$options": "i"}},
+                {"_id": 0},
+            )
+            if doc:
+                rows = doc.get("data_rows") or []
+        if not rows:
+            for d in (_ServerBridge.in_memory_data or {}).get("event_data") or []:
+                if str(d.get("event_name", "")).lower() == nm.lower():
+                    rows = d.get("data_rows") or []
+                    break
+        event_data[nm] = rows
+    activity_data = {k: v for k, v in event_data.items()
+                     if all_event_fields[k]["eventType"] == "activity"}
+    scoped = (filter_event_data_by_posting_date(activity_data, posting_date)
+              if posting_date else activity_data)
+    merged = merge_event_data_by_instrument(scoped) if activity_data else [{}]
+    if not merged:
+        merged = [{}]
+    try:
+        py = (dsl_to_python_multi_event(code, all_event_fields) if all_event_fields
+              else _h("dsl_to_python_standalone")(code))
+    except Exception as exc:
+        raise ToolError(f"DSL translation failed: {exc}") from exc
+    try:
+        result = await execute_python_template(py, merged, event_data,
+                                                posting_date, effective_date)
+    except Exception as exc:
+        raise ToolError(f"Execution failed: {exc}") from exc
+    return result, len(merged)
+
+
+async def _resolve_default_posting_date() -> str | None:
+    """Pick the first posting date from the event_data collection. Mirrors the
+    modal's fallback when the user hasn't selected one."""
+    db = _ServerBridge.db
+    if db is None:
+        return None
+    try:
+        cursor = db.event_data.find({}, {"_id": 0, "data_rows": {"$slice": 1}})
+        async for doc in cursor:
+            rows = doc.get("data_rows") or []
+            for r in rows:
+                pd = r.get("postingdate") or r.get("postingDate")
+                if pd:
+                    return str(pd)[:10]
+    except Exception:
+        return None
+    return None
+
+
+async def tool_test_schedule_step(args: dict) -> dict:
+    """Execute a stepType='schedule' step the same way the visual
+    ScheduleStepModal does: build period(...) + schedule(...) DSL, run it
+    incrementally column-by-column, then test each outputVar. Returns
+    per-column pass/fail and the materialised schedule preview.
+
+    Args:
+        rule_id (str)         — required, parent rule id
+        step_index (int)      — or step_name; locate the schedule step
+        step_name (str)
+        posting_date (str)    — optional; defaults to first available
+        effective_date (str)  — optional
+        sample_limit (int)    — max preview rows to return (default 6)
+    """
+    rule = await _load_rule((args.get("rule_id") or "").strip())
+    idx = _resolve_step_index(rule, args)
+    steps = rule.get("steps") or []
+    target = steps[idx]
+    if (target.get("stepType") or "") != "schedule":
+        raise ToolError(
+            f"Step '{target.get('name')}' (index {idx}) is stepType="
+            f"'{target.get('stepType')}', not 'schedule'. Use debug_step "
+            f"for non-schedule steps."
+        )
+    sc = target.get("scheduleConfig") or {}
+    cols = [c for c in (sc.get("columns") or []) if c.get("name") and c.get("formula")]
+    if not cols:
+        raise ToolError("Schedule has no columns to test.")
+    out_vars = list(target.get("outputVars") or [])
+
+    posting_date = args.get("posting_date") or await _resolve_default_posting_date()
+    effective_date = args.get("effective_date")
+    sample_limit = max(1, int(args.get("sample_limit") or 6))
+
+    # Build prior code: every step BEFORE the schedule step (calc/condition/
+    # iteration). This supplies the contextVars the schedule references.
+    prior_rule = {**rule, "steps": steps[:idx], "outputs": {}}
+    prior_code = _generate_rule_code(prior_rule)
+
+    # Incremental column tests: replace the schedule step with one that has
+    # only columns 1..k, then re-run. Fail fast on the first column that
+    # errors out.
+    column_results: list[dict] = []
+    for k in range(1, len(cols) + 1):
+        partial_step = {
+            **target,
+            "scheduleConfig": {**sc, "columns": cols[:k]},
+            "outputVars": [],   # Skip outputVars during column probe
+        }
+        partial_rule = {**rule, "steps": steps[:idx] + [partial_step], "outputs": {}}
+        code = _generate_rule_code(partial_rule)
+        try:
+            result, _ = await _execute_dsl_for_rule(
+                partial_rule, code, posting_date, effective_date
+            )
+            err = None
+            if not result.get("success", True):
+                err = result.get("error") or "execution returned success=false"
+        except ToolError as exc:
+            err = str(exc)
+        col = cols[k - 1]
+        column_results.append({
+            "column": col["name"],
+            "formula": col["formula"],
+            "ok": err is None,
+            "error": err,
+        })
+        if err is not None:
+            return {
+                "rule_id": rule["id"],
+                "step_name": target.get("name"),
+                "ok": False,
+                "failed_at": "column",
+                "failed_column": col["name"],
+                "error": err,
+                "column_results": column_results,
+                "fix_hint": (
+                    f"Column '{col['name']}' formula failed. Check that all "
+                    f"identifiers are EITHER (a) other columns defined ABOVE "
+                    f"this one, (b) schedule built-ins "
+                    f"({sorted(_SCHEDULE_COLUMN_BUILTINS)}), (c) DSL function "
+                    f"names, or (d) variables from prior calc steps that "
+                    f"appear in scheduleConfig.contextVars (auto-derived from "
+                    f"this step's column formulas)."
+                ),
+            }
+
+    # Full schedule + outputVars run.
+    full_rule = {**rule, "steps": steps[:idx + 1], "outputs": {}}
+    full_code = _generate_rule_code(full_rule)
+    result, row_count = await _execute_dsl_for_rule(
+        full_rule, full_code, posting_date, effective_date
+    )
+    if not result.get("success", True):
+        return {
+            "rule_id": rule["id"],
+            "step_name": target.get("name"),
+            "ok": False,
+            "failed_at": "full_schedule",
+            "error": result.get("error") or "execution failed",
+            "column_results": column_results,
+        }
+
+    # Parse the schedule output from print_outputs (last print is the schedule).
+    prints = result.get("print_outputs") or []
+    preview_rows: list = []
+    for p in reversed(prints):
+        s = str(p).strip()
+        if not s.startswith("["):
+            continue
+        try:
+            parsed = json.loads(s)
+        except Exception:
+            continue
+        if isinstance(parsed, list) and parsed and isinstance(parsed[0], list):
+            parsed = parsed[0]
+        if isinstance(parsed, list) and parsed and isinstance(parsed[0], dict) and "schedule" in parsed[0]:
+            preview_rows = []
+            for item in parsed:
+                for r in (item.get("schedule") or []):
+                    preview_rows.append(r)
+        elif isinstance(parsed, list) and parsed and isinstance(parsed[0], dict):
+            preview_rows = parsed
+        if preview_rows:
+            break
+
+    # Test each outputVar by name appearing in the prints.
+    output_results: list[dict] = []
+    for ov in out_vars:
+        ov_name = ov.get("name")
+        # Look for a print line like "<ov_name> = ..." or any line containing it.
+        found = next((p for p in prints if isinstance(p, str) and ov_name in p), None)
+        output_results.append({
+            "name": ov_name,
+            "type": ov.get("type"),
+            "column": ov.get("column"),
+            "ok": found is not None,
+            "sample": (str(found)[:200] if found else None),
+        })
+
+    return {
+        "rule_id": rule["id"],
+        "step_name": target.get("name"),
+        "ok": True,
+        "row_count_input": row_count,
+        "column_results": column_results,
+        "output_results": output_results,
+        "preview_sample": preview_rows[:sample_limit],
+        "preview_total_rows": len(preview_rows),
+        "next_action_hint": (
+            "Schedule executed successfully. Safe to call finish or proceed "
+            "to attach_rules_to_template."
+        ),
+    }
+
+
+async def _auto_test_schedule_steps(rule: dict) -> list[dict]:
+    """For each schedule step in `rule`, run tool_test_schedule_step. Returns
+    a list of {step_name, ok, error?} entries. Used by create/update/finish
+    so the agent SEES schedule failures in the same turn."""
+    results: list[dict] = []
+    for i, s in enumerate(rule.get("steps") or []):
+        if (s.get("stepType") or "") != "schedule":
+            continue
+        try:
+            r = await tool_test_schedule_step({
+                "rule_id": rule["id"],
+                "step_index": i,
+                "sample_limit": 3,
+            })
+            results.append({
+                "step_name": s.get("name"),
+                "ok": bool(r.get("ok")),
+                "failed_at": r.get("failed_at"),
+                "error": r.get("error"),
+                "failed_column": r.get("failed_column"),
+            })
+        except ToolError as exc:
+            results.append({"step_name": s.get("name"), "ok": False, "error": str(exc)})
+        except Exception as exc:  # pragma: no cover — defensive
+            results.append({"step_name": s.get("name"), "ok": False,
+                             "error": f"unexpected: {exc}"})
+    return results
+
+
 # ──────────────────────────────────────────────────────────────────────────
 # Schedule tools
 # ──────────────────────────────────────────────────────────────────────────
@@ -2959,6 +3437,23 @@ async def tool_create_saved_schedule(args: dict) -> dict:
     name = (args.get("name") or "").strip()
     if not name:
         raise ToolError("`name` is required")
+    # Hard block: standalone schedules render in the read-only code viewer with
+    # no visual editor. Force the agent down the visual `add_step_to_rule`
+    # path unless the user EXPLICITLY asked for a shared library schedule.
+    if not bool(args.get("force_standalone")):
+        raise ToolError(
+            "REFUSED: standalone saved schedules render in the read-only code "
+            "viewer with NO visual editor — the user will see an unfilled "
+            "card and cannot edit columns/period/outputs.\n"
+            "FIX: call `add_step_to_rule` with step.stepType='schedule' and a "
+            "populated `scheduleConfig` (periodType, frequency, columns, "
+            "contextVars auto-derived, outputVars). That renders inside the "
+            "visual ScheduleStepModal where every field is editable. Then "
+            "call `test_schedule_step` to verify it executes cleanly.\n"
+            "Pass `force_standalone=true` ONLY when the user has explicitly "
+            "asked for a SHARED, REUSABLE library schedule attached to "
+            "multiple templates."
+        )
     dsl_code = (args.get("dsl_code") or "").strip()
     if not dsl_code:
         raise ToolError("`dsl_code` is required (must define `period(...)` then `schedule(...)`)")
@@ -3389,6 +3884,27 @@ async def tool_finish(args: dict) -> dict:
                     f"calling finish. (Rule #19: NEVER stop on validation "
                     f"failure.)"
                 )
+            # Schedule-test gate: every schedule step must pass its preview.
+            # We re-run the tests here so the agent cannot skip them.
+            try:
+                sched_results = await _auto_test_schedule_steps(rule)
+            except Exception:
+                sched_results = []
+            sched_failures = [r for r in sched_results if not r.get("ok")]
+            if sched_failures:
+                preview2 = "; ".join(
+                    f"{r.get('step_name')}: "
+                    f"{r.get('error') or 'failed'}"
+                    for r in sched_failures[:5]
+                )
+                raise ToolError(
+                    f"Rule '{rule.get('name')}' has {len(sched_failures)} "
+                    f"schedule step(s) that fail their preview test: "
+                    f"{preview2}. FIX each failing column/output via "
+                    f"`update_step` and re-run `test_schedule_step` until "
+                    f"ok=true BEFORE calling finish. A schedule that does "
+                    f"not preview cannot run end-to-end."
+                )
     low = summary.lower()
     for phrase in _FORBIDDEN_FINISH_PHRASES:
         if phrase in low:
@@ -3723,6 +4239,83 @@ SCHEDULE (amortisation, ECL projection, etc.)
 }
 
 ------------------------------------------------------------------
+SCHEDULE STEP — FULL FIELD REFERENCE  (mirrors ScheduleStepModal)
+------------------------------------------------------------------
+Every schedule step is rendered by the visual ScheduleStepModal. Every
+scheduleConfig key below corresponds to a field in that modal. Missing
+or invalid values are rejected by `_validate_schedule_step_shape`.
+
+  scheduleConfig:
+    periodType:  "date"   → use start/end dates
+                 "number" → use periodCount
+
+    frequency:   "D" | "W" | "M" | "Q" | "Y"   (REQUIRED)
+
+    convention:  "" | "30/360" | "Actual/360" | "Actual/365" |
+                 "Actual/Actual" | "30E/360"   (optional, date period only)
+
+    # Date-range mode (periodType=="date"):
+    startDateSource: "value" | "field" | "formula"
+      • value   → startDate          = "2026-01-01"
+      • field   → startDateField     = "EVENTNAME.fieldname"
+      • formula → startDateFormula   = "<DSL expression>"
+    endDateSource:   same shape on endDate / endDateField / endDateFormula
+
+    # Count mode (periodType=="number"):
+    periodCountSource: "value" | "field" | "formula"
+      • value   → periodCount         = 12
+      • field   → periodCountField    = "EVENTNAME.fieldname"
+      • formula → periodCountFormula  = "<DSL expression>"
+
+    columns: [{name, formula}, ...]   (REQUIRED, at least one)
+      • Each column formula may reference, in order of preference:
+          (a) a column DEFINED ABOVE it in the same array
+          (b) a SCHEDULE BUILT-IN (see list below)
+          (c) any DSL function name
+          (d) a contextVar (auto-derived; see below)
+
+    contextVars: AUTO-DERIVED — the validator scans every column formula
+                 and pulls in any identifier that is not (a)/(b)/(c) above.
+                 You DO NOT need to populate this manually; whatever you
+                 supply is merged with the auto-derived set.
+
+  outputVars: [{name, type, column, ...}, ...]
+    type ∈ {"first","last","sum","column","filter"}.
+      • first   → schedule_first(sched, "<column>")    ⇒ scalar
+      • last    → schedule_last(sched, "<column>")     ⇒ scalar
+      • sum     → schedule_sum(sched, "<column>")      ⇒ scalar
+      • column  → schedule_column(sched, "<column>")   ⇒ array
+      • filter  → schedule_filter(sched, "<matchCol>", <matchValue>, "<column>")
+                  REQUIRES matchCol + matchValue + column.
+    Every `column` MUST be the name of a defined column in
+    scheduleConfig.columns. The validator rejects unknown column names.
+
+SCHEDULE COLUMN BUILT-INS (auto-injected into every column expression;
+do NOT put them in contextVars):
+  period_date, period_index, period_start, period_number,
+  dcf, lag, days_in_current_period, total_periods,
+  daily_basis, item_name, subinstrument_id, s_no,
+  index, start_date, end_date
+
+REQUIRED VALIDATION FLOW for any schedule step you author:
+  1. add_step_to_rule with stepType='schedule' and a populated
+     scheduleConfig (validator runs immediately; fix any errors it returns).
+  2. test_schedule_step(rule_id, step_name) — runs column-by-column +
+     each outputVar exactly like the visual modal's preview button.
+     This MUST return ok=true. If `failed_at='column'` the named column
+     formula references something undefined; either rename to a column
+     defined above, fix to a built-in, or define the variable in a calc
+     step BEFORE the schedule step.
+  3. Only then proceed to add transactions / call finish.
+  Finish refuses to close while any schedule step in the rule fails its
+  preview.
+
+NEVER call `create_saved_schedule` for a typical "create a depreciation
+/ amortization / ECL / runoff schedule" request. That tool is hard-blocked
+unless `force_standalone=true` and is reserved for shared library
+schedules attached to multiple templates by the user.
+
+------------------------------------------------------------------
 EMITTING TRANSACTIONS  (THE OUTPUT OF A RULE *IS* ITS TRANSACTIONS)
 ------------------------------------------------------------------
 A rule with ZERO entries in `outputs.transactions[]` produces NO
@@ -3829,6 +4422,7 @@ TOOLS: dict[str, Callable[[dict], Awaitable[dict]]] = {
     "delete_transaction_from_rule": tool_delete_transaction_from_rule,
     "update_transaction_in_rule": tool_update_transaction_in_rule,
     "debug_step": tool_debug_step,
+    "test_schedule_step": tool_test_schedule_step,
     "list_saved_schedules": tool_list_saved_schedules,
     "create_saved_schedule": tool_create_saved_schedule,
     "delete_saved_schedule": tool_delete_saved_schedule,
@@ -4277,6 +4871,31 @@ TOOL_SCHEMAS.extend([
         },
     },
     {
+        "name": "test_schedule_step",
+        "description": (
+            "Execute a stepType='schedule' step the same way the visual "
+            "ScheduleStepModal preview button does: builds period(...) + "
+            "schedule(...) DSL, runs it INCREMENTALLY column-by-column "
+            "(failing fast on the first broken column), then evaluates each "
+            "outputVar and returns a materialised preview. ALWAYS call this "
+            "after add_step_to_rule / update_step on a schedule step BEFORE "
+            "calling finish — finish will refuse to close until every "
+            "schedule step in the rule has passed this test."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "rule_id": {"type": "string"},
+                "step_index": {"type": "integer"},
+                "step_name": {"type": "string"},
+                "posting_date": {"type": "string"},
+                "effective_date": {"type": "string"},
+                "sample_limit": {"type": "integer"},
+            },
+            "required": ["rule_id"],
+        },
+    },
+    {
         "name": "list_saved_schedules",
         "description": "List saved schedules (id, name, priority).",
         "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
@@ -4284,22 +4903,16 @@ TOOL_SCHEMAS.extend([
     {
         "name": "create_saved_schedule",
         "description": (
-            "⚠️ USE SPARINGLY — prefer `add_step_to_rule` with stepType='schedule' instead.\n"
+            "⛔ BLOCKED BY DEFAULT — returns ToolError unless `force_standalone=true`.\n"
             "\n"
-            "This tool creates a STANDALONE schedule in the saved_schedules collection. "
-            "In the current build there is NO standalone visual schedule editor mounted, so "
-            "a schedule created here will only be viewable as raw DSL in the code editor and "
-            "will NOT show up as an editable card in the Rule Builder UI.\n"
+            "Standalone saved schedules render in the read-only code viewer with NO visual editor; "
+            "the user sees an unfilled schedule card with no way to edit columns, period, or outputs. "
+            "For ANY user request like 'create a depreciation/amortization/ECL/runoff schedule', "
+            "call `add_step_to_rule` with step.stepType='schedule' and a populated `scheduleConfig`, "
+            "then `test_schedule_step` to verify. That path is fully editable in the visual modal.\n"
             "\n"
-            "DEFAULT PATH for ANY 'create a depreciation/amortization/ECL/runoff schedule' "
-            "request from the user: call `add_step_to_rule` with step.stepType='schedule' "
-            "and a populated `scheduleConfig` (periodType, frequency, columns, contextVars, "
-            "outputVars). That renders inside the visual Schedule Step Modal where every "
-            "column, period setting and output is editable.\n"
-            "\n"
-            "Use THIS tool ONLY when the user explicitly asks for a SHARED, REUSABLE schedule "
-            "that they want attached to multiple templates via `attach_rules_to_template` and "
-            "are happy editing the raw DSL."
+            "Pass `force_standalone=true` ONLY when the user has EXPLICITLY asked for a shared, "
+            "reusable library schedule attached to multiple templates via `attach_rules_to_template`."
         ),
         "parameters": {
             "type": "object",
@@ -4308,8 +4921,9 @@ TOOL_SCHEMAS.extend([
                 "dsl_code": {"type": "string"},
                 "priority": {"type": "integer"},
                 "config": {"type": "object", "description": "Optional structured config (frequency, columns, etc.) used by the Schedule Builder UI."},
+                "force_standalone": {"type": "boolean", "description": "REQUIRED to be true. Set only when the user explicitly asked for a shared library schedule."},
             },
-            "required": ["name", "dsl_code"],
+            "required": ["name", "dsl_code", "force_standalone"],
         },
     },
     {
