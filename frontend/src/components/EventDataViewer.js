@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback } from "react";
 import axios from "axios";
+import * as XLSX from "xlsx";
 import { useToast } from "./ToastProvider";
 import { X, Database, Download } from "lucide-react";
 import { Button, IconButton, Chip, Box, Typography, Table, TableHead, TableBody, TableRow, TableCell, Card, Tabs, Tab, Alert } from '@mui/material';
@@ -98,21 +99,102 @@ const EventDataViewer = ({ onClose }) => {
     }
   }, [eventDataSummary, loadEventData, selectedEvent]);
 
-  const downloadEventData = async (eventName) => {
+  const [exporting, setExporting] = useState(false);
+
+  // Excel sheet names: max 31 chars, cannot contain : \ / ? * [ ]
+  const sanitizeSheetName = (name, used) => {
+    let safe = String(name || "Sheet").replace(/[:\\\/\?\*\[\]]/g, "_");
+    if (safe.length > 31) safe = safe.slice(0, 31);
+    if (!safe.trim()) safe = "Sheet";
+    let candidate = safe;
+    let n = 2;
+    while (used.has(candidate.toLowerCase())) {
+      const suffix = `_${n}`;
+      candidate = safe.slice(0, 31 - suffix.length) + suffix;
+      n += 1;
+    }
+    used.add(candidate.toLowerCase());
+    return candidate;
+  };
+
+  // Coerce extended-JSON style objects into plain scalars so they render
+  // sensibly in Excel cells.
+  const flattenCellForExcel = (value) => {
+    if (value === null || value === undefined) return "";
+    if (typeof value === "object") {
+      if (value.$date) return typeof value.$date === "string" ? value.$date : String(value.$date);
+      if (value.$oid) return value.$oid;
+      if (value.$numberDecimal) return Number(value.$numberDecimal);
+      if (value.$numberLong) return Number(value.$numberLong);
+      return JSON.stringify(value);
+    }
+    return value;
+  };
+
+  const exportAllEventsToExcel = async () => {
+    if (!eventDataSummary || eventDataSummary.length === 0) {
+      toast.error("No event data to export");
+      return;
+    }
+    setExporting(true);
     try {
-      const response = await axios.get(`${API}/event-data/download/${eventName}`, {
-        responseType: 'blob'
-      });
-      const url = window.URL.createObjectURL(new Blob([response.data]));
-      const link = document.createElement('a');
-      link.href = url;
-      link.setAttribute('download', `${eventName}_data.csv`);
-      document.body.appendChild(link);
-      link.click();
-      link.remove();
-      toast.success("Downloaded successfully");
-    } catch (error) {
-      toast.error("Failed to download");
+      const wb = XLSX.utils.book_new();
+      const usedSheetNames = new Set();
+      let exportedCount = 0;
+
+      for (const summary of eventDataSummary) {
+        const eventName = summary.event_name;
+        let rows = [];
+        try {
+          const resp = await axios.get(`${API}/event-data/${eventName}`);
+          rows = (resp.data && resp.data.data_rows) || [];
+        } catch (err) {
+          // Skip events that fail to load but keep going on the rest.
+          continue;
+        }
+
+        // Build a stable column order: union of keys across all rows in order
+        // of first appearance.
+        const headers = [];
+        const seen = new Set();
+        for (const r of rows) {
+          for (const k of Object.keys(r || {})) {
+            if (!seen.has(k)) {
+              seen.add(k);
+              headers.push(k);
+            }
+          }
+        }
+
+        const flatRows = rows.map((r) => {
+          const out = {};
+          for (const h of headers) out[h] = flattenCellForExcel(r ? r[h] : "");
+          return out;
+        });
+
+        const ws =
+          headers.length > 0
+            ? XLSX.utils.json_to_sheet(flatRows, { header: headers })
+            : XLSX.utils.aoa_to_sheet([["(no rows)"]]);
+
+        const sheetName = sanitizeSheetName(eventName, usedSheetNames);
+        XLSX.utils.book_append_sheet(wb, ws, sheetName);
+        exportedCount += 1;
+      }
+
+      if (exportedCount === 0) {
+        toast.error("No event data could be exported");
+        return;
+      }
+
+      const stamp = new Date().toISOString().slice(0, 10);
+      XLSX.writeFile(wb, `event_data_${stamp}.xlsx`);
+      toast.success(`Exported ${exportedCount} event${exportedCount > 1 ? "s" : ""} to Excel`);
+    } catch (err) {
+      console.error(err);
+      toast.error("Failed to export event data");
+    } finally {
+      setExporting(false);
     }
   };
 
@@ -180,9 +262,21 @@ const EventDataViewer = ({ onClose }) => {
               </Typography>
             </Box>
           </Box>
-          <IconButton onClick={onClose} data-testid="close-data-viewer">
-            <X size={20} />
-          </IconButton>
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+            <Button
+              variant="outlined"
+              size="small"
+              onClick={exportAllEventsToExcel}
+              startIcon={<Download size={16} />}
+              disabled={exporting || eventDataSummary.length === 0}
+              data-testid="export-events-excel"
+            >
+              {exporting ? 'Exporting…' : 'Export Excel'}
+            </Button>
+            <IconButton onClick={onClose} data-testid="close-data-viewer">
+              <X size={20} />
+            </IconButton>
+          </Box>
         </Box>
 
         {/* Instrument scope warning banner (from JSON import) */}
@@ -320,15 +414,6 @@ const EventDataViewer = ({ onClose }) => {
                       {eventData?.data_rows?.length || 0} rows × {getColumnHeaders().length} columns
                     </Typography>
                   </Box>
-                  <Button 
-                    variant="outlined" 
-                    size="small" 
-                    onClick={() => downloadEventData(selectedEvent)}
-                    startIcon={<Download size={16} />}
-                    data-testid="download-event-data"
-                  >
-                    Download CSV
-                  </Button>
                 </Box>
 
                 {/* Data Table */}
