@@ -1611,6 +1611,32 @@ def _validate_step_shape(step: dict) -> dict:
     if not step.get("name"):
         raise ToolError("step.name is required")
     name = step["name"]
+    # HARD-BLOCK: agents (esp. weak models) sometimes try to satisfy "emit
+    # transactions" by creating a calc step literally named `outputs_transactions`
+    # or `transactions` with a placeholder value of 0. That step does NOTHING —
+    # the Rule Builder's Transactions panel reads ONLY from the rule's
+    # `outputs.transactions[]` array, never from a step. Reject the antipattern.
+    _txnish_names = {
+        "outputs_transactions", "outputstransactions", "output_transactions",
+        "transactions", "transaction", "outputs", "output", "txns", "txn",
+        "create_transaction", "createtransaction", "emit_transactions",
+        "emit_transaction", "post_transactions", "post_transaction",
+    }
+    if name.strip().lower() in _txnish_names:
+        raise ToolError(
+            f"step name '{name}' is reserved/forbidden. Steps cannot emit "
+            f"transactions — only the rule's `outputs.transactions[]` array "
+            f"does. The Transactions panel in the Rule Builder reads ONLY "
+            f"from `outputs.transactions[]`. \n"
+            f"FIX: do NOT create this step. Instead call `add_transaction_to_rule` "
+            f"(or pass `outputs.transactions=[...]` to create_saved_rule / "
+            f"update_saved_rule) with entries shaped like:\n"
+            f"  {{ \"type\": \"YourTxnType\", \"amount\": \"<calc_step_var>\", \"side\": \"debit\" }}\n"
+            f"  {{ \"type\": \"YourTxnType\", \"amount\": \"<calc_step_var>\", \"side\": \"credit\" }}\n"
+            f"where <calc_step_var> is the NAME of a prior calc step that holds "
+            f"the computed amount. Register transaction types via "
+            f"`add_transaction_types` first."
+        )
     out: dict = {"name": name, "stepType": st}
     if st == "calc":
         src = step.get("source") or "formula"
@@ -1969,6 +1995,67 @@ async def tool_delete_step(args: dict) -> dict:
     removed = rule["steps"].pop(idx)
     rule = await _save_rule_doc(rule, is_new=False)
     return {"rule_id": rule["id"], "deleted_step": removed.get("name"), "step_count": len(rule["steps"])}
+
+
+async def tool_add_transaction_to_rule(args: dict) -> dict:
+    """Append one entry to the rule's `outputs.transactions[]` array. This is
+    the ONLY supported way to make a rule emit a transaction — steps cannot
+    emit transactions on their own. Always call this in PAIRS (one debit + one
+    credit) so the entry is balanced.
+
+    Args:
+      rule_id  – id of the saved rule
+      type     – the transaction type name (must be registered first via
+                 `add_transaction_types`)
+      amount   – name of a prior calc-step variable (or a numeric literal)
+                 holding the amount
+      side     – "debit" or "credit"
+    """
+    rule = await _load_rule((args.get("rule_id") or "").strip())
+    txn_type = (args.get("type") or "").strip()
+    amount = (args.get("amount") or "").strip()
+    side = (args.get("side") or "").strip().lower()
+    if not txn_type:
+        raise ToolError("`type` is required (the transaction type name)")
+    if not amount:
+        raise ToolError("`amount` is required — pass the NAME of a prior "
+                        "calc-step variable, or a numeric literal")
+    if side not in ("debit", "credit"):
+        raise ToolError("`side` must be 'debit' or 'credit'")
+    # Verify the transaction type is registered.
+    db = _ServerBridge.db
+    if db is not None:
+        reg = await db.transaction_types.find_one(
+            {"name": {"$regex": f"^{re.escape(txn_type)}$", "$options": "i"}},
+            {"_id": 0, "name": 1},
+        )
+        if not reg:
+            raise ToolError(
+                f"Transaction type '{txn_type}' is not registered. Call "
+                f"`add_transaction_types` with [{{\"name\": \"{txn_type}\"}}] first."
+            )
+    outputs = dict(rule.get("outputs") or {})
+    txns = list(outputs.get("transactions") or [])
+    txns.append({"type": txn_type, "amount": amount, "side": side})
+    outputs["transactions"] = txns
+    outputs["createTransaction"] = True
+    rule["outputs"] = outputs
+    # _validate_transaction_outputs will reject `amount` if it doesn't resolve
+    # to a known step variable or numeric literal.
+    _validate_transaction_outputs(rule.get("steps") or [], outputs)
+    rule = await _save_rule_doc(rule, is_new=False)
+    sides = [(t.get("side") or "").lower() for t in txns]
+    balanced = any(s == "debit" for s in sides) and any(s == "credit" for s in sides)
+    return {
+        "rule_id": rule["id"],
+        "transaction_count": len(txns),
+        "balanced": balanced,
+        "next_step_hint": (
+            f"Added {side} '{txn_type}' for amount={amount}. "
+            + ("Pair is balanced." if balanced else
+               f"NOT balanced — add the matching {'credit' if side == 'debit' else 'debit'} entry next.")
+        ),
+    }
 
 
 async def tool_debug_step(args: dict) -> dict:
@@ -2439,6 +2526,38 @@ _FORBIDDEN_FINISH_PHRASES = (
 
 async def tool_finish(args: dict) -> dict:
     summary = (args.get("summary") or "").strip() or "Done."
+    # If the caller passes a rule_id, do a final correctness gate: the rule
+    # MUST have at least one entry in outputs.transactions[]. A rule with no
+    # transactions emits NOTHING — that is never a valid completion state.
+    rule_id = (args.get("rule_id") or "").strip()
+    if rule_id:
+        try:
+            rule = await _load_rule(rule_id)
+        except ToolError:
+            rule = None
+        if rule is not None:
+            txns = ((rule.get("outputs") or {}).get("transactions") or [])
+            if not txns:
+                raise ToolError(
+                    f"Rule '{rule.get('name')}' has ZERO entries in "
+                    f"`outputs.transactions[]`. The output of every accounting "
+                    f"rule IS its transactions. A rule with no transactions "
+                    f"produces no output and is never complete.\n"
+                    f"FIX: call `add_transaction_to_rule` (twice — one debit, "
+                    f"one credit) referencing the calc-step variable that "
+                    f"holds the computed amount. DO NOT create a calc step "
+                    f"named 'outputs_transactions' or 'transactions' — those "
+                    f"steps do nothing; only the rule's `outputs.transactions[]` "
+                    f"array drives the Transactions panel."
+                )
+            sides = [(t.get("side") or "").lower() for t in txns]
+            if not (any(s == "debit" for s in sides) and any(s == "credit" for s in sides)):
+                raise ToolError(
+                    f"Rule '{rule.get('name')}' has transactions but the "
+                    f"double-entry pair is unbalanced (sides={sides}). Add "
+                    f"the missing side via `add_transaction_to_rule` before "
+                    f"calling `finish`."
+                )
     low = summary.lower()
     for phrase in _FORBIDDEN_FINISH_PHRASES:
         if phrase in low:
@@ -2701,21 +2820,40 @@ SCHEDULE (amortisation, ECL projection, etc.)
 }
 
 ------------------------------------------------------------------
-EMITTING TRANSACTIONS
+EMITTING TRANSACTIONS  (THE OUTPUT OF A RULE *IS* ITS TRANSACTIONS)
 ------------------------------------------------------------------
-Preferred — put them in the rule's outputs.transactions[]:
-{
-  "outputs": {
-    "createTransaction": true,
-    "transactions": [
-      {"type": "InterestIncome",     "amount": "interest_amount", "side": "credit"},
-      {"type": "InterestReceivable", "amount": "interest_amount", "side": "debit"}
-    ]
-  }
-}
-- "amount" is a VARIABLE NAME defined in a prior step.
-- Always emit BOTH SIDES of the double-entry; debits must equal credits.
-- Register every transaction TYPE via add_transaction_types FIRST.
+A rule with ZERO entries in `outputs.transactions[]` produces NO
+OUTPUT and is never a valid result. A calc step does NOT emit a
+transaction — no matter what you name it.
+
+DO NOT do any of these (all are WRONG and the validator will reject them):
+  ✗ Create a calc step named `outputs_transactions` / `transactions` /
+    `transaction` / `output` with a placeholder value of 0.
+  ✗ Put `createTransaction(...)` inside a calc-step formula.
+  ✗ Put `createTransaction(...)` inside an iteration expression.
+  ✗ Wrap an `outputs.transactions` object inside a step's value field.
+
+The ONE correct pattern:
+  1. Register the transaction types ONCE up-front:
+        add_transaction_types([{name:'ECLAllowance'}, {name:'ECLExpense'}])
+  2. Add a calc step that COMPUTES the amount (this step's `name` becomes
+     the variable referenced below):
+        { name:'ecl_amount', stepType:'calc', source:'formula',
+          formula:'multiply(multiply(pd, lgd), ead)' }
+  3. Add the transactions to the rule's `outputs.transactions[]` (preferred
+     interface: call `add_transaction_to_rule` twice, once per side):
+        add_transaction_to_rule(rule_id, type='ECLAllowance', amount='ecl_amount', side='credit')
+        add_transaction_to_rule(rule_id, type='ECLExpense',   amount='ecl_amount', side='debit')
+     Equivalent shape on create_saved_rule / update_saved_rule:
+        outputs: { createTransaction:true, transactions:[
+           {type:'ECLAllowance', amount:'ecl_amount', side:'credit'},
+           {type:'ECLExpense',   amount:'ecl_amount', side:'debit'} ] }
+
+RULES:
+- `amount` is the NAME of a prior calc step (or a numeric literal).
+- ALWAYS pair debit + credit so the entry balances.
+- The engine emits these transactions ONCE PER ROW automatically — no
+  iteration step needed for fan-out across instruments.
 
 ------------------------------------------------------------------
 WHEN A DRY-RUN FAILS WITH "unterminated string literal" OR "invalid syntax"
@@ -2784,6 +2922,7 @@ TOOLS: dict[str, Callable[[dict], Awaitable[dict]]] = {
     "add_step_to_rule": tool_add_step_to_rule,
     "update_step": tool_update_step,
     "delete_step": tool_delete_step,
+    "add_transaction_to_rule": tool_add_transaction_to_rule,
     "debug_step": tool_debug_step,
     "list_saved_schedules": tool_list_saved_schedules,
     "create_saved_schedule": tool_create_saved_schedule,
@@ -2966,10 +3105,18 @@ TOOL_SCHEMAS: list[dict] = [
     },
     {
         "name": "finish",
-        "description": "Signal that the task is complete. Provide a short user-facing summary of what was accomplished.",
+        "description": (
+            "Signal that the task is complete. Provide a short user-facing summary. "
+            "If you built or modified a rule, ALSO pass `rule_id` so the runtime can "
+            "verify the rule has at least one balanced debit/credit pair in "
+            "`outputs.transactions[]` before accepting completion."
+        ),
         "parameters": {
             "type": "object",
-            "properties": {"summary": {"type": "string"}},
+            "properties": {
+                "summary": {"type": "string"},
+                "rule_id": {"type": "string"},
+            },
             "required": ["summary"],
         },
     },
@@ -3112,6 +3259,28 @@ TOOL_SCHEMAS.extend([
                 "step_name": {"type": "string"},
             },
             "required": ["rule_id"],
+        },
+    },
+    {
+        "name": "add_transaction_to_rule",
+        "description": (
+            "Append ONE transaction entry to a rule's `outputs.transactions[]` array. "
+            "This is the ONLY supported way to make a rule emit a transaction — "
+            "DO NOT create a calc step named 'outputs_transactions' or 'transactions'. "
+            "Always call this tool TWICE in a row to add a balanced debit + credit pair. "
+            "`amount` must be the NAME of a prior calc-step variable that holds the "
+            "computed amount (or a numeric literal). The transaction `type` must already "
+            "be registered via `add_transaction_types`."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "rule_id": {"type": "string"},
+                "type": {"type": "string", "description": "Registered transaction type name"},
+                "amount": {"type": "string", "description": "Name of a prior calc-step variable, or a numeric literal"},
+                "side": {"type": "string", "enum": ["debit", "credit"]},
+            },
+            "required": ["rule_id", "type", "amount", "side"],
         },
     },
     {
