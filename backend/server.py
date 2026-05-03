@@ -4159,6 +4159,9 @@ async def save_rule(request: dict):
 
     rule_id = request.get("id")
     now = datetime.now(timezone.utc).isoformat()
+    existing_doc = None
+    if rule_id:
+        existing_doc = await db.saved_rules.find_one({"id": rule_id}, {"_id": 0})
 
     # Check uniqueness: no other rule with same name (case-insensitive)
     existing = await db.saved_rules.find_one(
@@ -4199,6 +4202,7 @@ async def save_rule(request: dict):
     doc = {
         "name": name,
         "priority": priority,
+        "disabled": bool(request.get("disabled", (existing_doc or {}).get("disabled", False))),
         "ruleType": request.get("ruleType", "simple_calc"),
         "variables": request.get("variables", []),
         "conditions": request.get("conditions", []),
@@ -4223,6 +4227,15 @@ async def save_rule(request: dict):
         _normalise_transaction_outputs(doc.get("steps") or [], doc.get("outputs") or {})
     except Exception as _norm_err:
         logger.warning(f"transaction normalisation skipped: {_norm_err}")
+
+    # Always regenerate generatedCode from the current persisted shape so UI
+    # preview/runtime combined code reflect disabled step/transaction comments
+    # even if the client sends stale generatedCode.
+    try:
+        from backend.agent.tools import _generate_rule_code
+        doc["generatedCode"] = _generate_rule_code(doc)
+    except Exception as _gen_err:
+        logger.warning(f"generatedCode regeneration skipped: {_gen_err}")
 
     if rule_id:
         doc["id"] = rule_id
@@ -4346,7 +4359,23 @@ async def update_saved_rule(rule_id: str, request: dict):
     update_fields = {k: v for k, v in request.items() if k in allowed}
     if not update_fields:
         raise HTTPException(status_code=400, detail="No valid fields to update.")
-    result = await db.saved_rules.update_one({"id": rule_id}, {"$set": update_fields})
+    existing = await db.saved_rules.find_one({"id": rule_id}, {"_id": 0})
+    if not existing:
+        raise HTTPException(status_code=404, detail="Rule not found.")
+
+    merged = {**existing, **update_fields}
+
+    # If caller patches steps/outputs/name/etc, regenerate generatedCode so
+    # disabled step/transaction comments stay in sync.
+    if any(k in update_fields for k in {"steps", "outputs", "name"}):
+        try:
+            from backend.agent.tools import _normalise_transaction_outputs, _generate_rule_code
+            _normalise_transaction_outputs(merged.get("steps") or [], merged.get("outputs") or {})
+            merged["generatedCode"] = _generate_rule_code(merged)
+        except Exception as _gen_err:
+            logger.warning(f"update_saved_rule regeneration skipped: {_gen_err}")
+
+    result = await db.saved_rules.update_one({"id": rule_id}, {"$set": merged})
     if result.matched_count == 0:
         raise HTTPException(status_code=404, detail="Rule not found.")
     return {"success": True, "message": "Rule updated."}
