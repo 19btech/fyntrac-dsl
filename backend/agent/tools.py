@@ -2703,7 +2703,7 @@ def _generate_rule_code(rule: dict) -> str:
             lines.append("")
         elif st == "schedule":
             sc = s.get("scheduleConfig") or {}
-            lines.append("## Schedule")
+            sched_lines: list[str] = ["## Schedule"]
             # Period definition
             if sc.get("periodType") == "number":
                 src_t = sc.get("periodCountSource")
@@ -2713,7 +2713,7 @@ def _generate_rule_code(rule: dict) -> str:
                     count_expr = sc["periodCountFormula"]
                 else:
                     count_expr = sc.get("periodCount") or 12
-                lines.append(f'p = period({count_expr}, "{sc.get("frequency") or "M"}")')
+                sched_lines.append(f'p = period({count_expr}, "{sc.get("frequency") or "M"}")')
             else:
                 if sc.get("startDateSource") == "field" and sc.get("startDateField"):
                     start_expr = sc["startDateField"]
@@ -2731,37 +2731,44 @@ def _generate_rule_code(rule: dict) -> str:
                 if sc.get("convention"):
                     period_call += f', "{sc["convention"]}"'
                 period_call += ")"
-                lines.append(period_call)
+                sched_lines.append(period_call)
             # Schedule call
             valid_cols = [c for c in (sc.get("columns") or []) if c.get("name") and c.get("formula")]
-            lines.append(f'{s["name"]} = schedule(p, {{')
+            sched_lines.append(f'{s["name"]} = schedule(p, {{')
             for i, col in enumerate(valid_cols):
                 comma = "," if i < len(valid_cols) - 1 else ""
-                lines.append(f'    "{col["name"]}": "{col["formula"]}"{comma}')
+                sched_lines.append(f'    "{col["name"]}": "{col["formula"]}"{comma}')
             ctx_vars = [v for v in (sc.get("contextVars") or []) if v != s["name"]]
             if ctx_vars:
                 ctx_pairs = ", ".join(f'"{v}": {v}' for v in ctx_vars)
-                lines.append(f"}}, {{{ctx_pairs}}})")
+                sched_lines.append(f"}}, {{{ctx_pairs}}})")
             else:
-                lines.append("})")
-            lines.append(f'print({s["name"]})')
-            defined.append(s["name"])
+                sched_lines.append("})")
+            sched_lines.append(f'print({s["name"]})')
             for o in s.get("outputVars") or []:
                 otype = o.get("type")
                 oname = o.get("name")
                 col = o.get("column")
                 if otype == "first":
-                    lines.append(f'{oname} = schedule_first({s["name"]}, "{col}")')
+                    sched_lines.append(f'{oname} = schedule_first({s["name"]}, "{col}")')
                 elif otype == "last":
-                    lines.append(f'{oname} = schedule_last({s["name"]}, "{col}")')
+                    sched_lines.append(f'{oname} = schedule_last({s["name"]}, "{col}")')
                 elif otype == "sum":
-                    lines.append(f'{oname} = schedule_sum({s["name"]}, "{col}")')
+                    sched_lines.append(f'{oname} = schedule_sum({s["name"]}, "{col}")')
                 elif otype == "column":
-                    lines.append(f'{oname} = schedule_column({s["name"]}, "{col}")')
+                    sched_lines.append(f'{oname} = schedule_column({s["name"]}, "{col}")')
                 elif otype == "filter":
-                    lines.append(f'{oname} = schedule_filter({s["name"]}, "{o.get("matchCol")}", {o.get("matchValue")}, "{col}")')
-                if oname:
-                    defined.append(oname)
+                    sched_lines.append(f'{oname} = schedule_filter({s["name"]}, "{o.get("matchCol")}", {o.get("matchValue")}, "{col}")')
+
+            if s.get("disabled"):
+                lines.extend([f"# [DISABLED] {ln}" for ln in sched_lines])
+            else:
+                lines.extend(sched_lines)
+                defined.append(s["name"])
+                for o in s.get("outputVars") or []:
+                    oname = o.get("name")
+                    if oname:
+                        defined.append(oname)
             lines.append("")
 
     outputs = rule.get("outputs") or {}

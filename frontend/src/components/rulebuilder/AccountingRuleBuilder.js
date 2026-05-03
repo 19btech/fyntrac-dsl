@@ -1584,7 +1584,7 @@ const AccountingRuleBuilder = ({ events, dslFunctions, transactionDefinitions, o
         lines.push('');
       } else if (s.stepType === 'schedule') {
         if (s.disabled) {
-          lines.push(`# [DISABLED] ## Schedule (${s.name})`);
+          lines.push(...buildScheduleStepLines(s).map(l => `# [DISABLED] ${l}`));
           lines.push('');
           continue;
         }
