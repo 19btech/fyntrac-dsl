@@ -2655,6 +2655,9 @@ def _generate_rule_code(rule: dict) -> str:
         st = s.get("stepType") or "calc"
         if not s.get("name") and st == "calc":
             continue
+        # Skip disabled steps entirely — don't emit any code, don't mark as defined
+        if s.get("disabled"):
+            continue
         if s.get("inlineComment") and (s.get("commentText") or "").strip():
             for line in s["commentText"].strip().split("\n"):
                 lines.append(f"## {line}")
@@ -2751,7 +2754,7 @@ def _generate_rule_code(rule: dict) -> str:
             lines.append("")
 
     outputs = rule.get("outputs") or {}
-    txns = [t for t in (outputs.get("transactions") or []) if t and t.get("type")]
+    txns = [t for t in (outputs.get("transactions") or []) if t and t.get("type") and not t.get("disabled")]
     if txns:
         lines.append("")
         lines.append("## Create Transactions")

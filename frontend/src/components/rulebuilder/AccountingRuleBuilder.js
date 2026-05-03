@@ -7,7 +7,7 @@ import {
 } from "@mui/material";
 import {
   Plus, Trash2, Play, Code, Save, X,
-  Calculator, GitBranch, Repeat, GripVertical, Edit3, ChevronDown, Calendar, Copy, Receipt,
+  Calculator, GitBranch, Repeat, GripVertical, Edit3, ChevronDown, Calendar, Copy, Receipt, RotateCcw,
 } from "lucide-react";
 import { API } from "../../config";
 import FormulaBar from "./FormulaBar";
@@ -940,6 +940,7 @@ const AccountingRuleBuilder = ({ events, dslFunctions, transactionDefinitions, o
   });
   const [inlineComment, setInlineComment] = useState(initialData?.inlineComment || false);
   const [commentText, setCommentText] = useState(initialData?.commentText || '');
+  const [ruleDisabled, setRuleDisabled] = useState(initialData?.disabled || false);
 
   // ── Unified steps array ──
   // Each step: { name, stepType: 'calc'|'condition'|'iteration', source, formula, value, eventField, collectType, conditions, elseFormula, iterations }
@@ -971,6 +972,7 @@ const AccountingRuleBuilder = ({ events, dslFunctions, transactionDefinitions, o
         setRulePriority(fresh.priority ?? '');
         setInlineComment(!!fresh.inlineComment);
         setCommentText(fresh.commentText || '');
+        setRuleDisabled(fresh.disabled || false);
         if (fresh.outputs && fresh.outputs.printResult !== undefined) {
           setOutputs(fresh.outputs);
         } else if (fresh.outputs) {
@@ -1677,6 +1679,7 @@ const AccountingRuleBuilder = ({ events, dslFunctions, transactionDefinitions, o
         id: ruleId,
         name: ruleName.trim(),
         priority: Number(rulePriority),
+        disabled: ruleDisabled,
         ruleType: effectiveRuleType,
         variables,
         conditions,
@@ -1712,7 +1715,7 @@ const AccountingRuleBuilder = ({ events, dslFunctions, transactionDefinitions, o
     } finally {
       setSaving(false);
     }
-  }, [ruleName, rulePriority, ruleId, effectiveRuleType, steps, outputs, inlineComment, commentText, generatedCode, onSave, resetForm]);
+  }, [ruleName, rulePriority, ruleId, ruleDisabled, effectiveRuleType, steps, outputs, inlineComment, commentText, generatedCode, onSave, resetForm]);
 
   // ── Step CRUD ──
   const openAddStep = (type) => {
@@ -2054,6 +2057,11 @@ const AccountingRuleBuilder = ({ events, dslFunctions, transactionDefinitions, o
           <Calculator size={20} color="#5B5FED" />
           <Typography variant="h5">Rule Builder</Typography>
           <Box sx={{ flex: 1 }} />
+          <Tooltip title="Refresh Rule">
+            <IconButton size="small" onClick={resetForm} sx={{ color: '#5B5FED' }}>
+              <RotateCcw size={18} />
+            </IconButton>
+          </Tooltip>
           <Tooltip title="New Rule">
             <IconButton size="small" onClick={resetForm} sx={{ color: '#5B5FED' }}>
               <Plus size={18} />
@@ -2066,8 +2074,8 @@ const AccountingRuleBuilder = ({ events, dslFunctions, transactionDefinitions, o
       </Box>
 
       <Box sx={{ flex: 1, overflow: 'auto', p: 2 }}>
-        {/* Rule Name & Priority & Test Posting Date */}
-        <Box sx={{ display: 'flex', gap: 1.5, mb: 2 }}>
+        {/* Rule Name & Priority & Test Posting Date & Disabled Toggle */}
+        <Box sx={{ display: 'flex', gap: 1.5, mb: 2, alignItems: 'center' }}>
           <TextField size="small" label="Rule Name *" value={ruleName}
             onChange={(e) => setRuleName(e.target.value)}
             placeholder="e.g., Monthly Interest Accrual" sx={{ flex: 1 }} />
@@ -2089,6 +2097,11 @@ const AccountingRuleBuilder = ({ events, dslFunctions, transactionDefinitions, o
               </Select>
             </FormControl>
           )}
+          <FormControlLabel
+            control={<Switch size="small" checked={!ruleDisabled} onChange={(e) => setRuleDisabled(!e.target.checked)} />}
+            label={ruleDisabled ? "Rule Disabled" : "Rule Enabled"}
+            sx={{ whiteSpace: 'nowrap' }}
+          />
         </Box>
 
         {/* ── Steps List ── */}
@@ -2158,6 +2171,13 @@ const AccountingRuleBuilder = ({ events, dslFunctions, transactionDefinitions, o
                   </Typography>
                   <Chip size="small" label={meta.label}
                     sx={{ fontSize: '0.625rem', height: 18, bgcolor: `${meta.color}18`, color: meta.color, fontWeight: 600 }} />
+                  <FormControlLabel
+                    control={<Switch size="small" checked={!step.disabled} onChange={(e) => {
+                      setSteps(prev => prev.map((s, i) => i === idx ? { ...s, disabled: !e.target.checked } : s));
+                    }} />}
+                    label={step.disabled ? "Disabled" : "Enabled"}
+                    sx={{ ml: 1, fontSize: '0.75rem', '& .MuiSwitch-root': { m: 0 } }}
+                  />
                   {step.stepType !== 'custom_code' && step.stepType !== 'schedule' && (
                     <Tooltip title="Test up to this step">
                       <IconButton size="small" onClick={() => handleInlineTest(idx)}
@@ -2253,6 +2273,14 @@ const AccountingRuleBuilder = ({ events, dslFunctions, transactionDefinitions, o
                   </Typography>
                   <Chip size="small" label="Transaction"
                     sx={{ fontSize: '0.625rem', height: 18, bgcolor: `${TXN_COLOR}18`, color: TXN_COLOR, fontWeight: 600 }} />
+                  <FormControlLabel
+                    control={<Switch size="small" checked={!txn.disabled} onChange={(e) => {
+                      const updated = outputs.transactions.map((t, i) => i === idx ? { ...t, disabled: !e.target.checked } : t);
+                      setOutputs(prev => ({ ...prev, transactions: updated }));
+                    }} />}
+                    label={txn.disabled ? "Disabled" : "Enabled"}
+                    sx={{ ml: 1, fontSize: '0.75rem', '& .MuiSwitch-root': { m: 0 } }}
+                  />
                   <Tooltip title="Test this transaction">
                     <span>
                       <IconButton size="small" onClick={() => handleTransactionTest(idx)}
