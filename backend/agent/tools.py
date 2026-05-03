@@ -3460,11 +3460,45 @@ def _validate_step_shape(step: dict) -> dict:
         src = step.get("source") or "formula"
         if src not in ("formula", "value", "event_field", "collect"):
             raise ToolError(f"Unknown calc source '{src}'")
+
+        # Normalize eventField: for the standard DSL metadata field names
+        # (postingdate, effectivedate, subinstrumentid, instrumentid), always
+        # lowercase the field portion of "EVT.FieldName" so that the code
+        # generator produces "EVT_fieldname" which matches the pre-declared
+        # row variable. e.g. "REV.SubInstrumentId" → "REV.subinstrumentid".
+        _STANDARD_LOWERCASE_FIELDS = {
+            "postingdate", "effectivedate", "subinstrumentid", "instrumentid",
+        }
+        raw_ef = (step.get("eventField") or "").strip()
+        if raw_ef and "." in raw_ef:
+            _evt, _field = raw_ef.split(".", 1)
+            if _field.lower() in _STANDARD_LOWERCASE_FIELDS:
+                raw_ef = f"{_evt}.{_field.lower()}"
+
+        # Block the circular self-alias anti-pattern:
+        # source:'formula', formula:'postingdate' on a step named 'postingdate'
+        # (or same for effectivedate). This resolves to the global variable but
+        # does NOT read from the event, which is misleading and wrong for callers
+        # that expect the event's postingdate. Force the agent to use event_field.
+        if src == "formula":
+            formula_val = (step.get("formula") or "").strip()
+            if name.lower() in _STANDARD_LOWERCASE_FIELDS and formula_val.lower() == name.lower():
+                raise ToolError(
+                    f"Step '{name}' with source='formula' and formula='{formula_val}' "
+                    f"is a circular self-alias — it just reads the global '{name}' "
+                    f"variable, NOT the event field. This is always wrong for the "
+                    f"mandatory alias steps.\n"
+                    f"Fix: use source='event_field' with eventField='EVENTNAME.{name}' "
+                    f"(replace EVENTNAME with the actual event, e.g. REV, LOAN, EOD):\n"
+                    f"  {{name:'{name}', stepType:'calc', source:'event_field', "
+                    f"eventField:'REV.{name}'}}"
+                )
+
         out.update({
             "source": src,
             "formula": _coerce_lower_booleans(step.get("formula") or ""),
             "value": _coerce_lower_booleans(step.get("value") or ""),
-            "eventField": step.get("eventField") or "",
+            "eventField": raw_ef,
             "collectType": step.get("collectType") or "collect_by_instrument",
         })
         # Guardrails on formula content
