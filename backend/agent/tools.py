@@ -4651,16 +4651,19 @@ async def tool_create_saved_rule(args: dict) -> dict:
         )
         _scalar_warns = _scalar_event_field_warnings(steps, set(multi_evts))
         if _scalar_warns:
-            payload["multi_subid_scalar_warnings"] = _scalar_warns
-            payload["multi_subid_scalar_hint"] = (
-                f"⚠️ {len(_scalar_warns)} calc step(s) read event fields as "
-                f"scalars from multi-subId event(s) {multi_evts}. The engine "
-                f"merges rows before execution, so only ONE subId's value "
-                f"survives. If you need per-subId values, change those steps "
-                f"to source='collect' with collectType='collect_by_instrument' "
-                f"(returns array, one value per subId) or "
-                f"'collect_by_subinstrument' (returns array for current subId "
-                f"only). See multi_subid_scalar_warnings[] for affected steps."
+            _bad = ", ".join(f"'{w['step_name']}' ({w['event']}.{w['field']})" for w in _scalar_warns)
+            raise ToolError(
+                f"SCALAR SOURCE ON NON-SCALAR EVENT — rule creation blocked.\n"
+                f"{len(_scalar_warns)} step(s) use source='event_field' on event(s) "
+                f"{multi_evts} which have multiple subInstrumentIds per instrument: "
+                f"{_bad}.\n"
+                f"Using event_field on a multi-subId event silently discards all but "
+                f"one subId's row. This is always wrong for per-instrument data.\n"
+                f"Fix EVERY affected step before creating this rule:\n"
+                f"  WRONG: {{name:'product_id', source:'event_field', eventField:'REV.FIELD'}}\n"
+                f"  RIGHT: {{name:'product_id', source:'collect', "
+                f"collectType:'collect_by_instrument', eventField:'REV.FIELD'}}\n"
+                f"See MANDATORY FIELD-PLANNING GATE (Rule 0a) in the system prompt."
             )
     sched_results = await _auto_test_schedule_steps(rule)
     if sched_results:
@@ -4718,16 +4721,16 @@ async def tool_update_saved_rule(args: dict) -> dict:
         )
         _scalw = _scalar_event_field_warnings(rule.get("steps") or [], set(multi_evts))
         if _scalw:
-            payload["multi_subid_scalar_warnings"] = _scalw
-            payload["multi_subid_scalar_hint"] = (
-                f"⚠️ {len(_scalw)} calc step(s) read event fields as "
-                f"scalars from multi-subId event(s) {multi_evts}. The engine "
-                f"merges rows before execution, so only ONE subId's value "
-                f"survives. If you need per-subId values, change those steps "
-                f"to source='collect' with collectType='collect_by_instrument' "
-                f"(returns array, one value per subId) or "
-                f"'collect_by_subinstrument' (returns array for current subId "
-                f"only). See multi_subid_scalar_warnings[] for affected steps."
+            _bad = ", ".join(f"'{w['step_name']}' ({w['event']}.{w['field']})" for w in _scalw)
+            raise ToolError(
+                f"SCALAR SOURCE ON NON-SCALAR EVENT — rule update blocked.\n"
+                f"{len(_scalw)} step(s) use source='event_field' on event(s) "
+                f"{multi_evts} which have multiple subInstrumentIds per instrument: "
+                f"{_bad}.\n"
+                f"event_field silently discards all but one subId's row. "
+                f"This is always wrong for per-instrument data.\n"
+                f"Fix every affected step to use source='collect', "
+                f"collectType='collect_by_instrument' before updating the rule."
             )
     sched_results = await _auto_test_schedule_steps(rule)
     if sched_results:
@@ -5009,19 +5012,20 @@ async def tool_add_step_to_rule(args: dict) -> dict:
     _validate_transaction_outputs(steps, rule.get("outputs") or {})
     rule = await _save_rule_doc(rule, is_new=False)
     payload = {"rule_id": rule["id"], "step_name": step["name"], "step_count": len(steps)}
-    # Warn if new step reads a scalar event_field from a multi-subId event.
+    # Block if new step reads a scalar event_field from a multi-subId event.
     _add_multi_evts = await _detect_multi_subid_events(steps)
     if _add_multi_evts:
         _add_scalw = _scalar_event_field_warnings([step], set(_add_multi_evts))
         if _add_scalw:
-            payload["multi_subid_scalar_warnings"] = _add_scalw
-            payload["multi_subid_scalar_hint"] = (
-                f"⚠️ Step '{step['name']}' reads an event field as a scalar "
-                f"but event(s) {_add_multi_evts} have multiple subInstrumentIds "
-                f"per instrument. Only ONE subId's value survives the row merge. "
-                f"Switch to source='collect', collectType='collect_by_instrument' "
-                f"to get all subId values as an array, or "
-                f"'collect_by_subinstrument' for the current subId's values."
+            w = _add_scalw[0]
+            raise ToolError(
+                f"SCALAR SOURCE ON NON-SCALAR EVENT — step addition blocked.\n"
+                f"Step '{w['step_name']}' uses source='event_field' on event "
+                f"'{w['event']}' which has multiple subInstrumentIds per instrument.\n"
+                f"event_field silently discards all but one subId's row. "
+                f"This is always wrong for per-instrument data.\n"
+                f"Fix: {{name:'{w['step_name']}', source:'collect', "
+                f"collectType:'collect_by_instrument', eventField:'{w['event']}.{w['field']}'}}"
             )
     # Surface auto-generated outputVars hint
     if step.get("stepType") == "schedule" and (
@@ -5106,19 +5110,20 @@ async def tool_update_step(args: dict) -> dict:
         "step_name": merged["name"],
         "merge_mode": "deep",
     }
-    # Warn if the (updated) step reads a scalar event_field from a multi-subId event.
+    # Block if the (updated) step reads a scalar event_field from a multi-subId event.
     _upd_multi_evts = await _detect_multi_subid_events(rule.get("steps") or [])
     if _upd_multi_evts:
         _upd_scalw = _scalar_event_field_warnings([merged], set(_upd_multi_evts))
         if _upd_scalw:
-            payload["multi_subid_scalar_warnings"] = _upd_scalw
-            payload["multi_subid_scalar_hint"] = (
-                f"⚠️ Step '{merged['name']}' reads an event field as a scalar "
-                f"but event(s) {_upd_multi_evts} have multiple subInstrumentIds "
-                f"per instrument. Only ONE subId's value survives the row merge. "
-                f"Switch to source='collect', collectType='collect_by_instrument' "
-                f"to get all subId values as an array, or "
-                f"'collect_by_subinstrument' for the current subId's values."
+            w = _upd_scalw[0]
+            raise ToolError(
+                f"SCALAR SOURCE ON NON-SCALAR EVENT — step update blocked.\n"
+                f"Step '{w['step_name']}' uses source='event_field' on event "
+                f"'{w['event']}' which has multiple subInstrumentIds per instrument.\n"
+                f"event_field silently discards all but one subId's row. "
+                f"This is always wrong for per-instrument data.\n"
+                f"Fix: {{name:'{w['step_name']}', source:'collect', "
+                f"collectType:'collect_by_instrument', eventField:'{w['event']}.{w['field']}'}}"
             )
     # Read-back: re-fetch and confirm the patched fields actually persisted.
     if merged.get("id"):
