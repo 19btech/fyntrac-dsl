@@ -890,6 +890,24 @@ const AccountingRuleBuilder = ({ events, dslFunctions, transactionDefinitions, o
   const [saving, setSaving] = useState(false);
   const [saveResult, setSaveResult] = useState(null);
   const [validationMsg, setValidationMsg] = useState('');
+
+  const persistDisableToggle = useCallback(async (nextSteps, nextOutputs) => {
+    if (!ruleId) return;
+    try {
+      await fetch(`${API}/saved-rules/${ruleId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: (ruleName || '').trim(),
+          steps: nextSteps,
+          outputs: nextOutputs,
+        }),
+      });
+      if (onSave) onSave();
+    } catch (_) {
+      // Keep local toggle state even if immediate persistence fails.
+    }
+  }, [ruleId, ruleName, onSave]);
   const [showCode, setShowCode] = useState(false);
 
   // ── Test Posting Date (drives all per-step Test buttons in this builder) ──
@@ -2206,7 +2224,9 @@ const AccountingRuleBuilder = ({ events, dslFunctions, transactionDefinitions, o
                     sx={{ fontSize: '0.625rem', height: 18, bgcolor: `${meta.color}18`, color: meta.color, fontWeight: 600 }} />
                   <Tooltip title={step.disabled ? "Disabled" : "Enabled"}>
                     <Switch size="small" checked={!step.disabled} onChange={(e) => {
-                      setSteps(prev => prev.map((s, i) => i === idx ? { ...s, disabled: !e.target.checked } : s));
+                      const nextSteps = steps.map((s, i) => i === idx ? { ...s, disabled: !e.target.checked } : s);
+                      setSteps(nextSteps);
+                      persistDisableToggle(nextSteps, outputs);
                     }} sx={{
                       '& .MuiSwitch-switchBase.Mui-checked': { color: '#64B5F6' },
                       '& .MuiSwitch-switchBase.Mui-checked + .MuiSwitch-track': { backgroundColor: '#90CAF9' },
@@ -2310,7 +2330,9 @@ const AccountingRuleBuilder = ({ events, dslFunctions, transactionDefinitions, o
                   <Tooltip title={txn.disabled ? "Disabled" : "Enabled"}>
                     <Switch size="small" checked={!txn.disabled} onChange={(e) => {
                       const updated = outputs.transactions.map((t, i) => i === idx ? { ...t, disabled: !e.target.checked } : t);
-                      setOutputs(prev => ({ ...prev, transactions: updated }));
+                      const nextOutputs = { ...outputs, transactions: updated };
+                      setOutputs(nextOutputs);
+                      persistDisableToggle(steps, nextOutputs);
                     }} sx={{
                       '& .MuiSwitch-switchBase.Mui-checked': { color: '#64B5F6' },
                       '& .MuiSwitch-switchBase.Mui-checked + .MuiSwitch-track': { backgroundColor: '#90CAF9' },
