@@ -3749,6 +3749,15 @@ def _normalise_transaction_outputs(steps: list[dict], outputs: dict,
         "subinstrumentid": "subInstrumentId", "sub_instrument_id": "subInstrumentId",
     }
 
+    # Detect which mandatory alias steps the rule already defines.
+    # If postingdate/effectivedate/subinstrumentid calc steps exist, we ALWAYS
+    # use their variable names in transactions so the generated code references
+    # a defined Python variable rather than raw EVT.field dot-notation.
+    step_names = {(s.get("name") or "").strip().lower() for s in (steps or []) if isinstance(s, dict)}
+    has_postingdate_step   = "postingdate"    in step_names
+    has_effectivedate_step = "effectivedate"  in step_names
+    has_subinstrumentid_step = "subinstrumentid" in step_names
+
     fixed: list[dict] = []
     _DEFAULT_SUBIDS = {"", "1", "1.0", "0", "0.0", None}
     for t in txns:
@@ -3759,15 +3768,29 @@ def _normalise_transaction_outputs(steps: list[dict], outputs: dict,
         nt: dict = {}
         for k, v in t.items():
             nt[_ALIASES.get(k, k)] = v
-        if not str(nt.get("postingDate") or "").strip() and default_event:
+
+        # If the rule has mandatory alias steps, always wire transactions to them.
+        # This guarantees the generated code references a defined variable.
+        if has_postingdate_step:
+            nt["postingDate"] = "postingdate"
+        elif not str(nt.get("postingDate") or "").strip() and default_event:
             nt["postingDate"] = f"{default_event}.postingdate"
-        if not str(nt.get("effectiveDate") or "").strip() and default_event:
+
+        if has_effectivedate_step:
+            nt["effectiveDate"] = "effectivedate"
+        elif not str(nt.get("effectiveDate") or "").strip() and default_event:
             nt["effectiveDate"] = f"{default_event}.effectivedate"
+
         # Normalize any agent-supplied date reference:
         # Convert Python-style underscore refs (e.g. REV_PostingDate, REV_postingdate)
         # to DSL dot notation (REV.postingdate) so the code generator handles them.
         # Also force the field part to lowercase (postingdate / effectivedate).
+        # (Only applies when alias steps don't exist — skip if already set above.)
         for date_key, canonical_field in (("postingDate", "postingdate"), ("effectiveDate", "effectivedate")):
+            already_aliased = (date_key == "postingDate" and has_postingdate_step) or \
+                              (date_key == "effectiveDate" and has_effectivedate_step)
+            if already_aliased:
+                continue
             raw = str(nt.get(date_key) or "").strip()
             if not raw:
                 continue
@@ -3777,7 +3800,6 @@ def _normalise_transaction_outputs(steps: list[dict], outputs: dict,
                 nt[date_key] = f"{parts[0]}.{parts[1].lower()}"
                 continue
             # Python underscore form: EVENT_PostingDate → EVENT.postingdate
-            # If it ends with a known date suffix (case-insensitive), fix it.
             _DATE_SUFFIXES = ("_postingdate", "_posting_date", "_effectivedate", "_effective_date",
                               "_PostingDate", "_EffectiveDate")
             fixed_date = False
@@ -3793,12 +3815,14 @@ def _normalise_transaction_outputs(steps: list[dict], outputs: dict,
             # Bare identifier that isn't a known DSL global → override with default
             if raw not in ("postingdate", "effectivedate") and default_event:
                 nt[date_key] = f"{default_event}.{canonical_field}"
+
         sid_now = str(nt.get("subInstrumentId") or "").strip()
-        if multi_subid_default:
-            # Multi-subid event detected: ALWAYS prefer the row-level identifier
-            # over the literal default "1" / "1.0", because the data carries
-            # multiple subIds per instrument and a hardcoded value mis-tags
-            # every transaction. Honour explicit non-default agent input.
+        # If the rule has a subinstrumentid alias step, always use it in transactions.
+        if has_subinstrumentid_step:
+            nt["subInstrumentId"] = "subinstrumentid"
+        elif multi_subid_default:
+            # Multi-subid event detected: prefer the row-level identifier
+            # over the literal default "1" / "1.0".
             if sid_now in _DEFAULT_SUBIDS:
                 nt["subInstrumentId"] = multi_subid_default
         elif not sid_now:
@@ -4670,6 +4694,23 @@ async def tool_create_saved_rule(args: dict) -> dict:
     }
     rule = await _save_rule_doc(rule, is_new=True)
     payload = {"rule_id": rule["id"], "name": name, "priority": priority, "step_count": len(steps)}
+    # Check for mandatory alias steps: postingdate, effectivedate, subinstrumentid.
+    # These must be the first three steps of every rule so that downstream steps
+    # and transactions reference defined Python variables rather than raw event refs.
+    _defined_step_names = {(s.get("name") or "").strip().lower() for s in steps if isinstance(s, dict)}
+    _missing_aliases = [n for n in ("postingdate", "effectivedate", "subinstrumentid")
+                        if n not in _defined_step_names]
+    if _missing_aliases:
+        payload["missing_mandatory_alias_steps"] = _missing_aliases
+        payload["missing_mandatory_alias_steps_hint"] = (
+            f"⚠️ MANDATORY alias step(s) missing: {_missing_aliases}. "
+            f"Every rule MUST begin with calc steps named 'postingdate', "
+            f"'effectivedate', and 'subinstrumentid' (see Rule 0a STEP C). "
+            f"Transactions reference these names as Python variables — omitting "
+            f"them causes 'name is not defined' runtime errors. "
+            f"Call add_step_to_rule immediately to add the missing steps BEFORE "
+            f"any other calc/condition/schedule steps."
+        )
     # Warn about any auto-generated outputVars
     _auto_ov_steps = [
         s["name"] for s in steps
