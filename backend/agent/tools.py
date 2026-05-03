@@ -575,25 +575,587 @@ def _generate_value(field: dict, rng: random.Random, field_hints: dict) -> Any:
     return val
 
 
+# ---------------------------------------------------------------------------
+# Accounting-domain-aware coherent profile generation
+# ---------------------------------------------------------------------------
+
+def _detect_accounting_domain(event_name: str, field_names: list[str]) -> str:
+    """Identify the accounting standard domain from event name + fields.
+
+    Returns one of: fas91 | ifrs9 | lease | fixed_asset | revenue | securities | generic.
+    """
+    name_lc = event_name.lower()
+    fields_lc = {f.lower() for f in field_names}
+
+    def _hits_name(*kws: str) -> bool:
+        return any(k in name_lc for k in kws)
+
+    def _hits_fields(*kws: str) -> bool:
+        return any(k in fields_lc for k in kws)
+
+    if _hits_name("fas91", "fee_amort", "loan_fee", "deferred_fee") or \
+       _hits_fields("origination_fee", "loan_fee", "deferred_fee",
+                    "amortized_fee", "eir_rate", "note_rate"):
+        return "fas91"
+    if _hits_name("ecl", "ifrs9", "ifrs_9", "credit_risk",
+                  "impairment", "provision", "allowance", "cecl") or \
+       _hits_fields("pd", "lgd", "ecl", "stage",
+                    "days_past_due", "credit_impaired"):
+        return "ifrs9"
+    if _hits_name("lease", "ifrs16", "ifrs_16", "asc842", "asc_842",
+                  "rou", "rightofuse") or \
+       _hits_fields("rou_asset", "lease_liability", "lease_payment",
+                    "incremental_borrowing_rate", "ibr", "right_of_use"):
+        return "lease"
+    if _hits_name("depreciation", "fixed_asset", "ias16", "ias_16",
+                  "asc360", "asc_360", "property_plant") or \
+       _hits_fields("acquisition_cost", "residual_value", "useful_life",
+                    "accumulated_depreciation", "nbv"):
+        return "fixed_asset"
+    if _hits_name("revenue", "ifrs15", "ifrs_15", "asc606", "asc_606",
+                  "contract", "performance_obligation") or \
+       _hits_fields("contract_amount", "ssp", "recognized_revenue",
+                    "deferred_revenue", "allocated_amount"):
+        return "revenue"
+    if _hits_name("bond", "security", "sbo", "fair_value", "mtm",
+                  "market_value") or \
+       _hits_fields("face_value", "market_value", "accrued_interest",
+                    "coupon_rate"):
+        return "securities"
+    return "generic"
+
+
+def _generate_instrument_profiles(
+    event_def: dict,
+    instrument_ids: list[str],
+    posting_dates: list[str],
+    seed: int = 42,
+) -> dict:
+    """Build a per-instrument profile that drives coherent row generation.
+
+    Each instrument gets:
+      - ``static``: field values that are constant across all posting dates
+        (e.g. principal, rate, origination date, stage).
+      - ``time_series``: lists of values aligned to *sorted* posting dates
+        (e.g. declining balance, increasing accumulated depreciation).
+
+    Returns::
+
+        {
+          "domain": str,
+          "profiles": {
+              instrument_id: {"static": {...}, "time_series": {field: [...]}}
+          },
+          "sorted_dates": [sorted posting dates]
+        }
+    """
+    import calendar as _cal
+    from datetime import date as _date, timedelta as _td
+
+    fields = event_def.get("fields", [])
+    field_names_lc = {f.get("name", "").lower() for f in fields}
+    event_name = event_def.get("event_name", "")
+    domain = _detect_accounting_domain(event_name, list(field_names_lc))
+
+    sorted_dates = sorted(posting_dates)
+    n_periods = len(sorted_dates)
+
+    def _parse_date(s: str) -> _date:
+        try:
+            return _date.fromisoformat(s)
+        except Exception:
+            return _date(2026, 1, 1)
+
+    def _round_thousands(v: float) -> float:
+        return round(v / 1000) * 1000
+
+    profiles: dict[str, dict] = {}
+
+    for i, inst_id in enumerate(instrument_ids):
+        inst_rng = random.Random(seed + i * 1997)  # deterministic per instrument
+        static: dict[str, Any] = {}
+        time_series: dict[str, list] = {}
+
+        if domain == "fas91":
+            # ----------------------------------------------------------------
+            # FAS 91 / Amortised Cost — loan fee amortization
+            # ----------------------------------------------------------------
+            _LOAN_TIERS = [50_000, 75_000, 100_000, 125_000, 150_000, 175_000,
+                           200_000, 250_000, 300_000, 350_000, 400_000, 500_000]
+            loan_amount = _round_thousands(
+                inst_rng.choice(_LOAN_TIERS) * inst_rng.choice([1.0, 1.1, 0.9, 1.25, 0.75])
+            )
+            note_rate = round(inst_rng.uniform(0.030, 0.095), 6)
+            fee_pct = inst_rng.uniform(0.005, 0.025)          # 0.5 % – 2.5 %
+            origination_fee = round(loan_amount * fee_pct, 2)
+            eir_rate = round(note_rate + fee_pct / inst_rng.uniform(3.0, 7.0), 6)
+            term_months = inst_rng.choice(
+                [24, 36, 48, 60, 72, 84, 120, 180, 240, 300, 360]
+            )
+
+            first_pd = _parse_date(sorted_dates[0])
+            months_back = inst_rng.randint(1, min(36, term_months - 1))
+            orig_month = first_pd.month - (months_back % 12)
+            orig_year = first_pd.year - (months_back // 12)
+            if orig_month <= 0:
+                orig_month += 12
+                orig_year -= 1
+            orig_day = min(first_pd.day,
+                           _cal.monthrange(orig_year, orig_month)[1])
+            origination_date = _date(orig_year, orig_month, orig_day)
+
+            mat_total_months = origination_date.month + term_months
+            mat_year = origination_date.year + (mat_total_months - 1) // 12
+            mat_month = ((mat_total_months - 1) % 12) + 1
+            mat_day = _cal.monthrange(mat_year, mat_month)[1]
+            maturity_date = _date(mat_year, mat_month, mat_day)
+
+            static.update({
+                "loan_amount": loan_amount,
+                "origination_fee": origination_fee,
+                "note_rate": note_rate,
+                "eir_rate": eir_rate,
+                "effective_interest_rate": eir_rate,
+                "yield_rate": eir_rate,
+                "term_months": term_months,
+                "status": inst_rng.choices(
+                    ["Active", "Performing", "Closed", "Defaulted"],
+                    weights=[65, 22, 8, 5]
+                )[0],
+                "currency": inst_rng.choice(["USD", "EUR", "GBP"]),
+                "product": inst_rng.choice(
+                    ["Mortgage", "PersonalLoan", "CommercialLoan", "AutoLoan"]
+                ),
+            })
+            for fname in ("origination_date", "issue_date",
+                          "booking_date", "start_date"):
+                if fname in field_names_lc:
+                    static[fname] = origination_date.isoformat()
+            for fname in ("maturity_date", "end_date", "term_end_date"):
+                if fname in field_names_lc:
+                    static[fname] = maturity_date.isoformat()
+
+            # Amortising time-series
+            monthly_principal = loan_amount / term_months
+            monthly_fee_amort = origination_fee / term_months
+            outstanding_s, amortized_s = [], []
+            for pd_str in sorted_dates:
+                pd_d = _parse_date(pd_str)
+                m_elapsed = max(0,
+                    (pd_d.year - origination_date.year) * 12
+                    + pd_d.month - origination_date.month)
+                bal = max(0.0, round(loan_amount - monthly_principal * m_elapsed, 2))
+                amort = round(min(origination_fee,
+                                  monthly_fee_amort * m_elapsed), 2)
+                outstanding_s.append(bal)
+                amortized_s.append(amort)
+
+            for fname in ("outstanding_balance", "balance", "ead",
+                          "exposure_at_default"):
+                time_series[fname] = outstanding_s
+            for fname in ("amortized_fee", "fee_amortized",
+                          "amortization_amount"):
+                time_series[fname] = amortized_s
+            for fname in ("unamortized_fee", "net_fee", "deferred_fee"):
+                time_series[fname] = [round(origination_fee - v, 2)
+                                      for v in amortized_s]
+
+        elif domain == "ifrs9":
+            # ----------------------------------------------------------------
+            # IFRS 9 / CECL — ECL measurement
+            # Stage distribution: 60 % S1, 30 % S2, 10 % S3
+            # ----------------------------------------------------------------
+            stage = inst_rng.choices([1, 2, 3], weights=[60, 30, 10])[0]
+            ead = round(inst_rng.uniform(10_000, 500_000), 2)
+
+            if stage == 1:
+                pd_val = round(inst_rng.uniform(0.0010, 0.0200), 6)
+                dpd = inst_rng.randint(0, 29)
+                credit_impaired = False
+            elif stage == 2:
+                pd_val = round(inst_rng.uniform(0.0200, 0.1500), 6)
+                dpd = inst_rng.randint(30, 89)
+                credit_impaired = False
+            else:
+                pd_val = round(inst_rng.uniform(0.20, 0.70), 6)
+                dpd = inst_rng.randint(90, 365)
+                credit_impaired = True
+
+            lgd = round(inst_rng.uniform(0.30, 0.60), 6)
+            collateral_value = round(ead * inst_rng.uniform(0.50, 1.50), 2)
+            ecl_base = round(pd_val * lgd * ead, 2)
+            rating = max(1, min(10, 11 - stage * 3 + inst_rng.randint(0, 2)))
+
+            static.update({
+                "stage": stage,
+                "ead": ead,
+                "outstanding_balance": ead,
+                "balance": ead,
+                "pd": pd_val,
+                "lgd": lgd,
+                "collateral_value": collateral_value,
+                "credit_impaired": credit_impaired,
+                "credit_impaired_flag": credit_impaired,
+                "is_defaulted": credit_impaired,
+                "in_default": credit_impaired,
+                "rating": rating,
+                "currency": inst_rng.choice(["USD", "EUR", "GBP"]),
+                "segment": inst_rng.choices(
+                    ["Retail", "Corporate", "SME", "Sovereign"],
+                    weights=[40, 30, 25, 5]
+                )[0],
+                "product": inst_rng.choice(
+                    ["Mortgage", "PersonalLoan", "CommercialLoan", "AutoLoan"]
+                ),
+            })
+
+            # ECL and DPD evolve modestly over time
+            ecl_s, dpd_s = [], []
+            for j in range(n_periods):
+                drift = inst_rng.uniform(-0.04, 0.04)
+                ecl_s.append(round(max(0, ecl_base * (1 + drift * (j + 1))), 2))
+                dpd_s.append(max(0, dpd + j * inst_rng.randint(0, 4)))
+
+            for fname in ("ecl", "expected_credit_loss",
+                          "allowance", "impairment", "provision"):
+                time_series[fname] = ecl_s
+            for fname in ("days_past_due", "dpd", "days_overdue",
+                          "delinquent_days"):
+                time_series[fname] = dpd_s
+
+        elif domain == "lease":
+            # ----------------------------------------------------------------
+            # IFRS 16 / ASC 842 — right-of-use asset & lease liability
+            # ----------------------------------------------------------------
+            rou_initial = _round_thousands(inst_rng.uniform(20_000, 400_000))
+            ibr = round(inst_rng.uniform(0.030, 0.090), 6)
+            lease_term = inst_rng.choice([12, 24, 36, 48, 60, 84, 120])
+            monthly_rate = ibr / 12
+            if monthly_rate > 0:
+                pmt = rou_initial * monthly_rate / (1 - (1 + monthly_rate) ** -lease_term)
+            else:
+                pmt = rou_initial / lease_term
+            pmt = round(pmt, 2)
+
+            first_pd = _parse_date(sorted_dates[0])
+            months_back = inst_rng.randint(1, min(24, lease_term - 1))
+            ls_month = first_pd.month - (months_back % 12)
+            ls_year = first_pd.year - (months_back // 12)
+            if ls_month <= 0:
+                ls_month += 12
+                ls_year -= 1
+            lease_start = _date(ls_year, ls_month, 1)
+
+            le_total = lease_start.month + lease_term
+            le_year = lease_start.year + (le_total - 1) // 12
+            le_month = ((le_total - 1) % 12) + 1
+            lease_end = _date(le_year, le_month,
+                              _cal.monthrange(le_year, le_month)[1])
+
+            static.update({
+                "lease_payment": pmt,
+                "monthly_rent": pmt,
+                "annual_rent": round(pmt * 12, 2),
+                "annual_lease": round(pmt * 12, 2),
+                "lease_installment": pmt,
+                "discount_rate": ibr,
+                "incremental_borrowing_rate": ibr,
+                "ibr": ibr,
+                "lessee_rate": ibr,
+                "lease_term": lease_term,
+                "lease_period": lease_term,
+                "lease_start_date": lease_start.isoformat(),
+                "lease_end_date": lease_end.isoformat(),
+                "currency": inst_rng.choice(["USD", "EUR", "GBP"]),
+            })
+
+            rou_s, liability_s = [], []
+            rou_monthly_depr = rou_initial / lease_term
+            liability_running = rou_initial
+            for j, pd_str in enumerate(sorted_dates):
+                pd_d = _parse_date(pd_str)
+                m_elapsed = max(0,
+                    (pd_d.year - lease_start.year) * 12
+                    + pd_d.month - lease_start.month)
+                current_rou = max(0.0, round(
+                    rou_initial - rou_monthly_depr * m_elapsed, 2))
+                # Walk liability forward from initial
+                liab = rou_initial
+                for _ in range(m_elapsed):
+                    interest = liab * monthly_rate
+                    liab = max(0.0, liab - (pmt - interest))
+                current_liab = round(liab, 2)
+                rou_s.append(current_rou)
+                liability_s.append(current_liab)
+
+            for fname in ("rou_asset", "right_of_use", "rouasset",
+                          "lease_asset", "rightofuse"):
+                time_series[fname] = rou_s
+            for fname in ("lease_liability", "lease_obligation",
+                          "leaseLiability", "lease_balance"):
+                time_series[fname] = liability_s
+
+        elif domain == "fixed_asset":
+            # ----------------------------------------------------------------
+            # IAS 16 / ASC 360 — PP&E depreciation
+            # ----------------------------------------------------------------
+            cost = _round_thousands(inst_rng.uniform(10_000, 500_000))
+            useful_life_years = inst_rng.choice([3, 5, 7, 10, 15, 20, 25, 40])
+            residual_pct = inst_rng.uniform(0.05, 0.20)
+            residual = round(cost * residual_pct, 2)
+            depreciable = cost - residual
+            annual_depr = round(depreciable / useful_life_years, 2)
+            monthly_depr = round(annual_depr / 12, 2)
+
+            first_pd = _parse_date(sorted_dates[0])
+            months_back = inst_rng.randint(6, min(useful_life_years * 12 - 1, 60))
+            acq_month = first_pd.month - (months_back % 12)
+            acq_year = first_pd.year - (months_back // 12)
+            if acq_month <= 0:
+                acq_month += 12
+                acq_year -= 1
+            acq_date = _date(acq_year, acq_month,
+                             _cal.monthrange(acq_year, acq_month)[1])
+
+            static.update({
+                "acquisition_cost": cost,
+                "purchase_cost": cost,
+                "gross_cost": cost,
+                "historical_cost": cost,
+                "asset_cost": cost,
+                "residual_value": residual,
+                "salvage_value": residual,
+                "scrap_value": residual,
+                "useful_life": useful_life_years,
+                "useful_life_years": useful_life_years,
+                "depreciation_charge": annual_depr,
+                "annual_depreciation": annual_depr,
+                "period_depreciation": monthly_depr,
+                "depr_charge": annual_depr,
+                "depr_amount": annual_depr,
+                "acquisition_date": acq_date.isoformat(),
+                "asset_type": inst_rng.choice(
+                    ["Plant", "Equipment", "Machinery", "Vehicle", "Building"]
+                ),
+                "currency": inst_rng.choice(["USD", "EUR", "GBP"]),
+            })
+
+            accum_s, nbv_s = [], []
+            for pd_str in sorted_dates:
+                pd_d = _parse_date(pd_str)
+                m_elapsed = max(0,
+                    (pd_d.year - acq_date.year) * 12
+                    + pd_d.month - acq_date.month)
+                accum = round(min(depreciable, monthly_depr * m_elapsed), 2)
+                nbv_s.append(round(cost - accum, 2))
+                accum_s.append(accum)
+
+            for fname in ("accumulated_depreciation", "accum_depr"):
+                time_series[fname] = accum_s
+            for fname in ("nbv", "net_book_value", "carrying_value",
+                          "book_value", "carrying_amount"):
+                time_series[fname] = nbv_s
+
+        elif domain == "revenue":
+            # ----------------------------------------------------------------
+            # IFRS 15 / ASC 606 — revenue recognition
+            # ----------------------------------------------------------------
+            contract_val = _round_thousands(inst_rng.uniform(5_000, 300_000))
+            n_obligations = inst_rng.choice([1, 2, 3])
+            alloc_pct = 1.0 / n_obligations
+            allocated = round(contract_val * alloc_pct, 2)
+            ssp_val = round(allocated * inst_rng.uniform(0.85, 1.15), 2)
+            contract_duration = inst_rng.choice([12, 24, 36])
+
+            first_pd = _parse_date(sorted_dates[0])
+            months_back = inst_rng.randint(1, 18)
+            cs_month = first_pd.month - (months_back % 12)
+            cs_year = first_pd.year - (months_back // 12)
+            if cs_month <= 0:
+                cs_month += 12
+                cs_year -= 1
+            contract_start = _date(cs_year, cs_month, 1)
+
+            ce_total = contract_start.month + contract_duration
+            ce_year = contract_start.year + (ce_total - 1) // 12
+            ce_month = ((ce_total - 1) % 12) + 1
+            contract_end = _date(ce_year, ce_month,
+                                 _cal.monthrange(ce_year, ce_month)[1])
+
+            monthly_rev = round(contract_val / contract_duration, 2)
+
+            static.update({
+                "contract_amount": contract_val,
+                "transaction_price": contract_val,
+                "contract_value": contract_val,
+                "revenue_amount": contract_val,
+                "ssp": ssp_val,
+                "standalone_selling_price": ssp_val,
+                "sspprice": ssp_val,
+                "allocated_amount": allocated,
+                "allocated_revenue": allocated,
+                "allocation": allocated,
+                "contract_start_date": contract_start.isoformat(),
+                "contract_end_date": contract_end.isoformat(),
+                "currency": inst_rng.choice(["USD", "EUR", "GBP"]),
+            })
+
+            recog_s, deferred_s = [], []
+            for pd_str in sorted_dates:
+                pd_d = _parse_date(pd_str)
+                m_elapsed = max(0,
+                    (pd_d.year - contract_start.year) * 12
+                    + pd_d.month - contract_start.month)
+                recognized = round(min(contract_val,
+                                       monthly_rev * m_elapsed), 2)
+                deferred_s.append(round(max(0, contract_val - recognized), 2))
+                recog_s.append(recognized)
+
+            for fname in ("recognized_revenue", "revenue_recognized"):
+                time_series[fname] = recog_s
+            for fname in ("period_revenue", "recognition_amount"):
+                time_series[fname] = [monthly_rev] * n_periods
+            for fname in ("deferred_revenue", "contract_asset",
+                          "contract_liability"):
+                time_series[fname] = deferred_s
+
+        elif domain == "securities":
+            # ----------------------------------------------------------------
+            # Securities / Fair Value — bonds, SBO
+            # ----------------------------------------------------------------
+            face = float(inst_rng.choice(
+                [1_000, 5_000, 10_000, 50_000, 100_000, 500_000, 1_000_000]
+            ))
+            coupon = round(inst_rng.uniform(0.020, 0.080), 6)
+            mkt_premium = inst_rng.uniform(-0.15, 0.15)
+            mkt_val_base = round(face * (1 + mkt_premium), 2)
+            book_val = round(face * inst_rng.uniform(0.92, 1.08), 2)
+
+            first_pd = _parse_date(sorted_dates[0])
+            days_back = inst_rng.randint(30, 1460)
+            purchase_date = first_pd - _td(days=days_back)
+            mat_years = inst_rng.choice([1, 2, 3, 5, 7, 10, 20, 30])
+            mat_year = first_pd.year + mat_years
+            mat_day = _cal.monthrange(mat_year, first_pd.month)[1]
+            maturity_date = _date(mat_year, first_pd.month, mat_day)
+
+            static.update({
+                "face_value": face,
+                "principal": face,
+                "notional": face,
+                "facevalue": face,
+                "book_value": book_val,
+                "coupon_rate": coupon,
+                "yield": round(coupon + inst_rng.uniform(-0.010, 0.020), 6),
+                "purchase_date": purchase_date.isoformat(),
+                "maturity_date": maturity_date.isoformat(),
+                "currency": inst_rng.choice(["USD", "EUR", "GBP"]),
+                "product": inst_rng.choice(
+                    ["GovernmentBond", "CorporateBond", "Treasury",
+                     "MunicipalBond"]
+                ),
+            })
+
+            daily_accrual = round(face * coupon / 365, 4)
+            mkt_s, accrued_s = [], []
+            mkt_running = mkt_val_base
+            for j, pd_str in enumerate(sorted_dates):
+                pd_d = _parse_date(pd_str)
+                shock = inst_rng.uniform(-0.008, 0.008)
+                mkt_running = round(max(face * 0.70, mkt_running * (1 + shock)), 2)
+                mkt_s.append(mkt_running)
+                days_since_purchase = (pd_d - purchase_date).days % 180
+                accrued_s.append(round(daily_accrual * max(0, days_since_purchase), 2))
+
+            for fname in ("market_value", "fair_value", "mtm"):
+                time_series[fname] = mkt_s
+            for fname in ("accrued_interest",):
+                time_series[fname] = accrued_s
+
+        profiles[inst_id] = {"static": static, "time_series": time_series}
+
+    return {"domain": domain, "profiles": profiles, "sorted_dates": sorted_dates}
+
+
 def _make_sample_rows(
     event_def: dict,
     instrument_ids: list[str],
     posting_dates: list[str],
     field_hints: dict | None = None,
     seed: int = 42,
+    reference_constraints: dict[str, list] | None = None,
 ) -> list[dict]:
+    """Generate synthetic rows for *event_def*.
+
+    Priority for each field value:
+      1. **Reference constraint** — if an already-stored reference event
+         contains the same field name, pick from its actual distinct values
+         (cycling deterministically over the list so every value is used).
+         This guarantees that e.g. ``product_type`` in an activity event only
+         ever contains values that exist in the PRODUCT_CATALOG reference table.
+      2. **Accounting-domain profile time-series** — amortising balances,
+         accumulating depreciation, etc.
+      3. **Accounting-domain profile static fields** — loan amount, rate, dates.
+      4. **Name-based heuristic generator** — fallback for any custom field.
+    """
     rng = random.Random(seed)
     rows: list[dict] = []
     is_reference = event_def.get("eventType") == "reference"
+    ref_constraints = reference_constraints or {}
+
+    # Build coherent per-instrument profiles for accounting domains
+    profile_data = _generate_instrument_profiles(
+        event_def, instrument_ids, posting_dates, seed
+    )
+    profiles = profile_data["profiles"]
+    sorted_dates = profile_data["sorted_dates"]
+    date_index = {d: i for i, d in enumerate(sorted_dates)}
+
+    # Pre-compute per-field reference value cycle so that across all rows
+    # we rotate through the available reference values, not just always
+    # picking index 0. Each field gets its own counter.
+    _ref_cycle_counter: dict[str, int] = {}
+
     for posting_date in posting_dates:
+        pd_idx = date_index.get(posting_date, 0)
         for inst in instrument_ids:
             row: dict[str, Any] = {}
             if not is_reference:
                 row["postingdate"] = posting_date
                 row["effectivedate"] = posting_date
                 row["instrumentid"] = inst
+
+            profile = profiles.get(inst, {})
+            static = profile.get("static", {})
+            time_series = profile.get("time_series", {})
+
             for f in event_def.get("fields", []):
-                row[f["name"]] = _generate_value(f, rng, field_hints or {})
+                fname = f.get("name", "")
+                fname_lc = fname.lower()
+
+                # 1. Reference constraint — exact field match from reference data
+                if fname in ref_constraints and ref_constraints[fname]:
+                    choices = ref_constraints[fname]
+                    idx = _ref_cycle_counter.get(fname, 0)
+                    row[fname] = choices[idx % len(choices)]
+                    _ref_cycle_counter[fname] = idx + 1
+                    continue
+
+                # 2. Profile time-series (accounting-domain coherence)
+                if fname_lc in time_series:
+                    series = time_series[fname_lc]
+                    if pd_idx < len(series):
+                        row[fname] = series[pd_idx]
+                        continue
+
+                # 3. Profile static values
+                if fname_lc in static:
+                    row[fname] = static[fname_lc]
+                    continue
+
+                # 4. Heuristic fallback for custom / non-standard fields
+                row[fname] = _generate_value(f, rng, field_hints or {})
+
             rows.append(row)
     return rows
 
@@ -634,7 +1196,9 @@ def _audit_sample_rows(rows: list[dict], event_def: dict) -> list[str]:
 
 
 # Common debit/credit transaction-type pairs. When the agent registers one
-# side, we can suggest the other to keep journal entries balanced.
+# side, we can suggest the other to keep the transaction pair complete.
+# NOTE: these are TRANSACTIONS emitted for downstream journal posting —
+# this app does NOT create journal entries directly.
 _TXN_PAIR_HINTS: list[tuple[str, str]] = [
     ("ECLAllowance", "ECLExpense"),
     ("InterestReceivable", "InterestIncome"),
@@ -653,9 +1217,9 @@ def _suggest_txn_pairs(registered: list[str], existing: list[str]) -> list[str]:
     for a, b in _TXN_PAIR_HINTS:
         la, lb = a.lower(), b.lower()
         if la in have and lb not in have:
-            suggestions.append(f"'{a}' is registered but '{b}' is not — double-entry usually needs both")
+            suggestions.append(f"'{a}' is registered but '{b}' is not — a complete transaction pair usually needs both (downstream system uses these to post journals)")
         if lb in have and la not in have:
-            suggestions.append(f"'{b}' is registered but '{a}' is not — double-entry usually needs both")
+            suggestions.append(f"'{b}' is registered but '{a}' is not — a complete transaction pair usually needs both (downstream system uses these to post journals)")
     # de-dup while preserving order
     seen = set()
     out = []
@@ -886,6 +1450,102 @@ async def tool_add_transaction_types(args: dict) -> dict:
     }
 
 
+# ---------------------------------------------------------------------------
+# Reference-event cross-seeding helpers
+# ---------------------------------------------------------------------------
+
+async def _load_all_reference_data() -> dict[str, list[dict]]:
+    """Return {event_name: [rows]} for every stored reference event.
+
+    Only events whose definition has eventType='reference' are included.
+    Both DB and in-memory stores are consulted.
+    """
+    db = _ServerBridge.db
+    ref_names: set[str] = set()
+
+    # Collect names of all reference event definitions
+    try:
+        if db is not None:
+            async for d in db.event_definitions.find({"eventType": "reference"}, {"_id": 0, "event_name": 1}):
+                nm = d.get("event_name")
+                if nm:
+                    ref_names.add(str(nm).lower())
+    except Exception:
+        pass
+    for d in (_ServerBridge.in_memory_data or {}).get("event_definitions") or []:
+        if d.get("eventType") == "reference":
+            nm = d.get("event_name")
+            if nm:
+                ref_names.add(str(nm).lower())
+
+    if not ref_names:
+        return {}
+
+    result: dict[str, list[dict]] = {}
+
+    # Load stored rows for each reference event
+    try:
+        if db is not None:
+            async for d in db.event_data.find({}, {"_id": 0, "event_name": 1, "data_rows": 1}):
+                nm = str(d.get("event_name") or "").lower()
+                if nm in ref_names:
+                    result[nm] = d.get("data_rows") or []
+    except Exception:
+        pass
+    for d in (_ServerBridge.in_memory_data or {}).get("event_data") or []:
+        nm = str(d.get("event_name") or "").lower()
+        if nm in ref_names and nm not in result:
+            result[nm] = d.get("data_rows") or []
+
+    return result
+
+
+def _build_reference_constraints(
+    event_def: dict,
+    reference_data: dict[str, list[dict]],
+) -> dict[str, list]:
+    """For each field on *event_def*, search all reference-event rows and
+    collect the distinct values already stored for that field name.
+
+    Returns ``{field_name_original_case: [distinct_values]}`` for fields
+    where matching reference data was found.  The returned list preserves
+    the insertion order of distinct values (first occurrence wins).
+
+    Priority logic:
+    - Exact field-name match (case-insensitive) against any reference event's
+      rows wins outright.
+    - An empty value list in the reference data is ignored (not yet generated).
+    """
+    constraints: dict[str, list] = {}
+    if not reference_data:
+        return constraints
+
+    for f in event_def.get("fields") or []:
+        fname = f.get("name") or ""
+        fname_lc = fname.lower()
+        if not fname_lc:
+            continue
+
+        distinct: list = []
+        seen_vals: set = set()
+
+        for _ref_rows in reference_data.values():
+            for row in _ref_rows:
+                # Match field by exact name (case-insensitive)
+                for rk, rv in row.items():
+                    if rk.lower() == fname_lc:
+                        key = str(rv)  # hashable repr for dedup
+                        if key not in seen_vals and rv is not None:
+                            seen_vals.add(key)
+                            distinct.append(rv)
+                        break  # found in this row
+
+        if distinct:
+            constraints[fname] = distinct
+
+    return constraints
+
+
 async def tool_generate_sample_event_data(args: dict) -> dict:
     EventData = _h("EventData")
     db = _ServerBridge.db
@@ -946,7 +1606,24 @@ async def tool_generate_sample_event_data(args: dict) -> dict:
     field_hints = args.get("field_hints") or {}
     append = bool(args.get("append", False))
 
-    new_rows = _make_sample_rows(event_def, instrument_ids, posting_dates, field_hints, seed)
+    # Load reference-event data and build field-level constraints so that
+    # activity-event fields whose names match a reference-event field are
+    # populated exclusively from the values that already exist in the
+    # reference data — never independently mocked.
+    # For *reference* events being generated now, no constraints apply
+    # (they ARE the source of truth).
+    ref_constraints: dict[str, list] = {}
+    if event_def.get("eventType") != "reference":
+        try:
+            ref_data = await _load_all_reference_data()
+            ref_constraints = _build_reference_constraints(event_def, ref_data)
+        except Exception as exc:
+            logger.debug("Reference constraint load failed (non-fatal): %s", exc)
+
+    new_rows = _make_sample_rows(
+        event_def, instrument_ids, posting_dates, field_hints, seed,
+        reference_constraints=ref_constraints,
+    )
 
     existing_doc = None
     try:
@@ -985,6 +1662,10 @@ async def tool_generate_sample_event_data(args: dict) -> dict:
         "instrument_ids_reused_from": reused_from,
         "posting_dates": posting_dates,
         "sample_row": new_rows[0] if new_rows else None,
+        "reference_seeded_fields": {
+            fname: vals[:5]  # show up to 5 sample reference values
+            for fname, vals in ref_constraints.items()
+        } if ref_constraints else {},
         "data_quality_warnings": _audit_sample_rows(new_rows, event_def),
     }
 
@@ -1698,7 +2379,8 @@ async def tool_dry_run_template(args: dict) -> dict:
             f"or a balance multiplied by an unbounded factor). "
             f"Inspect the formulas/iterations and the source event-data ranges."
         )
-    # Check for double-entry imbalance per instrument
+    # Check for transaction imbalance per instrument (debit total should equal credit total
+    # so the downstream journal-posting system receives balanced input)
     by_instr_signed: dict[str, float] = {}
     for t in txn_dicts:
         amt = float(t.get("amount") or 0)
@@ -1713,8 +2395,8 @@ async def tool_dry_run_template(args: dict) -> dict:
     unbalanced = {k: round(v, 2) for k, v in by_instr_signed.items() if abs(v) > 0.01}
     if unbalanced and len(txn_dicts) > 1:
         sanity_warnings.append(
-            f"signed-sum of recognised debit/credit transactions is non-zero "
-            f"for {len(unbalanced)} instrument(s) — double-entry may be incomplete"
+            f"debit/credit transaction totals are unequal "
+            f"for {len(unbalanced)} instrument(s) — the downstream journal-posting system expects balanced input"
         )
 
     # Zero-transactions despite declared transactions: catches the silent
@@ -2252,38 +2934,58 @@ def _validate_schedule_step_shape(name: str, sc: dict, outputVars: list,
         if src == "value":
             v = sc.get(prefix)
             if v in (None, ""):
-                # Auto-heal hint: look through any calc-step variable names
-                # visible from the schedule's contextVars (already partial) or
-                # the sc keys themselves for date-looking names.
+                # ── Auto-heal missing start/end date ──────────────────────
+                # Priority:
+                #  1. Look for a date-like calc-step variable in scope
+                #     (e.g. a step that reads EVENT.startdate / postingdate).
+                #  2. Look for a date-like event field in contextVars.
+                #  3. Final fallback hard-coded:
+                #       startDate  → formula "postingdate"
+                #       endDate    → formula "add_years(postingdate, 1)"
+                # This prevents saving a schedule with blank time bounds, which
+                # would silently produce zero rows at runtime.
                 all_vars = list(sc.get("contextVars") or []) + list(
                     (context_var_names or [])
                 )
-                date_like = [
-                    cv for cv in all_vars
-                    if re.search(r"date|start|end|from|until|acquisition|inception",
-                                 cv, re.IGNORECASE)
-                ]
-                if date_like:
-                    hint = (
-                        f" Set {prefix}Source='formula' and "
-                        f"{prefix}Formula='{date_like[0]}' (calc-step variable "
-                        f"'{date_like[0]}' looks like a date)."
+                # Narrow to names that smell like dates.
+                _DATE_RE = re.compile(
+                    r"date|start|end|from|until|acquisition|inception|origination"
+                    r"|maturity|effective|posting",
+                    re.IGNORECASE,
+                )
+                date_like = [cv for cv in all_vars if _DATE_RE.search(cv)]
+                # Pick the most relevant match by prefix hint.
+                if prefix == "startDate":
+                    _preferred = [v for v in date_like if re.search(r"start|origination|inception|acquisition|effective|posting", v, re.IGNORECASE)]
+                    chosen_var = (_preferred or date_like or [None])[0]
+                    fallback_formula = "postingdate"
+                else:  # endDate
+                    _preferred = [v for v in date_like if re.search(r"end|maturity|expir|until", v, re.IGNORECASE)]
+                    chosen_var = (_preferred or date_like or [None])[0]
+                    fallback_formula = "add_years(postingdate, 1)"
+
+                if chosen_var:
+                    # Promote the found variable to a formula source.
+                    sc[f"{prefix}Source"] = "formula"
+                    sc[f"{prefix}Formula"] = chosen_var
+                    src = "formula"
+                    sc.setdefault("_autohealed", []).append(
+                        f"{prefix}: no value supplied — auto-set to formula "
+                        f"'{chosen_var}' (found in scope; review and adjust if "
+                        f"this is not the correct date field)."
                     )
                 else:
-                    hint = (
-                        f" Example: {prefix}Source='formula', "
-                        f"{prefix}Formula='asset_start_date' where "
-                        f"'asset_start_date' is a calc step reading "
-                        f"EVENTNAME.acquisition_date. For a literal date: "
-                        f"{prefix}Source='value', {prefix}='2024-01-01'."
+                    # Hard fallback: postingdate / add_years(postingdate, 1)
+                    sc[f"{prefix}Source"] = "formula"
+                    sc[f"{prefix}Formula"] = fallback_formula
+                    src = "formula"
+                    sc.setdefault("_autohealed", []).append(
+                        f"{prefix}: no value supplied and no date variable found "
+                        f"in scope — auto-set to formula '{fallback_formula}'. "
+                        f"Review: if your event has a dedicated start/end date "
+                        f"field, add a calc step to read it and set "
+                        f"{prefix}Source='formula', {prefix}Formula='<that step name>'."
                     )
-                errs.append(
-                    f"scheduleConfig.{prefix} is required when "
-                    f"{prefix}Source='value'. Set {prefix}=<literal>, "
-                    f"OR switch {prefix}Source to 'field' (then set "
-                    f"{prefix}Field='EVENTNAME.fieldname') or 'formula' "
-                    f"(then set {prefix}Formula='<DSL expression>').{hint}"
-                )
         elif src == "field":
             v = (sc.get(f"{prefix}Field") or "").strip()
             if not v:
@@ -2712,6 +3414,47 @@ def _validate_step_shape(step: dict) -> dict:
             f"the computed amount. Register transaction types via "
             f"`add_transaction_types` first."
         )
+    # HARD-BLOCK: never create a calc step named 'instrumentid'.
+    # instrumentid is always available as an implicit global on every row —
+    # creating a step for it is redundant noise that clutters the rule.
+    # Transactions needing instrumentid reference it directly via the global.
+    if name.strip().lower() == "instrumentid":
+        raise ToolError(
+            "Creating a calc step named 'instrumentid' is FORBIDDEN. "
+            "'instrumentid' is already an implicit global available on every "
+            "rule row — no step is needed. Simply use it by name wherever you "
+            "need it (e.g. in a formula or as a transaction field).\n"
+            "If you need the instrument identifier in a transaction entry, the "
+            "engine injects it automatically. Delete this step."
+        )
+    # GUIDANCE: a 'subinstrumentid' step IS expected, but its source must
+    # reflect whether the event has scalar (one sub-id per instrument) or
+    # non-scalar (multiple sub-ids per instrument) data.
+    if name.strip().lower() == "subinstrumentid":
+        src_hint = (step.get("source") or "").strip().lower()
+        ef = (step.get("eventField") or "").strip()
+        ct = (step.get("collectType") or "").strip().lower()
+        # If the agent tried to make this a formula step or left it as a
+        # plain value step, coerce it to the correct shape with a clear error.
+        if src_hint not in ("event_field", "collect", ""):
+            raise ToolError(
+                "Step 'subinstrumentid' must use source='event_field' (when each "
+                "instrument has exactly ONE subinstrumentid per posting date — "
+                "scalar) or source='collect' + collectType='collect_by_instrument' "
+                "(when an instrument has MULTIPLE subinstrumentids on the same "
+                "posting date — non-scalar).\n"
+                f"You supplied source='{src_hint}'. Fix:\n"
+                "  SCALAR:     {name:'subinstrumentid', stepType:'calc', source:'event_field', eventField:'EVENTNAME.subinstrumentid'}\n"
+                "  NON-SCALAR: {name:'subinstrumentid', stepType:'calc', source:'collect', collectType:'collect_by_instrument', eventField:'EVENTNAME.subinstrumentid'}"
+            )
+        # If source is collect but collectType is not collect_by_instrument, fix it.
+        if src_hint == "collect" and ct and ct != "collect_by_instrument":
+            raise ToolError(
+                f"Step 'subinstrumentid' with source='collect' must use "
+                f"collectType='collect_by_instrument', not '{ct}'. "
+                f"subinstrumentid varies per instrument, not globally."
+            )
+
     out: dict = {"id": _step_id, "name": name, "stepType": st}
     if st == "calc":
         src = step.get("source") or "formula"
@@ -3577,6 +4320,46 @@ async def _validate_rule_static(rule: dict) -> list[dict]:
                             f" Or use a schedule built-in: "
                             f"{', '.join(sb_sug)}."
                         )
+                # SCHEDULE OUTPUTVAR HINT: If the undefined token looks like
+                # it could be a schedule outputVar name or an alias the agent
+                # invented for one, tell it that outputVar names are already
+                # in scope directly — no wrapper calc step is needed.
+                for _sch in steps:
+                    if _sch.get("stepType") != "schedule":
+                        continue
+                    _sn = (_sch.get("name") or "").strip()
+                    _ov_names = [
+                        (ov.get("name") or "").strip()
+                        for ov in (_sch.get("outputVars") or [])
+                        if (ov.get("name") or "").strip()
+                    ]
+                    # tok matches the pattern <scheduleName>_<anything> — the
+                    # agent is guessing an auto-generated name.
+                    if _sn and tok.startswith(_sn + "_"):
+                        fix += (
+                            f" SCHEDULE OUTPUTVAR HINT: '{tok}' looks like an "
+                            f"auto-generated name derived from schedule '{_sn}'. "
+                            f"outputVar names are set EXPLICITLY in "
+                            f"outputVars[].name and are in scope DIRECTLY — "
+                            f"no alias calc step is needed. "
+                            f"Current outputVar names on '{_sn}': "
+                            f"{_ov_names or '(none yet)'}. "
+                            f"If you want '{tok}' in scope, set "
+                            f"outputVars[].name = '{tok}' on '{_sn}', "
+                            f"then DELETE any alias step for it."
+                        )
+                        break
+                    # tok IS a known outputVar but isn't in scope yet —
+                    # probably an ordering problem (schedule step after
+                    # the step that references it).
+                    if tok in _ov_names:
+                        fix += (
+                            f" NOTE: '{tok}' IS defined as an outputVar of "
+                            f"schedule '{_sn}' but is not yet in scope — "
+                            f"ensure the schedule step '{_sn}' appears BEFORE "
+                            f"the step that references '{tok}'."
+                        )
+                        break
                 errors.append({
                     "step": step.get("name"),
                     "kind": "undefined_variable",
@@ -3623,6 +4406,53 @@ async def _validate_rule_static(rule: dict) -> list[dict]:
                 "where": f"outputs.transactions[{i}].amount",
                 "fix_hint": fix,
             })
+
+    # -------------------------------------------------------------------------
+    # ALIAS-STEP ANTI-PATTERN CHECK
+    # Schedule outputVar names are already in scope directly — a calc step
+    # whose formula is exactly the name of a schedule step or outputVar is a
+    # redundant alias that the agent must NOT create.
+    # -------------------------------------------------------------------------
+    _sched_scope: set[str] = set()
+    for _st in steps:
+        if _st.get("stepType") == "schedule":
+            _sn = (_st.get("name") or "").strip()
+            if _sn:
+                _sched_scope.add(_sn)
+            for _ov in (_st.get("outputVars") or []):
+                _ovn = (_ov.get("name") or "").strip()
+                if _ovn:
+                    _sched_scope.add(_ovn)
+
+    for _st in steps:
+        if _st.get("stepType") == "schedule":
+            continue
+        _src = (_st.get("source") or "formula").strip().lower()
+        if _src != "formula":
+            continue
+        _formula = (_st.get("formula") or "").strip()
+        _sname = (_st.get("name") or "").strip()
+        # Formula is a single identifier that is already a schedule-scoped
+        # variable — and the step doesn't share the same name (which would
+        # just be a self-referencing step, a separate problem).
+        if _formula in _sched_scope and _formula != _sname:
+            _formula_idents = _extract_identifiers(_formula)
+            if len(_formula_idents) == 1:
+                errors.append({
+                    "step": _sname,
+                    "kind": "alias_step_antipattern",
+                    "name": _formula,
+                    "where": f"step '{_sname}'.formula",
+                    "fix_hint": (
+                        f"Step '{_sname}' is a REDUNDANT ALIAS. Its formula "
+                        f"'{_formula}' is already in scope directly as a "
+                        f"schedule outputVar or schedule step variable. "
+                        f"ACTION: DELETE step '{_sname}'. Reference '{_formula}' "
+                        f"directly in transaction amounts and other step formulas. "
+                        f"Schedule outputVar names need NO wrapper calc step."
+                    ),
+                })
+
     return errors
 
 
@@ -7358,17 +8188,37 @@ TOOL_SCHEMAS: list[dict] = [
     {
         "name": "generate_sample_event_data",
         "description": (
-            "Generate deterministic synthetic rows for an event definition. "
-            "Used to seed the workspace before validating rules. Replaces existing data unless append=true. "
-            "FIELD NAME CONVENTIONS: the generator uses field names to pick realistic value ranges — "
-            "you MUST use accounting-standard field names so the generated data is meaningful. "
-            "Examples: use 'loan_amount' (50k–500k), 'note_rate' (0.02–0.12), 'origination_fee' (500–15k), "
-            "'pd' (0.001–0.30), 'lgd' (0.10–0.80), 'ead'/'outstanding_balance' for IFRS9; "
-            "'rou_asset'/'lease_liability' (10k–500k), 'discount_rate'/'incremental_borrowing_rate' (0.02–0.10) for leases; "
-            "'acquisition_cost' (5k–500k), 'depreciation_charge', 'nbv'/'net_book_value' for fixed assets; "
-            "'contract_amount'/'transaction_price', 'ssp'/'standalone_selling_price', 'recognized_revenue' for revenue. "
-            "Generic names like 'amount', 'rate', 'date' produce random ranges. "
-            "Use field_hints to override any field's range when needed."
+            "Generate deterministic, accounting-standards-coherent synthetic rows for an event definition. "
+            "The generator detects the accounting domain from the event name and field names and produces "
+            "INTERNALLY CONSISTENT data: loan balances amortise over time, ECL scales with PD×LGD×EAD, "
+            "ROU assets and lease liabilities decline via annuity amortisation, NBV = cost − accumulated "
+            "depreciation, recognised revenue accumulates straight-line, bond accrued interest follows "
+            "coupon/365. MANDATORY USAGE RULES:\n"
+            "0. REFERENCE EVENTS FIRST — CRITICAL: if any of the event definitions are reference/lookup "
+            "tables (eventType='reference'), you MUST call generate_sample_event_data for those reference "
+            "events BEFORE calling it for activity events. The generator automatically detects field-name "
+            "matches between reference and activity events and seeds the activity data from the reference "
+            "values — so the reference data must exist first. For example: if PRODUCT_CATALOG has field "
+            "'product_type' with rows ['SaaS','Service'], and CONTRACTS also has 'product_type', then "
+            "CONTRACTS rows will only contain 'SaaS' or 'Service' — never a made-up value. The response "
+            "will include 'reference_seeded_fields' listing which fields were constrained this way.\n"
+            "1. INSTRUMENT IDS: use domain-meaningful IDs — 'LN-001','LN-002' for loans/FAS91; "
+            "'LEASE-001','LEASE-002' for IFRS16/ASC842; 'FA-001','FA-002' for fixed assets; "
+            "'CONT-001','CONT-002' for revenue contracts; 'BOND-001','BOND-002' for securities; "
+            "'ECL-001','ECL-002' for credit/IFRS9 events.\n"
+            "2. POSTING DATES: always supply 3–6 monthly dates (e.g. ['2025-10-31','2025-11-30',"
+            "'2025-12-31','2026-01-31','2026-02-28','2026-03-31']) so time-series fields "
+            "(balance, accumulated depreciation, deferred revenue, etc.) show realistic evolution.\n"
+            "3. FIELD NAMES DRIVE DOMAIN DETECTION: use exact accounting-standard names so the "
+            "right profile is selected. FAS91: loan_amount, origination_fee, note_rate, eir_rate, "
+            "outstanding_balance, amortized_fee, origination_date, maturity_date. "
+            "IFRS9: ead, pd, lgd, ecl, stage, days_past_due, credit_impaired, collateral_value. "
+            "IFRS16: rou_asset, lease_liability, lease_payment, incremental_borrowing_rate, lease_term. "
+            "IAS16: acquisition_cost, residual_value, useful_life_years, accumulated_depreciation, nbv. "
+            "IFRS15: contract_amount, ssp, allocated_amount, recognized_revenue, deferred_revenue. "
+            "Securities: face_value, coupon_rate, market_value/fair_value, accrued_interest.\n"
+            "4. RATES must be in decimal form: 5 % = 0.05, NEVER 5.\n"
+            "5. Use field_hints only to override ranges for custom fields not in the standard templates."
         ),
         "parameters": {
             "type": "object",

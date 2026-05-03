@@ -1,12 +1,12 @@
 import React, { useState, useEffect } from "react";
 import axios from "axios";
 import { useToast } from "./ToastProvider";
-import { Upload, FileText, FileSpreadsheet, Download, CheckCircle, Eye, X, Info } from "lucide-react";
+import { Upload, FileText, FileSpreadsheet, Download, CheckCircle, Eye, X, Info, Sparkles } from "lucide-react";
 import { Button, Card, CardContent, Box, Typography, LinearProgress, IconButton, Tooltip } from '@mui/material';
 import { API } from '../config';
 import DataPreviewPanel from './DataPreviewPanel';
 
-const FileUploadPanel = ({ onUploadSuccess, events, transactions = [], addConsoleLog, selectedEvent, onViewEvent }) => {
+const FileUploadPanel = ({ onUploadSuccess, events, transactions = [], addConsoleLog, selectedEvent, onViewEvent, onGenerateSample }) => {
   const [eventFile, setEventFile] = useState(null);
   const [excelDataFile, setExcelDataFile] = useState(null);
   const [uploadedEventFileName, setUploadedEventFileName] = useState('');
@@ -437,20 +437,120 @@ const FileUploadPanel = ({ onUploadSuccess, events, transactions = [], addConsol
                   <FileSpreadsheet size={20} color="#4CAF50" />
                   <Typography variant="h5">Event Data (Excel)</Typography>
                 </Box>
-                <Tooltip title="View data">
-                  <span>
-                    <IconButton
-                      size="small"
-                      onClick={() => { if (typeof onViewEvent === 'function' && selectedEvent) onViewEvent(selectedEvent); }}
-                      disabled={!(selectedEvent && (eventDataSummary.some(it => it.event_name === selectedEvent && (it.row_count || 0) > 0) || uploadErrors.length > 0))}
-                      data-testid="view-event-data-button"
-                      sx={{ color: '#5B5FED' }}
-                      aria-label="View event data"
-                    >
-                      <Eye size={16} />
-                    </IconButton>
-                  </span>
-                </Tooltip>
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                  {(() => {
+                    const hasDefs = Array.isArray(events) && events.length > 0;
+                    const hasData = Array.isArray(eventDataSummary)
+                      && eventDataSummary.some(it => (it.row_count || 0) > 0);
+                    const canGenerate = hasDefs && !hasData;
+                    const tooltip = !hasDefs
+                      ? 'Load event definitions first'
+                      : hasData
+                        ? 'Event data is already loaded'
+                        : 'Ask the AI agent to generate sample event data';
+                    const handleClick = () => {
+                      if (!canGenerate || typeof onGenerateSample !== 'function') return;
+                      const eventNames = (events || []).map(e => e.event_name).filter(Boolean);
+                      const txnNames = (transactions || []).map(t => t.name || t.transaction_name).filter(Boolean);
+
+                      // Detect domain from event names to suggest the right instrument ID prefix
+                      const allNames = eventNames.join(' ').toLowerCase();
+                      let instPrefix = 'INST';
+                      if (/fas91|origination_fee|loan_fee|amort/.test(allNames)) instPrefix = 'LN';
+                      else if (/ecl|ifrs9|credit_risk|impairment|provision/.test(allNames)) instPrefix = 'ECL';
+                      else if (/lease|ifrs16|asc842|rou/.test(allNames)) instPrefix = 'LEASE';
+                      else if (/depreciation|fixed_asset|ias16|property/.test(allNames)) instPrefix = 'FA';
+                      else if (/revenue|ifrs15|asc606|contract/.test(allNames)) instPrefix = 'CONT';
+                      else if (/bond|security|sbo|fair_value|mtm/.test(allNames)) instPrefix = 'BOND';
+
+                      const inst1 = `${instPrefix}-001`;
+                      const inst2 = `${instPrefix}-002`;
+
+                      // 6 monthly posting dates ending at the most recent month-end
+                      const today = new Date();
+                      const monthEnds = [];
+                      for (let m = 5; m >= 0; m--) {
+                        const d = new Date(today.getFullYear(), today.getMonth() - m + 1, 0);
+                        monthEnds.push(d.toISOString().slice(0, 10));
+                      }
+
+                      const msg = [
+                        `Generate production-quality, accounting-standards-coherent sample event data for exactly 2 instruments and load it into the system.`,
+                        ``,
+                        `Event definitions: ${eventNames.length ? eventNames.join(', ') : '(use whatever is loaded)'}.`,
+                        txnNames.length ? `Transaction types: ${txnNames.join(', ')}.` : '',
+                        ``,
+                        `MANDATORY REQUIREMENTS — read carefully:`,
+                        `1. Use instrument IDs: "${inst1}" and "${inst2}".`,
+                        `2. Use these 6 monthly posting dates: ${monthEnds.join(', ')}.`,
+                        `   This shows time-series evolution (amortising balances, accumulating depreciation, etc.).`,
+                        `3. Data must be INTERNALLY CONSISTENT per instrument across all 6 dates:`,
+                        `   - Loan/FAS91: outstanding_balance must decline each month as principal amortises.`,
+                        `     origination_fee must be 0.5–2.5% of loan_amount. eir_rate > note_rate.`,
+                        `     origination_date < each posting_date < maturity_date.`,
+                        `   - IFRS 9/ECL: ecl = pd × lgd × ead. Stage 1 pd < 2%, Stage 2 pd 2–15%, Stage 3 pd > 20%.`,
+                        `     days_past_due matches stage: S1 0–29, S2 30–89, S3 90+.`,
+                        `   - IFRS 16 Lease: rou_asset decreases each month. lease_liability decreases via annuity`,
+                        `     amortisation. lease_payment is fixed. ibr/discount_rate is an annual rate 3–9%.`,
+                        `   - IAS 16 Fixed Assets: accumulated_depreciation increases by annual_charge/12 each month.`,
+                        `     nbv = acquisition_cost − accumulated_depreciation.`,
+                        `   - IFRS 15 Revenue: recognized_revenue increases monthly, deferred_revenue decreases.`,
+                        `   - Securities/SBO: market_value fluctuates realistically around face_value.`,
+                        `     accrued_interest resets at coupon payment dates.`,
+                        `4. All rates must be in DECIMAL form: 5% = 0.05, NOT 5.`,
+                        `5. Amounts must be realistic: loans $50k–$500k, leases $20k–$400k, bonds $1k–$1M.`,
+                        `6. Call generate_sample_event_data once per event with all 6 posting dates.`,
+                        `7. After loading, confirm with a table showing: instrument, event, key fields, and their`,
+                        `   values at the first and last posting date to prove time-series coherence.`,
+                      ].filter(Boolean).join('\n');
+                      onGenerateSample(msg);
+                    };
+                    return (
+                      <Tooltip title={tooltip}>
+                        <span>
+                          <Button
+                            variant="contained"
+                            size="small"
+                            disableElevation
+                            onClick={handleClick}
+                            disabled={!canGenerate}
+                            startIcon={<Sparkles size={14} />}
+                            data-testid="generate-sample-event-data"
+                            sx={{
+                              textTransform: 'none',
+                              borderRadius: '999px',
+                              fontWeight: 600,
+                              fontSize: '0.75rem',
+                              px: 1.5,
+                              py: 0.25,
+                              minHeight: 28,
+                              bgcolor: '#F3E8FF',
+                              color: '#7C3AED',
+                              '&:hover': { bgcolor: '#E9D5FF', boxShadow: 'none' },
+                              '&.Mui-disabled': { bgcolor: '#F3F4F6', color: '#9CA3AF' },
+                            }}
+                          >
+                            Generate Sample
+                          </Button>
+                        </span>
+                      </Tooltip>
+                    );
+                  })()}
+                  <Tooltip title="View data">
+                    <span>
+                      <IconButton
+                        size="small"
+                        onClick={() => { if (typeof onViewEvent === 'function' && selectedEvent) onViewEvent(selectedEvent); }}
+                        disabled={!(selectedEvent && (eventDataSummary.some(it => it.event_name === selectedEvent && (it.row_count || 0) > 0) || uploadErrors.length > 0))}
+                        data-testid="view-event-data-button"
+                        sx={{ color: '#5B5FED' }}
+                        aria-label="View event data"
+                      >
+                        <Eye size={16} />
+                      </IconButton>
+                    </span>
+                  </Tooltip>
+                </Box>
               </Box>
               <Typography variant="body2" color="text.secondary" sx={{ lineHeight: 1.6 }}>
                 Excel file with event data (each sheet = one event)

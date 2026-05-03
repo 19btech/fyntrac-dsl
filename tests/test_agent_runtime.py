@@ -18,7 +18,7 @@ class StubProvider:
         self.script = list(script)
         self.turn = 0
 
-    async def chat_with_tools(self, *, api_key, model, messages, tools, temperature=0.1):
+    async def chat_with_tools(self, *, api_key, model, messages, tools, temperature=0.1, tool_choice=None):
         if self.turn >= len(self.script):
             return {
                 "message": {"role": "assistant", "content": "[stub: no more turns]",

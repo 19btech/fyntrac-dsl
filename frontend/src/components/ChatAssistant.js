@@ -77,6 +77,14 @@ const ChatAssistantComponent = ({ dslFunctions, events, onInsertCode, onOverwrit
         handleSendWithMessage(message);
       }
     },
+    // Variant that forces agent mode for the next send (used by quick-action
+    // buttons such as the Event Data viewer's "Generate Sample" button).
+    sendAgentMessage: (message) => {
+      if (!message.trim()) return;
+      setAgentMode(true);
+      setMessages(prev => [...prev, { role: "user", content: message }]);
+      handleSendWithMessage(message, { forceAgent: true });
+    },
     // Silent variant used by the Ask AI button: no user bubble is shown.
     // funcName is the display name (e.g. "rate"); message is the full prompt.
     sendSilentMessage: (funcName, message) => {
@@ -148,11 +156,11 @@ const ChatAssistantComponent = ({ dslFunctions, events, onInsertCode, onOverwrit
     } catch (e) { /* ignore */ }
   }, [messages, sessionId]);
 
-  const handleSendWithMessage = async (userMessage) => {
+  const handleSendWithMessage = async (userMessage, opts = {}) => {
     setLoading(true);
 
     // Agent mode: spawn an autonomous run instead of the explanation pipeline.
-    if (agentMode) {
+    if (agentMode || opts.forceAgent) {
       const runKey = generateMessageId();
       // Ensure a stable session_id exists so the agent runtime can persist
       // conversation history across runs in the same chat.

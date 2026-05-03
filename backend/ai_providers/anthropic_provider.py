@@ -182,11 +182,19 @@ class AnthropicProvider(AIProvider):
         messages: list[dict],
         tools: list[dict],
         temperature: float = 0.1,
+        tool_choice: str | None = None,
     ) -> dict:
         import json as _json
         try:
             import anthropic
             client = anthropic.Anthropic(api_key=api_key)
+
+            # I18: pre-pass — drop assistant tool_use blocks whose ids never
+            # got a tool_result reply (otherwise Anthropic returns 400).
+            replied_ids: set[str] = set()
+            for m in messages:
+                if m.get("role") == "tool" and m.get("tool_call_id"):
+                    replied_ids.add(str(m["tool_call_id"]))
 
             # Extract system prompt — Anthropic takes it as a separate param.
             system_text = ""
@@ -200,6 +208,8 @@ class AnthropicProvider(AIProvider):
                     if m.get("content"):
                         parts.append({"type": "text", "text": m["content"]})
                     for tc in (m.get("tool_calls") or []):
+                        if str(tc.get("id") or "") not in replied_ids:
+                            continue   # orphan — skip
                         parts.append({
                             "type": "tool_use",
                             "id": tc["id"],
@@ -232,14 +242,27 @@ class AnthropicProvider(AIProvider):
                 for t in tools
             ]
 
-            response = await asyncio.to_thread(
-                client.messages.create,
+            # I19: tool_choice mapping. Internal "required" → Anthropic
+            # {"type":"any"}; "none"/None → default (auto).
+            anth_tool_choice = None
+            if tool_choice == "required":
+                anth_tool_choice = {"type": "any"}
+            elif tool_choice and tool_choice not in ("auto", "none"):
+                anth_tool_choice = {"type": "tool", "name": tool_choice}
+
+            create_kwargs = dict(
                 model=model,
                 max_tokens=4096,
                 temperature=temperature,
                 system=system_text or "You are a helpful assistant.",
                 messages=anth_messages,
                 tools=anth_tools,
+            )
+            if anth_tool_choice:
+                create_kwargs["tool_choice"] = anth_tool_choice
+            response = await asyncio.to_thread(
+                client.messages.create,
+                **create_kwargs,
             )
 
             text_chunks = []

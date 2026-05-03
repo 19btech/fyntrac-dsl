@@ -813,6 +813,12 @@ const Dashboard = () => {
                   addConsoleLog={addConsoleLog}
                   selectedEvent={selectedEvent}
                   onViewEvent={(eventName) => { setSelectedEvent(eventName); setShowEventDataViewer(true); }}
+                  onGenerateSample={(message) => {
+                    if (chatAssistantRef.current && chatAssistantRef.current.sendAgentMessage) {
+                      setChatCollapsed(false);
+                      chatAssistantRef.current.sendAgentMessage(message);
+                    }
+                  }}
                 />
             </TabPanel>
 

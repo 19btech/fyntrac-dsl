@@ -165,10 +165,12 @@ class DeepSeekProvider(AIProvider):
         messages: list[dict],
         tools: list[dict],
         temperature: float = 0.1,
+        tool_choice: str | None = None,
     ) -> dict:
         from .openai_provider import _openai_compatible_chat_with_tools
         return await _openai_compatible_chat_with_tools(
             api_key=api_key, model=model, messages=messages,
             tools=tools, temperature=temperature,
             base_url=DEEPSEEK_BASE_URL, provider_name="deepseek",
+            tool_choice=tool_choice,
         )

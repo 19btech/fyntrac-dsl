@@ -208,11 +208,13 @@ class OpenAIProvider(AIProvider):
         messages: list[dict],
         tools: list[dict],
         temperature: float = 0.1,
+        tool_choice: str | None = None,
     ) -> dict:
         return await _openai_compatible_chat_with_tools(
             api_key=api_key, model=model, messages=messages,
             tools=tools, temperature=temperature,
             base_url=None, provider_name="openai",
+            tool_choice=tool_choice,
         )
 
 
@@ -239,13 +241,26 @@ def _to_openai_tool_specs(tools: list[dict]) -> list[dict]:
 
 
 def _normalise_messages_for_openai(messages: list[dict]) -> list[dict]:
-    """Convert our internal message format into the OpenAI SDK's expected shape."""
+    """Convert our internal message format into the OpenAI SDK's expected shape.
+
+    I18: also prunes orphan tool_calls — every assistant `tool_calls[i].id`
+    must have a matching `role:'tool'` reply later in the history, otherwise
+    OpenAI returns 400 "messages with role 'tool' must follow tool_call".
+    Orphans happen when a previous run was cancelled mid-flight and the
+    history was replayed.
+    """
+    # Pre-pass: collect tool_call_ids that DO have a reply.
+    replied_ids: set[str] = set()
+    for m in messages:
+        if m.get("role") == "tool" and m.get("tool_call_id"):
+            replied_ids.add(str(m["tool_call_id"]))
     out = []
     for m in messages:
         role = m.get("role")
         if role == "assistant":
             msg = {"role": "assistant", "content": m.get("content")}
-            tcs = m.get("tool_calls") or []
+            tcs = [tc for tc in (m.get("tool_calls") or [])
+                   if str(tc.get("id") or "") in replied_ids]
             if tcs:
                 msg["tool_calls"] = [
                     {
@@ -259,6 +274,10 @@ def _normalise_messages_for_openai(messages: list[dict]) -> list[dict]:
                     }
                     for tc in tcs
                 ]
+            # Drop assistant messages that had ONLY orphan tool_calls and no
+            # textual content — they would be empty and reject the request.
+            if not tcs and not (msg.get("content") or "").strip():
+                continue
             out.append(msg)
         elif role == "tool":
             out.append({
@@ -280,6 +299,7 @@ async def _openai_compatible_chat_with_tools(
     temperature: float,
     base_url: str | None,
     provider_name: str,
+    tool_choice: str | None = None,
 ) -> dict:
     try:
         from openai import OpenAI
@@ -295,7 +315,7 @@ async def _openai_compatible_chat_with_tools(
             model=model,
             messages=oa_messages,
             tools=oa_tools,
-            tool_choice="auto",
+            tool_choice=(tool_choice or "auto"),
             temperature=temperature,
         )
         choice = response.choices[0]

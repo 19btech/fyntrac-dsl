@@ -90,6 +90,7 @@ class AIProvider(ABC):
         messages: list[dict],
         tools: list[dict],
         temperature: float = 0.1,
+        tool_choice: str | None = None,
     ) -> dict:
         """Tool-calling chat used by the autonomous agent runtime.
 

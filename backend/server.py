@@ -1,4 +1,4 @@
-from fastapi import FastAPI, APIRouter, UploadFile, File, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, APIRouter, UploadFile, File, HTTPException, WebSocket, WebSocketDisconnect, Body
 from fastapi.responses import StreamingResponse, Response
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -2602,6 +2602,61 @@ async def get_event_data(event_name: str):
         event_data['created_at'] = datetime.fromisoformat(event_data['created_at'])
     
     return event_data
+
+
+@api_router.patch("/event-data/{event_name}/rows/{row_index}")
+async def update_event_data_row(event_name: str, row_index: int, payload: Dict[str, Any] = Body(...)):
+    """Update a single cell or multiple cells in a row of event data.
+
+    Body shape: {"updates": {"column": value, ...}} — values are stored as-is
+    after best-effort numeric coercion of stringy numbers.
+    """
+    updates = payload.get("updates") if isinstance(payload, dict) else None
+    if not isinstance(updates, dict) or not updates:
+        raise HTTPException(status_code=400, detail="Body must include non-empty 'updates' object")
+
+    record = await db.event_data.find_one({"event_name": event_name})
+    if not record:
+        raise HTTPException(status_code=404, detail=f"Event data not found for '{event_name}'")
+
+    rows = record.get("data_rows") or []
+    if not isinstance(rows, list) or row_index < 0 or row_index >= len(rows):
+        raise HTTPException(status_code=404, detail=f"Row index {row_index} out of range")
+
+    def _coerce(v):
+        if isinstance(v, str):
+            s = v.strip()
+            if s == "":
+                return s
+            try:
+                if "." in s or "e" in s.lower():
+                    return float(s)
+                return int(s)
+            except (ValueError, TypeError):
+                return v
+        return v
+
+    target = dict(rows[row_index] or {})
+    for k, v in updates.items():
+        target[str(k)] = _coerce(v)
+    rows[row_index] = target
+
+    await db.event_data.update_one(
+        {"event_name": event_name},
+        {"$set": {"data_rows": rows}},
+    )
+    # Refresh in-memory caches used by DSL execution so subsequent runs
+    # see the edited values.
+    try:
+        cursor = db.event_data.find({}, {"_id": 0})
+        all_records = await cursor.to_list(length=None)
+        raw = {r.get("event_name"): r.get("data_rows", []) for r in all_records if r.get("event_name")}
+        set_raw_event_data(raw)
+        set_all_event_data(merge_event_data_by_instrument(raw))
+    except Exception as _e:
+        logger.warning(f"Failed to refresh event-data caches after edit: {_e}")
+
+    return {"event_name": event_name, "row_index": row_index, "row": target}
 
 @api_router.post("/dsl/run")
 async def run_dsl_code(request: DSLRunRequest):

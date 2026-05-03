@@ -1,6 +1,12 @@
 /**
  * Agent Pipeline — full cycle: thinking → reading → planning → executing → streaming reply.
  * Emits events to agentEventBus which AgentMessage subscribes to and renders.
+ *
+ * Two flows are exported:
+ *   • `runAgentPipeline`  — teaching/explanation flow (calls /chat/stream).
+ *   • `runAgentBuildSSE`  — autonomous build flow (calls /api/agent/run SSE
+ *     and surfaces real tool-call events, including step_id / persisted /
+ *     mismatches so the UI can show a per-step audit trail). H16 + H17.
  */
 
 import { agentEventBus } from './agentEventBus';
@@ -279,4 +285,172 @@ function findRelevantFunctions(message, dslFunctions) {
     }
   }
   return matched;
+}
+
+// ──────────────────────────────────────────────────────────────────────
+// H16 + H17: real autonomous-build flow over /api/agent/run SSE.
+// Surfaces every backend tool-call event so the chat UI can show:
+//   • which step_id was created / mutated
+//   • whether the read-back verification passed (`persisted.ok`)
+//   • the exact mismatches[] when a deep-merge or patch silently no-op'd
+// ──────────────────────────────────────────────────────────────────────
+export async function runAgentBuildSSE(userMessage, opts = {}) {
+  const msgId = opts.messageId || generateMessageId();
+  const {
+    selectedModel,
+    sessionId,
+    maxSteps = 50,
+    autoApproveDestructive = false,
+    onEvent,           // optional raw-event callback for callers that want full payload
+  } = opts;
+
+  agentEventBus.thinking(msgId, 'Starting autonomous agent run…');
+
+  const body = {
+    task: userMessage,
+    session_id: sessionId || undefined,
+    model: selectedModel || undefined,
+    max_steps: maxSteps,
+    auto_approve_destructive: !!autoApproveDestructive,
+  };
+
+  let response;
+  try {
+    response = await fetch(`${API}/agent/run`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+  } catch (e) {
+    agentEventBus.error(msgId, `Failed to reach agent endpoint: ${e.message}`);
+    setTimeout(() => agentEventBus.cleanup(msgId), 5000);
+    return { messageId: msgId, fullText: '', sessionId, error: e };
+  }
+
+  if (!response.ok || !response.body) {
+    const err = `HTTP ${response?.status} from /agent/run`;
+    agentEventBus.error(msgId, err);
+    setTimeout(() => agentEventBus.cleanup(msgId), 5000);
+    return { messageId: msgId, fullText: '', sessionId, error: new Error(err) };
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let fullText = '';
+  let runId = null;
+  let finalSummary = '';
+
+  // Map call_id → {name, step_id, ok} so tool_done can correlate.
+  const toolCallMeta = new Map();
+
+  const shortId = (s) => (s || '').slice(0, 8);
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split('\n');
+    buffer = lines.pop() || '';
+
+    for (const raw of lines) {
+      if (!raw.startsWith('data: ')) continue;
+      const payload = raw.slice(6).trim();
+      if (!payload || payload === '[DONE]') continue;
+      let evt;
+      try { evt = JSON.parse(payload); } catch { continue; }
+      if (typeof onEvent === 'function') {
+        try { onEvent(evt); } catch { /* swallow */ }
+      }
+
+      switch (evt.type) {
+        case 'run_started':
+          runId = evt.run_id || null;
+          break;
+        case 'thinking':
+          agentEventBus.thinking(msgId, `Step ${evt.step}: thinking…`);
+          break;
+        case 'calling_model':
+          agentEventBus.readStep(msgId, '◎', `Calling ${evt.model}…`,
+            evt.message || `step ${evt.step}`);
+          break;
+        case 'heartbeat':
+          // optional: reflect long waits in UI
+          break;
+        case 'assistant_message': {
+          const txt = (evt.content || '').trim();
+          if (txt) {
+            fullText += txt + '\n';
+            agentEventBus.replyToken(msgId, txt + '\n');
+          }
+          break;
+        }
+        case 'tool_start': {
+          toolCallMeta.set(evt.call_id, { name: evt.name, step_id: null, ok: null });
+          agentEventBus.execStepStart(msgId, evt.call_id,
+            `→ ${evt.name}` + (evt.args && evt.args.step_id
+              ? ` (step ${shortId(evt.args.step_id)})`
+              : evt.args && evt.args.step_name
+                ? ` (${evt.args.step_name})`
+                : ''));
+          break;
+        }
+        case 'tool_done': {
+          const meta = toolCallMeta.get(evt.call_id) || { name: evt.name };
+          const r = evt.result || {};
+          // Pull step_id and persistence verification from the standard
+          // shape returned by update_step / patch_step / add_step_to_rule.
+          const stepId = r.step_id
+            || (r.step && r.step.id)
+            || (r.persisted && r.persisted.step_id);
+          const persisted = r.persisted || (r.verification ? { ok: r.verification.ok, mismatches: r.verification.mismatches } : null);
+          let detail = `✓ ${evt.duration_ms || 0} ms`;
+          if (stepId) detail += ` · step ${shortId(stepId)}`;
+          if (persisted && persisted.ok === false) {
+            detail += ` · ⚠ NOT persisted (${(persisted.mismatches || []).length} mismatches)`;
+          } else if (persisted && persisted.ok === true) {
+            detail += ' · ✓ persisted';
+          }
+          agentEventBus.execStepDone(msgId, evt.call_id, detail);
+          // If a write tool reports persisted=false, emit a visible warning
+          // line so the user sees the silent-update class of failure that
+          // motivated this whole hardening pass.
+          if (persisted && persisted.ok === false) {
+            agentEventBus.error(
+              msgId,
+              `Tool ${meta.name || evt.name} reported a successful return but ` +
+              `the read-back check failed. Mismatches: ` +
+              JSON.stringify(persisted.mismatches || []).slice(0, 400)
+            );
+          }
+          break;
+        }
+        case 'tool_error': {
+          agentEventBus.execStepDone(msgId, evt.call_id,
+            `✗ ${evt.name}: ${(evt.error || '').slice(0, 200)}`);
+          break;
+        }
+        case 'warning':
+          agentEventBus.error(msgId, evt.message || 'warning');
+          break;
+        case 'final': {
+          finalSummary = evt.summary || '';
+          if (finalSummary) {
+            fullText += '\n' + finalSummary;
+            agentEventBus.replyToken(msgId, '\n' + finalSummary);
+          }
+          break;
+        }
+        case 'error':
+          agentEventBus.error(msgId, evt.error_message || evt.message || 'agent error');
+          break;
+        default:
+          break;
+      }
+    }
+  }
+
+  agentEventBus.complete(msgId);
+  setTimeout(() => agentEventBus.cleanup(msgId), 8000);
+  return { messageId: msgId, fullText: fullText.trim(), sessionId, runId, summary: finalSummary };
 }
