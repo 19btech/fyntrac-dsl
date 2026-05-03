@@ -3763,6 +3763,36 @@ def _normalise_transaction_outputs(steps: list[dict], outputs: dict,
             nt["postingDate"] = f"{default_event}.postingdate"
         if not str(nt.get("effectiveDate") or "").strip() and default_event:
             nt["effectiveDate"] = f"{default_event}.effectivedate"
+        # Normalize any agent-supplied date reference:
+        # Convert Python-style underscore refs (e.g. REV_PostingDate, REV_postingdate)
+        # to DSL dot notation (REV.postingdate) so the code generator handles them.
+        # Also force the field part to lowercase (postingdate / effectivedate).
+        for date_key, canonical_field in (("postingDate", "postingdate"), ("effectiveDate", "effectivedate")):
+            raw = str(nt.get(date_key) or "").strip()
+            if not raw:
+                continue
+            # Already valid DSL dot notation → just lowercase the field part
+            if "." in raw:
+                parts = raw.split(".", 1)
+                nt[date_key] = f"{parts[0]}.{parts[1].lower()}"
+                continue
+            # Python underscore form: EVENT_PostingDate → EVENT.postingdate
+            # If it ends with a known date suffix (case-insensitive), fix it.
+            _DATE_SUFFIXES = ("_postingdate", "_posting_date", "_effectivedate", "_effective_date",
+                              "_PostingDate", "_EffectiveDate")
+            fixed_date = False
+            for suf in _DATE_SUFFIXES:
+                if raw.lower().endswith(suf.lower()):
+                    evt_part = raw[: len(raw) - len(suf)]
+                    if evt_part:
+                        nt[date_key] = f"{evt_part}.{canonical_field}"
+                        fixed_date = True
+                        break
+            if fixed_date:
+                continue
+            # Bare identifier that isn't a known DSL global → override with default
+            if raw not in ("postingdate", "effectivedate") and default_event:
+                nt[date_key] = f"{default_event}.{canonical_field}"
         sid_now = str(nt.get("subInstrumentId") or "").strip()
         if multi_subid_default:
             # Multi-subid event detected: ALWAYS prefer the row-level identifier
@@ -3912,7 +3942,23 @@ def _scalar_event_field_warnings(steps: list[dict],
     Returns a list of warning dicts (may be empty). Callers add these to the
     tool payload so the agent knows to switch to collect_by_instrument or
     collect_by_subinstrument where per-subId values are needed.
+
+    IMPORTANT: if the rule has a 'subinstrumentid' step with source='event_field',
+    the rule is in per-subinstrument mode — the engine executes the rule once per
+    (instrumentId, subInstrumentId) pair, so every event field IS scalar within
+    that single-row execution context. This function returns [] in that case,
+    because event_field is correct and collect_by_instrument would be wrong.
     """
+    # Detect per-subinstrument mode: subinstrumentid step using event_field means
+    # each execution sees exactly one subId's row — all fields are scalar.
+    has_per_subinstrument_mode = any(
+        isinstance(s, dict)
+        and (s.get("name") or "").strip().lower() == "subinstrumentid"
+        and (s.get("source") or "").strip().lower() == "event_field"
+        for s in (steps or [])
+    )
+    if has_per_subinstrument_mode:
+        return []
     warnings: list[dict] = []
     for s in steps or []:
         if not isinstance(s, dict):
