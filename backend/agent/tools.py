@@ -2616,14 +2616,17 @@ def _build_iteration_lines(iters: list[dict], available: list[str]) -> list[str]
         src = it.get("sourceArray") or ""
         sec = it.get("secondArray") or "[]"
         expr = it.get("expression") or ""
+        # Replace any double-quotes inside the expression with single-quotes so
+        # they don't break the outer double-quoted string wrapper in generated code.
+        safe_expr = expr.replace('"', "'")
         if it.get("type") == "apply_each":
-            lines.append(f'{rv} = apply_each({src}, "{expr}"{ctx_str})')
+            lines.append(f'{rv} = apply_each({src}, "{safe_expr}"{ctx_str})')
         elif it.get("type") == "apply_each_paired":
-            lines.append(f'{rv} = apply_each({src}, {sec}, "{expr}"{ctx_str})')
+            lines.append(f'{rv} = apply_each({src}, {sec}, "{safe_expr}"{ctx_str})')
         else:
             vn = it.get("varName") or "each"
             sv = it.get("secondVar") or "second"
-            lines.append(f'{rv} = for_each({src}, {sec}, "{vn}", "{sv}", "{expr}")')
+            lines.append(f'{rv} = for_each({src}, {sec}, "{vn}", "{sv}", "{safe_expr}")')
         if rv:
             iter_results.append(rv)
     return lines
@@ -7468,6 +7471,15 @@ PATTERN B — COLLECT + apply_each + AGGREGATE
     4. calc step aggregates (sum/avg) the result
     5. outputs.transactions[] emit using the aggregate
   Reference templates: revenue_recognition, RevenueFinal111.
+
+  LOOKUP ARG ORDER — CRITICAL:
+    lookup(VALUES_ARRAY, KEYS_ARRAY, TARGET)
+    → searches KEYS_ARRAY for TARGET, returns VALUES_ARRAY at the same index.
+    Example — get SSP mode for product id stored in `each`:
+      lookup(CatalogSSPMode, CatalogProductIds, each)
+      ✓ correct: searches CatalogProductIds (keys) for each, returns CatalogSSPMode (values)
+      ✗ wrong:   lookup(CatalogProductIds, CatalogSSPMode, each)
+                 searches the SSP-mode strings for a product id — always returns None.
 
 PATTERN C — REPLAY + LAG SCHEDULE + DELTA
   Use for: SBO replay, period-over-period adjustments, true-up postings.
