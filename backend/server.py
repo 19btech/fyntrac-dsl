@@ -4342,7 +4342,7 @@ async def update_saved_rule(rule_id: str, request: dict):
     """Patch specific fields of a saved rule (generatedCode, outputs, steps, etc.)."""
     allowed = {"generatedCode", "outputs", "steps", "name", "priority", "variables",
                "conditions", "elseFormula", "conditionResultVar", "iterations",
-               "iterConfig", "inlineComment", "commentText", "ruleType"}
+               "iterConfig", "inlineComment", "commentText", "ruleType", "disabled"}
     update_fields = {k: v for k, v in request.items() if k in allowed}
     if not update_fields:
         raise HTTPException(status_code=400, detail="No valid fields to update.")
@@ -4790,10 +4790,15 @@ async def get_combined_code():
         items = []
         for r in rules:
             p = r.get("priority")
-            items.append({"priority": p if p is not None else float('inf'), "code": r.get("generatedCode", ""), "name": r.get("name", "")})
+            items.append({
+                "priority": p if p is not None else float('inf'),
+                "code": r.get("generatedCode", ""),
+                "name": r.get("name", ""),
+                "disabled": bool(r.get("disabled", False)),
+            })
         for s in schedules:
             p = s.get("priority")
-            items.append({"priority": p if p is not None else float('inf'), "code": s.get("generatedCode", ""), "name": s.get("name", "")})
+            items.append({"priority": p if p is not None else float('inf'), "code": s.get("generatedCode", ""), "name": s.get("name", ""), "disabled": False})
 
         items.sort(key=lambda x: (x["priority"], x["name"]))
 
@@ -4824,6 +4829,17 @@ async def get_combined_code():
         # Stage 2) that lead to NameError at runtime.
         for it in items:
             it['code'] = strip_dependencies_section(it.get('code', ''))
+
+        # If a rule is disabled, keep it visible in combined/runtime code but
+        # comment out every non-empty line so it never executes.
+        for it in items:
+            if not it.get('disabled'):
+                continue
+            code = it.get('code', '') or ''
+            it['code'] = '\n'.join(
+                (f"# [DISABLED RULE] {line}" if line.strip() else line)
+                for line in code.split('\n')
+            )
 
         # ── Topological reorder: if rule A's body references a symbol that
         # rule B defines, B must come before A — even if A has a lower priority

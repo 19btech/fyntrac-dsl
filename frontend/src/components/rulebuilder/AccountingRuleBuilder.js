@@ -1528,27 +1528,48 @@ const AccountingRuleBuilder = ({ events, dslFunctions, transactionDefinitions, o
 
       if (s.stepType === 'calc') {
         const line = buildCalcLine(s);
-        if (line) { lines.push(line); definedVars.push(s.name); }
-        if (s.printResult && s.name) lines.push(`print("${s.name} =", ${s.name})`);
+        if (line) {
+          if (s.disabled) {
+            lines.push(`# [DISABLED] ${line}`);
+          } else {
+            lines.push(line);
+            definedVars.push(s.name);
+          }
+        }
+        if (s.printResult && s.name && !s.disabled) lines.push(`print("${s.name} =", ${s.name})`);
       } else if (s.stepType === 'condition') {
-        lines.push('## Conditional Logic');
+        if (!s.disabled) lines.push('## Conditional Logic');
         const expr = buildConditionExpr(s.conditions || [], s.elseFormula);
-        lines.push(`${s.name} = ${expr}`);
-        definedVars.push(s.name);
-        if (s.printResult && s.name) lines.push(`print("${s.name} =", ${s.name})`);
+        const condLine = `${s.name} = ${expr}`;
+        if (s.disabled) {
+          lines.push(`# [DISABLED] ${condLine}`);
+        } else {
+          lines.push(condLine);
+          definedVars.push(s.name);
+        }
+        if (s.printResult && s.name && !s.disabled) lines.push(`print("${s.name} =", ${s.name})`);
         lines.push('');
       } else if (s.stepType === 'iteration') {
-        lines.push('## Iteration');
+        if (!s.disabled) lines.push('## Iteration');
         const allCtxVars = [...new Set([...definedVars, ...depLines.map(l => l.split(' = ')[0]).filter(Boolean)])];
         const iterLines = buildIterationLines(s.iterations || [], allCtxVars);
-        lines.push(...iterLines);
-        (s.iterations || []).forEach(it => { if (it.resultVar) definedVars.push(it.resultVar); });
-        if (s.printResult) {
+        if (s.disabled) {
+          lines.push(...iterLines.map(l => `# [DISABLED] ${l}`));
+        } else {
+          lines.push(...iterLines);
+          (s.iterations || []).forEach(it => { if (it.resultVar) definedVars.push(it.resultVar); });
+        }
+        if (s.printResult && !s.disabled) {
           const lastIter = (s.iterations || [])[(s.iterations || []).length - 1];
           if (lastIter?.resultVar) lines.push(`print("${lastIter.resultVar} =", ${lastIter.resultVar})`);
         }
         lines.push('');
       } else if (s.stepType === 'schedule') {
+        if (s.disabled) {
+          lines.push(`# [DISABLED] ## Schedule (${s.name})`);
+          lines.push('');
+          continue;
+        }
         const sc = s.scheduleConfig || {};
         lines.push('## Schedule');
         // Period definition
@@ -1603,8 +1624,15 @@ const AccountingRuleBuilder = ({ events, dslFunctions, transactionDefinitions, o
         }
         lines.push('');
       } else if (s.stepType === 'custom_code') {
-        lines.push('## Custom Code');
-        if (s.customCode) lines.push(s.customCode);
+        if (s.disabled) {
+          lines.push('# [DISABLED] ## Custom Code');
+          if (s.customCode) {
+            (s.customCode || '').split('\n').forEach(line => lines.push(`# [DISABLED] ${line}`));
+          }
+        } else {
+          lines.push('## Custom Code');
+          if (s.customCode) lines.push(s.customCode);
+        }
         lines.push('');
       }
     }
@@ -1622,13 +1650,23 @@ const AccountingRuleBuilder = ({ events, dslFunctions, transactionDefinitions, o
         const pd = txn.postingDate;
         const ed = txn.effectiveDate;
         const sid = txn.subInstrumentId || '';
-        if (sid) lines.push(`createTransaction(${pd}, ${ed}, "${txn.type}", ${amt}, ${sid})`);
-        else lines.push(`createTransaction(${pd}, ${ed}, "${txn.type}", ${amt})`);
+        const txnLine = sid
+          ? `createTransaction(${pd}, ${ed}, "${txn.type}", ${amt}, ${sid})`
+          : `createTransaction(${pd}, ${ed}, "${txn.type}", ${amt})`;
+        if (txn.disabled) lines.push(`# [DISABLED] ${txnLine}`);
+        else lines.push(txnLine);
       }
     }
 
-    return lines.join('\n');
-  }, [ruleName, steps, outputs, savedRulesVars]);
+    const code = lines.join('\n');
+    if (ruleDisabled) {
+      return code
+        .split('\n')
+        .map((line) => (line ? `# [DISABLED RULE] ${line}` : line))
+        .join('\n');
+    }
+    return code;
+  }, [ruleName, ruleDisabled, steps, outputs, savedRulesVars]);
 
   // Determine the ruleType for backward-compatible saving
   const effectiveRuleType = useMemo(() => {
@@ -2074,7 +2112,7 @@ const AccountingRuleBuilder = ({ events, dslFunctions, transactionDefinitions, o
       </Box>
 
       <Box sx={{ flex: 1, overflow: 'auto', p: 2 }}>
-        {/* Rule Name & Priority & Test Posting Date & Disabled Toggle */}
+        {/* Rule Name & Priority & Test Posting Date */}
         <Box sx={{ display: 'flex', gap: 1.5, mb: 2, alignItems: 'center' }}>
           <TextField size="small" label="Rule Name *" value={ruleName}
             onChange={(e) => setRuleName(e.target.value)}
@@ -2097,9 +2135,6 @@ const AccountingRuleBuilder = ({ events, dslFunctions, transactionDefinitions, o
               </Select>
             </FormControl>
           )}
-          <Tooltip title={ruleDisabled ? "Rule Disabled" : "Rule Enabled"}>
-            <Switch size="small" checked={!ruleDisabled} onChange={(e) => setRuleDisabled(!e.target.checked)} sx={{ color: '#CE93D8', '&.Mui-checked': { color: '#CE93D8' }, '& .MuiSwitch-thumb': { bgcolor: '#CE93D8' } }} />
-          </Tooltip>
         </Box>
 
         {/* ── Steps List ── */}
@@ -2169,13 +2204,14 @@ const AccountingRuleBuilder = ({ events, dslFunctions, transactionDefinitions, o
                   </Typography>
                   <Chip size="small" label={meta.label}
                     sx={{ fontSize: '0.625rem', height: 18, bgcolor: `${meta.color}18`, color: meta.color, fontWeight: 600 }} />
-                  <FormControlLabel
-                    control={<Switch size="small" checked={!step.disabled} onChange={(e) => {
+                  <Tooltip title={step.disabled ? "Disabled" : "Enabled"}>
+                    <Switch size="small" checked={!step.disabled} onChange={(e) => {
                       setSteps(prev => prev.map((s, i) => i === idx ? { ...s, disabled: !e.target.checked } : s));
-                    }} />}
-                    label={step.disabled ? "Disabled" : "Enabled"}
-                    sx={{ ml: 1, fontSize: '0.75rem', '& .MuiSwitch-root': { m: 0 } }}
-                  />
+                    }} sx={{
+                      '& .MuiSwitch-switchBase.Mui-checked': { color: '#64B5F6' },
+                      '& .MuiSwitch-switchBase.Mui-checked + .MuiSwitch-track': { backgroundColor: '#90CAF9' },
+                    }} />
+                  </Tooltip>
                   {step.stepType !== 'custom_code' && step.stepType !== 'schedule' && (
                     <Tooltip title="Test up to this step">
                       <IconButton size="small" onClick={() => handleInlineTest(idx)}
@@ -2275,7 +2311,10 @@ const AccountingRuleBuilder = ({ events, dslFunctions, transactionDefinitions, o
                     <Switch size="small" checked={!txn.disabled} onChange={(e) => {
                       const updated = outputs.transactions.map((t, i) => i === idx ? { ...t, disabled: !e.target.checked } : t);
                       setOutputs(prev => ({ ...prev, transactions: updated }));
-                    }} sx={{ color: '#CE93D8', '&.Mui-checked': { color: '#CE93D8' }, '& .MuiSwitch-thumb': { bgcolor: '#CE93D8' } }} />
+                    }} sx={{
+                      '& .MuiSwitch-switchBase.Mui-checked': { color: '#64B5F6' },
+                      '& .MuiSwitch-switchBase.Mui-checked + .MuiSwitch-track': { backgroundColor: '#90CAF9' },
+                    }} />
                   </Tooltip>
                   <Tooltip title="Test this transaction">
                     <span>

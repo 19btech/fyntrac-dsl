@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import {
   Box, Typography, Card, CardContent, Button, IconButton, Chip, TextField,
-  CircularProgress, Alert, Tooltip, Divider,
+  CircularProgress, Alert, Tooltip, Divider, Switch,
   Dialog, DialogTitle, DialogContent, DialogContentText, DialogActions,
   Menu, MenuItem, ListItemIcon, ListItemText,
 } from "@mui/material";
@@ -112,6 +112,32 @@ const SavedRules = ({ onEditRule, onEditSchedule, refreshKey, onPlayAll, onClear
       setDeleting(null);
     }
   }, []);
+
+  const handleToggleRuleDisabled = useCallback(async (item, nextDisabled) => {
+    if (item._isSchedule) return;
+    const prevRules = rules;
+    setRules(prev => prev.map(r => r.id === item.id ? { ...r, disabled: nextDisabled } : r));
+    try {
+      const res = await fetch(`${API}/saved-rules/${item.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ disabled: nextDisabled }),
+      });
+      if (!res.ok) {
+        setRules(prevRules);
+        const data = await res.json().catch(() => ({}));
+        setError(data.detail || data.error || 'Failed to update rule state');
+        return;
+      }
+      await loadRules();
+      if (typeof onReorder === 'function') {
+        try { onReorder(); } catch { /* ignore */ }
+      }
+    } catch (err) {
+      setRules(prevRules);
+      setError(err?.message || 'Failed to update rule state');
+    }
+  }, [rules, loadRules, onReorder]);
 
   const formatDate = (iso) => {
     if (!iso) return '';
@@ -579,6 +605,20 @@ const SavedRules = ({ onEditRule, onEditSchedule, refreshKey, onPlayAll, onClear
                   )}
                 </Box>
                 <Box sx={{ display: 'flex', gap: 0.5, flexShrink: 0 }}>
+                  {!rule._isSchedule && (
+                    <Tooltip title={rule.disabled ? 'Disabled' : 'Enabled'}>
+                      <Switch
+                        size="small"
+                        checked={!rule.disabled}
+                        onClick={(e) => e.stopPropagation()}
+                        onChange={(e) => handleToggleRuleDisabled(rule, !e.target.checked)}
+                        sx={{
+                          '& .MuiSwitch-switchBase.Mui-checked': { color: '#64B5F6' },
+                          '& .MuiSwitch-switchBase.Mui-checked + .MuiSwitch-track': { backgroundColor: '#90CAF9' },
+                        }}
+                      />
+                    </Tooltip>
+                  )}
                   <Tooltip title={rule._isSchedule ? 'Edit schedule' : 'Edit rule'}>
                     <IconButton size="small" onClick={(e) => { e.stopPropagation(); handleClick(); }} sx={{ color: meta.color }}>
                       <Edit3 size={16} />
