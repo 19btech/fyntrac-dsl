@@ -32,7 +32,7 @@ services:
       # Nginx will substitute this in the default.conf
       # We pull GATEWAY_URI from the host environment (e.g. .dev_profile)
       # with a fallback to host.docker.internal
-      - GATEWAY_URI=${GATEWAY_URI:-http://localhost:8585}
+      - GATEWAY_URI=${GATEWAY_URI:-http://host.docker.internal:8585}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:
