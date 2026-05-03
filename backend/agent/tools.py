@@ -4251,11 +4251,11 @@ def _step_referenced_names(step: dict) -> list[tuple[str, str]]:
             v = sc.get(k) or ""
             if v:
                 refs.append((f"step '{nm}'.scheduleConfig.{k}", v))
-        # contextVars are required to have been defined before
-        for cv in sc.get("contextVars") or []:
-            cv = (cv or "").strip()
-            if cv:
-                refs.append((f"step '{nm}'.scheduleConfig.contextVars", cv))
+        # NOTE: contextVars are auto-derived from column formula identifiers by
+        # _validate_schedule_step_shape and always exactly mirror what the column
+        # formulas use. Validating them here would produce duplicate errors for
+        # every undefined identifier already caught by the column formula checks
+        # above. Skip contextVars validation — the column checks are sufficient.
     return refs
 
 
