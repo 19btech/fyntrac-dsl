@@ -1691,12 +1691,51 @@ async def tool_get_event_data(args: dict) -> dict:
                 doc = d
                 break
     if not doc:
-        return {"event_name": event_name, "row_count": 0, "rows": []}
+        return {"event_name": event_name, "row_count": 0, "rows": [], "subid_analysis": {}}
     rows = doc.get("data_rows") or []
+
+    # Pre-compute distinct subinstrumentid counts per instrumentid so the agent
+    # can immediately see whether collect_by_instrument is required.
+    _subids_per_instrument: dict[str, set] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        # Find instrumentid field case-insensitively
+        inst_id = None
+        sub_id = None
+        for k, v in row.items():
+            kl = k.lower()
+            if kl == "instrumentid":
+                inst_id = str(v) if v is not None else None
+            elif kl == "subinstrumentid":
+                sub_id = str(v) if v is not None else None
+        if inst_id is not None:
+            _subids_per_instrument.setdefault(inst_id, set())
+            if sub_id is not None:
+                _subids_per_instrument[inst_id].add(sub_id)
+
+    subid_by_inst = {k: sorted(v) for k, v in _subids_per_instrument.items()}
+    max_subids = max((len(v) for v in _subids_per_instrument.values()), default=0)
+    multi_subid = max_subids > 1
+
+    subid_analysis = {
+        "multi_subid_event": multi_subid,
+        "max_distinct_subids_per_instrument": max_subids,
+        "distinct_subids_by_instrument": subid_by_inst,
+        "RULE": (
+            "MULTI-SUBID EVENT: ALL fields from this event MUST use "
+            "source:'collect', collectType:'collect_by_instrument'. "
+            "Using source:'event_field' on ANY field is a hard error."
+        ) if multi_subid else (
+            "SCALAR EVENT: fields may use source:'event_field'."
+        ),
+    }
+
     return {
         "event_name": doc.get("event_name"),
         "row_count": len(rows),
         "rows": rows[:limit],
+        "subid_analysis": subid_analysis,
     }
 
 
@@ -3998,25 +4037,14 @@ def _scalar_event_field_warnings(steps: list[dict],
     instrument before executing the rule body.
 
     Returns a list of warning dicts (may be empty). Callers add these to the
-    tool payload so the agent knows to switch to collect_by_instrument or
-    collect_by_subinstrument where per-subId values are needed.
+    tool payload so the agent knows to switch to collect_by_instrument where
+    per-subId values are needed.
 
-    IMPORTANT: if the rule has a 'subinstrumentid' step with source='event_field',
-    the rule is in per-subinstrument mode — the engine executes the rule once per
-    (instrumentId, subInstrumentId) pair, so every event field IS scalar within
-    that single-row execution context. This function returns [] in that case,
-    because event_field is correct and collect_by_instrument would be wrong.
+    When an event has multiple distinct subinstrumentids per instrumentid,
+    EVERY field from that event MUST use collect_by_instrument — no exceptions.
+    There is no "per-subinstrument execution mode" that makes scalar event_field
+    correct; the engine collapses multi-subId rows before rule execution.
     """
-    # Detect per-subinstrument mode: subinstrumentid step using event_field means
-    # each execution sees exactly one subId's row — all fields are scalar.
-    has_per_subinstrument_mode = any(
-        isinstance(s, dict)
-        and (s.get("name") or "").strip().lower() == "subinstrumentid"
-        and (s.get("source") or "").strip().lower() == "event_field"
-        for s in (steps or [])
-    )
-    if has_per_subinstrument_mode:
-        return []
     warnings: list[dict] = []
     for s in steps or []:
         if not isinstance(s, dict):
