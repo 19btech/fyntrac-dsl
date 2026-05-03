@@ -2655,35 +2655,46 @@ def _generate_rule_code(rule: dict) -> str:
         st = s.get("stepType") or "calc"
         if not s.get("name") and st == "calc":
             continue
-        # Skip disabled steps entirely — don't emit any code, don't mark as defined
-        if s.get("disabled"):
-            continue
         if s.get("inlineComment") and (s.get("commentText") or "").strip():
             for line in s["commentText"].strip().split("\n"):
                 lines.append(f"## {line}")
         if st == "calc":
             line = _build_calc_line(s)
             if line:
-                lines.append(line)
-                defined.append(s["name"])
-            if s.get("printResult") and s.get("name"):
+                # Emit disabled steps as comments so they're visible but inactive
+                if s.get("disabled"):
+                    lines.append(f"# [DISABLED] {line}")
+                else:
+                    lines.append(line)
+                    defined.append(s["name"])
+            if s.get("printResult") and s.get("name") and not s.get("disabled"):
                 lines.append(f'print("{s["name"]} =", {s["name"]})')
         elif st == "condition":
-            lines.append("## Conditional Logic")
+            if not s.get("disabled"):
+                lines.append("## Conditional Logic")
             expr = _build_condition_expr(s.get("conditions") or [], s.get("elseFormula") or "")
-            lines.append(f"{s['name']} = {expr}")
-            defined.append(s["name"])
-            if s.get("printResult") and s.get("name"):
+            cond_line = f"{s['name']} = {expr}"
+            if s.get("disabled"):
+                lines.append(f"# [DISABLED] {cond_line}")
+            else:
+                lines.append(cond_line)
+                defined.append(s["name"])
+            if s.get("printResult") and s.get("name") and not s.get("disabled"):
                 lines.append(f'print("{s["name"]} =", {s["name"]})')
             lines.append("")
         elif st == "iteration":
-            lines.append("## Iteration")
+            if not s.get("disabled"):
+                lines.append("## Iteration")
             iter_lines = _build_iteration_lines(s.get("iterations") or [], list(defined))
+            if s.get("disabled"):
+                # Emit iteration lines as comments when disabled
+                iter_lines = [f"# [DISABLED] {line}" for line in iter_lines]
             lines.extend(iter_lines)
-            for it in s.get("iterations") or []:
-                if it.get("resultVar"):
-                    defined.append(it["resultVar"])
-            if s.get("printResult"):
+            if not s.get("disabled"):
+                for it in s.get("iterations") or []:
+                    if it.get("resultVar"):
+                        defined.append(it["resultVar"])
+            if s.get("printResult") and not s.get("disabled"):
                 last = (s.get("iterations") or [])
                 if last:
                     rv = last[-1].get("resultVar")
@@ -2754,11 +2765,11 @@ def _generate_rule_code(rule: dict) -> str:
             lines.append("")
 
     outputs = rule.get("outputs") or {}
-    txns = [t for t in (outputs.get("transactions") or []) if t and t.get("type") and not t.get("disabled")]
-    if txns:
+    all_txns = [t for t in (outputs.get("transactions") or []) if t and t.get("type")]
+    if all_txns:
         lines.append("")
         lines.append("## Create Transactions")
-        for txn in txns:
+        for txn in all_txns:
             if not (txn.get("postingDate") and txn.get("effectiveDate")):
                 continue
             amt = txn.get("amount") or (defined[-1] if defined else "0")
@@ -2766,10 +2777,11 @@ def _generate_rule_code(rule: dict) -> str:
             ed = txn["effectiveDate"]
             sid = txn.get("subInstrumentId") or ""
             ttype = txn["type"]
-            if sid:
-                lines.append(f'createTransaction({pd}, {ed}, "{ttype}", {amt}, {sid})')
+            txn_line = f'createTransaction({pd}, {ed}, "{ttype}", {amt}, {sid})' if sid else f'createTransaction({pd}, {ed}, "{ttype}", {amt})'
+            if txn.get("disabled"):
+                lines.append(f"# [DISABLED] {txn_line}")
             else:
-                lines.append(f'createTransaction({pd}, {ed}, "{ttype}", {amt})')
+                lines.append(txn_line)
 
     return "\n".join(lines)
 

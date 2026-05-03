@@ -2097,11 +2097,9 @@ const AccountingRuleBuilder = ({ events, dslFunctions, transactionDefinitions, o
               </Select>
             </FormControl>
           )}
-          <FormControlLabel
-            control={<Switch size="small" checked={!ruleDisabled} onChange={(e) => setRuleDisabled(!e.target.checked)} />}
-            label={ruleDisabled ? "Rule Disabled" : "Rule Enabled"}
-            sx={{ whiteSpace: 'nowrap' }}
-          />
+          <Tooltip title={ruleDisabled ? "Rule Disabled" : "Rule Enabled"}>
+            <Switch size="small" checked={!ruleDisabled} onChange={(e) => setRuleDisabled(!e.target.checked)} sx={{ color: '#CE93D8', '&.Mui-checked': { color: '#CE93D8' }, '& .MuiSwitch-thumb': { bgcolor: '#CE93D8' } }} />
+          </Tooltip>
         </Box>
 
         {/* ── Steps List ── */}
@@ -2273,14 +2271,12 @@ const AccountingRuleBuilder = ({ events, dslFunctions, transactionDefinitions, o
                   </Typography>
                   <Chip size="small" label="Transaction"
                     sx={{ fontSize: '0.625rem', height: 18, bgcolor: `${TXN_COLOR}18`, color: TXN_COLOR, fontWeight: 600 }} />
-                  <FormControlLabel
-                    control={<Switch size="small" checked={!txn.disabled} onChange={(e) => {
+                  <Tooltip title={txn.disabled ? "Disabled" : "Enabled"}>
+                    <Switch size="small" checked={!txn.disabled} onChange={(e) => {
                       const updated = outputs.transactions.map((t, i) => i === idx ? { ...t, disabled: !e.target.checked } : t);
                       setOutputs(prev => ({ ...prev, transactions: updated }));
-                    }} />}
-                    label={txn.disabled ? "Disabled" : "Enabled"}
-                    sx={{ ml: 1, fontSize: '0.75rem', '& .MuiSwitch-root': { m: 0 } }}
-                  />
+                    }} sx={{ color: '#CE93D8', '&.Mui-checked': { color: '#CE93D8' }, '& .MuiSwitch-thumb': { bgcolor: '#CE93D8' } }} />
+                  </Tooltip>
                   <Tooltip title="Test this transaction">
                     <span>
                       <IconButton size="small" onClick={() => handleTransactionTest(idx)}
