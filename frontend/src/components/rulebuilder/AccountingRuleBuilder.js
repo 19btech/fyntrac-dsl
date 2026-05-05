@@ -1657,8 +1657,15 @@ const AccountingRuleBuilder = ({ events, dslFunctions, transactionDefinitions, o
       }
     }
 
-    return lines.join('\n');
-  }, [ruleName, steps, outputs, savedRulesVars]);
+    const code = lines.join('\n');
+    if (ruleDisabled) {
+      return code
+        .split('\n')
+        .map((line) => (line ? `# [DISABLED RULE] ${line}` : line))
+        .join('\n');
+    }
+    return code;
+  }, [ruleName, ruleDisabled, steps, outputs, savedRulesVars]);
 
   // Determine the ruleType for backward-compatible saving
   const effectiveRuleType = useMemo(() => {
@@ -1728,6 +1735,7 @@ const AccountingRuleBuilder = ({ events, dslFunctions, transactionDefinitions, o
         id: ruleId,
         name: ruleName.trim(),
         priority: Number(rulePriority),
+        disabled: ruleDisabled,
         ruleType: effectiveRuleType,
         variables,
         conditions,
@@ -1763,7 +1771,7 @@ const AccountingRuleBuilder = ({ events, dslFunctions, transactionDefinitions, o
     } finally {
       setSaving(false);
     }
-  }, [ruleName, rulePriority, ruleId, effectiveRuleType, steps, outputs, inlineComment, commentText, generatedCode, onSave, resetForm]);
+  }, [ruleName, rulePriority, ruleId, ruleDisabled, effectiveRuleType, steps, outputs, inlineComment, commentText, generatedCode, onSave, resetForm]);
 
   // ── Step CRUD ──
   const openAddStep = (type) => {
@@ -2105,6 +2113,11 @@ const AccountingRuleBuilder = ({ events, dslFunctions, transactionDefinitions, o
           <Calculator size={20} color="#5B5FED" />
           <Typography variant="h5">Rule Builder</Typography>
           <Box sx={{ flex: 1 }} />
+          <Tooltip title="Refresh Rule">
+            <IconButton size="small" onClick={resetForm} sx={{ color: '#5B5FED' }}>
+              <RotateCcw size={18} />
+            </IconButton>
+          </Tooltip>
           <Tooltip title="New Rule">
             <IconButton size="small" onClick={resetForm} sx={{ color: '#5B5FED' }}>
               <Plus size={18} />
@@ -2118,7 +2131,7 @@ const AccountingRuleBuilder = ({ events, dslFunctions, transactionDefinitions, o
 
       <Box sx={{ flex: 1, overflow: 'auto', p: 2 }}>
         {/* Rule Name & Priority & Test Posting Date */}
-        <Box sx={{ display: 'flex', gap: 1.5, mb: 2 }}>
+        <Box sx={{ display: 'flex', gap: 1.5, mb: 2, alignItems: 'center' }}>
           <TextField size="small" label="Rule Name *" value={ruleName}
             onChange={(e) => setRuleName(e.target.value)}
             placeholder="e.g., Monthly Interest Accrual" sx={{ flex: 1 }} />
@@ -2190,6 +2203,7 @@ const AccountingRuleBuilder = ({ events, dslFunctions, transactionDefinitions, o
               sx={{
                 mb: 1, borderLeft: `3px solid ${meta.color}`,
                 transition: 'all 0.15s',
+                opacity: step.disabled ? 0.6 : 1,
                 '&:hover': { boxShadow: `0 2px 8px ${meta.color}1F` },
               }}>
               <CardContent sx={{ p: 1.5, '&:last-child': { pb: 1.5 } }}>
@@ -2209,28 +2223,54 @@ const AccountingRuleBuilder = ({ events, dslFunctions, transactionDefinitions, o
                   </Typography>
                   <Chip size="small" label={meta.label}
                     sx={{ fontSize: '0.625rem', height: 18, bgcolor: `${meta.color}18`, color: meta.color, fontWeight: 600 }} />
+                  <Tooltip title={step.disabled ? "Disabled" : "Enabled"}>
+                    <Switch
+                      size="small"
+                      checked={!step.disabled}
+                      onClick={(e) => e.stopPropagation()}
+                      onChange={(e) => {
+                        e.stopPropagation();
+                        const nextSteps = steps.map((s, i) => i === idx ? { ...s, disabled: !e.target.checked } : s);
+                        setSteps(nextSteps);
+                        persistDisableToggle(nextSteps, outputs);
+                      }}
+                      sx={{
+                        mr: 0.5,
+                        '& .MuiSwitch-switchBase.Mui-checked': { color: '#64B5F6' },
+                        '& .MuiSwitch-switchBase.Mui-checked + .MuiSwitch-track': { backgroundColor: '#90CAF9' },
+                      }}
+                    />
+                  </Tooltip>
                   {step.stepType !== 'custom_code' && step.stepType !== 'schedule' && (
                     <Tooltip title="Test up to this step">
-                      <IconButton size="small" onClick={() => handleInlineTest(idx)}
-                        disabled={!!stepTesting[idx]} sx={{ color: '#4CAF50' }}>
-                        {stepTesting[idx] ? <CircularProgress size={14} /> : <Play size={14} />}
-                      </IconButton>
+                      <span>
+                        <IconButton size="small" onClick={() => handleInlineTest(idx)}
+                          disabled={!!stepTesting[idx] || step.disabled} sx={{ color: '#4CAF50' }}>
+                          {stepTesting[idx] ? <CircularProgress size={14} /> : <Play size={14} />}
+                        </IconButton>
+                      </span>
                     </Tooltip>
                   )}
                   <Tooltip title="Duplicate step">
-                    <IconButton size="small" onClick={() => duplicateStep(idx)} sx={{ color: '#607D8B' }}>
-                      <Copy size={14} />
-                    </IconButton>
+                    <span>
+                      <IconButton size="small" onClick={() => duplicateStep(idx)} disabled={step.disabled} sx={{ color: '#607D8B' }}>
+                        <Copy size={14} />
+                      </IconButton>
+                    </span>
                   </Tooltip>
                   <Tooltip title="Edit step">
-                    <IconButton size="small" onClick={() => openEditStep(idx)} sx={{ color: meta.color }}>
-                      <Edit3 size={14} />
-                    </IconButton>
+                    <span>
+                      <IconButton size="small" onClick={() => openEditStep(idx)} disabled={step.disabled} sx={{ color: meta.color }}>
+                        <Edit3 size={14} />
+                      </IconButton>
+                    </span>
                   </Tooltip>
                   <Tooltip title="Delete step">
-                    <IconButton size="small" onClick={() => removeStep(idx)} sx={{ color: '#F44336' }}>
-                      <Trash2 size={14} />
-                    </IconButton>
+                    <span>
+                      <IconButton size="small" onClick={() => removeStep(idx)} sx={{ color: '#F44336' }}>
+                        <Trash2 size={14} />
+                      </IconButton>
+                    </span>
                   </Tooltip>
                 </Box>
                 {tr && (
@@ -2285,6 +2325,7 @@ const AccountingRuleBuilder = ({ events, dslFunctions, transactionDefinitions, o
               sx={{
                 mb: 1, borderLeft: `3px solid ${TXN_COLOR}`,
                 transition: 'all 0.15s',
+                opacity: txn.disabled ? 0.6 : 1,
                 '&:hover': { boxShadow: `0 2px 8px ${TXN_COLOR}1F` },
               }}>
               <CardContent sx={{ p: 1.5, '&:last-child': { pb: 1.5 } }}>
@@ -2304,28 +2345,52 @@ const AccountingRuleBuilder = ({ events, dslFunctions, transactionDefinitions, o
                   </Typography>
                   <Chip size="small" label="Transaction"
                     sx={{ fontSize: '0.625rem', height: 18, bgcolor: `${TXN_COLOR}18`, color: TXN_COLOR, fontWeight: 600 }} />
+                  <Tooltip title={txn.disabled ? "Disabled" : "Enabled"}>
+                    <Switch
+                      size="small"
+                      checked={!txn.disabled}
+                      onClick={(e) => e.stopPropagation()}
+                      onChange={(e) => {
+                        e.stopPropagation();
+                        const updated = outputs.transactions.map((t, i) => i === idx ? { ...t, disabled: !e.target.checked } : t);
+                        const nextOutputs = { ...outputs, transactions: updated };
+                        setOutputs(nextOutputs);
+                        persistDisableToggle(steps, nextOutputs);
+                      }}
+                      sx={{
+                        '& .MuiSwitch-switchBase.Mui-checked': { color: '#64B5F6' },
+                        '& .MuiSwitch-switchBase.Mui-checked + .MuiSwitch-track': { backgroundColor: '#90CAF9' },
+                      }}
+                    />
+                  </Tooltip>
                   <Tooltip title="Test this transaction">
                     <span>
                       <IconButton size="small" onClick={() => handleTransactionTest(idx)}
-                        disabled={!!txnTesting[idx] || !txn.type} sx={{ color: '#4CAF50' }}>
+                        disabled={!!txnTesting[idx] || !txn.type || txn.disabled} sx={{ color: '#4CAF50' }}>
                         {txnTesting[idx] ? <CircularProgress size={14} /> : <Play size={14} />}
                       </IconButton>
                     </span>
                   </Tooltip>
                   <Tooltip title="Duplicate transaction">
-                    <IconButton size="small" onClick={() => duplicateTransaction(idx)} sx={{ color: '#607D8B' }}>
-                      <Copy size={14} />
-                    </IconButton>
+                    <span>
+                      <IconButton size="small" onClick={() => duplicateTransaction(idx)} disabled={txn.disabled} sx={{ color: '#607D8B' }}>
+                        <Copy size={14} />
+                      </IconButton>
+                    </span>
                   </Tooltip>
                   <Tooltip title="Edit transaction">
-                    <IconButton size="small" onClick={() => openEditTransaction(idx)} sx={{ color: TXN_COLOR }}>
-                      <Edit3 size={14} />
-                    </IconButton>
+                    <span>
+                      <IconButton size="small" onClick={() => openEditTransaction(idx)} disabled={txn.disabled} sx={{ color: TXN_COLOR }}>
+                        <Edit3 size={14} />
+                      </IconButton>
+                    </span>
                   </Tooltip>
                   <Tooltip title="Delete transaction">
-                    <IconButton size="small" onClick={() => removeTransaction(idx)} sx={{ color: '#F44336' }}>
-                      <Trash2 size={14} />
-                    </IconButton>
+                    <span>
+                      <IconButton size="small" onClick={() => removeTransaction(idx)} sx={{ color: '#F44336' }}>
+                        <Trash2 size={14} />
+                      </IconButton>
+                    </span>
                   </Tooltip>
                 </Box>
                 {tr && (

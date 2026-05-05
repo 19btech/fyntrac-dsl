@@ -2703,7 +2703,7 @@ def _generate_rule_code(rule: dict) -> str:
             lines.append("")
         elif st == "schedule":
             sc = s.get("scheduleConfig") or {}
-            lines.append("## Schedule")
+            sched_lines: list[str] = ["## Schedule"]
             # Period definition
             if sc.get("periodType") == "number":
                 src_t = sc.get("periodCountSource")
@@ -2713,7 +2713,7 @@ def _generate_rule_code(rule: dict) -> str:
                     count_expr = sc["periodCountFormula"]
                 else:
                     count_expr = sc.get("periodCount") or 12
-                lines.append(f'p = period({count_expr}, "{sc.get("frequency") or "M"}")')
+                sched_lines.append(f'p = period({count_expr}, "{sc.get("frequency") or "M"}")')
             else:
                 if sc.get("startDateSource") == "field" and sc.get("startDateField"):
                     start_expr = sc["startDateField"]
@@ -2731,11 +2731,10 @@ def _generate_rule_code(rule: dict) -> str:
                 if sc.get("convention"):
                     period_call += f', "{sc["convention"]}"'
                 period_call += ")"
-                lines.append(period_call)
+                sched_lines.append(period_call)
             # Schedule call
             valid_cols = [c for c in (sc.get("columns") or []) if c.get("name") and c.get("formula")]
-            lines.append(f'{s["name"]} = schedule(p, {{')
-            sched_lines = []
+            sched_lines.append(f'{s["name"]} = schedule(p, {{')
             for i, col in enumerate(valid_cols):
                 comma = "," if i < len(valid_cols) - 1 else ""
                 sched_lines.append(f'    "{col["name"]}": "{col["formula"]}"{comma}')
@@ -7494,6 +7493,15 @@ PATTERN B — COLLECT + apply_each + AGGREGATE
     4. calc step aggregates (sum/avg) the result
     5. outputs.transactions[] emit using the aggregate
   Reference templates: revenue_recognition, RevenueFinal111.
+
+  LOOKUP ARG ORDER — CRITICAL:
+    lookup(VALUES_ARRAY, KEYS_ARRAY, TARGET)
+    → searches KEYS_ARRAY for TARGET, returns VALUES_ARRAY at the same index.
+    Example — get SSP mode for product id stored in `each`:
+      lookup(CatalogSSPMode, CatalogProductIds, each)
+      ✓ correct: searches CatalogProductIds (keys) for each, returns CatalogSSPMode (values)
+      ✗ wrong:   lookup(CatalogProductIds, CatalogSSPMode, each)
+                 searches the SSP-mode strings for a product id — always returns None.
 
 PATTERN C — REPLAY + LAG SCHEDULE + DELTA
   Use for: SBO replay, period-over-period adjustments, true-up postings.
