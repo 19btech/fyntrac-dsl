@@ -173,6 +173,47 @@
   background: #f8f8f8;
   padding: 8px 12px;
 }
+.vsc-footer-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.vsc-mode-toggle {
+  display: inline-flex;
+  border: 1px solid #c4c4c4;
+  border-radius: 6px;
+  overflow: hidden;
+  background: #ffffff;
+}
+.vsc-mode-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 10px;
+  font-size: 11px;
+  font-weight: 500;
+  color: #424242;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+}
+.vsc-mode-btn + .vsc-mode-btn {
+  border-left: 1px solid #e0e0e0;
+}
+.vsc-mode-btn:hover:not(:disabled) {
+  background: #eef4fb;
+}
+.vsc-mode-btn.active {
+  background: #005fb8;
+  color: #ffffff;
+}
+.vsc-mode-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
 
 /* -- Input area -- */
 .vsc-input-area {

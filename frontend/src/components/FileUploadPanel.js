@@ -1,11 +1,12 @@
 import React, { useState, useEffect } from "react";
 import axios from "axios";
 import { useToast } from "./ToastProvider";
-import { Upload, FileText, FileSpreadsheet, Download, CheckCircle, Eye, X } from "lucide-react";
+import { Upload, FileText, FileSpreadsheet, Download, CheckCircle, Eye, X, Info, Sparkles } from "lucide-react";
 import { Button, Card, CardContent, Box, Typography, LinearProgress, IconButton, Tooltip } from '@mui/material';
 import { API } from '../config';
+import DataPreviewPanel from './DataPreviewPanel';
 
-const FileUploadPanel = ({ onUploadSuccess, events, addConsoleLog, selectedEvent, onViewEvent }) => {
+const FileUploadPanel = ({ onUploadSuccess, events, transactions = [], addConsoleLog, selectedEvent, onViewEvent, onGenerateSample }) => {
   const [eventFile, setEventFile] = useState(null);
   const [excelDataFile, setExcelDataFile] = useState(null);
   const [uploadedEventFileName, setUploadedEventFileName] = useState('');
@@ -107,7 +108,7 @@ const FileUploadPanel = ({ onUploadSuccess, events, addConsoleLog, selectedEvent
 
     const eventDefLoadedHandler = (e) => {
       try {
-        const filename = e?.detail?.filename || 'Event.csv';
+        const filename = e?.detail?.filename || 'ReferenceData.xlsx';
         setUploadedEventFileName(filename);
         localStorage.setItem('uploadedEventFileName', filename);
       } catch (err) {}
@@ -280,19 +281,19 @@ const FileUploadPanel = ({ onUploadSuccess, events, addConsoleLog, selectedEvent
 
   const handleDownloadEvents = async () => {
     try {
-      addConsoleLog("Downloading event definitions...", "info");
+      addConsoleLog("Downloading reference data...", "info");
       const response = await axios.get(`${API}/events/download`, { responseType: 'blob' });
-      const url = window.URL.createObjectURL(new Blob([response.data]));
+      const url = window.URL.createObjectURL(new Blob([response.data], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }));
       const link = document.createElement('a');
       link.href = url;
-      link.setAttribute('download', 'event_definitions.csv');
+      link.setAttribute('download', 'reference_data.xlsx');
       document.body.appendChild(link);
       link.click();
       link.remove();
-      toast.success("Event definitions downloaded!");
+      toast.success("Reference data downloaded!");
     } catch (error) {
       const errorMsg = error.response?.data?.detail || error.message;
-      toast.error("Failed to download events");
+      toast.error("Failed to download reference data");
       addConsoleLog(`✗ Error: ${errorMsg}`, "error");
     }
   };
@@ -301,7 +302,7 @@ const FileUploadPanel = ({ onUploadSuccess, events, addConsoleLog, selectedEvent
     <Box sx={{ p: 3, bgcolor: '#F8F9FA', minHeight: '100%' }} data-testid="file-upload-panel">
       <Box sx={{ mb: 3 }}>
         <Typography variant="h3" sx={{ mb: 0.5 }}>Upload Data Files</Typography>
-        <Typography variant="body2" color="text.secondary">Upload event definitions (CSV) and event data (Excel)</Typography>
+        <Typography variant="body2" color="text.secondary">Upload reference data (.xlsx) and event data (Excel)</Typography>
       </Box>
 
       {uploading && (
@@ -318,10 +319,57 @@ const FileUploadPanel = ({ onUploadSuccess, events, addConsoleLog, selectedEvent
               <Box>
                 <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1 }}>
                   <FileText size={20} color="#5B5FED" />
-                  <Typography variant="h5">Event Setup File</Typography>
+                  <Typography variant="h5">Reference Data File</Typography>
+                  <Tooltip
+                    arrow
+                    placement="right"
+                    componentsProps={{
+                      tooltip: {
+                        sx: {
+                          bgcolor: '#1A1D23',
+                          color: '#F8F9FA',
+                          maxWidth: 460,
+                          p: 2,
+                          fontSize: '0.78rem',
+                          lineHeight: 1.55,
+                          borderRadius: 1.5,
+                          boxShadow: 4,
+                          '& code': {
+                            bgcolor: 'rgba(255,255,255,0.08)',
+                            px: 0.5,
+                            py: 0.1,
+                            borderRadius: 0.5,
+                            fontSize: '0.72rem',
+                          },
+                          '& strong': { color: '#A5B4FC' },
+                          '& em': { color: '#F8F9FA', fontStyle: 'normal' },
+                        },
+                      },
+                      arrow: { sx: { color: '#1A1D23' } },
+                    }}
+                    title={(
+                      <Box>
+                        <Typography variant="caption" sx={{ display: 'block', fontWeight: 700, mb: 1, color: '#A5B4FC', textTransform: 'uppercase', letterSpacing: '0.06em', fontSize: '0.68rem' }}>
+                          Upload Instructions
+                        </Typography>
+                        <Box component="ul" sx={{ m: 0, pl: 2, '& li': { mb: 0.75 } }}>
+                          <li><strong>Reference Data File (Excel):</strong> Two sheets — <em>events</em> (columns: EventName, EventField, DataType, EventType, EventTable) and <em>transactions</em> (column: transactiontype, no spaces e.g. <code>InterestAccrual</code>)</li>
+                          <li><strong>Event Table:</strong> <code>standard</code> (always a transaction event) or <code>custom</code> (transaction event or reference table)</li>
+                          <li><strong>Event Data (Excel):</strong> Sheet name must match event name</li>
+                          <li><strong>Required Columns (transaction events):</strong> PostingDate, EffectiveDate, InstrumentId + event fields</li>
+                          <li><strong>Reference table events (custom):</strong> Tenant-level data — no PostingDate, EffectiveDate, or InstrumentId needed</li>
+                          <li><strong>Financial Formulas:</strong> 100+ built-in financial calculation formulas are available</li>
+                        </Box>
+                      </Box>
+                    )}
+                  >
+                    <IconButton size="small" sx={{ p: 0.25, color: '#5B5FED' }} aria-label="Upload instructions" data-testid="reference-data-info">
+                      <Info size={15} />
+                    </IconButton>
+                  </Tooltip>
                 </Box>
                 <Typography variant="body2" color="text.secondary" sx={{ lineHeight: 1.6 }}>
-                  Upload CSV file with your event structure
+                  Upload .xlsx file with events and transaction types
                 </Typography>
               </Box>
               <Tooltip title="Download">
@@ -342,7 +390,7 @@ const FileUploadPanel = ({ onUploadSuccess, events, addConsoleLog, selectedEvent
             <Box sx={{ mb: 2 }}>
               <input
                 type="file"
-                accept=".csv"
+                accept=".xlsx"
                 onChange={(e) => setEventFile(e.target.files[0])}
                 style={{ display: 'none' }}
                 id="event-file-input"
@@ -356,13 +404,13 @@ const FileUploadPanel = ({ onUploadSuccess, events, addConsoleLog, selectedEvent
                   size="small"
                   sx={{ justifyContent: 'flex-start', py: 1.5, textAlign: 'left' }}
                 >
-                  {eventFile ? eventFile.name : 'Choose CSV file...'}
+                  {eventFile ? eventFile.name : 'Choose .xlsx file...'}
                 </Button>
               </label>
               {uploadedEventFileName && (
                 <Typography variant="caption" color="success.main" sx={{ display: 'flex', alignItems: 'center', gap: 0.5, mt: 1 }}>
                   <CheckCircle size={12} />
-                  {uploadedEventFileName === 'event.csv' ? 'Event.csv' : uploadedEventFileName}
+                  {uploadedEventFileName === 'event.csv' ? 'ReferenceData.xlsx' : uploadedEventFileName}
                 </Typography>
               )}
             </Box>
@@ -375,7 +423,7 @@ const FileUploadPanel = ({ onUploadSuccess, events, addConsoleLog, selectedEvent
               startIcon={<Upload size={16} />}
               data-testid="upload-events-button"
             >
-              Upload Setup File
+              Upload Reference File
             </Button>
           </CardContent>
         </Card>
@@ -389,20 +437,120 @@ const FileUploadPanel = ({ onUploadSuccess, events, addConsoleLog, selectedEvent
                   <FileSpreadsheet size={20} color="#4CAF50" />
                   <Typography variant="h5">Event Data (Excel)</Typography>
                 </Box>
-                <Tooltip title="View data">
-                  <span>
-                    <IconButton
-                      size="small"
-                      onClick={() => { if (typeof onViewEvent === 'function' && selectedEvent) onViewEvent(selectedEvent); }}
-                      disabled={!(selectedEvent && (eventDataSummary.some(it => it.event_name === selectedEvent && (it.row_count || 0) > 0) || uploadErrors.length > 0))}
-                      data-testid="view-event-data-button"
-                      sx={{ color: '#5B5FED' }}
-                      aria-label="View event data"
-                    >
-                      <Eye size={16} />
-                    </IconButton>
-                  </span>
-                </Tooltip>
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                  {(() => {
+                    const hasDefs = Array.isArray(events) && events.length > 0;
+                    const hasData = Array.isArray(eventDataSummary)
+                      && eventDataSummary.some(it => (it.row_count || 0) > 0);
+                    const canGenerate = hasDefs && !hasData;
+                    const tooltip = !hasDefs
+                      ? 'Load event definitions first'
+                      : hasData
+                        ? 'Event data is already loaded'
+                        : 'Ask the AI agent to generate sample event data';
+                    const handleClick = () => {
+                      if (!canGenerate || typeof onGenerateSample !== 'function') return;
+                      const eventNames = (events || []).map(e => e.event_name).filter(Boolean);
+                      const txnNames = (transactions || []).map(t => t.name || t.transaction_name).filter(Boolean);
+
+                      // Detect domain from event names to suggest the right instrument ID prefix
+                      const allNames = eventNames.join(' ').toLowerCase();
+                      let instPrefix = 'INST';
+                      if (/fas91|origination_fee|loan_fee|amort/.test(allNames)) instPrefix = 'LN';
+                      else if (/ecl|ifrs9|credit_risk|impairment|provision/.test(allNames)) instPrefix = 'ECL';
+                      else if (/lease|ifrs16|asc842|rou/.test(allNames)) instPrefix = 'LEASE';
+                      else if (/depreciation|fixed_asset|ias16|property/.test(allNames)) instPrefix = 'FA';
+                      else if (/revenue|ifrs15|asc606|contract/.test(allNames)) instPrefix = 'CONT';
+                      else if (/bond|security|sbo|fair_value|mtm/.test(allNames)) instPrefix = 'BOND';
+
+                      const inst1 = `${instPrefix}-001`;
+                      const inst2 = `${instPrefix}-002`;
+
+                      // 6 monthly posting dates ending at the most recent month-end
+                      const today = new Date();
+                      const monthEnds = [];
+                      for (let m = 5; m >= 0; m--) {
+                        const d = new Date(today.getFullYear(), today.getMonth() - m + 1, 0);
+                        monthEnds.push(d.toISOString().slice(0, 10));
+                      }
+
+                      const msg = [
+                        `Generate production-quality, accounting-standards-coherent sample event data for exactly 2 instruments and load it into the system.`,
+                        ``,
+                        `Event definitions: ${eventNames.length ? eventNames.join(', ') : '(use whatever is loaded)'}.`,
+                        txnNames.length ? `Transaction types: ${txnNames.join(', ')}.` : '',
+                        ``,
+                        `MANDATORY REQUIREMENTS — read carefully:`,
+                        `1. Use instrument IDs: "${inst1}" and "${inst2}".`,
+                        `2. Use these 6 monthly posting dates: ${monthEnds.join(', ')}.`,
+                        `   This shows time-series evolution (amortising balances, accumulating depreciation, etc.).`,
+                        `3. Data must be INTERNALLY CONSISTENT per instrument across all 6 dates:`,
+                        `   - Loan/FAS91: outstanding_balance must decline each month as principal amortises.`,
+                        `     origination_fee must be 0.5–2.5% of loan_amount. eir_rate > note_rate.`,
+                        `     origination_date < each posting_date < maturity_date.`,
+                        `   - IFRS 9/ECL: ecl = pd × lgd × ead. Stage 1 pd < 2%, Stage 2 pd 2–15%, Stage 3 pd > 20%.`,
+                        `     days_past_due matches stage: S1 0–29, S2 30–89, S3 90+.`,
+                        `   - IFRS 16 Lease: rou_asset decreases each month. lease_liability decreases via annuity`,
+                        `     amortisation. lease_payment is fixed. ibr/discount_rate is an annual rate 3–9%.`,
+                        `   - IAS 16 Fixed Assets: accumulated_depreciation increases by annual_charge/12 each month.`,
+                        `     nbv = acquisition_cost − accumulated_depreciation.`,
+                        `   - IFRS 15 Revenue: recognized_revenue increases monthly, deferred_revenue decreases.`,
+                        `   - Securities/SBO: market_value fluctuates realistically around face_value.`,
+                        `     accrued_interest resets at coupon payment dates.`,
+                        `4. All rates must be in DECIMAL form: 5% = 0.05, NOT 5.`,
+                        `5. Amounts must be realistic: loans $50k–$500k, leases $20k–$400k, bonds $1k–$1M.`,
+                        `6. Call generate_sample_event_data once per event with all 6 posting dates.`,
+                        `7. After loading, confirm with a table showing: instrument, event, key fields, and their`,
+                        `   values at the first and last posting date to prove time-series coherence.`,
+                      ].filter(Boolean).join('\n');
+                      onGenerateSample(msg);
+                    };
+                    return (
+                      <Tooltip title={tooltip}>
+                        <span>
+                          <Button
+                            variant="contained"
+                            size="small"
+                            disableElevation
+                            onClick={handleClick}
+                            disabled={!canGenerate}
+                            startIcon={<Sparkles size={14} />}
+                            data-testid="generate-sample-event-data"
+                            sx={{
+                              textTransform: 'none',
+                              borderRadius: '999px',
+                              fontWeight: 600,
+                              fontSize: '0.75rem',
+                              px: 1.5,
+                              py: 0.25,
+                              minHeight: 28,
+                              bgcolor: '#F3E8FF',
+                              color: '#7C3AED',
+                              '&:hover': { bgcolor: '#E9D5FF', boxShadow: 'none' },
+                              '&.Mui-disabled': { bgcolor: '#F3F4F6', color: '#9CA3AF' },
+                            }}
+                          >
+                            Generate Sample
+                          </Button>
+                        </span>
+                      </Tooltip>
+                    );
+                  })()}
+                  <Tooltip title="View data">
+                    <span>
+                      <IconButton
+                        size="small"
+                        onClick={() => { if (typeof onViewEvent === 'function' && selectedEvent) onViewEvent(selectedEvent); }}
+                        disabled={!(selectedEvent && (eventDataSummary.some(it => it.event_name === selectedEvent && (it.row_count || 0) > 0) || uploadErrors.length > 0))}
+                        data-testid="view-event-data-button"
+                        sx={{ color: '#5B5FED' }}
+                        aria-label="View event data"
+                      >
+                        <Eye size={16} />
+                      </IconButton>
+                    </span>
+                  </Tooltip>
+                </Box>
               </Box>
               <Typography variant="body2" color="text.secondary" sx={{ lineHeight: 1.6 }}>
                 Excel file with event data (each sheet = one event)
@@ -460,20 +608,8 @@ const FileUploadPanel = ({ onUploadSuccess, events, addConsoleLog, selectedEvent
         </Card>
       </Box>
 
-      {/* Instructions */}
-      <Card sx={{ mt: 3, bgcolor: '#EEF0FE', border: '1px solid #D4D6FA' }}>
-        <CardContent sx={{ p: 3 }}>
-          <Typography variant="h6" sx={{ mb: 1.5, color: '#5B5FED' }}>Upload Instructions</Typography>
-            <Box component="ul" sx={{ m: 0, pl: 2.5, '& li': { mb: 1, fontSize: '0.8125rem', color: '#495057', lineHeight: 1.6 } }}>
-            <li><strong>Event Setup File (CSV):</strong> Columns: Event Name, Field Name, Data Format, Event Type, Event Table</li>
-            <li><strong>Event Table:</strong> <code>standard</code> (always a transaction event) or <code>custom</code> (transaction event or reference table)</li>
-            <li><strong>Event Data (Excel):</strong> Sheet name must match event name</li>
-            <li><strong>Required Columns (transaction events):</strong> PostingDate, EffectiveDate, InstrumentId + event fields</li>
-            <li><strong>Reference table events (custom):</strong> Tenant-level data — no PostingDate, EffectiveDate, or InstrumentId needed</li>
-            <li><strong>Financial Formulas:</strong> 100+ built-in financial calculation formulas are available</li>
-          </Box>
-        </CardContent>
-      </Card>
+      {/* Live data preview */}
+      <DataPreviewPanel events={events} transactions={transactions} />
     </Box>
   );
 };

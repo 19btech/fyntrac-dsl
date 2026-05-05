@@ -1,0 +1,122 @@
+[{
+  "_id": {
+    "$oid": "6947b464dfafe52b6b20b8ac"
+  },
+  "eventId": "EOD",
+  "eventName": "End Of Day",
+  "eventPriority": 1,
+  "description": "",
+  "triggerSetup": {
+    "triggerType": "ON_MODEL_EXECUTION",
+    "triggerCondition": "",
+    "triggerSource": []
+  },
+  "sourceMappings": [
+    {
+      "sourceTable": "Attribute",
+      "sourceColumns": [
+        {
+          "label": "ORIGINATIONDATE",
+          "value": "ORIGINATIONDATE"
+        },
+        {
+          "label": "LOANAMOUNT",
+          "value": "LOANAMOUNT"
+        },
+        {
+          "label": "TERM",
+          "value": "TERM"
+        },
+        {
+          "label": "NOTERATE",
+          "value": "NOTERATE"
+        }
+      ],
+      "versionType": [
+        {
+          "label": "Current",
+          "value": "Current"
+        }
+      ],
+      "dataMapping": [],
+      "fieldType": "NONE"
+    },
+    {
+      "sourceTable": "Balances",
+      "sourceColumns": [
+        {
+          "label": "EndingBalance",
+          "value": "EndingBalance"
+        }
+      ],
+      "versionType": [],
+      "dataMapping": [
+        {
+          "label": "UPB",
+          "value": "UPB"
+        },
+        {
+          "label": "IMPAIRMENT",
+          "value": "IMPAIRMENT"
+        }
+      ],
+      "fieldType": "NONE"
+    }
+  ],
+  "createdBy": "67171f54dcbd9e7e9a527801",
+  "updatedBy": "67171f54dcbd9e7e9a527801",
+  "isActive": true,
+  "isDeleted": false,
+  "_class": "com.fyntrac.common.entity.EventConfiguration"
+},
+{
+  "_id": {
+    "$oid": "6947b4aadfafe52b6b20b8ad"
+  },
+  "eventId": "ECF",
+  "eventName": "ExpectedCashFlows",
+  "eventPriority": 3,
+  "description": "",
+  "triggerSetup": {
+    "triggerType": "ON_CUSTOM_DATA_TRIGGER",
+    "triggerCondition": "",
+    "triggerSource": [
+      {
+        "label": "Operational Table",
+        "value": "operational_table"
+      }
+    ]
+  },
+  "sourceMappings": [
+    {
+      "sourceTable": "ExpectedCashFlow",
+      "sourceColumns": [
+        {
+          "label": "MeasurementType",
+          "value": "MeasurementType"
+        },
+        {
+          "label": "StartDate",
+          "value": "StartDate"
+        },
+        {
+          "label": "ExpectedCF",
+          "value": "ExpectedCF"
+        }
+      ],
+      "versionType": [],
+      "dataMapping": [
+        {
+          "label": "CF",
+          "value": "CF"
+        }
+      ],
+      "fieldType": "NONE"
+    }
+  ],
+  "createdBy": "67171f54dcbd9e7e9a527801",
+  "updatedBy": "67171f54dcbd9e7e9a527801",
+  "isActive": true,
+  "isDeleted": false,
+  "_class": "com.fyntrac.common.entity.EventConfiguration"
+}]

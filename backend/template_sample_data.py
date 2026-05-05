@@ -8,6 +8,7 @@ TEMPLATE_SAMPLE_DATA = {
 
     # ─── Loan Amortization ────────────────────────────────────────────
     "loan_amortization": {
+        "transaction_types": ["InterestAccrual", "PrincipalPayment"],
         "events": [
             {
                 "event_name": "LoanSetup",
@@ -52,6 +53,7 @@ TEMPLATE_SAMPLE_DATA = {
 
     # ─── Revenue Recognition (ASC 606) ────────────────────────────────
     "revenue_recognition": {
+        "transaction_types": ["Revenue"],
         "events": [
             {
                 "event_name": "RevenueContract",
@@ -106,6 +108,7 @@ TEMPLATE_SAMPLE_DATA = {
 
     # ─── Interest Accrual ─────────────────────────────────────────────
     "interest_accrual": {
+        "transaction_types": ["InterestAccrual"],
         "events": [
             {
                 "event_name": "AccrualSetup",
@@ -148,6 +151,7 @@ TEMPLATE_SAMPLE_DATA = {
 
     # ─── Fee Amortization (FAS 91) ────────────────────────────────────
     "fee_amortization": {
+        "transaction_types": ["FeeAmortization", "InterestAccrual"],
         "events": [
             {
                 "event_name": "FeeEvent",
@@ -192,6 +196,7 @@ TEMPLATE_SAMPLE_DATA = {
 
     # ─── NPV Analysis ─────────────────────────────────────────────────
     "npv_analysis": {
+        "transaction_types": ["NPVAnalysis"],
         "events": [
             {
                 "event_name": "InvestmentProject",
@@ -243,6 +248,7 @@ TEMPLATE_SAMPLE_DATA = {
 
     # ─── Lease Accounting (ASC 842) ───────────────────────────────────
     "lease_accounting": {
+        "transaction_types": ["LeaseExpense", "LeaseLiabilityReduction"],
         "events": [
             {
                 "event_name": "LeaseSetup",

@@ -23,7 +23,7 @@ const ACCOUNTING_TEMPLATES = [
       { key: 'interest', label: 'Interest Accrued', default: true },
       { key: 'principal_payment', label: 'Principal Payment', default: true },
       { key: 'closing_balance', label: 'Closing Balance', default: true },
-      { key: 'create_txn', label: 'Create Transaction', default: false, txnType: 'Interest Accrual' },
+      { key: 'create_txn', label: 'Create Transaction', default: false, txnType: 'InterestAccrual' },
     ],
     generateDSL: (config) => {
       const freqMap = { 'Monthly': 'M', 'Quarterly': 'Q', 'Semi-Annual': 'S', 'Annual': 'A' };
@@ -77,7 +77,7 @@ const ACCOUNTING_TEMPLATES = [
         lines.push(`## Create transaction`);
         lines.push('interest_for_postingdate = schedule_filter(sched, "date", postingdate, "interest")');
         lines.push('print("Interest for posting date:", interest_for_postingdate)');
-        lines.push(`createTransaction(postingdate, postingdate, "${config.txn_type || 'Interest Accrual'}", interest_for_postingdate)`);
+        lines.push(`createTransaction(postingdate, postingdate, "${config.txn_type || 'InterestAccrual'}", interest_for_postingdate)`);
       }
 
       return lines.join('\n');
@@ -182,7 +182,7 @@ const ACCOUNTING_TEMPLATES = [
     outputs: [
       { key: 'schedule', label: 'Accrual Schedule', default: true },
       { key: 'total_interest', label: 'Total Interest', default: true },
-      { key: 'create_txn', label: 'Create Transaction', default: false, txnType: 'Interest Accrual' },
+      { key: 'create_txn', label: 'Create Transaction', default: false, txnType: 'InterestAccrual' },
     ],
     generateDSL: (config) => {
       const balance = config.balance_source === 'field' ? config.balance_field : config.balance;
@@ -216,7 +216,7 @@ const ACCOUNTING_TEMPLATES = [
         lines.push('');
         lines.push('interest_for_postingdate = schedule_filter(sched, "period_date", postingdate, "accrued_interest")');
         lines.push('print("Interest for posting date:", interest_for_postingdate)');
-        lines.push(`createTransaction(postingdate, postingdate, "${config.txn_type || 'Interest Accrual'}", interest_for_postingdate)`);
+        lines.push(`createTransaction(postingdate, postingdate, "${config.txn_type || 'InterestAccrual'}", interest_for_postingdate)`);
       }
 
       return lines.join('\n');
@@ -238,7 +238,7 @@ const ACCOUNTING_TEMPLATES = [
     ],
     outputs: [
       { key: 'schedule', label: 'Amortization Schedule', default: true },
-      { key: 'create_txn', label: 'Create Transaction', default: false, txnType: 'Fee Amortization' },
+      { key: 'create_txn', label: 'Create Transaction', default: false, txnType: 'FeeAmortization' },
     ],
     generateDSL: (config) => {
       const fee = config.fee_amount_source === 'field' ? config.fee_amount_field : config.fee_amount;
@@ -273,9 +273,9 @@ const ACCOUNTING_TEMPLATES = [
         if (config.outputs_schedule) {
           lines.push('amort_for_postingdate = schedule_filter(sched, "date", postingdate, "amortization")');
           lines.push('print("Amortization for posting date:", amort_for_postingdate)');
-          lines.push(`createTransaction(postingdate, postingdate, "${config.txn_type || 'Fee Amortization'}", amort_for_postingdate)`);
+          lines.push(`createTransaction(postingdate, postingdate, "${config.txn_type || 'FeeAmortization'}", amort_for_postingdate)`);
         } else {
-          lines.push(`createTransaction(${startDate}, ${startDate}, "${config.txn_type || 'Fee Amortization'}", monthly_amort)`);
+          lines.push(`createTransaction(${startDate}, ${startDate}, "${config.txn_type || 'FeeAmortization'}", monthly_amort)`);
         }
       }
 
@@ -303,7 +303,7 @@ const ACCOUNTING_TEMPLATES = [
     outputs: [
       { key: 'npv', label: 'Net Present Value', default: true },
       { key: 'irr', label: 'Internal Rate of Return', default: true },
-      { key: 'create_txn', label: 'Create Transaction', default: true, txnType: 'NPV Analysis' },
+      { key: 'create_txn', label: 'Create Transaction', default: true, txnType: 'NPVAnalysis' },
     ],
     generateDSL: (config) => {
       const investment = config.initial_investment_source === 'field' ? config.initial_investment_field : config.initial_investment;
@@ -332,7 +332,7 @@ const ACCOUNTING_TEMPLATES = [
         lines.push('net_pv = npv(discount_rate, cashflows)');
         lines.push('print("Net Present Value:", net_pv)');
         if (config.outputs_create_txn) {
-          lines.push(`createTransaction(postingdate, postingdate, "${config.txn_type || 'NPV Analysis'}", net_pv)`);
+          lines.push(`createTransaction(postingdate, postingdate, "${config.txn_type || 'NPVAnalysis'}", net_pv)`);
         }
       }
 
@@ -362,7 +362,7 @@ const ACCOUNTING_TEMPLATES = [
     outputs: [
       { key: 'schedule', label: 'Lease Amortization Schedule', default: true },
       { key: 'rou_asset', label: 'ROU Asset Value', default: true },
-      { key: 'create_txn', label: 'Create Transaction', default: false, txnType: 'Lease Expense' },
+      { key: 'create_txn', label: 'Create Transaction', default: false, txnType: 'LeaseExpense' },
     ],
     generateDSL: (config) => {
       const payment = config.lease_payment_source === 'field' ? config.lease_payment_field : config.lease_payment;
@@ -403,7 +403,7 @@ const ACCOUNTING_TEMPLATES = [
         lines.push('');
         lines.push('interest_for_postingdate = schedule_filter(sched, "date", postingdate, "interest_expense")');
         lines.push('print("Lease expense for posting date:", interest_for_postingdate)');
-        lines.push(`createTransaction(postingdate, postingdate, "${config.txn_type || 'Lease Expense'}", interest_for_postingdate)`);
+        lines.push(`createTransaction(postingdate, postingdate, "${config.txn_type || 'LeaseExpense'}", interest_for_postingdate)`);
       }
 
       return lines.join('\n');

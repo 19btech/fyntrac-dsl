@@ -81,3 +81,42 @@ class AIProvider(ABC):
         """
         resp = await self.chat(api_key, model_id, system_prompt, user_message, history)
         yield resp.text
+
+    async def chat_with_tools(
+        self,
+        *,
+        api_key: str,
+        model: str,
+        messages: list[dict],
+        tools: list[dict],
+        temperature: float = 0.1,
+        tool_choice: str | None = None,
+    ) -> dict:
+        """Tool-calling chat used by the autonomous agent runtime.
+
+        Args:
+            messages: Full conversation in OpenAI-style format. Each message is
+                {"role": "system"|"user"|"assistant"|"tool",
+                 "content": str | None,
+                 "tool_calls": [...]?,         # for assistant
+                 "tool_call_id": str?,         # for tool
+                 "name": str?}                 # for tool
+            tools: List of OpenAI-style tool schemas
+                ({"name", "description", "parameters"}).
+
+        Returns:
+            {
+                "message": {"role": "assistant", "content": str|None,
+                              "tool_calls": [...]},
+                "tool_calls": [{"id": str, "name": str,
+                                  "arguments": dict}],   # convenience
+                "finish_reason": str,
+                "usage": dict | None,
+            }
+
+        Providers that do not yet support tool calling should raise
+        NotImplementedError.
+        """
+        raise NotImplementedError(
+            f"{self.__class__.__name__} does not implement chat_with_tools"
+        )

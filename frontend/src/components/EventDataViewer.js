@@ -1,8 +1,9 @@
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback, useMemo } from "react";
 import axios from "axios";
+import * as XLSX from "xlsx";
 import { useToast } from "./ToastProvider";
-import { X, Database, Download } from "lucide-react";
-import { Button, IconButton, Chip, Box, Typography, Table, TableHead, TableBody, TableRow, TableCell, Card, Tabs, Tab, Alert } from '@mui/material';
+import { X, Database, Download, ArrowUp, ArrowDown, ArrowUpDown } from "lucide-react";
+import { Button, IconButton, Chip, Box, Typography, Table, TableHead, TableBody, TableRow, TableCell, Card, Tabs, Tab, Alert, TextField, CircularProgress, Tooltip } from '@mui/material';
 import { API } from '../config';
 
 const EventDataViewer = ({ onClose }) => {
@@ -13,6 +14,11 @@ const EventDataViewer = ({ onClose }) => {
   const [leftTab, setLeftTab] = useState(0); // 0 = Events, 1 = Errors
   const [uploadErrors, setUploadErrors] = useState([]);
   const [instrumentWarning, setInstrumentWarning] = useState(null); // array of instrument ids or null
+  // Sort: { key: columnName | null, dir: 'asc' | 'desc' }
+  const [sort, setSort] = useState({ key: null, dir: 'asc' });
+  // Inline edit: { rowIdx: originalIndex, col: columnName, value: string } | null
+  const [editing, setEditing] = useState(null);
+  const [savingCell, setSavingCell] = useState(false);
   const toast = useToast();
 
   const loadEventDataSummary = useCallback(async () => {
@@ -34,6 +40,8 @@ const EventDataViewer = ({ onClose }) => {
       const response = await axios.get(`${API}/event-data/${eventName}`);
       setEventData(response.data);
       setSelectedEvent(eventName);
+      setSort({ key: null, dir: 'asc' });
+      setEditing(null);
     } catch (error) {
       toast.error("Failed to load event data");
     } finally {
@@ -98,21 +106,102 @@ const EventDataViewer = ({ onClose }) => {
     }
   }, [eventDataSummary, loadEventData, selectedEvent]);
 
-  const downloadEventData = async (eventName) => {
+  const [exporting, setExporting] = useState(false);
+
+  // Excel sheet names: max 31 chars, cannot contain : \ / ? * [ ]
+  const sanitizeSheetName = (name, used) => {
+    let safe = String(name || "Sheet").replace(/[:\\\/\?\*\[\]]/g, "_");
+    if (safe.length > 31) safe = safe.slice(0, 31);
+    if (!safe.trim()) safe = "Sheet";
+    let candidate = safe;
+    let n = 2;
+    while (used.has(candidate.toLowerCase())) {
+      const suffix = `_${n}`;
+      candidate = safe.slice(0, 31 - suffix.length) + suffix;
+      n += 1;
+    }
+    used.add(candidate.toLowerCase());
+    return candidate;
+  };
+
+  // Coerce extended-JSON style objects into plain scalars so they render
+  // sensibly in Excel cells.
+  const flattenCellForExcel = (value) => {
+    if (value === null || value === undefined) return "";
+    if (typeof value === "object") {
+      if (value.$date) return typeof value.$date === "string" ? value.$date : String(value.$date);
+      if (value.$oid) return value.$oid;
+      if (value.$numberDecimal) return Number(value.$numberDecimal);
+      if (value.$numberLong) return Number(value.$numberLong);
+      return JSON.stringify(value);
+    }
+    return value;
+  };
+
+  const exportAllEventsToExcel = async () => {
+    if (!eventDataSummary || eventDataSummary.length === 0) {
+      toast.error("No event data to export");
+      return;
+    }
+    setExporting(true);
     try {
-      const response = await axios.get(`${API}/event-data/download/${eventName}`, {
-        responseType: 'blob'
-      });
-      const url = window.URL.createObjectURL(new Blob([response.data]));
-      const link = document.createElement('a');
-      link.href = url;
-      link.setAttribute('download', `${eventName}_data.csv`);
-      document.body.appendChild(link);
-      link.click();
-      link.remove();
-      toast.success("Downloaded successfully");
-    } catch (error) {
-      toast.error("Failed to download");
+      const wb = XLSX.utils.book_new();
+      const usedSheetNames = new Set();
+      let exportedCount = 0;
+
+      for (const summary of eventDataSummary) {
+        const eventName = summary.event_name;
+        let rows = [];
+        try {
+          const resp = await axios.get(`${API}/event-data/${eventName}`);
+          rows = (resp.data && resp.data.data_rows) || [];
+        } catch (err) {
+          // Skip events that fail to load but keep going on the rest.
+          continue;
+        }
+
+        // Build a stable column order: union of keys across all rows in order
+        // of first appearance.
+        const headers = [];
+        const seen = new Set();
+        for (const r of rows) {
+          for (const k of Object.keys(r || {})) {
+            if (!seen.has(k)) {
+              seen.add(k);
+              headers.push(k);
+            }
+          }
+        }
+
+        const flatRows = rows.map((r) => {
+          const out = {};
+          for (const h of headers) out[h] = flattenCellForExcel(r ? r[h] : "");
+          return out;
+        });
+
+        const ws =
+          headers.length > 0
+            ? XLSX.utils.json_to_sheet(flatRows, { header: headers })
+            : XLSX.utils.aoa_to_sheet([["(no rows)"]]);
+
+        const sheetName = sanitizeSheetName(eventName, usedSheetNames);
+        XLSX.utils.book_append_sheet(wb, ws, sheetName);
+        exportedCount += 1;
+      }
+
+      if (exportedCount === 0) {
+        toast.error("No event data could be exported");
+        return;
+      }
+
+      const stamp = new Date().toISOString().slice(0, 10);
+      XLSX.writeFile(wb, `event_data_${stamp}.xlsx`);
+      toast.success(`Exported ${exportedCount} event${exportedCount > 1 ? "s" : ""} to Excel`);
+    } catch (err) {
+      console.error(err);
+      toast.error("Failed to export event data");
+    } finally {
+      setExporting(false);
     }
   };
 
@@ -144,6 +233,109 @@ const EventDataViewer = ({ onClose }) => {
       return JSON.stringify(value);
     }
     return String(value);
+  };
+
+  // --- Sorting ---
+  const handleSortClick = (col) => {
+    setEditing(null);
+    setSort(prev => {
+      if (prev.key !== col) return { key: col, dir: 'asc' };
+      if (prev.dir === 'asc') return { key: col, dir: 'desc' };
+      return { key: null, dir: 'asc' };
+    });
+  };
+
+  const sortableValue = (v) => {
+    if (v === null || v === undefined) return null;
+    if (typeof v === 'object') {
+      if (v.$date) return Date.parse(v.$date) || v.$date;
+      if (v.$numberDecimal) return Number(v.$numberDecimal);
+      if (v.$numberLong) return Number(v.$numberLong);
+      if (v.$oid) return v.$oid;
+      return JSON.stringify(v);
+    }
+    if (typeof v === 'string') {
+      const n = Number(v);
+      if (v.trim() !== '' && !Number.isNaN(n)) return n;
+      const t = Date.parse(v);
+      if (!Number.isNaN(t) && /\d{4}-\d{2}-\d{2}/.test(v)) return t;
+      return v.toLowerCase();
+    }
+    return v;
+  };
+
+  // Build [{row, originalIndex}] preserving original index for edit/save.
+  const indexedRows = useMemo(() => {
+    const rows = eventData?.data_rows || [];
+    return rows.map((row, originalIndex) => ({ row, originalIndex }));
+  }, [eventData]);
+
+  const sortedRows = useMemo(() => {
+    if (!sort.key) return indexedRows;
+    const dir = sort.dir === 'asc' ? 1 : -1;
+    const arr = [...indexedRows];
+    arr.sort((a, b) => {
+      const av = sortableValue(a.row?.[sort.key]);
+      const bv = sortableValue(b.row?.[sort.key]);
+      if (av === null && bv === null) return 0;
+      if (av === null) return 1;
+      if (bv === null) return -1;
+      if (typeof av === 'number' && typeof bv === 'number') return (av - bv) * dir;
+      return String(av).localeCompare(String(bv), undefined, { numeric: true }) * dir;
+    });
+    return arr;
+  }, [indexedRows, sort]);
+
+  // --- Inline editing ---
+  const beginEdit = (originalIndex, col, currentValue) => {
+    setEditing({
+      rowIdx: originalIndex,
+      col,
+      value: currentValue === null || currentValue === undefined ? '' : renderCellValue(currentValue),
+    });
+  };
+
+  const cancelEdit = () => setEditing(null);
+
+  const saveEdit = async () => {
+    if (!editing || !selectedEvent) return;
+    const { rowIdx, col, value } = editing;
+    const original = eventData?.data_rows?.[rowIdx]?.[col];
+    if (renderCellValue(original) === value) {
+      setEditing(null);
+      return;
+    }
+    setSavingCell(true);
+    try {
+      const resp = await axios.patch(
+        `${API}/event-data/${encodeURIComponent(selectedEvent)}/rows/${rowIdx}`,
+        { updates: { [col]: value } },
+      );
+      const updatedRow = resp?.data?.row;
+      setEventData(prev => {
+        if (!prev) return prev;
+        const next = { ...prev, data_rows: [...(prev.data_rows || [])] };
+        next.data_rows[rowIdx] = updatedRow || { ...(next.data_rows[rowIdx] || {}), [col]: value };
+        return next;
+      });
+      toast.success('Cell updated');
+      setEditing(null);
+    } catch (err) {
+      const msg = err?.response?.data?.detail || err?.message || 'Failed to update cell';
+      toast.error(typeof msg === 'string' ? msg : 'Failed to update cell');
+    } finally {
+      setSavingCell(false);
+    }
+  };
+
+  const handleEditKeyDown = (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      saveEdit();
+    } else if (e.key === 'Escape') {
+      e.preventDefault();
+      cancelEdit();
+    }
   };
 
   return (
@@ -180,9 +372,21 @@ const EventDataViewer = ({ onClose }) => {
               </Typography>
             </Box>
           </Box>
-          <IconButton onClick={onClose} data-testid="close-data-viewer">
-            <X size={20} />
-          </IconButton>
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+            <Button
+              variant="outlined"
+              size="small"
+              onClick={exportAllEventsToExcel}
+              startIcon={<Download size={16} />}
+              disabled={exporting || eventDataSummary.length === 0}
+              data-testid="export-events-excel"
+            >
+              {exporting ? 'Exporting…' : 'Export Excel'}
+            </Button>
+            <IconButton onClick={onClose} data-testid="close-data-viewer">
+              <X size={20} />
+            </IconButton>
+          </Box>
         </Box>
 
         {/* Instrument scope warning banner (from JSON import) */}
@@ -318,17 +522,12 @@ const EventDataViewer = ({ onClose }) => {
                     <Typography variant="h6">{selectedEvent}</Typography>
                     <Typography variant="caption" color="text.secondary">
                       {eventData?.data_rows?.length || 0} rows × {getColumnHeaders().length} columns
+                      {sort.key ? ` • sorted by ${sort.key} (${sort.dir})` : ''}
                     </Typography>
                   </Box>
-                  <Button 
-                    variant="outlined" 
-                    size="small" 
-                    onClick={() => downloadEventData(selectedEvent)}
-                    startIcon={<Download size={16} />}
-                    data-testid="download-event-data"
-                  >
-                    Download CSV
-                  </Button>
+                  <Typography variant="caption" color="text.secondary" sx={{ fontStyle: 'italic' }}>
+                    Click column to sort • Double-click cell to edit
+                  </Typography>
                 </Box>
 
                 {/* Data Table */}
@@ -338,24 +537,77 @@ const EventDataViewer = ({ onClose }) => {
                       <TableHead>
                         <TableRow>
                           <TableCell sx={{ fontWeight: 600, bgcolor: '#F8F9FA' }}>#</TableCell>
-                          {getColumnHeaders().map((header, idx) => (
-                            <TableCell key={idx} sx={{ fontWeight: 600, bgcolor: '#F8F9FA', whiteSpace: 'nowrap' }}>
-                              {header}
-                            </TableCell>
-                          ))}
+                          {getColumnHeaders().map((header, idx) => {
+                            const isActive = sort.key === header;
+                            const SortIcon = !isActive ? ArrowUpDown : (sort.dir === 'asc' ? ArrowUp : ArrowDown);
+                            return (
+                              <TableCell
+                                key={idx}
+                                sx={{
+                                  fontWeight: 600,
+                                  bgcolor: '#F8F9FA',
+                                  whiteSpace: 'nowrap',
+                                  cursor: 'pointer',
+                                  userSelect: 'none',
+                                  '&:hover': { bgcolor: '#EEF0FE' },
+                                }}
+                                onClick={() => handleSortClick(header)}
+                                title="Click to sort"
+                              >
+                                <Box sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.5 }}>
+                                  <span>{header}</span>
+                                  <SortIcon size={12} color={isActive ? '#5B5FED' : '#ADB5BD'} />
+                                </Box>
+                              </TableCell>
+                            );
+                          })}
                         </TableRow>
                       </TableHead>
                       <TableBody>
-                        {eventData.data_rows.map((row, rowIdx) => (
-                          <TableRow key={rowIdx} hover>
+                        {sortedRows.map(({ row, originalIndex }, displayIdx) => (
+                          <TableRow key={originalIndex} hover>
                             <TableCell sx={{ color: '#6C757D', fontFamily: 'monospace', fontSize: '0.8125rem' }}>
-                              {rowIdx + 1}
+                              {displayIdx + 1}
                             </TableCell>
-                            {getColumnHeaders().map((header, colIdx) => (
-                              <TableCell key={colIdx} sx={{ fontFamily: 'monospace', fontSize: '0.8125rem', whiteSpace: 'nowrap' }}>
-                                {renderCellValue(row[header])}
-                              </TableCell>
-                            ))}
+                            {getColumnHeaders().map((header, colIdx) => {
+                              const isEditing = editing && editing.rowIdx === originalIndex && editing.col === header;
+                              return (
+                                <TableCell
+                                  key={colIdx}
+                                  onDoubleClick={() => beginEdit(originalIndex, header, row[header])}
+                                  sx={{
+                                    fontFamily: 'monospace',
+                                    fontSize: '0.8125rem',
+                                    whiteSpace: 'nowrap',
+                                    cursor: isEditing ? 'text' : 'cell',
+                                    p: isEditing ? '2px 4px' : undefined,
+                                    bgcolor: isEditing ? '#FFFBEA' : undefined,
+                                    '&:hover': isEditing ? undefined : { bgcolor: '#F8F9FA' },
+                                  }}
+                                  title={isEditing ? '' : 'Double-click to edit'}
+                                >
+                                  {isEditing ? (
+                                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                                      <TextField
+                                        autoFocus
+                                        size="small"
+                                        variant="standard"
+                                        value={editing.value}
+                                        onChange={(e) => setEditing(prev => prev ? { ...prev, value: e.target.value } : prev)}
+                                        onKeyDown={handleEditKeyDown}
+                                        onBlur={saveEdit}
+                                        disabled={savingCell}
+                                        InputProps={{ sx: { fontFamily: 'monospace', fontSize: '0.8125rem' } }}
+                                        sx={{ minWidth: 80 }}
+                                      />
+                                      {savingCell && <CircularProgress size={12} />}
+                                    </Box>
+                                  ) : (
+                                    renderCellValue(row[header])
+                                  )}
+                                </TableCell>
+                              );
+                            })}
                           </TableRow>
                         ))}
                       </TableBody>

@@ -1,0 +1,157 @@
+[{
+  "_id": {
+    "$oid": "694cd792aa7ae064aafc878c"
+  },
+  "eventId": "TRANX",
+  "eventName": "Transaction Event",
+  "eventPriority": 1,
+  "description": "",
+  "triggerSetup": {
+    "triggerType": "ON_TRANSACTION_POST",
+    "triggerCondition": "",
+    "triggerSource": [
+      {
+        "label": "REMIT",
+        "value": "REMIT"
+      }
+    ]
+  },
+  "sourceMappings": [
+    {
+      "sourceTable": "Transactions",
+      "sourceColumns": [
+        {
+          "label": "Amount",
+          "value": "Amount"
+        }
+      ],
+      "versionType": [],
+      "dataMapping": [
+        {
+          "label": "REMIT",
+          "value": "REMIT"
+        }
+      ],
+      "fieldType": "NONE"
+    }
+  ],
+  "createdBy": "67171f54dcbd9e7e9a527803",
+  "updatedBy": "67171f54dcbd9e7e9a527803",
+  "isActive": true,
+  "isDeleted": false,
+  "_class": "com.fyntrac.common.entity.EventConfiguration"
+},
+{
+  "_id": {
+    "$oid": "694cd7d0aa7ae064aafc878d"
+  },
+  "eventId": "EOD",
+  "eventName": "End Of Day Event",
+  "eventPriority": 3,
+  "description": "",
+  "triggerSetup": {
+    "triggerType": "ON_MODEL_EXECUTION",
+    "triggerCondition": "",
+    "triggerSource": []
+  },
+  "sourceMappings": [
+    {
+      "sourceTable": "Attribute",
+      "sourceColumns": [
+        {
+          "label": "INTEREST_RATE",
+          "value": "INTEREST_RATE"
+        }
+      ],
+      "versionType": [
+        {
+          "label": "Current",
+          "value": "Current"
+        }
+      ],
+      "dataMapping": [],
+      "fieldType": "NONE"
+    },
+    {
+      "sourceTable": "Balances",
+      "sourceColumns": [
+        {
+          "label": "BeginningBalance",
+          "value": "BeginningBalance"
+        }
+      ],
+      "versionType": [],
+      "dataMapping": [
+        {
+          "label": "UNPAID_PRINCIPAL_BALANCE",
+          "value": "UNPAID_PRINCIPAL_BALANCE"
+        },
+        {
+          "label": "SERVICING_INTEREST_ACCRUAL",
+          "value": "SERVICING_INTEREST_ACCRUAL"
+        },
+        {
+          "label": "ACCRUED_INTEREST_RECEIVABLE",
+          "value": "ACCRUED_INTEREST_RECEIVABLE"
+        }
+      ],
+      "fieldType": "NONE"
+    }
+  ],
+  "createdBy": "67171f54dcbd9e7e9a527803",
+  "updatedBy": "67171f54dcbd9e7e9a527803",
+  "isActive": true,
+  "isDeleted": false,
+  "_class": "com.fyntrac.common.entity.EventConfiguration"
+},
+{
+  "_id": {
+    "$oid": "694cd833aa7ae064aafc878e"
+  },
+  "eventId": "REPLAY",
+  "eventName": "Replay Event",
+  "eventPriority": 2,
+  "description": "",
+  "triggerSetup": {
+    "triggerType": "ON_REPLAY",
+    "triggerCondition": "",
+    "triggerSource": [
+      {
+        "label": "REMIT",
+        "value": "REMIT"
+      }
+    ]
+  },
+  "sourceMappings": [
+    {
+      "sourceTable": "Transactions",
+      "sourceColumns": [
+        {
+          "label": "Amount",
+          "value": "Amount"
+        }
+      ],
+      "versionType": [],
+      "dataMapping": [
+        {
+          "label": "REMIT",
+          "value": "REMIT"
+        },
+        {
+          "label": "PAYMENT_UPB",
+          "value": "PAYMENT_UPB"
+        },
+        {
+          "label": "SERVICING_INTEREST_ACCRUAL",
+          "value": "SERVICING_INTEREST_ACCRUAL"
+        }
+      ],
+      "fieldType": "NONE"
+    }
+  ],
+  "createdBy": "67171f54dcbd9e7e9a527803",
+  "updatedBy": "67171f54dcbd9e7e9a527803",
+  "isActive": true,
+  "isDeleted": false,
+  "_class": "com.fyntrac.common.entity.EventConfiguration"
+}]

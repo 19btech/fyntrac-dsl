@@ -2,8 +2,7 @@ import React, { useState, useEffect, useRef } from "react";
 import axios from "axios";
 import { useToast } from "../components/ToastProvider";
 import { Upload, Code, BookOpen, Sparkles, Trash2, Search as SearchIcon, Settings, ChevronDown, Database, Calculator, Eye, Save } from "lucide-react";
-import { Button, Tabs, Tab, Box, Menu, MenuItem, Divider, Alert, Typography, ToggleButtonGroup, ToggleButton, Tooltip, Avatar } from '@mui/material';
-import { alpha } from '@mui/material/styles';
+import { Button, Tabs, Tab, Box, Menu, MenuItem, Divider, Alert, Typography, ToggleButtonGroup, ToggleButton, Tooltip } from '@mui/material';
 import Editor from "@monaco-editor/react";
 import FileUploadPanel from "../components/FileUploadPanel";
 import LeftSidebar from "../components/LeftSidebar";
@@ -55,6 +54,7 @@ const Dashboard = () => {
 
   const [templates, setTemplates] = useState([]);
   const [selectedEvent, setSelectedEvent] = useState("");
+  const [transactionDefinitions, setTransactionDefinitions] = useState([]);
   const [consoleOutput, setConsoleOutput] = useState([]);
   const [tabValue, setTabValue] = useState(0);
   const [showFunctionBrowser, setShowFunctionBrowser] = useState(false);
@@ -78,31 +78,10 @@ const Dashboard = () => {
   const chatAssistantRef = useRef(null);
   const editorRef = useRef(null);
   const monacoRef = useRef(null);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [chatCollapsed, setChatCollapsed] = useState(false);
   const toast = useToast();
   const { confirmProps, openConfirm, promptProps, openPrompt } = useAppDialog();
-
-  // Read firstName and tenant from URL or sessionStorage (so it survives URL changes)
-  const [firstName, setFirstName] = React.useState(() => {
-    try {
-      const urlVal = new URLSearchParams(window.location.search).get('firstName');
-      if (urlVal) {
-        sessionStorage.setItem('dsl_firstName', urlVal);
-        return urlVal;
-      }
-      return sessionStorage.getItem('dsl_firstName') || '';
-    } catch { return ''; }
-  });
-  
-  const [tenant, setTenant] = React.useState(() => {
-    try {
-      const urlVal = new URLSearchParams(window.location.search).get('tenant');
-      if (urlVal) {
-        sessionStorage.setItem('dsl_tenant', urlVal);
-        return urlVal;
-      }
-      return sessionStorage.getItem('dsl_tenant') || '';
-    } catch { return ''; }
-  });
 
   useEffect(() => {
 
@@ -110,6 +89,15 @@ const Dashboard = () => {
     loadDslFunctions();
     loadTemplates();
     loadCombinedCode();
+    loadTransactionDefinitions();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Reload transaction definitions when a template wizard seeds them
+  useEffect(() => {
+    const handler = () => loadTransactionDefinitions();
+    window.addEventListener('dsl-transaction-defs-changed', handler);
+    return () => window.removeEventListener('dsl-transaction-defs-changed', handler);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -149,6 +137,15 @@ const Dashboard = () => {
     }
   };
 
+  const loadTransactionDefinitions = async () => {
+    try {
+      const response = await axios.get(`${API}/transaction-definitions`);
+      setTransactionDefinitions(response.data?.transaction_types || []);
+    } catch (error) {
+      // Non-fatal: leave as empty array
+    }
+  };
+
   const loadDslFunctions = async () => {
     try {
       const response = await axios.get(`${API}/dsl-functions`);
@@ -182,14 +179,15 @@ const Dashboard = () => {
         try {
           addConsoleLog("Clearing all data...", "info");
           const response = await axios.delete(`${API}/clear-all-data`);
-          
+
           addConsoleLog(`✓ ${response.data.message}`, "success");
-          
+
           setEvents([]);
           setDslFunctions([]);
           setTemplates([]);
           setSelectedEvent("");
           setDslCode('');
+          setTransactionDefinitions([]);
           setShowEventDataViewer(false);
 
           // Clear console output
@@ -212,8 +210,8 @@ const Dashboard = () => {
             localStorage.removeItem('lastEventDataUploadStatus');
             localStorage.removeItem('lastEventDataUploadErrors');
             localStorage.removeItem('importSelectedInstruments');
-            try { window.dispatchEvent(new Event('dsl-clear-uploaded-files')); } catch(e) {}
-            try { window.dispatchEvent(new Event('dsl-clear-event-viewer')); } catch(e) {}
+            try { window.dispatchEvent(new Event('dsl-clear-uploaded-files')); } catch (e) { }
+            try { window.dispatchEvent(new Event('dsl-clear-event-viewer')); } catch (e) { }
           } catch (e) {
             // ignore
           }
@@ -261,7 +259,7 @@ const Dashboard = () => {
           // FileUploadPanel restores these from localStorage on mount, so they
           // survive the hard refresh below.
           try {
-            localStorage.setItem('uploadedEventFileName', 'Event.csv');
+            localStorage.setItem('uploadedEventFileName', 'ReferenceData.xlsx');
             localStorage.setItem('uploadedExcelFileName', 'Activity.xlsx');
             localStorage.setItem('lastEventDataUploadFileName', 'Activity.xlsx');
             localStorage.setItem('lastEventDataUploadStatus', 'success');
@@ -296,14 +294,14 @@ const Dashboard = () => {
       const response = await axios.get(`${API}/events/download`, {
         responseType: 'blob'
       });
-      const url = window.URL.createObjectURL(new Blob([response.data]));
+      const url = window.URL.createObjectURL(new Blob([response.data], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }));
       const link = document.createElement('a');
       link.href = url;
-      link.setAttribute('download', 'event_definitions.csv');
+      link.setAttribute('download', 'reference_data.xlsx');
       document.body.appendChild(link);
       link.click();
       link.remove();
-      toast.success("Event definitions downloaded!");
+      toast.success("Reference data downloaded!");
     } catch (error) {
       toast.error("Failed to download events");
     }
@@ -314,7 +312,7 @@ const Dashboard = () => {
       toast.error("Please select an event first");
       return;
     }
-    
+
     openPrompt({
       title: "Save Template",
       message: "Enter a name for this template.",
@@ -322,7 +320,7 @@ const Dashboard = () => {
       onSubmit: async (templateName) => {
         try {
           const checkResponse = await axios.get(`${API}/templates/check-name/${encodeURIComponent(templateName)}`);
-          
+
           if (checkResponse.data.exists) {
             openConfirm({
               title: "Replace Template",
@@ -393,7 +391,7 @@ const Dashboard = () => {
       // Zero or one posting date — run exactly as before (pass the single date if present)
       try {
         // Wipe previous transaction reports before running
-        try { await axios.delete(`${API}/transaction-reports/all`); } catch (_) {}
+        try { await axios.delete(`${API}/transaction-reports/all`); } catch (_) { }
         addConsoleLog("Executing template on event data...", "info");
         const response = await axios.post(`${API}/templates/execute`, {
           template_id: templateId,
@@ -413,7 +411,7 @@ const Dashboard = () => {
 
     // Multiple posting dates — run sequentially across all dates
     // Wipe previous transaction reports before batch run
-    try { await axios.delete(`${API}/transaction-reports/all`); } catch (_) {}
+    try { await axios.delete(`${API}/transaction-reports/all`); } catch (_) { }
     setBatchRunning(true);
     setBatchStatus({ total: postingDates.length, current: 0, currentDate: null, results: [], errors: [] });
     addConsoleLog(`Starting batch execution across ${postingDates.length} posting dates...`, "info");
@@ -484,7 +482,7 @@ const Dashboard = () => {
     try {
       addConsoleLog(`Deleting template '${templateName}'...`, "info");
       await axios.delete(`${API}/templates/${templateId}`);
-      
+
       addConsoleLog(`✓ Template deleted successfully!`, "success");
       toast.success("Template deleted!");
       loadTemplates();
@@ -652,15 +650,17 @@ const Dashboard = () => {
   };
 
   return (
-    <div className="flex h-screen bg-[#F8F9FA] overflow-auto" style={{ minWidth: '1400px' }} data-testid="dashboard-container">
+    <div className="flex h-screen bg-[#F8F9FA] overflow-auto" style={{ minWidth: '900px' }} data-testid="dashboard-container">
       {/* Left Sidebar */}
-        <div className="sidebar-enter">
-        <LeftSidebar 
-          events={events} 
+      <div className="sidebar-enter">
+        <LeftSidebar
+          events={events}
           selectedEvent={selectedEvent}
           onEventSelect={setSelectedEvent}
           onDownloadEvents={handleDownloadEvents}
           onViewEventData={() => setShowEventDataViewer(true)}
+          collapsed={sidebarCollapsed}
+          onToggleCollapsed={() => setSidebarCollapsed(c => !c)}
           onImportSuccess={() => {
             loadEvents();
             window.dispatchEvent(new CustomEvent('dsl-event-data-refresh'));
@@ -677,30 +677,10 @@ const Dashboard = () => {
               <h1 className="text-2xl font-bold text-[#14213d] tracking-tight" style={{ fontFamily: "'Inter', sans-serif" }}>Logic Studio</h1>
               <p className="text-sm text-[#6C757D] mt-1">Design and test your financial calculation logic using built-in formulas</p>
             </div>
-            <div className="flex gap-2 items-center">
-              {/* User Profile Pill — same format as main/page.jsx */}
-              {firstName && (
-                <Box sx={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 1.5,
-                  bgcolor: alpha('#919EAB', 0.12),
-                  py: 0.5,
-                  px: 1.5,
-                  borderRadius: 3,
-                  mr: 1,
-                }}>
-                  <Avatar sx={{ bgcolor: '#2563EB', width: 28, height: 28, fontSize: 14, fontWeight: 700 }}>
-                    {firstName[0].toUpperCase()}
-                  </Avatar>
-                  <Typography variant="subtitle2" sx={{ color: '#1E293B', lineHeight: 1, fontWeight: 500 }}>
-                    {firstName} {tenant && tenant !== 'master' ? `/ ${tenant}` : ''}
-                  </Typography>
-                </Box>
-              )}
-              <Button 
-                variant="outlined" 
-                size="small" 
+            <div className="flex gap-2">
+              <Button
+                variant="outlined"
+                size="small"
                 onClick={() => setShowFunctionBrowser(true)}
                 data-testid="browse-functions-button"
                 title={`${dslFunctions.length} formulas loaded`}
@@ -724,9 +704,9 @@ const Dashboard = () => {
                 Browse Formulas ({dslFunctions.length})
               </Button>
               {/* Build Function removed */}
-              <Button 
-                variant="outlined" 
-                size="small" 
+              <Button
+                variant="outlined"
+                size="small"
                 onClick={(e) => setSettingsAnchorEl(e.currentTarget)}
                 data-testid="settings-button"
                 startIcon={<Settings className="w-4 h-4" />}
@@ -796,7 +776,7 @@ const Dashboard = () => {
                   <Sparkles className="w-4 h-4 text-[#6C757D] mr-2" />
                   AI Agent Setup
                 </MenuItem>
-                
+
               </Menu>
             </div>
           </div>
@@ -808,17 +788,17 @@ const Dashboard = () => {
           <Box sx={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0, overflow: 'hidden' }}>
             <Box sx={{ borderBottom: 1, borderColor: 'divider', bgcolor: 'white', px: 3 }}>
               <Tabs value={tabValue} onChange={(e, newValue) => { setTabValue(newValue); if (newValue === 1) { setEditorMode('savedRules'); } }}>
-                <Tab 
-                  icon={<Upload className="w-4 h-4" />} 
-                  iconPosition="start" 
-                  label="Upload Data" 
+                <Tab
+                  icon={<Upload className="w-4 h-4" />}
+                  iconPosition="start"
+                  label="Upload Data"
                   data-testid="upload-tab"
                   sx={{ textTransform: 'none', fontSize: '0.875rem' }}
                 />
-                <Tab 
-                  icon={<Code className="w-4 h-4" />} 
-                  iconPosition="start" 
-                  label="Logic Builder" 
+                <Tab
+                  icon={<Code className="w-4 h-4" />}
+                  iconPosition="start"
+                  label="Logic Builder"
                   data-testid="editor-tab"
                   sx={{ textTransform: 'none', fontSize: '0.875rem' }}
                 />
@@ -826,13 +806,20 @@ const Dashboard = () => {
             </Box>
 
             <TabPanel value={tabValue} index={0}>
-              <FileUploadPanel 
-                  onUploadSuccess={loadEvents} 
-                  events={events}
-                  addConsoleLog={addConsoleLog}
-                  selectedEvent={selectedEvent}
-                  onViewEvent={(eventName) => { setSelectedEvent(eventName); setShowEventDataViewer(true); }}
-                />
+              <FileUploadPanel
+                onUploadSuccess={() => { loadEvents(); loadTransactionDefinitions(); }}
+                events={events}
+                transactions={transactionDefinitions}
+                addConsoleLog={addConsoleLog}
+                selectedEvent={selectedEvent}
+                onViewEvent={(eventName) => { setSelectedEvent(eventName); setShowEventDataViewer(true); }}
+                onGenerateSample={(message) => {
+                  if (chatAssistantRef.current && chatAssistantRef.current.sendAgentMessage) {
+                    setChatCollapsed(false);
+                    chatAssistantRef.current.sendAgentMessage(message);
+                  }
+                }}
+              />
             </TabPanel>
 
             <TabPanel value={tabValue} index={1}>
@@ -1018,9 +1005,9 @@ const Dashboard = () => {
                       }}
                     />
                   </div>
-                  <ConsoleOutput 
-                    output={consoleOutput} 
-                    onClear={() => setConsoleOutput([])} 
+                  <ConsoleOutput
+                    output={consoleOutput}
+                    onClear={() => setConsoleOutput([])}
                     dslCode={dslCode}
                     addConsoleLog={addConsoleLog}
                     onCodeChange={setDslCode}
@@ -1037,6 +1024,7 @@ const Dashboard = () => {
                   key={editingRule ? `${editingRule.id}-p${editingRule.priority ?? 0}-u${editingRule.updated_at || ''}` : 'new'}
                   events={events}
                   dslFunctions={dslFunctions}
+                  transactionDefinitions={transactionDefinitions}
                   onGenerate={handleGeneratedCode}
                   onClose={() => { setEditorMode('code'); setEditingRule(null); }}
                   onSave={() => { setSavedRulesRefreshKey(k => k + 1); loadCombinedCode(); }}
@@ -1066,9 +1054,16 @@ const Dashboard = () => {
                     setEditorMode('ruleBuilder');
                   }}
                   onEditSchedule={(sched) => {
-                    setEditingRule(sched);
-                    setEditingSchedule(null);
-                    setEditorMode('ruleBuilder');
+                    // Schedules are stored in db.saved_schedules and have no
+                    // visual editor mounted in this build — load their
+                    // generatedCode into the code editor so the user can at
+                    // least inspect / tweak / run them.
+                    setEditingRule(null);
+                    setEditingSchedule(sched);
+                    if (sched?.generatedCode) {
+                      setDslCode(sched.generatedCode);
+                    }
+                    setEditorMode('code');
                   }}
                   onPlayAll={(result) => {
                     setLastExecutionResult(result);
@@ -1086,7 +1081,7 @@ const Dashboard = () => {
                       // Only delete rules and schedules — event definitions and event data are preserved
                       await Promise.all([
                         axios.delete(`${API}/saved-rules`),
-                        axios.delete(`${API}/saved-schedules`).catch(() => {}),
+                        axios.delete(`${API}/saved-schedules`).catch(() => { }),
                       ]);
 
                       setDslCode('');
@@ -1134,10 +1129,12 @@ const Dashboard = () => {
 
           {/* Right Sidebar - Chat Assistant */}
           <div className="flex-shrink-0 chat-panel-enter">
-            <ChatAssistant 
+            <ChatAssistant
               ref={chatAssistantRef}
-              dslFunctions={dslFunctions} 
+              dslFunctions={dslFunctions}
               events={events}
+              collapsed={chatCollapsed}
+              onToggleCollapsed={() => setChatCollapsed(c => !c)}
               onInsertCode={(code) => setDslCode(prev => prev + "\n" + code)}
               onOverwriteCode={(code) => setDslCode(code)}
               editorCode={dslCode}
@@ -1145,6 +1142,29 @@ const Dashboard = () => {
               editorRef={editorRef}
               monacoRef={monacoRef}
               providerRefreshKey={providerRefreshKey}
+              onAgentDataChange={(toolName, ev) => {
+                // Agent just mutated server state — refresh affected panels.
+                try { loadEvents(); } catch (_) { }
+                try { loadTemplates(); } catch (_) { }
+                try { loadDslFunctions(); } catch (_) { }
+                try { loadTransactionDefinitions(); } catch (_) { }
+                // Rules / schedules list and the combined-code preview.
+                try { setSavedRulesRefreshKey(k => k + 1); } catch (_) { }
+                try { loadCombinedCode(); } catch (_) { }
+                try { window.dispatchEvent(new CustomEvent('dsl-templates-changed', { detail: { source: 'agent', tool: toolName } })); } catch (_) { }
+                // Targeted refresh for an open Rule Builder when the agent
+                // mutated a specific rule (add_transaction_to_rule, update_step,
+                // add_step_to_rule, delete_step, update_saved_rule, ...).
+                try {
+                  const ruleId = ev?.result?.rule_id || ev?.args?.rule_id || null;
+                  if (ruleId) {
+                    window.dispatchEvent(new CustomEvent('dsl-rule-changed', {
+                      detail: { rule_id: ruleId, tool: toolName, source: 'agent' },
+                    }));
+                  }
+                } catch (_) { }
+                addConsoleLog(`Agent updated: ${toolName}`, "info");
+              }}
               uiContext={{
                 mode: editorMode,
                 editingRule: editingRule?.name || editingRule?.ruleName || null,
@@ -1161,7 +1181,7 @@ const Dashboard = () => {
 
       {/* Modals */}
       {showFunctionBrowser && (
-        <FunctionBrowser 
+        <FunctionBrowser
           dslFunctions={dslFunctions}
           onClose={() => setShowFunctionBrowser(false)}
           onAskAI={handleAskAIAboutFunction}
@@ -1170,7 +1190,7 @@ const Dashboard = () => {
 
 
       {showEventDataViewer && (
-        <EventDataViewer 
+        <EventDataViewer
           onClose={() => setShowEventDataViewer(false)}
         />
       )}

@@ -1,0 +1,60 @@
+[{
+  "_id": {
+    "$oid": "69ef03b5f25ac5448b5eed77"
+  },
+  "name": "PAYMENT_UPB",
+  "exclusive": 1,
+  "isGL": 1,
+  "isReplayable": 0,
+  "_class": "com.fyntrac.common.entity.Transactions"
+},
+{
+  "_id": {
+    "$oid": "69ef03b5f25ac5448b5eed78"
+  },
+  "name": "PAYMENT_INTEREST",
+  "exclusive": 1,
+  "isGL": 1,
+  "isReplayable": 0,
+  "_class": "com.fyntrac.common.entity.Transactions"
+},
+{
+  "_id": {
+    "$oid": "69ef03b5f25ac5448b5eed79"
+  },
+  "name": "IMPAIRMENT_GAIN",
+  "exclusive": 1,
+  "isGL": 1,
+  "isReplayable": 0,
+  "_class": "com.fyntrac.common.entity.Transactions"
+},
+{
+  "_id": {
+    "$oid": "69ef03b5f25ac5448b5eed7a"
+  },
+  "name": "ORIGINATION_PRINCIPAL",
+  "exclusive": 1,
+  "isGL": 1,
+  "isReplayable": 0,
+  "_class": "com.fyntrac.common.entity.Transactions"
+},
+{
+  "_id": {
+    "$oid": "69ef03b5f25ac5448b5eed7b"
+  },
+  "name": "INTEREST_ACCRUAL",
+  "exclusive": 1,
+  "isGL": 1,
+  "isReplayable": 0,
+  "_class": "com.fyntrac.common.entity.Transactions"
+},
+{
+  "_id": {
+    "$oid": "69ef03b5f25ac5448b5eed7c"
+  },
+  "name": "IMPAIRMENT_LOSS",
+  "exclusive": 1,
+  "isGL": 1,
+  "isReplayable": 0,
+  "_class": "com.fyntrac.common.entity.Transactions"
+}]

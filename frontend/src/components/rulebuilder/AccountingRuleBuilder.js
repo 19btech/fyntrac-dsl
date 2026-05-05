@@ -631,7 +631,7 @@ const StepModal = ({ open, step, stepType, onClose, onSaveStep, events, definedV
 // ═══════════════════════════════════════════════════════════════════════
 const TXN_COLOR = '#0288D1';
 
-const TransactionModal = ({ open, txn, onClose, onSaveTxn, onTest, amountOptions, subIdOptions, eventFieldOptions, dateOptions }) => {
+const TransactionModal = ({ open, txn, onClose, onSaveTxn, onTest, transactionDefinitions, amountOptions, subIdOptions, eventFieldOptions, dateOptions }) => {
   const [local, setLocal] = useState(txn || {});
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState(null);
@@ -671,6 +671,10 @@ const TransactionModal = ({ open, txn, onClose, onSaveTxn, onTest, amountOptions
       setSaveError('Transaction Type is required.');
       return;
     }
+    if (transactionDefinitions && transactionDefinitions.length > 0 && !transactionDefinitions.includes(local.type)) {
+      setSaveError(`Transaction type "${local.type}" is not in the loaded transaction list. Select a valid type or upload a Reference Data File with the required types.`);
+      return;
+    }
     if (!local.postingDate) {
       setSaveError('Posting Date is required — pick a date-typed event field or variable.');
       return;
@@ -703,13 +707,34 @@ const TransactionModal = ({ open, txn, onClose, onSaveTxn, onTest, amountOptions
       <DialogContent sx={{ pt: 2, overflow: 'auto' }}>
         {/* ── Identity ── */}
         <SectionLabel>Transaction Identity</SectionLabel>
-        <TextField
-          size="small" fullWidth required
-          label="Transaction Type *"
-          value={local.type || ''}
-          onChange={(e) => update('type', e.target.value)}
-          placeholder="e.g., Calculation Result, Interest Accrual"
-          helperText="A short label that identifies this transaction in the ledger."
+        {transactionDefinitions && transactionDefinitions.length === 0 && (
+          <Alert severity="warning" sx={{ mb: 1.5, fontSize: '0.75rem' }}>
+            No transaction types loaded. Upload a Reference Data File (.xlsx) with a <em>transactions</em> sheet to populate this list.
+          </Alert>
+        )}
+        <Autocomplete
+          size="small"
+          fullWidth
+          options={transactionDefinitions || []}
+          value={local.type || null}
+          onChange={(_, val) => update('type', val || '')}
+          onInputChange={(_, val, reason) => { if (reason === 'input') update('type', val); }}
+          isOptionEqualToValue={(opt, val) => opt === val}
+          freeSolo={false}
+          renderInput={(params) => (
+            <TextField {...params}
+              required
+              label="Transaction Type *"
+              placeholder={transactionDefinitions && transactionDefinitions.length > 0 ? 'Select a transaction type' : 'Upload a Reference Data File first'}
+              helperText="A short label that identifies this transaction in the ledger."
+              error={!!saveError && (!local.type || (transactionDefinitions?.length > 0 && !transactionDefinitions.includes(local.type)))}
+            />
+          )}
+          noOptionsText={
+            <Typography variant="caption" color="text.secondary">
+              No transaction types loaded. Upload a Reference Data File first.
+            </Typography>
+          }
           sx={{ mb: 2 }}
         />
 
@@ -841,7 +866,8 @@ const TransactionModal = ({ open, txn, onClose, onSaveTxn, onTest, amountOptions
       <DialogActions sx={{ px: 3, py: 2, borderTop: '1px solid #E9ECEF' }}>
         <Button onClick={onClose} color="inherit">Cancel</Button>
         <Box sx={{ flex: 1 }} />
-        <Button onClick={handleSave} variant="contained" disabled={!local.type}
+        <Button onClick={handleSave} variant="contained"
+          disabled={!local.type || (transactionDefinitions && transactionDefinitions.length > 0 && !transactionDefinitions.includes(local.type))}
           startIcon={<Save size={14} />}>
           Save Transaction
         </Button>
@@ -856,7 +882,7 @@ const TransactionModal = ({ open, txn, onClose, onSaveTxn, onTest, amountOptions
 // The main screen shows a flat list of steps. Clicking "Add Step" opens
 // a modal for calc / condition / iteration. Steps are draggable.
 // ═══════════════════════════════════════════════════════════════════════
-const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialData }) => {
+const AccountingRuleBuilder = ({ events, dslFunctions, transactionDefinitions, onClose, onSave, initialData }) => {
   // ── Rule-level state ──
   const [ruleName, setRuleName] = useState(initialData?.name || '');
   const [rulePriority, setRulePriority] = useState(initialData?.priority ?? '');
@@ -900,10 +926,18 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
   // ── Output options ──
   // Transactions are first-class; the legacy `createTransaction` boolean is kept
   // for backward compat only — the UI now treats `transactions.length > 0` as truth.
-  const [outputs, setOutputs] = useState(
-    initialData?.outputs?.printResult !== undefined ? initialData.outputs :
-    { printResult: true, createTransaction: false, transactions: [] }
-  );
+  // NOTE: Always merge initialData.outputs (don't gate on `printResult`) — the
+  // agent's `add_transaction_to_rule` writes only `transactions` + `createTransaction`
+  // and never sets `printResult`, so the previous gated init silently dropped
+  // agent-added transactions when the rule was reopened.
+  const [outputs, setOutputs] = useState(() => {
+    const src = initialData?.outputs || {};
+    return {
+      printResult: src.printResult !== undefined ? src.printResult : true,
+      createTransaction: src.createTransaction ?? ((src.transactions || []).length > 0),
+      transactions: Array.isArray(src.transactions) ? src.transactions : [],
+    };
+  });
   const [inlineComment, setInlineComment] = useState(initialData?.inlineComment || false);
   const [commentText, setCommentText] = useState(initialData?.commentText || '');
 
@@ -918,6 +952,41 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
   const [savedRulesVarNames, setSavedRulesVarNames] = useState([]);
   const [savedRulesVars, setSavedRulesVars] = useState([]);
   const [savedRulesRaw, setSavedRulesRaw] = useState([]);
+
+  // ── Listen for agent-driven rule mutations and re-fetch the open rule.
+  // Fixes the "Transactions panel stays empty even though the agent added
+  // 6 entries" bug — the agent writes straight to the DB, the open builder
+  // never knew about it.
+  useEffect(() => {
+    if (!ruleId) return undefined;
+    const handler = async (evt) => {
+      try {
+        const detail = evt?.detail || {};
+        if (detail.rule_id && detail.rule_id !== ruleId) return;
+        const res = await fetch(`${API}/saved-rules/${ruleId}`);
+        if (!res.ok) return;
+        const fresh = await res.json();
+        if (!fresh || !fresh.id) return;
+        setRuleName(fresh.name || '');
+        setRulePriority(fresh.priority ?? '');
+        setInlineComment(!!fresh.inlineComment);
+        setCommentText(fresh.commentText || '');
+        if (fresh.outputs && fresh.outputs.printResult !== undefined) {
+          setOutputs(fresh.outputs);
+        } else if (fresh.outputs) {
+          setOutputs({
+            printResult: fresh.outputs.printResult ?? true,
+            createTransaction: fresh.outputs.createTransaction ?? false,
+            transactions: fresh.outputs.transactions || [],
+          });
+        }
+        setSteps(convertInitialDataToSteps(fresh));
+      } catch (_) { /* ignore */ }
+    };
+    window.addEventListener('dsl-rule-changed', handler);
+    return () => window.removeEventListener('dsl-rule-changed', handler);
+  }, [ruleId]);
+
   useEffect(() => {
     (async () => {
       try {
@@ -2354,6 +2423,7 @@ const AccountingRuleBuilder = ({ events, dslFunctions, onClose, onSave, initialD
         onClose={() => { setTxnModalOpen(false); setEditingTxnIndex(null); }}
         onSaveTxn={saveTransactionFromModal}
         onTest={testTransactionDraft}
+        transactionDefinitions={transactionDefinitions || []}
         amountOptions={(() => {
           const varNames = [];
           steps.forEach(s => {

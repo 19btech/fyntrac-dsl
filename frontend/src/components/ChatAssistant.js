@@ -1,13 +1,14 @@
 import React, { useState, useRef, useEffect, useCallback } from "react";
 import { useToast } from "./ToastProvider";
-import { Send, RotateCcw, AlertTriangle, Square, Sparkles } from "lucide-react";
+import { Send, RotateCcw, AlertTriangle, Square, Sparkles, Bot, MessageSquare, PanelRightClose, PanelRightOpen } from "lucide-react";
 import ModelSelector from "./ModelSelector";
 import AgentMessage from "./agent/AgentMessage";
+import AgentRunMessage from "./agent/AgentRunMessage";
 import { runAgentPipeline, generateMessageId } from "../agent/agentPipeline";
 import { detectFunctionMention, getExplanation, formatForChat, detectConceptMention, getConcept, formatConceptForChat } from "../agent/testing/explanationStore";
 import "./ChatAssistant.css";
 
-const ChatAssistantComponent = ({ dslFunctions, events, onInsertCode, onOverwriteCode, editorCode, consoleOutput, editorRef, monacoRef, providerRefreshKey, uiContext }, ref) => {
+const ChatAssistantComponent = ({ dslFunctions, events, onInsertCode, onOverwriteCode, editorCode, consoleOutput, editorRef, monacoRef, providerRefreshKey, uiContext, onAgentDataChange, collapsed = false, onToggleCollapsed }, ref) => {
   const toast = useToast();
 
   const [messages, setMessages] = useState(() => {
@@ -15,7 +16,11 @@ const ChatAssistantComponent = ({ dslFunctions, events, onInsertCode, onOverwrit
       const saved = localStorage.getItem('chatMessages');
       if (saved) {
         const parsed = JSON.parse(saved);
-        return parsed.filter(m => m.role === 'user' || (m.role === 'assistant' && m.content));
+        return parsed.filter(m =>
+          m.role === 'user'
+          || (m.role === 'assistant' && m.content)
+          || (m.role === 'agent-run' && m.task)
+        );
       }
       return [];
     } catch (e) {
@@ -24,6 +29,9 @@ const ChatAssistantComponent = ({ dslFunctions, events, onInsertCode, onOverwrit
   });
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
+  // When an agent run is active, AgentRunMessage publishes its stop handler
+  // here so the chat input's send button can double as a Stop button.
+  const [stopHandler, setStopHandler] = useState(null);
   const [sessionId, setSessionId] = useState(() => {
     try {
       return localStorage.getItem('chatSessionId') || null;
@@ -32,8 +40,15 @@ const ChatAssistantComponent = ({ dslFunctions, events, onInsertCode, onOverwrit
     }
   });
   const [selectedModel, setSelectedModel] = useState("");
+  const [agentMode, setAgentMode] = useState(() => {
+    try { return localStorage.getItem('chatAgentMode') === '1'; } catch (e) { return false; }
+  });
   const scrollRef = useRef(null);
   const inputRef = useRef(null);
+
+  useEffect(() => {
+    try { localStorage.setItem('chatAgentMode', agentMode ? '1' : '0'); } catch (e) { /* ignore */ }
+  }, [agentMode]);
 
   const handleModelChange = useCallback((model) => {
     setSelectedModel(model);
@@ -41,6 +56,14 @@ const ChatAssistantComponent = ({ dslFunctions, events, onInsertCode, onOverwrit
 
   React.useImperativeHandle(ref, () => ({
     clearChat: () => {
+      // Best-effort: tell backend to drop any persisted agent memory for this
+      // chat session so a follow-up message starts from a clean slate.
+      const sid = sessionId;
+      if (sid) {
+        try {
+          fetch(`/api/agent/sessions/${encodeURIComponent(sid)}/reset`, { method: 'POST' }).catch(() => {});
+        } catch (e) { /* ignore */ }
+      }
       setMessages([]);
       setSessionId(null);
       try {
@@ -53,6 +76,14 @@ const ChatAssistantComponent = ({ dslFunctions, events, onInsertCode, onOverwrit
         setMessages(prev => [...prev, { role: "user", content: message }]);
         handleSendWithMessage(message);
       }
+    },
+    // Variant that forces agent mode for the next send (used by quick-action
+    // buttons such as the Event Data viewer's "Generate Sample" button).
+    sendAgentMessage: (message) => {
+      if (!message.trim()) return;
+      setAgentMode(true);
+      setMessages(prev => [...prev, { role: "user", content: message }]);
+      handleSendWithMessage(message, { forceAgent: true });
     },
     // Silent variant used by the Ask AI button: no user bubble is shown.
     // funcName is the display name (e.g. "rate"); message is the full prompt.
@@ -114,15 +145,43 @@ const ChatAssistantComponent = ({ dslFunctions, events, onInsertCode, onOverwrit
 
   useEffect(() => {
     try {
-      const persistable = messages.filter(m => m.role === 'user' || (m.role === 'assistant' && m.content));
+      const persistable = messages.filter(m =>
+        m.role === 'user'
+        || (m.role === 'assistant' && m.content)
+        || (m.role === 'agent-run' && m.task)
+      );
       localStorage.setItem('chatMessages', JSON.stringify(persistable));
       if (sessionId) localStorage.setItem('chatSessionId', sessionId);
       else localStorage.removeItem('chatSessionId');
     } catch (e) { /* ignore */ }
   }, [messages, sessionId]);
 
-  const handleSendWithMessage = async (userMessage) => {
+  const handleSendWithMessage = async (userMessage, opts = {}) => {
     setLoading(true);
+
+    // Agent mode: spawn an autonomous run instead of the explanation pipeline.
+    if (agentMode || opts.forceAgent) {
+      const runKey = generateMessageId();
+      // Ensure a stable session_id exists so the agent runtime can persist
+      // conversation history across runs in the same chat.
+      let sid = sessionId;
+      if (!sid) {
+        try {
+          sid = (window.crypto && window.crypto.randomUUID)
+            ? window.crypto.randomUUID()
+            : `s_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+        } catch (e) {
+          sid = `s_${Date.now()}`;
+        }
+        setSessionId(sid);
+        try { localStorage.setItem('chatSessionId', sid); } catch (e) { /* ignore */ }
+      }
+      setMessages(prev => [...prev, { role: 'agent-run', runKey, task: userMessage, model: selectedModel || undefined }]);
+      // The AgentRunMessage component manages its own lifecycle; we just
+      // need to clear the typing indicator once the SSE stream resolves.
+      // It calls onComplete; we wire that below in render.
+      return;
+    }
 
     // Check if the user is asking about a known DSL function.
     // If we have a pre-built explanation, inject it as an instant response
@@ -206,7 +265,42 @@ const ChatAssistantComponent = ({ dslFunctions, events, onInsertCode, onOverwrit
   };
 
   return (
-    <div className="vsc-chat" data-testid="chat-assistant">
+    collapsed ? (
+      <div
+        className="vsc-chat vsc-chat-collapsed"
+        data-testid="chat-assistant-collapsed"
+        style={{
+          width: 44,
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'center',
+          padding: '8px 0',
+          gap: 8,
+          transition: 'width 200ms ease',
+        }}
+      >
+        <button
+          className="vsc-icon-btn"
+          onClick={onToggleCollapsed}
+          title="Expand AI Assistant"
+          aria-label="Expand AI Assistant"
+        >
+          <PanelRightOpen size={18} />
+        </button>
+        <div title="AI Assistant" style={{ color: '#6C757D', marginTop: 4 }}>
+          <Sparkles size={18} />
+        </div>
+        {messages.filter(m => !m._hidden).length > 0 && (
+          <div
+            title={`${messages.filter(m => !m._hidden).length} message(s)`}
+            style={{ color: '#6C757D', marginTop: 4 }}
+          >
+            <MessageSquare size={16} />
+          </div>
+        )}
+      </div>
+    ) : (
+    <div className="vsc-chat" data-testid="chat-assistant" style={{ transition: 'width 200ms ease' }}>
       {/* Header - Fyntrac style */}
       <div className="vsc-chat-header">
         <div className="vsc-header-left">
@@ -215,11 +309,23 @@ const ChatAssistantComponent = ({ dslFunctions, events, onInsertCode, onOverwrit
           </div>
           <span className="vsc-chat-title">AI Assistant</span>
         </div>
-        {messages.filter(m => !m._hidden).length > 0 && (
-          <button className="vsc-icon-btn" onClick={handleClearChat} title="New conversation" disabled={loading}>
-            <RotateCcw size={14} />
-          </button>
-        )}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+          {messages.filter(m => !m._hidden).length > 0 && (
+            <button className="vsc-icon-btn" onClick={handleClearChat} title="New conversation" disabled={loading}>
+              <RotateCcw size={14} />
+            </button>
+          )}
+          {onToggleCollapsed && (
+            <button
+              className="vsc-icon-btn"
+              onClick={onToggleCollapsed}
+              title="Collapse AI Assistant"
+              aria-label="Collapse AI Assistant"
+            >
+              <PanelRightClose size={14} />
+            </button>
+          )}
+        </div>
       </div>
 
       {/* Messages */}
@@ -227,16 +333,24 @@ const ChatAssistantComponent = ({ dslFunctions, events, onInsertCode, onOverwrit
         {/* Empty state */}
         {messages.filter(m => !m._hidden).length === 0 && (
           <div className="vsc-empty-state">
-            <p className="vsc-empty-title">How can I help with your calculations?</p>
+            <p className="vsc-empty-title">
+              {agentMode ? "What should the agent build?" : "How can I help with your calculations?"}
+            </p>
             <p className="vsc-empty-subtitle">
-              I explain DSL functions with worked examples and walk you through the Rule Builder step by step. For full code generation, use the AI Rule Generator inside the Rule Builder.
+              {agentMode
+                ? "I'll define events, generate sample data, write rules with DSL functions only (no custom code), then dry-run and self-debug. Destructive actions need your approval."
+                : "I explain DSL functions with worked examples and walk you through the Rule Builder step by step. For full code generation, use the AI Rule Generator inside the Rule Builder."}
             </p>
             <div className="vsc-suggestions">
-              {[
+              {(agentMode ? [
+                "Build IFRS9 ECL stage 1/2/3 with sample data for 5 loans",
+                "Create an amortization rule for fixed-rate loans and verify totals",
+                "Generate sample data for the Loan event and dry-run my latest template",
+              ] : [
                 "What does pmt() do? Show me with sample numbers.",
                 "Walk me through building a loan amortization rule",
                 "How do I add a Schedule step in the Rule Builder?",
-              ].map((q, i) => (
+              ]).map((q, i) => (
                 <button key={i} className="vsc-suggestion-btn" onClick={() => setInput(q)}>
                   {q}
                 </button>
@@ -251,6 +365,34 @@ const ChatAssistantComponent = ({ dslFunctions, events, onInsertCode, onOverwrit
             return (
               <div key={idx} className="vsc-msg vsc-msg-user">
                 <div className="vsc-msg-content">{msg.content}</div>
+              </div>
+            );
+          }
+
+          if (msg.role === 'agent-run') {
+            const isHistorical = Array.isArray(msg.events) && msg.events.length > 0;
+            return (
+              <div key={idx} className="vsc-msg vsc-msg-agent">
+                <AgentRunMessage
+                  key={msg.runKey || idx}
+                  task={msg.task}
+                  model={msg.model}
+                  sessionId={sessionId}
+                  initialEvents={isHistorical ? msg.events : undefined}
+                  initialStatus={isHistorical ? (msg.finalStatus || 'done') : undefined}
+                  onAgentDataChange={onAgentDataChange}
+                  onStopHandleReady={(fn) => setStopHandler(() => fn)}
+                  onComplete={(finalEv, allEvents) => {
+                    setLoading(false);
+                    setStopHandler(null);
+                    // Persist the completed run so a refresh keeps it visible.
+                    setMessages(prev => prev.map((m, i) =>
+                      i === idx && m.role === 'agent-run'
+                        ? { ...m, events: allEvents, finalStatus: finalEv?.status || 'done' }
+                        : m
+                    ));
+                  }}
+                />
               </div>
             );
           }
@@ -287,9 +429,31 @@ const ChatAssistantComponent = ({ dslFunctions, events, onInsertCode, onOverwrit
         })}
       </div>
 
-      {/* Footer: model selector + input */}
+      {/* Footer: model selector + mode toggle + input */}
       <div className="vsc-chat-footer">
-        <ModelSelector onModelChange={handleModelChange} refreshKey={providerRefreshKey} />
+        <div className="vsc-footer-row">
+          <ModelSelector onModelChange={handleModelChange} refreshKey={providerRefreshKey} />
+          <div className="vsc-mode-toggle" role="group" aria-label="Assistant mode" data-testid="agent-mode-toggle">
+            <button
+              type="button"
+              className={`vsc-mode-btn ${!agentMode ? 'active' : ''}`}
+              onClick={() => setAgentMode(false)}
+              title="Ask mode — explanations & guided help"
+              disabled={loading}
+            >
+              <MessageSquare size={12} /> Chat
+            </button>
+            <button
+              type="button"
+              className={`vsc-mode-btn ${agentMode ? 'active' : ''}`}
+              onClick={() => setAgentMode(true)}
+              title="Agent mode — autonomous build with tools"
+              disabled={loading}
+            >
+              <Bot size={12} /> Agent
+            </button>
+          </div>
+        </div>
         <div className={`vsc-input-area ${loading ? 'disabled' : ''}`}>
           {loading && (
             <div className="vsc-progress-bar">
@@ -301,23 +465,25 @@ const ChatAssistantComponent = ({ dslFunctions, events, onInsertCode, onOverwrit
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder={loading ? "Generating..." : "Ask a question..."}
+            placeholder={loading ? "Generating..." : (agentMode ? "Describe what to build..." : "Ask a question...")}
             className="vsc-input"
             rows={1}
             disabled={loading}
             data-testid="chat-input"
           />
           <button
-            onClick={handleSendMessage}
-            disabled={!input.trim() || loading}
+            onClick={stopHandler ? () => { try { stopHandler(); } catch (_) {} setStopHandler(null); } : handleSendMessage}
+            disabled={stopHandler ? false : (!input.trim() || loading)}
             className="vsc-send-btn"
-            data-testid="send-message-button"
+            data-testid={stopHandler ? "stop-agent-button" : "send-message-button"}
+            title={stopHandler ? "Stop agent" : "Send"}
           >
-            {loading ? <Square size={14} /> : <Send size={14} />}
+            {stopHandler || loading ? <Square size={14} /> : <Send size={14} />}
           </button>
         </div>
       </div>
     </div>
+    )
   );
 };
 

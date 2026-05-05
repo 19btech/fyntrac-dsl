@@ -1,0 +1,80 @@
+[{
+  "_id": {
+    "$oid": "69f51df7c0f2446883533ae1"
+  },
+  "name": "PAYMENT_UPB",
+  "exclusive": 1,
+  "isGL": 1,
+  "isReplayable": 0,
+  "_class": "com.fyntrac.common.entity.Transactions"
+},
+{
+  "_id": {
+    "$oid": "69f51df7c0f2446883533ae2"
+  },
+  "name": "PAYMENT_INTEREST",
+  "exclusive": 1,
+  "isGL": 1,
+  "isReplayable": 0,
+  "_class": "com.fyntrac.common.entity.Transactions"
+},
+{
+  "_id": {
+    "$oid": "69f51df7c0f2446883533ae3"
+  },
+  "name": "SERVICING_INTEREST_ACCRUAL",
+  "exclusive": 1,
+  "isGL": 1,
+  "isReplayable": 0,
+  "_class": "com.fyntrac.common.entity.Transactions"
+},
+{
+  "_id": {
+    "$oid": "69f51df7c0f2446883533ae4"
+  },
+  "name": "PURCHASE_INTEREST",
+  "exclusive": 1,
+  "isGL": 1,
+  "isReplayable": 0,
+  "_class": "com.fyntrac.common.entity.Transactions"
+},
+{
+  "_id": {
+    "$oid": "69f51df7c0f2446883533ae5"
+  },
+  "name": "PURCHASE_UPB",
+  "exclusive": 1,
+  "isGL": 1,
+  "isReplayable": 0,
+  "_class": "com.fyntrac.common.entity.Transactions"
+},
+{
+  "_id": {
+    "$oid": "69f51df7c0f2446883533ae6"
+  },
+  "name": "REMIT",
+  "exclusive": 0,
+  "isGL": 0,
+  "isReplayable": 0,
+  "_class": "com.fyntrac.common.entity.Transactions"
+},
+{
+  "_id": {
+    "$oid": "69f51df7c0f2446883533ae7"
+  },
+  "name": "INTEREST_ADJUSTMENT",
+  "exclusive": 1,
+  "isGL": 1,
+  "isReplayable": 0,
+  "_class": "com.fyntrac.common.entity.Transactions"
+},
+{
+  "_id": {
+    "$oid": "69f51df7c0f2446883533ae8"
+  },
+  "name": "PRINCIPAL_ADJUSTMENT",
+  "exclusive": 1,
+  "isGL": 1,
+  "isReplayable": 0,
+  "_class": "com.fyntrac.common.entity.Transactions"
+}]

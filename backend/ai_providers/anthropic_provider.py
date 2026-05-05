@@ -173,3 +173,123 @@ class AnthropicProvider(AIProvider):
         except Exception as exc:
             error_type, detail = _classify_error(exc)
             raise AIError(error_type, "anthropic", detail) from exc
+
+    async def chat_with_tools(
+        self,
+        *,
+        api_key: str,
+        model: str,
+        messages: list[dict],
+        tools: list[dict],
+        temperature: float = 0.1,
+        tool_choice: str | None = None,
+    ) -> dict:
+        import json as _json
+        try:
+            import anthropic
+            client = anthropic.Anthropic(api_key=api_key)
+
+            # I18: pre-pass — drop assistant tool_use blocks whose ids never
+            # got a tool_result reply (otherwise Anthropic returns 400).
+            replied_ids: set[str] = set()
+            for m in messages:
+                if m.get("role") == "tool" and m.get("tool_call_id"):
+                    replied_ids.add(str(m["tool_call_id"]))
+
+            # Extract system prompt — Anthropic takes it as a separate param.
+            system_text = ""
+            anth_messages: list[dict] = []
+            for m in messages:
+                if m.get("role") == "system":
+                    system_text = (system_text + "\n" + (m.get("content") or "")).strip()
+                    continue
+                if m.get("role") == "assistant":
+                    parts = []
+                    if m.get("content"):
+                        parts.append({"type": "text", "text": m["content"]})
+                    for tc in (m.get("tool_calls") or []):
+                        if str(tc.get("id") or "") not in replied_ids:
+                            continue   # orphan — skip
+                        parts.append({
+                            "type": "tool_use",
+                            "id": tc["id"],
+                            "name": tc["name"],
+                            "input": tc.get("arguments") or {},
+                        })
+                    if parts:
+                        anth_messages.append({"role": "assistant", "content": parts})
+                elif m.get("role") == "tool":
+                    anth_messages.append({
+                        "role": "user",
+                        "content": [{
+                            "type": "tool_result",
+                            "tool_use_id": m.get("tool_call_id"),
+                            "content": m.get("content") or "",
+                        }],
+                    })
+                else:  # user
+                    anth_messages.append({
+                        "role": "user",
+                        "content": m.get("content") or "",
+                    })
+
+            anth_tools = [
+                {
+                    "name": t["name"],
+                    "description": t.get("description", ""),
+                    "input_schema": t.get("parameters", {"type": "object", "properties": {}}),
+                }
+                for t in tools
+            ]
+
+            # I19: tool_choice mapping. Internal "required" → Anthropic
+            # {"type":"any"}; "none"/None → default (auto).
+            anth_tool_choice = None
+            if tool_choice == "required":
+                anth_tool_choice = {"type": "any"}
+            elif tool_choice and tool_choice not in ("auto", "none"):
+                anth_tool_choice = {"type": "tool", "name": tool_choice}
+
+            create_kwargs = dict(
+                model=model,
+                max_tokens=4096,
+                temperature=temperature,
+                system=system_text or "You are a helpful assistant.",
+                messages=anth_messages,
+                tools=anth_tools,
+            )
+            if anth_tool_choice:
+                create_kwargs["tool_choice"] = anth_tool_choice
+            response = await asyncio.to_thread(
+                client.messages.create,
+                **create_kwargs,
+            )
+
+            text_chunks = []
+            tool_calls_out = []
+            for block in (response.content or []):
+                btype = getattr(block, "type", None)
+                if btype == "text":
+                    text_chunks.append(block.text)
+                elif btype == "tool_use":
+                    tool_calls_out.append({
+                        "id": block.id,
+                        "name": block.name,
+                        "arguments": block.input or {},
+                    })
+            return {
+                "message": {
+                    "role": "assistant",
+                    "content": "".join(text_chunks) or None,
+                    "tool_calls": tool_calls_out,
+                },
+                "tool_calls": tool_calls_out,
+                "finish_reason": response.stop_reason,
+                "usage": {
+                    "prompt_tokens": getattr(response.usage, "input_tokens", None),
+                    "completion_tokens": getattr(response.usage, "output_tokens", None),
+                } if response.usage else None,
+            }
+        except Exception as exc:
+            err_type, detail = _classify_error(exc)
+            raise AIError(err_type, "anthropic", detail) from exc

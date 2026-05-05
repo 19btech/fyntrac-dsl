@@ -1,39 +1,43 @@
 version: '3.8'
 
 services:
-  dsl-studio:
+  dsl:
     build:
       context: .
       dockerfile: backend/Dockerfile
-    container_name: dsl-studio
+    container_name: dsl
     ports:
       - "8000:8000"
     environment:
-      # Connect to host's MongoDB via host.docker.internal
-      - MONGO_URL=mongodb://root:${MONGODB_PSWD}@host.docker.internal:${MONGODB_PORT:-27017}/${MONGODB_NAME}?authSource=admin
-      - DB_NAME=${MONGODB_NAME}
+      # Connect to host's MongoDB via fyntrac-network
+      - MONGO_URL=mongodb://root:${MONGODB_PSWD:-R3s3rv%23313}@mongodb:${MONGODB_PORT:-27017}/${MONGODB_NAME:-master}?authSource=admin
+      - DB_NAME=${MONGODB_NAME:-DSL_STUDIO_master}
       - HOST=0.0.0.0
       - PORT=8000
       - GOOGLE_API_KEY=${GOOGLE_API_KEY:-}
       - ZITADEL_ISSUER_URI=${ZITADEL_ISSUER_URI:-}
       - ZITADEL_PROJECT_ID=${ZITADEL_PROJECT_ID:-}
-      - DATALOADER_BASE_URI=${DATALOADER_BASE_URI:-http://localhost:8585/api/dataloader}
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
+      - DATALOADER_BASE_URI=${DATALOADER_BASE_URI:-http://fyntrac-gateway:8585/api/dataloader}
+    networks:
+      - fyntrac-network
 
-  dsl-studio-ui:
+  dsl-ui:
     build:
       context: ./frontend
       dockerfile: Dockerfile
-    container_name: dsl-studio-ui
+    container_name: dsl-ui
     ports:
       - "3000:80"
     environment:
       # Nginx will substitute this in the default.conf
       # We pull GATEWAY_URI from the host environment (e.g. .dev_profile)
       # with a fallback to host.docker.internal
-      - GATEWAY_URI=${GATEWAY_URI:-http://host.docker.internal:8585}
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
+      - GATEWAY_URI=${GATEWAY_URI:-http://fyntrac-gateway:8585}
     depends_on:
-      - dsl-studio
+      - dsl
+    networks:
+      - fyntrac-network
+
+networks:
+  fyntrac-network:
+    external: true

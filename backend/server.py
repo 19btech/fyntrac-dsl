@@ -1,6 +1,8 @@
-from fastapi import FastAPI, APIRouter, UploadFile, File, HTTPException, WebSocket, WebSocketDisconnect, Request
-import httpx
-from fastapi.responses import StreamingResponse
+from fastapi import FastAPI, APIRouter, UploadFile, File, HTTPException, WebSocket, WebSocketDisconnect, Body, Request
+from contextvars import ContextVar
+from .auth import verify_jwt
+from fastapi import Depends, Header, Request
+from fastapi.responses import StreamingResponse, Response
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 import os
@@ -15,9 +17,7 @@ import pandas as pd
 import json
 import re
 import ast
-from contextvars import ContextVar
-from .auth import verify_jwt
-from fastapi import Depends, Header
+from pydantic import BaseModel
 
 
 # ---------------------------------------------------------------------------
@@ -337,6 +337,27 @@ except Exception:
             get_provider, PROVIDER_INFO, build_agent_context,
             encrypt_key, decrypt_key, AIError,
         )
+
+# Autonomous agent runtime (tools + plan/act/observe loop)
+try:
+    from backend.agent import (
+        run_agent as agent_run, submit_approval as agent_submit_approval,
+        cancel_run as agent_cancel_run, configure_bridge as agent_configure_bridge,
+        DESTRUCTIVE_TOOLS as AGENT_DESTRUCTIVE_TOOLS,
+    )
+except Exception:
+    try:
+        from agent import (
+            run_agent as agent_run, submit_approval as agent_submit_approval,
+            cancel_run as agent_cancel_run, configure_bridge as agent_configure_bridge,
+            DESTRUCTIVE_TOOLS as AGENT_DESTRUCTIVE_TOOLS,
+        )
+    except Exception:
+        from .agent import (
+            run_agent as agent_run, submit_approval as agent_submit_approval,
+            cancel_run as agent_cancel_run, configure_bridge as agent_configure_bridge,
+            DESTRUCTIVE_TOOLS as AGENT_DESTRUCTIVE_TOOLS,
+        )
 # Support running in different execution contexts: prefer package import, fallback to module-level
 try:
     from backend.dsl_functions import DSL_FUNCTIONS, DSL_FUNCTION_METADATA, normalize_date
@@ -387,6 +408,7 @@ class DatabaseProxy:
 # Global db object that all routes use
 db = DatabaseProxy()
 
+
 # --- Shared error message table for AI chat endpoints ---
 ERROR_MESSAGES = {
     "no_provider": "You haven't set up an AI provider yet. Go to Settings \u2192 AI Agent Setup to get started.",
@@ -402,7 +424,7 @@ ERROR_MESSAGES = {
 app = FastAPI()
 
 @app.middleware("http")
-async def tenant_middleware(request, call_next):
+async def tenant_middleware(request: Request, call_next):
     # Extract tenant from X-Tenant header (sent by gateway)
     tenant = request.headers.get("X-Tenant")
     
@@ -436,11 +458,11 @@ async def tenant_middleware(request, call_next):
 
 @app.get("/health")
 @app.get("/api/health")
-@app.get("/api/dsl_studio/health")
+@app.get("/api/dsl/health")
 async def health_check():
     return {"status": "ok"}
 
-# Router secured with ZITADEL JWT validation
+# Router without /api prefix - proxy will handle the /api part
 api_router = APIRouter(dependencies=[Depends(verify_jwt)])
 
 # Configure logging
@@ -458,7 +480,8 @@ in_memory_data = {
     "templates": [],
     "template_artifacts": [],
     "custom_functions": [],
-    "transaction_reports": []
+    "transaction_reports": [],
+    "transaction_definitions": [],
 }
 # Flag to track if we should use in-memory storage
 USE_IN_MEMORY = False
@@ -1676,10 +1699,24 @@ async def load_simple_sample():
         doc['created_at'] = doc['created_at'].isoformat()
         await db.event_data.insert_one(doc)
 
+        # ── Transaction Definitions ─────────────────────────────────────────
+        await db.transaction_definitions.delete_many({})
+        sample_txn_types = [
+            "InterestAccrual",
+            "PrincipalPayment",
+            "FeeAmortization",
+            "Revenue",
+            "LeaseExpense",
+            "NPVAnalysis",
+        ]
+        for txn_type in sample_txn_types:
+            await db.transaction_definitions.insert_one({"transactiontype": txn_type})
+
         return {
             "message": "Simple sample data loaded successfully",
             "events": ["LoanActivity", "RateSchedule"],
             "instruments": ["INST-001", "INST-002"],
+            "transaction_types": sample_txn_types,
         }
     except Exception as e:
         logger.exception("Failed to load simple sample data")
@@ -1904,11 +1941,11 @@ print(concat("Projected Investment Value: ", future_val))
 ## Use global postingdate and effectivedate (no prefixes needed)
 
 ## Only create fee transaction if the amount is greater than 0
-if(gt(loan_fee, 0), createTransaction(postingdate, effectivedate, "Loan Processing Fee", loan_fee), 0)
+if(gt(loan_fee, 0), createTransaction(postingdate, effectivedate, "LoanProcessingFee", loan_fee), 0)
 
 ## Record the monthly interest accrual
 monthly_interest = multiply(principal, monthly_rate)
-createTransaction(postingdate, effectivedate, "Interest Accrual", monthly_interest)"""
+createTransaction(postingdate, effectivedate, "InterestAccrual", monthly_interest)"""
         
         return {
             "message": "Sample data loaded successfully",
@@ -1977,11 +2014,11 @@ print(concat("Projected Investment Value: ", future_val))
 ## Use global postingdate and effectivedate (no prefixes needed)
 
 ## Only create fee transaction if the amount is greater than 0
-if(gt(loan_fee, 0), createTransaction(postingdate, effectivedate, "Loan Processing Fee", loan_fee), 0)
+if(gt(loan_fee, 0), createTransaction(postingdate, effectivedate, "LoanProcessingFee", loan_fee), 0)
 
 ## Record the monthly interest accrual
 monthly_interest = multiply(principal, monthly_rate)
-createTransaction(postingdate, effectivedate, "Interest Accrual", monthly_interest)"""
+createTransaction(postingdate, effectivedate, "InterestAccrual", monthly_interest)"""
         return {
             "message": "Sample data loaded into memory (DB unavailable)",
             "events": [e['event_name'] for e in SAMPLE_EVENTS],
@@ -1999,6 +2036,7 @@ async def clear_all_data():
         await db.custom_functions.delete_many({})
         await db.saved_rules.delete_many({})
         await db.saved_schedules.delete_many({})
+        await db.transaction_definitions.delete_many({})
 
         # Also clear in-memory fallback data so stale entries don't survive
         global in_memory_data
@@ -2006,12 +2044,13 @@ async def clear_all_data():
         in_memory_data['event_data'] = []
         in_memory_data['transaction_reports'] = []
         in_memory_data['custom_functions'] = []
+        in_memory_data['transaction_definitions'] = []
         in_memory_data.pop('saved_rules', None)
         in_memory_data.pop('saved_schedules', None)
 
         return {
             "message": "All data cleared successfully (templates preserved).",
-            "cleared": ["event_definitions", "event_data", "transaction_reports", "custom_functions", "saved_rules", "saved_schedules"],
+            "cleared": ["event_definitions", "event_data", "transaction_reports", "custom_functions", "saved_rules", "saved_schedules", "transaction_definitions"],
             "preserved": ["templates"]
         }
     except Exception as e:
@@ -2021,94 +2060,134 @@ async def clear_all_data():
 
 @api_router.post("/events/upload")
 async def upload_event_definitions(file: UploadFile = File(...)):
-    """Upload event definitions CSV (EventName, EventField, DataType[, EventType[, EventTable]])"""
+    """Upload Reference Data File (.xlsx) with two sheets:
+    - 'events'       : EventName, EventField, DataType[, EventType[, EventTable]]
+    - 'transactions' : transactiontype (single column, optional)
+    """
     try:
-        # Clear existing event definitions (preserve other collections)
-        try:
-            await db.event_definitions.delete_many({})
-        except Exception:
-            logger.warning("Could not clear event_definitions in DB - continuing with in-memory fallback")
+        if not (file.filename or '').lower().endswith('.xlsx'):
+            raise HTTPException(
+                status_code=400,
+                detail="File must be an Excel file (.xlsx). The Reference Data File format is .xlsx with two sheets: 'events' and 'transactions'."
+            )
         content = await file.read()
-        csv_content = content.decode('utf-8')
-        rows = parse_csv_content(csv_content)
-        
-        if len(rows) < 2:
-            raise HTTPException(status_code=400, detail="CSV must have header and at least one row")
-        
-        # Parse events from CSV
-        events_dict = {}
-        header = rows[0]
-        
-        # Validate header - support optional EventType (4th) and EventTable (5th) columns
-        if len(header) < 3 or header[0].lower() != 'eventname' or header[1].lower() != 'eventfield' or header[2].lower() != 'datatype':
-            raise HTTPException(status_code=400, detail="CSV must have columns: EventName, EventField, DataType[, EventType[, EventTable]]")
+        try:
+            xl = pd.ExcelFile(io.BytesIO(content))
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=f"Invalid Excel file: {exc}")
 
-        # Supported event types and event table values
+        sheet_names_lower = [s.lower() for s in xl.sheet_names]
+
+        # ── Events sheet ───────────────────────────────────────────────────────
+        if 'events' not in sheet_names_lower:
+            raise HTTPException(
+                status_code=400,
+                detail="Excel file must have a sheet named 'events' with columns: EventName, EventField, DataType[, EventType[, EventTable]]"
+            )
+        events_sheet = xl.sheet_names[sheet_names_lower.index('events')]
+        try:
+            events_df = pd.read_excel(xl, sheet_name=events_sheet, header=0, dtype=str)
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=f"Could not read 'events' sheet: {exc}")
+
+        # Normalise column names (strip whitespace)
+        events_df.columns = [str(c).strip() for c in events_df.columns]
+        col_lower_map = {c.lower(): c for c in events_df.columns}
+
+        for req in ('eventname', 'eventfield', 'datatype'):
+            if req not in col_lower_map:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Missing required column in 'events' sheet: '{req}'. Required: EventName, EventField, DataType"
+                )
+
         VALID_EVENT_TYPES = ('activity', 'reference')
         VALID_EVENT_TABLES = ('standard', 'custom')
 
-        # Temporary maps to capture event-level values
+        events_dict = {}
         event_type_map = {}
         event_table_map = {}
 
-        for row in rows[1:]:
-            if len(row) >= 3:
-                event_name = row[0].strip()
-                event_field = row[1].strip()
-                data_type = row[2].strip().lower()
+        for _, row in events_df.iterrows():
+            def _cell(col_key):
+                col = col_lower_map.get(col_key)
+                if col is None:
+                    return None
+                val = row[col]
+                return str(val).strip() if val is not None and not (isinstance(val, float) and pd.isna(val)) and str(val).strip() not in ('', 'nan', 'None') else None
 
-                # Optional columns 4 and 5: EventType and EventTable.
-                # Some CSVs omit EventType and put EventTable in column 4.
-                # Detect that case: if column 4 value matches EventTable values
-                # (standard/custom) but not EventType values (activity/reference),
-                # treat it as EventTable and default EventType to 'activity'.
-                event_type = 'activity'
-                event_table = 'standard'
-                col4 = row[3].strip().lower() if len(row) >= 4 and row[3].strip() else None
-                col5 = row[4].strip().lower() if len(row) >= 5 and row[4].strip() else None
+            event_name = _cell('eventname')
+            event_field = _cell('eventfield')
+            data_type = (_cell('datatype') or '').lower()
 
-                if col4 is not None:
-                    if col4 in VALID_EVENT_TYPES:
-                        # Normal layout: col4 = EventType, col5 = EventTable
-                        event_type = col4
-                        if col5 is not None:
-                            if col5 not in VALID_EVENT_TABLES:
-                                raise HTTPException(status_code=400, detail=f"Invalid eventTable '{row[4]}'. Must be one of: {', '.join(VALID_EVENT_TABLES)}")
-                            event_table = col5
-                    elif col4 in VALID_EVENT_TABLES:
-                        # Shifted layout: col4 = EventTable, EventType defaults to 'activity'
-                        event_table = col4
-                    else:
-                        raise HTTPException(status_code=400, detail=f"Invalid value '{row[3]}' in column 4. Must be an eventType ({', '.join(VALID_EVENT_TYPES)}) or eventTable ({', '.join(VALID_EVENT_TABLES)}).")
+            if not event_name or not event_field or not data_type:
+                continue  # skip blank rows
 
-                # Validate eventTable + eventType combination
-                if event_table == 'standard' and event_type != 'activity':
-                    raise HTTPException(status_code=400, detail=f"Event '{event_name}': standard event table must have eventType 'activity', got '{event_type}'")
+            # Resolve EventType (optional column)
+            event_type = 'activity'
+            et_raw = _cell('eventtype')
+            if et_raw:
+                et_raw_lower = et_raw.lower()
+                if et_raw_lower not in VALID_EVENT_TYPES:
+                    raise HTTPException(status_code=400, detail=f"Invalid eventType '{et_raw}'. Must be one of: {', '.join(VALID_EVENT_TYPES)}")
+                event_type = et_raw_lower
 
-                # Validate datatype
-                if data_type not in ['string', 'date', 'boolean', 'decimal', 'integer', 'int']:
-                    raise HTTPException(status_code=400, detail=f"Invalid datatype '{data_type}'. Must be one of: string, date, boolean, decimal, integer")
+            # Resolve EventTable (optional column)
+            event_table = 'standard'
+            etbl_raw = _cell('eventtable')
+            if etbl_raw:
+                etbl_raw_lower = etbl_raw.lower()
+                if etbl_raw_lower not in VALID_EVENT_TABLES:
+                    raise HTTPException(status_code=400, detail=f"Invalid eventTable '{etbl_raw}'. Must be one of: {', '.join(VALID_EVENT_TABLES)}")
+                event_table = etbl_raw_lower
 
-                # Ensure event_type is consistent across rows for same event
-                if event_name in event_type_map and event_type_map[event_name] != event_type:
-                    raise HTTPException(status_code=400, detail=f"Conflicting eventType values for event '{event_name}'")
-                event_type_map[event_name] = event_type
+            if event_table == 'standard' and event_type != 'activity':
+                raise HTTPException(status_code=400, detail=f"Event '{event_name}': standard event table must have eventType 'activity', got '{event_type}'")
 
-                # Ensure event_table is consistent across rows for same event
-                if event_name in event_table_map and event_table_map[event_name] != event_table:
-                    raise HTTPException(status_code=400, detail=f"Conflicting eventTable values for event '{event_name}'")
-                event_table_map[event_name] = event_table
+            if data_type not in ['string', 'date', 'boolean', 'decimal', 'integer', 'int']:
+                raise HTTPException(status_code=400, detail=f"Invalid datatype '{data_type}'. Must be one of: string, date, boolean, decimal, integer")
 
-                if event_name not in events_dict:
-                    events_dict[event_name] = []
-                events_dict[event_name].append({"name": event_field, "datatype": data_type})
-        
-        # Try to store in database; if DB unavailable, fall back to in-memory storage
+            if event_name in event_type_map and event_type_map[event_name] != event_type:
+                raise HTTPException(status_code=400, detail=f"Conflicting eventType values for event '{event_name}'")
+            event_type_map[event_name] = event_type
+
+            if event_name in event_table_map and event_table_map[event_name] != event_table:
+                raise HTTPException(status_code=400, detail=f"Conflicting eventTable values for event '{event_name}'")
+            event_table_map[event_name] = event_table
+
+            if event_name not in events_dict:
+                events_dict[event_name] = []
+            events_dict[event_name].append({"name": event_field, "datatype": data_type})
+
+        if not events_dict:
+            raise HTTPException(status_code=400, detail="No valid event definitions found in the 'events' sheet.")
+
+        # ── Transactions sheet (optional) ──────────────────────────────────────
+        transaction_types = []
+        if 'transactions' in sheet_names_lower:
+            txn_sheet = xl.sheet_names[sheet_names_lower.index('transactions')]
+            try:
+                txn_df = pd.read_excel(xl, sheet_name=txn_sheet, header=0, dtype=str)
+                # Locate the transactiontype column (case-insensitive, ignore spaces/underscores)
+                txn_col = None
+                for col in txn_df.columns:
+                    if str(col).strip().lower().replace(' ', '').replace('_', '') == 'transactiontype':
+                        txn_col = col
+                        break
+                if txn_col is None and not txn_df.empty:
+                    txn_col = txn_df.columns[0]  # fallback: first column
+                if txn_col is not None:
+                    transaction_types = [
+                        str(v).strip() for v in txn_df[txn_col]
+                        if v is not None and not (isinstance(v, float) and pd.isna(v)) and str(v).strip() not in ('', 'nan', 'None')
+                    ]
+            except Exception as exc:
+                logger.warning(f"Could not read 'transactions' sheet: {exc}")
+
+        # ── Store event definitions ────────────────────────────────────────────
+        stored_in_db = False
         try:
-            # Clear existing events
             await db.event_definitions.delete_many({})
-
-            # Store in database
             for event_name, fields in events_dict.items():
                 evt_type = event_type_map.get(event_name, 'activity')
                 evt_table = event_table_map.get(event_name, 'standard')
@@ -2116,13 +2195,8 @@ async def upload_event_definitions(file: UploadFile = File(...)):
                 doc = event.model_dump()
                 doc['created_at'] = doc['created_at'].isoformat()
                 await db.event_definitions.insert_one(doc)
-
-            return {
-                "message": f"Uploaded {len(events_dict)} event definitions with datatypes",
-                "events": list(events_dict.keys())
-            }
+            stored_in_db = True
         except Exception as e:
-            # Fallback to in-memory storage so tests and offline runs work
             logger.warning(f"Could not write event definitions to DB, using in-memory storage: {e}")
             in_memory_defs = []
             for event_name, fields in events_dict.items():
@@ -2130,17 +2204,29 @@ async def upload_event_definitions(file: UploadFile = File(...)):
                 evt_table = event_table_map.get(event_name, 'standard')
                 event = EventDefinition(event_name=event_name, fields=fields, eventType=evt_type, eventTable=evt_table)
                 doc = event.model_dump()
-                # store created_at as ISO string for consistency with DB format
                 doc['created_at'] = doc['created_at'].isoformat()
                 in_memory_defs.append(doc)
-
             in_memory_data['event_definitions'] = in_memory_defs
-            return {
-                "message": f"Uploaded {len(events_dict)} event definitions to in-memory store",
-                "events": list(events_dict.keys())
-            }
+
+        # ── Store transaction definitions ──────────────────────────────────────
+        try:
+            await db.transaction_definitions.delete_many({})
+            for txn_type in transaction_types:
+                await db.transaction_definitions.insert_one({"transactiontype": txn_type})
+        except Exception as e:
+            logger.warning(f"Could not write transaction definitions to DB: {e}")
+            in_memory_data['transaction_definitions'] = [{"transactiontype": t} for t in transaction_types]
+
+        store_label = "database" if stored_in_db else "in-memory store"
+        return {
+            "message": f"Uploaded {len(events_dict)} event definition(s) and {len(transaction_types)} transaction type(s) to {store_label}",
+            "events": list(events_dict.keys()),
+            "transaction_types": transaction_types,
+        }
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.error(f"Error uploading events: {str(e)}")
+        logger.error(f"Error uploading reference data: {str(e)}")
         raise HTTPException(status_code=400, detail=str(e))
 
 @api_router.get("/events")
@@ -2197,34 +2283,74 @@ async def get_dsl_functions():
 
 
 # Download Event Definitions as CSV
+@api_router.get("/transaction-definitions")
+async def get_transaction_definitions():
+    """Return all loaded transaction types from the Reference Data File."""
+    try:
+        try:
+            docs = await db.transaction_definitions.find({}, {"_id": 0}).to_list(1000)
+        except Exception:
+            docs = in_memory_data.get('transaction_definitions', [])
+        transaction_types = [d.get('transactiontype', '') for d in docs if d.get('transactiontype')]
+        return {"transaction_types": transaction_types}
+    except Exception as e:
+        logger.error(f"Error fetching transaction definitions: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @api_router.get("/events/download")
 async def download_event_definitions():
-    """Download all event definitions as a CSV file"""
+    """Download Reference Data File as .xlsx with two sheets: 'events' and 'transactions'."""
     try:
-        # Try DB first
+        # Load events
         try:
             events = await db.event_definitions.find({}, {"_id": 0}).to_list(1000)
         except Exception:
             events = in_memory_data.get('event_definitions', SAMPLE_EVENTS)
 
-        output = io.StringIO()
-        writer = csv.writer(output)
-        writer.writerow(['EventName', 'EventField', 'DataType', 'EventType', 'EventTable'])
+        # Load transaction definitions
+        try:
+            txn_docs = await db.transaction_definitions.find({}, {"_id": 0}).to_list(1000)
+        except Exception:
+            txn_docs = in_memory_data.get('transaction_definitions', [])
+        transaction_types = [d.get('transactiontype', '') for d in txn_docs if d.get('transactiontype')]
 
+        # Build events rows
+        events_rows = []
         for event in events:
             evt_type = event.get('eventType', 'activity')
             evt_table = event.get('eventTable', 'standard')
             for field in event.get('fields', []):
-                writer.writerow([event.get('event_name'), field.get('name'), field.get('datatype'), evt_type, evt_table])
+                events_rows.append([event.get('event_name'), field.get('name'), field.get('datatype'), evt_type, evt_table])
 
+        import openpyxl
+        wb = openpyxl.Workbook()
+
+        # Events sheet
+        ws_events = wb.active
+        ws_events.title = 'events'
+        ws_events.append(['EventName', 'EventField', 'DataType', 'EventType', 'EventTable'])
+        for row in events_rows:
+            ws_events.append(row)
+
+        # Transactions sheet
+        ws_txn = wb.create_sheet('transactions')
+        ws_txn.append(['transactiontype'])
+        for t in transaction_types:
+            ws_txn.append([t])
+
+        output = io.BytesIO()
+        wb.save(output)
         output.seek(0)
-        return StreamingResponse(
-            iter([output.getvalue()]),
-            media_type='text/csv',
-            headers={"Content-Disposition": "attachment; filename=event_definitions.csv"}
+        xlsx_bytes = output.read()
+
+        return Response(
+            content=xlsx_bytes,
+            media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            headers={"Content-Disposition": "attachment; filename=reference_data.xlsx"}
         )
     except Exception as e:
-        logger.error(f"Error generating events CSV: {e}")
+        logger.error(f"Error generating reference data xlsx: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 # Event Data - Excel Upload (multiple sheets for multiple events)
@@ -2540,6 +2666,61 @@ async def get_event_data(event_name: str):
         event_data['created_at'] = datetime.fromisoformat(event_data['created_at'])
     
     return event_data
+
+
+@api_router.patch("/event-data/{event_name}/rows/{row_index}")
+async def update_event_data_row(event_name: str, row_index: int, payload: Dict[str, Any] = Body(...)):
+    """Update a single cell or multiple cells in a row of event data.
+
+    Body shape: {"updates": {"column": value, ...}} — values are stored as-is
+    after best-effort numeric coercion of stringy numbers.
+    """
+    updates = payload.get("updates") if isinstance(payload, dict) else None
+    if not isinstance(updates, dict) or not updates:
+        raise HTTPException(status_code=400, detail="Body must include non-empty 'updates' object")
+
+    record = await db.event_data.find_one({"event_name": event_name})
+    if not record:
+        raise HTTPException(status_code=404, detail=f"Event data not found for '{event_name}'")
+
+    rows = record.get("data_rows") or []
+    if not isinstance(rows, list) or row_index < 0 or row_index >= len(rows):
+        raise HTTPException(status_code=404, detail=f"Row index {row_index} out of range")
+
+    def _coerce(v):
+        if isinstance(v, str):
+            s = v.strip()
+            if s == "":
+                return s
+            try:
+                if "." in s or "e" in s.lower():
+                    return float(s)
+                return int(s)
+            except (ValueError, TypeError):
+                return v
+        return v
+
+    target = dict(rows[row_index] or {})
+    for k, v in updates.items():
+        target[str(k)] = _coerce(v)
+    rows[row_index] = target
+
+    await db.event_data.update_one(
+        {"event_name": event_name},
+        {"$set": {"data_rows": rows}},
+    )
+    # Refresh in-memory caches used by DSL execution so subsequent runs
+    # see the edited values.
+    try:
+        cursor = db.event_data.find({}, {"_id": 0})
+        all_records = await cursor.to_list(length=None)
+        raw = {r.get("event_name"): r.get("data_rows", []) for r in all_records if r.get("event_name")}
+        set_raw_event_data(raw)
+        set_all_event_data(merge_event_data_by_instrument(raw))
+    except Exception as _e:
+        logger.warning(f"Failed to refresh event-data caches after edit: {_e}")
+
+    return {"event_name": event_name, "row_index": row_index, "row": target}
 
 @api_router.post("/dsl/run")
 async def run_dsl_code(request: DSLRunRequest):
@@ -3587,382 +3768,433 @@ async def chat_stream(message: ChatMessage):
 
 REQUIRED_EVENT_FIELDS = {"instrumentId", "eventId", "eventName", "postingDate", "effectiveDate", "status", "eventDetail", "_class"}
 
-# ---------------------------------------------------------------------------
-# Import transformation helpers
-# ---------------------------------------------------------------------------
-# Fixed/system fields — both PascalCase (EOD-style) and camelCase (inner-row style)
-# must be excluded from dynamic columns and handled explicitly.
-_IMPORT_FIXED_KEYS = {
-    "PostingDate", "EffectiveDate", "InstrumentId", "AttributeId",
-    "postingDate", "effectiveDate", "instrumentId", "attributeId",
-    "_id", "_metadata_version", "_imported_at",
-}
+
+# ──────────────────────────────────────────────────────────────────────────
+# Autonomous agent endpoints
+# ──────────────────────────────────────────────────────────────────────────
+
+# Wire the agent's late-bound helpers exactly once at import time.
+try:
+    agent_configure_bridge(
+        db=db,
+        in_memory_data=in_memory_data,
+        use_in_memory_getter=lambda: USE_IN_MEMORY,
+        helpers={
+            "EventDefinition": EventDefinition,
+            "EventData": EventData,
+            "DSLTemplate": DSLTemplate,
+            "DSL_FUNCTION_METADATA": DSL_FUNCTION_METADATA,
+            "extract_event_names_from_dsl": extract_event_names_from_dsl,
+            "merge_event_data_by_instrument": merge_event_data_by_instrument,
+            "filter_event_data_by_posting_date": filter_event_data_by_posting_date,
+            "dsl_to_python": dsl_to_python,
+            "dsl_to_python_multi_event": dsl_to_python_multi_event,
+            "dsl_to_python_standalone": dsl_to_python_standalone,
+            "execute_python_template": execute_python_template,
+        },
+    )
+except Exception as _agent_bridge_exc:
+    logger.warning("Agent bridge configuration failed: %s", _agent_bridge_exc)
 
 
-def _infer_field_datatype(values: list) -> str:
-    """Infer the best datatype for a field from a list of sample values.
-    Scans all non-null values; the first conclusive type wins (boolean > date > string > decimal).
-    Numeric strings (e.g. "1250.50", "42") are treated as decimal.
+class AgentRunRequest(BaseModel):
+    task: str
+    model: Optional[str] = None
+    max_steps: Optional[int] = 50
+    auto_approve_destructive: Optional[bool] = False
+    session_id: Optional[str] = None
+
+
+class AgentApprovalRequest(BaseModel):
+    decision: str  # "approve" | "deny"
+
+
+@api_router.post("/agent/run")
+async def agent_run_endpoint(req: AgentRunRequest):
+    """SSE stream of an autonomous agent run.
+
+    Each SSE event has `data: <json>\\n\\n`. The terminal event has
+    `data: [DONE]\\n\\n`.
     """
-    for v in values:
-        if v is None:
-            continue
-        if isinstance(v, bool):
-            return "boolean"
-        if isinstance(v, dict) and "$date" in v:
-            return "date"
-        if isinstance(v, str):
-            if re.match(r"^\d{4}-\d{2}-\d{2}", v):
-                return "date"
-            # Check if the string is a numeric value (handles "1250.50", "-42", "1,234.56")
-            stripped = v.strip().lstrip('-').replace(',', '')
-            if stripped.replace('.', '', 1).isdigit():
-                return "decimal"
-            return "string"
-        if isinstance(v, (int, float)):
-            return "decimal"
-    return "decimal"  # all-null or empty → decimal (financial default)
+    async def event_stream():
+        # 16 KB pad + immediate "connected" event flushes proxy buffers
+        # (including the GitHub Codespaces port-forwarder, which buffers
+        # ~8 KB) so the UI shows progress before the first model call
+        # returns. Repeat the connected event after the pad to be safe.
+        yield ":" + (" " * 16384) + "\n\n"
+        yield f"data: {json.dumps({'type': 'connected', 'ts': datetime.now(timezone.utc).isoformat()})}\n\n"
+        yield ":" + (" " * 4096) + "\n\n"
+        try:
+            try:
+                provider_config = await db.ai_provider_config.find_one({}, {"_id": 0})
+            except Exception:
+                provider_config = None
+            if not provider_config:
+                yield f"data: {json.dumps({'type': 'error', 'error_type': 'no_provider', 'error_message': ERROR_MESSAGES['no_provider']})}\n\n"
+                yield "data: [DONE]\n\n"
+                return
+
+            provider_name = provider_config.get("provider", "")
+            selected_model = req.model or provider_config.get("selected_model", "")
+            try:
+                api_key = decrypt_key(provider_config["encrypted_api_key"])
+            except Exception:
+                yield f"data: {json.dumps({'type': 'error', 'error_type': 'invalid_key', 'error_message': ERROR_MESSAGES['invalid_key']})}\n\n"
+                yield "data: [DONE]\n\n"
+                return
+
+            try:
+                provider = get_provider(provider_name)
+            except Exception as exc:
+                yield f"data: {json.dumps({'type': 'error', 'error_message': f'Unknown provider {provider_name}: {exc}'})}\n\n"
+                yield "data: [DONE]\n\n"
+                return
+
+            try:
+                async for event in agent_run(
+                    task=req.task,
+                    provider=provider,
+                    api_key=api_key,
+                    model=selected_model,
+                    db=db,
+                    in_memory_data=in_memory_data,
+                    max_steps=int(req.max_steps or 50),
+                    auto_approve_destructive=bool(req.auto_approve_destructive),
+                    session_id=req.session_id,
+                ):
+                    yield f"data: {json.dumps(event, default=str)}\n\n"
+            except AIError as ae:
+                err_type = getattr(ae, "error_type", "network")
+                msg_template = ERROR_MESSAGES.get(err_type, str(ae))
+                msg = msg_template.format(provider=provider_name, model=selected_model)
+                yield f"data: {json.dumps({'type':'error','error_type':err_type,'error_message':msg})}\n\n"
+            except Exception as exc:
+                logger.exception("Agent run failed")
+                yield f"data: {json.dumps({'type':'error','error_message':str(exc)})}\n\n"
+        finally:
+            yield "data: [DONE]\n\n"
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
-def _parse_import_date(val) -> str:
-    """Normalise a date value from an imported event record to YYYY-MM-DD."""
-    if val is None:
-        return ""
-    if isinstance(val, dict) and "$date" in val:
-        return str(val["$date"])[:10]
-    if isinstance(val, int):
-        s = str(val)
-        if len(s) == 8:
-            return f"{s[:4]}-{s[4:6]}-{s[6:8]}"
-        return s
+@api_router.post("/agent/runs/{run_id}/approve")
+async def agent_approve(run_id: str, call_id: str, req: AgentApprovalRequest):
+    ok = agent_submit_approval(run_id, call_id, req.decision)
+    if not ok:
+        raise HTTPException(status_code=404, detail="No pending approval for this call_id")
+    return {"ok": True, "run_id": run_id, "call_id": call_id, "decision": req.decision}
+
+
+@api_router.post("/agent/runs/{run_id}/cancel")
+async def agent_cancel(run_id: str):
+    ok = agent_cancel_run(run_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Run not active")
+    return {"ok": True, "run_id": run_id}
+
+
+@api_router.get("/agent/runs")
+async def agent_list_runs(limit: int = 25):
     try:
-        return normalize_date(str(val))
+        runs = await db.agent_runs.find({}, {"_id": 0, "history": 0}) \
+                                  .sort("started_at", -1).to_list(limit)
+        if runs:
+            return {"runs": runs}
     except Exception:
-        return str(val)
+        pass
+    runs = list(in_memory_data.get("agent_runs") or [])
+    runs.sort(key=lambda r: r.get("started_at", ""), reverse=True)
+    return {"runs": [{k: v for k, v in r.items() if k != "history"} for r in runs[:limit]]}
 
 
-# Sentinel for "system" / placeholder instrument IDs with no real business meaning
-def _is_custom_event(records: list, event_id: str) -> bool:
+@api_router.get("/agent/runs/{run_id}")
+async def agent_get_run(run_id: str):
+    try:
+        run = await db.agent_runs.find_one({"run_id": run_id}, {"_id": 0})
+        if run:
+            return run
+    except Exception:
+        pass
+    for r in (in_memory_data.get("agent_runs") or []):
+        if r.get("run_id") == run_id:
+            return r
+    raise HTTPException(status_code=404, detail="Run not found")
+
+
+@api_router.get("/agent/destructive-tools")
+async def agent_destructive_tools():
+    return {"destructive_tools": sorted(AGENT_DESTRUCTIVE_TOOLS)}
+
+
+@api_router.post("/agent/sessions/{session_id}/reset")
+async def agent_reset_session(session_id: str):
+    """Drop the agent's persisted conversation memory for a chat session.
+    The next agent run for this session_id starts from a clean slate."""
+    try:
+        from backend.agent import reset_session_history
+    except Exception:
+        try:
+            from .agent import reset_session_history  # type: ignore
+        except Exception:
+            from agent import reset_session_history  # type: ignore
+    cleared = reset_session_history(session_id)
+    return {"ok": True, "session_id": session_id, "cleared": cleared}
+
+
+@api_router.post("/import/transactions")
+async def import_transactions(file: UploadFile = File(...)):
+    """Load transaction definitions from a JSON array.
+
+    Each entry is shaped like:
+        { "name": "PAYMENT_UPB", "exclusive": 1, "isGL": 1, "isReplayable": 0 }
+
+    Replaces the entire `transaction_definitions` collection.
     """
-    Return True if the event has no real InstrumentId.
-
-    Rule (no hardcoding of names or placeholder strings):
-      An event is 'standard' only when at least one inner value row contains
-      an instrumentId that matches the outer instrumentId of the same event
-      record — i.e. the inner rows are genuinely tied to a specific instrument.
-      If no inner row matches its enclosing record's outer instrumentId, the
-      event carries no instrument-specific data and is classified as
-      eventTable='custom', eventType='reference'.
-    """
-    for event in records:
-        if event.get("eventId") != event_id:
-            continue
-        outer = (event.get("instrumentId") or event.get("InstrumentId") or "").strip()
-        if not outer:
-            continue  # outer has no instrumentId — skip this record
-        for row_val in event.get("eventDetail", {}).get("values", {}).values():
-            if not isinstance(row_val, dict):
-                continue
-            inner = (row_val.get("instrumentId") or row_val.get("InstrumentId") or "").strip()
-            if inner and inner == outer:
-                return False  # inner instrumentId matches outer → real instrument event
-    return True  # no inner row matched its enclosing event's instrumentId → custom
-
-
-def _select_instruments(records: list, max_count: int = 2) -> list:
-    """
-    Collect all unique instrument IDs that appear in standard (non-custom) event records
-    and randomly return up to max_count of them.
-    Custom/reference events are excluded — they carry no real instrument.
-    Returns a sorted (deterministic within selection) list of instrument IDs.
-    """
-    import random
-    seen: set = set()
-    for event in records:
-        instrument = (event.get("instrumentId") or event.get("InstrumentId") or "").strip()
-        if not instrument:
-            continue
-        event_id = event.get("eventId", "")
-        # Only count instruments from standard (non-custom) events
-        if not _is_custom_event(records, event_id):
-            seen.add(instrument)
-    population = sorted(seen)  # sort for reproducibility of the pool
-    count = min(max_count, len(population))
-    if count == 0:
-        return []
-    return random.sample(population, count)
-
-
-def _build_event_definitions_from_import(records: list, allowed_instruments: set | None = None) -> list:
-    """
-    Derive unique event definitions from the imported records.
-    Groups by eventId, collects dynamic field names and infers datatypes.
-    Excludes all fixed/system fields (both PascalCase and camelCase) and meta keys.
-    Events with no real instrumentId are classified as custom/reference.
-    If allowed_instruments is given, standard event records whose outer instrumentId
-    is not in that set are skipped (custom/reference events are never filtered).
-    Returns a list of dicts compatible with EventDefinition.model_dump().
-    """
-    from collections import defaultdict
-    event_fields: dict = defaultdict(lambda: defaultdict(list))
-
-    for event in records:
-        event_id = event.get("eventId", "")
-        outer_instrument = (event.get("instrumentId") or event.get("InstrumentId") or "").strip()
-        is_custom = _is_custom_event(records, event_id)
-        # Filter standard events by allowed instrument list
-        if not is_custom and allowed_instruments is not None and outer_instrument not in allowed_instruments:
-            continue
-        for row_val in event.get("eventDetail", {}).get("values", {}).values():
-            if not isinstance(row_val, dict):
-                continue
-            for key, value in row_val.items():
-                if key not in _IMPORT_FIXED_KEYS:
-                    event_fields[event_id][key].append(value)
-
-    definitions = []
-    ts = datetime.now(timezone.utc).isoformat()
-    for event_id, fields in event_fields.items():
-        field_list = [
-            {"name": fn, "datatype": _infer_field_datatype(sv)}
-            for fn, sv in fields.items()
-        ]
-        is_custom = _is_custom_event(records, event_id)
-        definitions.append({
-            "id": str(uuid.uuid4()),
-            "event_name": event_id,
-            "fields": field_list,
-            "eventType": "reference" if is_custom else "activity",
-            "eventTable": "custom" if is_custom else "standard",
-            "created_at": ts,
-        })
-    return definitions
-
-
-def _build_event_data_from_import(records: list, allowed_instruments: set | None = None) -> list:
-    """
-    Build event data rows from imported records.
-    Groups rows by eventId. Each value entry in eventDetail.values becomes one data row.
-    Handles both PascalCase (EOD) and camelCase inner row keys.
-    Maps attributeId (either case) to SubInstrumentId — for standard events only.
-    Custom/reference events (no instrumentId in inner rows) omit all standard fields.
-    Normalises all date values to YYYY-MM-DD.
-    If allowed_instruments is given, standard event records whose outer instrumentId
-    is not in that set are skipped. Custom/reference events are never filtered.
-    """
-    from collections import defaultdict
-
-    # Pre-classify each event_id so we only scan once
-    event_ids = list({evt.get("eventId", "") for evt in records})
-    custom_events = {eid for eid in event_ids if _is_custom_event(records, eid)}
-
-    event_rows: dict = defaultdict(list)
-    # For custom/reference events, dedup by inner value-id so repeated event records
-    # (same data across different posting dates / instruments) don't multiply rows.
-    seen_custom_value_ids: dict = defaultdict(set)
-
-    for event in records:
-        event_id = event.get("eventId", "")
-        is_custom = event_id in custom_events
-
-        # Outer event-level fallbacks (always camelCase at top level)
-        outer_posting = _parse_import_date(event.get("postingDate") or event.get("PostingDate", ""))
-        outer_effective = _parse_import_date(event.get("effectiveDate") or event.get("EffectiveDate", ""))
-        outer_instrument = (event.get("instrumentId") or event.get("InstrumentId", "")).strip()
-
-        # Filter standard events by allowed instrument list
-        if not is_custom and allowed_instruments is not None and outer_instrument not in allowed_instruments:
-            continue
-
-        raw_values = event.get("eventDetail", {}).get("values", {})
-        for value_id, row_val in raw_values.items():
-            # Dedup: skip this inner row if we've already emitted it for this custom event
-            if is_custom:
-                if value_id in seen_custom_value_ids[event_id]:
-                    continue
-                seen_custom_value_ids[event_id].add(value_id)
-
-            if not isinstance(row_val, dict):
-                continue
-
-            if is_custom:
-                # Custom/reference events: no standard fields at all
-                row: dict = {}
-            else:
-                # Standard events: include the four standard fields
-                inner_posting = _parse_import_date(
-                    row_val.get("PostingDate") or row_val.get("postingDate")
-                ) or outer_posting
-                inner_effective = _parse_import_date(
-                    row_val.get("EffectiveDate") or row_val.get("effectiveDate")
-                ) or outer_effective
-                inner_instrument = (
-                    row_val.get("InstrumentId") or row_val.get("instrumentId") or outer_instrument
-                )
-                # attributeId (either case) maps to SubInstrumentId
-                inner_subinstr = str(
-                    row_val.get("AttributeId") or row_val.get("attributeId") or ""
-                )
-                row = {
-                    "PostingDate":     inner_posting,
-                    "EffectiveDate":   inner_effective,
-                    "InstrumentId":    inner_instrument,
-                    "SubInstrumentId": inner_subinstr,
-                }
-
-            for key, value in row_val.items():
-                if key in _IMPORT_FIXED_KEYS:
-                    continue
-                if isinstance(value, dict) and "$date" in value:
-                    row[key] = _parse_import_date(value)
-                elif isinstance(value, dict) and "$oid" in value:
-                    # Skip embedded object-id fields
-                    continue
-                else:
-                    row[key] = value
-
-            event_rows[event_id].append(row)
-
-    ts = datetime.now(timezone.utc).isoformat()
-    # Activity-data only: enforce canonical sort
-    # (instrumentid ASC, postingdate ASC, effectivedate ASC, subinstrumentid ASC)
-    # for every non-custom event. Custom/reference events are left untouched —
-    # they have no instrumentid/postingdate/effectivedate/subinstrumentid axis.
-    for _eid, _rows in event_rows.items():
-        if _eid not in custom_events:
-            _sort_activity_rows(_rows)
-    return [
-        {"id": str(uuid.uuid4()), "event_name": eid, "data_rows": rows, "created_at": ts}
-        for eid, rows in event_rows.items()
-    ]
-
-def _validate_imported_events(data: Any) -> str | None:
-    """Return an error string if data does not match the required format, else None."""
-    if not isinstance(data, list):
-        return "File must contain a JSON array of event objects."
-    if len(data) == 0:
-        return "The JSON array is empty — no events to import."
-    for i, item in enumerate(data):
-        if not isinstance(item, dict):
-            return f"Item at index {i} is not a JSON object."
-        missing = REQUIRED_EVENT_FIELDS - item.keys()
-        if missing:
-            return f"Item at index {i} is missing required fields: {', '.join(sorted(missing))}."
-        if not isinstance(item.get("eventDetail"), dict):
-            return f"Item at index {i}: 'eventDetail' must be a JSON object."
-        if "values" not in item["eventDetail"]:
-            return f"Item at index {i}: 'eventDetail' must contain a 'values' field."
-    return None
-
-
-@api_router.post("/import-events/transform")
-async def import_and_transform_events(file: UploadFile = File(...)):
-    """
-    Full import pipeline: validate JSON → persist raw → transform to
-    event definitions + event data and persist both.
-    Returns a structured result with success/failure details for each step.
-    """
-    # ---- Read and validate file ----
     if not file.filename or not file.filename.lower().endswith(".json"):
         raise HTTPException(status_code=400, detail="Only .json files are accepted.")
     try:
         content = await file.read()
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Could not read file: {e}")
-
-    try:
         records = json.loads(content.decode("utf-8"))
     except Exception:
-        raise HTTPException(status_code=400, detail="The file is not valid JSON. Please check the file and try again.")
+        raise HTTPException(status_code=400, detail="The file is not valid JSON.")
+    if not isinstance(records, list):
+        raise HTTPException(status_code=422, detail="File must contain a JSON array.")
 
-    validation_error = _validate_imported_events(records)
-    if validation_error:
-        raise HTTPException(status_code=422, detail=validation_error)
+    docs = []
+    for i, item in enumerate(records):
+        if not isinstance(item, dict):
+            raise HTTPException(status_code=422, detail=f"Item at index {i} is not an object.")
+        name = (item.get("name") or item.get("transactiontype") or "").strip()
+        if not name:
+            raise HTTPException(status_code=422, detail=f"Item at index {i} is missing 'name'.")
+        docs.append({
+            "transactiontype": name,
+            "exclusive": item.get("exclusive", 1),
+            "isGL": item.get("isGL", 1),
+            "isReplayable": item.get("isReplayable", 0),
+        })
 
-    import_ts = datetime.now(timezone.utc).isoformat()
-    # ---- Instrument selection (1–2 instruments for activity data) ----
-    selected_instruments = _select_instruments(records, max_count=2)
-    allowed_instruments_set = set(selected_instruments) if selected_instruments else None
+    try:
+        await db.transaction_definitions.delete_many({})
+        if docs:
+            await db.transaction_definitions.insert_many([dict(d) for d in docs])
+    except Exception as e:
+        logger.error(f"Failed to persist transaction definitions: {e}")
+        raise HTTPException(status_code=500, detail=f"Could not save transaction definitions: {e}")
 
-    result = {
-        "imported_count": len(records),
-        "selected_instruments": selected_instruments,
-        "event_definitions": None,
-        "event_data": None,
+    return {
+        "success": True,
+        "count": len(docs),
+        "transaction_types": [d["transactiontype"] for d in docs],
     }
 
-    # ---- Step 1: Persist raw to imported_events ----
+
+# ---------------------------------------------------------------------------
+# Event Configuration → Event Definition transformer
+# ---------------------------------------------------------------------------
+
+# Keywords that mark a field name as numeric (decimal). Lookup is case-
+# insensitive and substring-based on the assembled UPPERCASE field name.
+_DECIMAL_KEYWORDS = (
+    "AMOUNT", "BALANCE", "PRINCIPAL", "RATE", "INTEREST", "PRICE",
+    "QUANTITY", "TERM", "COUPON", "YIELD", "SPREAD", "FEE", "PAYMENT",
+    "CASH", "ACCRUAL", "RECEIVABLE", "CF", "LOAN",
+)
+_DECIMAL_NAME_SUFFIXES = ("_ID", "ID")  # ProductId / customer_id → decimal
+
+
+def _infer_field_dt(name: str) -> str:
+    """Infer datatype from the assembled (already prefixed) field name."""
+    n = name.upper()
+    if "DATE" in n:
+        return "date"
+    if any(k in n for k in _DECIMAL_KEYWORDS):
+        return "decimal"
+    # Treat *Id / *_ID / *_ID_* as decimal (matches sample reference data:
+    # ProductId, ATTRIBUTE_PRODUCT_ID_CURRENT, etc.)
+    if n.endswith("ID") or n.endswith("_ID") or "_ID_" in n:
+        return "decimal"
+    return "string"
+
+
+# `MeasurementType` is a Fyntrac convention: when an operational-trigger event
+# exposes a column literally named `MeasurementType`, the column is also
+# lifted into its own reference event (a measurement-type lookup table).
+_LIFTED_REFERENCE_FIELD_NAMES = {"measurementtype"}
+
+
+def _transform_event_configurations(records: list) -> list:
+    """Convert an EventConfiguration JSON array into EventDefinition docs.
+
+    Naming rules (validated against the sample reference data in
+    `Importflow/`):
+
+    * Reference event (triggerSource includes `reference_table`):
+      eventType=reference, eventTable=custom; field name = bare
+      `sourceColumns[].value`.
+    * Operational-trigger event (triggerSource includes `operational_table`):
+      eventType=activity, eventTable=standard; field name = bare
+      `sourceColumns[].value`. If a column is `MeasurementType`, also emit
+      a separate reference event for it.
+    * Otherwise (model-execution / replay / transaction-post triggers):
+      - If `versionType` is non-empty: name =
+        `{TABLE}_{COLUMN}_{VERSIONTYPE}` for each (column, version) pair.
+      - Else if table is `Balances`: emit three phases per dataMapping —
+        `BALANCES_BEGINNINGBALANCE_{DM}`,
+        `BALANCES_ENDINGBALANCE_{DM}`,
+        `BALANCES_ACTIVITY_{DM}` (decimal).
+      - Else if `dataMapping` is non-empty: name =
+        `{TABLE}_{COLUMN}_{DM}` per dataMapping value. When
+        `fieldType=AGGREGATED`, only the first dataMapping is emitted.
+      - Else: name = `{TABLE}_{COLUMN}`.
+    """
+    out: list = []
+    ts = datetime.now(timezone.utc).isoformat()
+    lifted_refs: dict = {}  # event_name -> list[(field_name, datatype)]
+
+    for cfg in records:
+        if not isinstance(cfg, dict):
+            continue
+        eid = (cfg.get("eventId") or cfg.get("eventName") or "UNKNOWN").strip() or "UNKNOWN"
+
+        trig = cfg.get("triggerSetup") or {}
+        trig_sources = [
+            ((s.get("value") or "").strip().lower())
+            for s in (trig.get("triggerSource") or []) if isinstance(s, dict)
+        ]
+        is_reference = "reference_table" in trig_sources
+        is_operational = "operational_table" in trig_sources
+
+        evt_type = "reference" if is_reference else "activity"
+        evt_table = "custom" if is_reference else "standard"
+
+        ordered_fields: list = []
+        seen_names: set = set()
+
+        def _add(name: str, dt: str) -> None:
+            if not name or name in seen_names:
+                return
+            seen_names.add(name)
+            ordered_fields.append({"name": name, "datatype": dt})
+
+        for sm in (cfg.get("sourceMappings") or []):
+            if not isinstance(sm, dict):
+                continue
+            table_up = ((sm.get("sourceTable") or "").strip()).upper()
+            cols = sm.get("sourceColumns") or []
+            ver_types = sm.get("versionType") or []
+            data_map = sm.get("dataMapping") or []
+            field_type = (sm.get("fieldType") or "NONE").upper()
+
+            for col in cols:
+                if not isinstance(col, dict):
+                    continue
+                col_val = (col.get("value") or "").strip()
+                if not col_val:
+                    continue
+                col_up = col_val.upper()
+
+                if is_reference or is_operational:
+                    _add(col_val, _infer_field_dt(col_val))
+                    if is_operational and col_val.lower() in _LIFTED_REFERENCE_FIELD_NAMES:
+                        lifted_refs.setdefault(col_val, []).append((col_val, _infer_field_dt(col_val)))
+                    continue
+
+                if ver_types:
+                    for vt in ver_types:
+                        suf = ((vt.get("value") or "").strip()).upper()
+                        name = f"{table_up}_{col_up}_{suf}" if suf else f"{table_up}_{col_up}"
+                        _add(name, _infer_field_dt(name))
+                    continue
+
+                if data_map:
+                    targets = data_map[:1] if field_type == "AGGREGATED" else data_map
+                    if table_up == "BALANCES":
+                        phases = ("BEGINNINGBALANCE", "ENDINGBALANCE", "ACTIVITY")
+                        for dm in targets:
+                            dm_v = ((dm.get("value") or "").strip()).upper()
+                            for ph in phases:
+                                _add(f"{table_up}_{ph}_{dm_v}", "decimal")
+                    else:
+                        for dm in targets:
+                            dm_v = ((dm.get("value") or "").strip()).upper()
+                            _add(f"{table_up}_{col_up}_{dm_v}", _infer_field_dt(f"{table_up}_{col_up}_{dm_v}"))
+                    continue
+
+                _add(f"{table_up}_{col_up}", _infer_field_dt(f"{table_up}_{col_up}"))
+
+        out.append({
+            "id": str(uuid.uuid4()),
+            "event_name": eid,
+            "fields": ordered_fields,
+            "eventType": evt_type,
+            "eventTable": evt_table,
+            "created_at": ts,
+        })
+
+    for name, items in lifted_refs.items():
+        seen2: set = set()
+        unique: list = []
+        for fn, dt in items:
+            if fn in seen2:
+                continue
+            seen2.add(fn)
+            unique.append({"name": fn, "datatype": dt})
+        out.append({
+            "id": str(uuid.uuid4()),
+            "event_name": name,
+            "fields": unique,
+            "eventType": "reference",
+            "eventTable": "custom",
+            "created_at": ts,
+        })
+
+    return out
+
+
+@api_router.post("/import/event-configurations")
+async def import_event_configurations(file: UploadFile = File(...)):
+    """Load event definitions from an EventConfiguration JSON array.
+
+    See `_transform_event_configurations` for naming rules. Replaces the
+    entire `event_definitions` collection.
+    """
+    if not file.filename or not file.filename.lower().endswith(".json"):
+        raise HTTPException(status_code=400, detail="Only .json files are accepted.")
     try:
-        docs = []
-        for item in records:
-            doc = dict(item)
-            doc["_imported_at"] = import_ts
-            doc.pop("_id", None)
-            docs.append(doc)
-        await db.imported_events.insert_many(docs)
-    except Exception as e:
-        logger.warning(f"Could not persist raw events to imported_events: {e}")
-        # Non-fatal — continue with transformation
+        content = await file.read()
+        records = json.loads(content.decode("utf-8"))
+    except Exception:
+        raise HTTPException(status_code=400, detail="The file is not valid JSON.")
+    if not isinstance(records, list) or not records:
+        raise HTTPException(status_code=422, detail="File must contain a non-empty JSON array.")
 
-    # ---- Step 2: Transform → Event Definitions (MUST complete before Event Data) ----
-    def_error = None
-    definitions = []
     try:
-        definitions = _build_event_definitions_from_import(records, allowed_instruments=allowed_instruments_set)
-        if not definitions:
-            def_error = "No event types could be extracted from the uploaded file."
-        else:
-            await db.event_definitions.delete_many({})
-            await db.event_definitions.insert_many([dict(d) for d in definitions])
-            result["event_definitions"] = {
-                "success": True,
-                "count": len(definitions),
-                "names": [d["event_name"] for d in definitions],
-                "types": {d["event_name"]: d["eventTable"] for d in definitions},
-            }
+        defs = _transform_event_configurations(records)
+        if not defs:
+            raise HTTPException(status_code=422, detail="No event definitions could be derived from the file.")
+        await db.event_definitions.delete_many({})
+        await db.event_definitions.insert_many([dict(d) for d in defs])
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.error(f"Event definition transformation failed: {e}")
-        def_error = f"Could not build event definitions: {e}"
+        logger.error(f"Event configuration import failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Could not import event configurations: {e}")
 
-    if def_error:
-        result["event_definitions"] = {"success": False, "error": def_error}
-
-    # ---- Step 3: Transform → Event Data (uses classification from Step 2) ----
-    data_error = None
-    try:
-        event_data_list = _build_event_data_from_import(records, allowed_instruments=allowed_instruments_set)
-        if not event_data_list:
-            data_error = "No event data rows could be extracted from the uploaded file."
-        else:
-            await db.event_data.delete_many({})
-            rows_by_event = {}
-            for ed in event_data_list:
-                await db.event_data.insert_one(dict(ed))
-                rows_by_event[ed["event_name"]] = len(ed["data_rows"])
-            result["event_data"] = {
-                "success": True,
-                "total_rows": sum(rows_by_event.values()),
-                "by_event": rows_by_event,
-            }
-    except Exception as e:
-        logger.error(f"Event data transformation failed: {e}")
-        data_error = f"Could not build event data: {e}"
-
-    if data_error:
-        result["event_data"] = {"success": False, "error": data_error}
-
-    # If BOTH transformations failed, surface as a 500
-    if not result["event_definitions"]["success"] and not result["event_data"]["success"]:
-        raise HTTPException(
-            status_code=500,
-            detail=(
-                f"Both transformations failed. "
-                f"Event definitions: {result['event_definitions']['error']}. "
-                f"Event data: {result['event_data']['error']}."
-            ),
-        )
-
-    return result
+    return {
+        "success": True,
+        "count": len(defs),
+        "names": [d["event_name"] for d in defs],
+        "types": {d["event_name"]: d["eventTable"] for d in defs},
+    }
 
 
 # ── Saved Rules CRUD ────────────────────────────────────────────────────
@@ -4047,6 +4279,15 @@ async def save_rule(request: dict):
         "updated_at": now,
     }
 
+    # Backfill missing postingDate/effectiveDate/subInstrumentId on every
+    # transaction entry, mirroring the agent-side normaliser, so that UI
+    # saves don't bypass the date-defaulting logic.
+    try:
+        from backend.agent.tools import _normalise_transaction_outputs
+        _normalise_transaction_outputs(doc.get("steps") or [], doc.get("outputs") or {})
+    except Exception as _norm_err:
+        logger.warning(f"transaction normalisation skipped: {_norm_err}")
+
     if rule_id:
         doc["id"] = rule_id
         await db.saved_rules.replace_one({"id": rule_id}, doc, upsert=True)
@@ -4089,6 +4330,76 @@ async def delete_saved_rule(rule_id: str):
     if result.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Rule not found.")
     return {"success": True, "message": "Rule deleted."}
+
+@api_router.post("/saved-rules/{rule_id}/revert")
+async def revert_saved_rule(rule_id: str):
+    """Restore the most recent pre-save snapshot for a rule.
+
+    Every time the agent saves a rule (update_step, patch_step, update_saved_rule,
+    etc.) the previous version is saved to the rule_history collection.
+    This endpoint pops the newest snapshot and restores it so the user can
+    undo the last agent change.
+    """
+    # Find the most recent snapshot for this rule.
+    snap = await db.rule_history.find_one(
+        {"rule_id": rule_id},
+        sort=[("snapshot_at", -1)],
+    )
+    if not snap:
+        raise HTTPException(status_code=404, detail="No history found for this rule.")
+    rule_doc = snap.get("rule_doc")
+    if not rule_doc:
+        raise HTTPException(status_code=500, detail="Snapshot has no rule document.")
+    rule_doc.pop("_id", None)
+    # Before restoring, snapshot the CURRENT state so the revert itself is
+    # also reversible (undo-undo).
+    current = await db.saved_rules.find_one({"id": rule_id}, {"_id": 0})
+    if current:
+        current.pop("_id", None)
+        await db.rule_history.insert_one({
+            "rule_id": rule_id,
+            "snapshot_at": datetime.now(timezone.utc).isoformat(),
+            "rule_doc": current,
+        })
+    # Restore the snapshot.
+    await db.saved_rules.replace_one({"id": rule_id}, rule_doc, upsert=True)
+    # Remove the snapshot we just restored (it's now the live doc).
+    await db.rule_history.delete_one({"_id": snap["_id"]})
+    # Prune: keep only the 20 most recent snapshots for this rule.
+    try:
+        all_snaps = await db.rule_history.find(
+            {"rule_id": rule_id}, {"_id": 1}
+        ).sort("snapshot_at", -1).to_list(None)
+        if len(all_snaps) > 20:
+            ids_to_delete = [s["_id"] for s in all_snaps[20:]]
+            await db.rule_history.delete_many({"_id": {"$in": ids_to_delete}})
+    except Exception:
+        pass
+    rule_doc.pop("_id", None)
+    return {
+        "success": True,
+        "message": f"Rule '{rule_doc.get('name', rule_id)}' reverted to snapshot from {snap.get('snapshot_at', '?')}",
+        "rule": rule_doc,
+    }
+
+@api_router.get("/saved-rules/{rule_id}/history")
+async def get_rule_history(rule_id: str):
+    """Return the list of available revert snapshots for a rule (newest first)."""
+    snaps = await db.rule_history.find(
+        {"rule_id": rule_id},
+        {"_id": 0, "rule_doc": 0},
+        sort=[("snapshot_at", -1)],
+    ).to_list(20)
+    return {"rule_id": rule_id, "snapshots": snaps}
+
+@api_router.get("/saved-rules/{rule_id}")
+async def get_saved_rule(rule_id: str):
+    """Fetch a single saved rule by id (used by the Rule Builder to refresh
+    after agent-driven mutations)."""
+    doc = await db.saved_rules.find_one({"id": rule_id}, {"_id": 0})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Rule not found.")
+    return doc
 
 @api_router.put("/saved-rules/{rule_id}")
 async def update_saved_rule(rule_id: str, request: dict):
@@ -4136,7 +4447,7 @@ async def reorder_saved_schedules(request: dict):
 
 # ── User Templates CRUD ─────────────────────────────────────────────────
 
-async def _mirror_user_template_to_dsl(name: str, combined_code: str, rules: list) -> tuple[str, str, str]:
+async def _mirror_user_template_to_dsl(name: str, combined_code: str, rules: list) -> None:
     """Mirror a user_template into dsl_templates (upsert by name) and append a
     versioned artifact in dsl_template_artifacts.
 
@@ -4229,46 +4540,8 @@ async def _mirror_user_template_to_dsl(name: str, combined_code: str, rules: lis
             await db.dsl_template_artifacts.delete_many(
                 {"template_id": template_id, "version": {"$lt": next_version}}
             )
-        return template_id, name, python_code
     except Exception as e:
         logger.warning(f"Failed to mirror user template '{name}' to dsl_templates: {e}")
-        return None, None, None
-
-
-async def _upload_to_dataloader(model_name: str, python_code: str, model_order_id: str, auth_token: Optional[str] = None, tenant: str = "master"):
-    """
-    Send the compiled Python code to the dataloader service's upload-dsl-model endpoint.
-    Uses the gateway-routed URI to ensure proper authentication and routing.
-    """
-    from .config import settings
-    # Ensure URL points to the gateway's dataloader path
-    url = f"{settings.dataloader_base_uri.rstrip('/')}/model/upload-dsl-model"
-    
-    files = {
-        "dslModel": (f"{model_name}.dsl", python_code, "text/plain")
-    }
-    data = {
-        "modelName": model_name,
-        "modelOrderId": model_order_id
-    }
-    
-    headers = {
-        "X-Tenant": tenant or "master"
-    }
-    if auth_token:
-        headers["Authorization"] = auth_token if auth_token.startswith("Bearer ") else f"Bearer {auth_token}"
-
-    async with httpx.AsyncClient() as client:
-        try:
-            logger.info(f"Uploading DSL model '{model_name}' to dataloader at {url}")
-            response = await client.post(url, files=files, data=data, headers=headers, timeout=30.0)
-            if response.status_code != 200:
-                logger.error(f"Dataloader upload failed with status {response.status_code}: {response.text}")
-                return {"success": False, "error": response.text}
-            return {"success": True, "data": response.json()}
-        except Exception as e:
-            logger.error(f"Error calling dataloader upload: {str(e)}")
-            return {"success": False, "error": str(e)}
 
 
 @api_router.get("/user-templates")
@@ -4369,9 +4642,20 @@ async def update_user_template(template_id: str, request: dict):
 
 
 @api_router.post("/user-templates/{template_id}/deploy")
-async def deploy_user_template(template_id: str, request: Request, auth_payload: dict = Depends(verify_jwt)):
+async def deploy_user_template(template_id: str):
     """
     Deploy a single user template to the runtime.
+
+    Compiles the user_template's DSL using the *current* event_definitions
+    schema and writes:
+      - dsl_templates: one document keyed by template name (DSL + ready-to-run
+        Python in `python_code`).
+      - dsl_template_artifacts: a new versioned snapshot scoped to this
+        template's id (older versions of the same template are pruned unless
+        KEEP_TEMPLATE_ARTIFACT_VERSIONS=true).
+
+    Only the named template's documents are touched; all other templates and
+    their artifacts are left untouched.
     """
     existing = await db.user_templates.find_one({"id": template_id}, {"_id": 0})
     if not existing:
@@ -4384,15 +4668,7 @@ async def deploy_user_template(template_id: str, request: Request, auth_payload:
     combined_code = existing.get("combinedCode") or ""
     rules = existing.get("rules") or []
 
-    # Mirror and compile
-    t_id, t_name, python_code = await _mirror_user_template_to_dsl(name, combined_code, rules)
-    
-    # Upload to dataloader
-    upload_result = None
-    if python_code:
-        auth_token = request.headers.get("Authorization")
-        tenant = request.headers.get("X-Tenant") or "master"
-        upload_result = await _upload_to_dataloader(t_name, python_code, template_id, auth_token, tenant)
+    await _mirror_user_template_to_dsl(name, combined_code, rules)
 
     # Read back the freshly-written rows so the caller gets confirmation of
     # what the runtime will see.
@@ -4411,7 +4687,6 @@ async def deploy_user_template(template_id: str, request: Request, auth_payload:
         "message": f"Template \"{name}\" deployed.",
         "template": {"id": dsl_doc.get("id"), "name": name, "updated_at": dsl_doc.get("updated_at")},
         "artifact": artifact,
-        "dataloader_upload": upload_result
     }
 
 
@@ -4452,6 +4727,12 @@ async def load_template_sample_data(template_id: str):
             "created_at": datetime.utcnow().isoformat(),
         }
         await db.event_data.insert_one(doc)
+
+    # Populate transaction definitions if provided in sample data
+    if sample.get("transaction_types"):
+        await db.transaction_definitions.delete_many({})
+        for txn_type in sample["transaction_types"]:
+            await db.transaction_definitions.insert_one({"transactiontype": txn_type})
 
     events = await db.event_definitions.find({}, {"_id": 0}).to_list(1000)
     return {"success": True, "events": events}
@@ -4691,8 +4972,13 @@ async def lifespan(app):
     client.close()
     logger.info("Application shutdown — MongoDB client closed")
 
-# Include router under /api so frontend proxying to /api/* resolves correctly
-app.include_router(api_router, prefix="/api/dsl_studio")
+# Include router under /api/dsl so frontend proxying via gateway resolves correctly
+app.include_router(api_router, prefix="/api/dsl")
+
+# Also include the same routes at root (no prefix) for dev environments where
+# the frontend proxy or external clients may strip the prefix. This
+# makes the backend tolerant to both `/api/dsl/...` and `/<route>` requests.
+app.include_router(api_router)
 
 # Set lifespan on app
 app.router.lifespan_context = lifespan
@@ -4706,6 +4992,20 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# WebSocket endpoint for development (supports hot reload, live updates)
+@app.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket):
+    """WebSocket endpoint for dev client connections and hot reload"""
+    await websocket.accept()
+    try:
+        while True:
+            # Receive and echo messages to keep connection alive
+            data = await websocket.receive_text()
+            await websocket.send_text(data)
+    except WebSocketDisconnect:
+        logger.info("WebSocket client disconnected")
+    except Exception as e:
+        logger.error(f"WebSocket error: {str(e)}")
 
 if __name__ == "__main__":
     import uvicorn
