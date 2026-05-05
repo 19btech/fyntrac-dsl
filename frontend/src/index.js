@@ -21,24 +21,47 @@ import App from "@/App";
 (function bootstrapToken() {
   const params = new URLSearchParams(window.location.search);
   const urlToken = params.get('token');
+  const urlTenant = params.get('tenant');
+  
   if (urlToken) {
     sessionStorage.setItem('dsl_auth_token', urlToken);
     console.info('[DSL Studio] Auth token received and stored.');
-    // Remove the token from the URL bar without a page reload
     params.delete('token');
+  }
+  
+  if (urlTenant) {
+    sessionStorage.setItem('dsl_tenant', urlTenant);
+    console.info('[DSL Studio] Tenant received and stored.');
+    params.delete('tenant');
+  }
+
+  // Also remove firstName if it exists to keep URL clean
+  if (params.has('firstName')) {
+    params.delete('firstName');
+  }
+
+  if (urlToken || urlTenant) {
     const cleanUrl = window.location.pathname + (params.toString() ? '?' + params.toString() : '');
     window.history.replaceState({}, document.title, cleanUrl);
   }
 })();
 
 // ── Axios defaults ───────────────────────────────────────────────────────────
-// Inject the Bearer token into every request if available in sessionStorage
+// Inject the Bearer token and X-Tenant into every request if available in sessionStorage
 axios.interceptors.request.use((config) => {
   const token = sessionStorage.getItem('dsl_auth_token');
+  const tenant = sessionStorage.getItem('dsl_tenant');
+  
+  config.headers = config.headers || {};
+  
   if (token) {
-    config.headers = config.headers || {};
     config.headers['Authorization'] = `Bearer ${token}`;
   }
+  
+  if (tenant) {
+    config.headers['X-Tenant'] = tenant;
+  }
+  
   return config;
 });
 
