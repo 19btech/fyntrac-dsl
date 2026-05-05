@@ -71,6 +71,7 @@ const LeftSidebar = ({ events, selectedEvent, onEventSelect, onDownloadEvents, o
       toast.success('Data loaded successfully');
       localStorage.setItem('uploadedEventFileName', 'EventConfigurations.json');
       window.dispatchEvent(new CustomEvent('dsl-event-def-loaded', { detail: { filename: 'EventConfigurations.json' } }));
+      window.dispatchEvent(new CustomEvent('dsl-transaction-defs-changed'));
       if (onImportSuccess) onImportSuccess();
     } else {
       toast.info('Data is not available');

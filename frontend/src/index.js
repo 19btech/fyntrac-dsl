@@ -22,6 +22,7 @@ import App from "@/App";
   const params = new URLSearchParams(window.location.search);
   const urlToken = params.get('token');
   const urlTenant = params.get('tenant');
+  const urlFirstName = params.get('firstName');
   
   if (urlToken) {
     sessionStorage.setItem('dsl_auth_token', urlToken);
@@ -35,12 +36,13 @@ import App from "@/App";
     params.delete('tenant');
   }
 
-  // Also remove firstName if it exists to keep URL clean
-  if (params.has('firstName')) {
+  if (urlFirstName) {
+    sessionStorage.setItem('dsl_firstName', urlFirstName);
+    console.info('[DSL Studio] First name received and stored.');
     params.delete('firstName');
   }
 
-  if (urlToken || urlTenant) {
+  if (urlToken || urlTenant || urlFirstName) {
     const cleanUrl = window.location.pathname + (params.toString() ? '?' + params.toString() : '');
     window.history.replaceState({}, document.title, cleanUrl);
   }

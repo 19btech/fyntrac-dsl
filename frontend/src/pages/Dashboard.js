@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from "react";
 import axios from "axios";
 import { useToast } from "../components/ToastProvider";
 import { Upload, Code, BookOpen, Sparkles, Trash2, Search as SearchIcon, Settings, ChevronDown, Database, Calculator, Eye, Save } from "lucide-react";
-import { Button, Tabs, Tab, Box, Menu, MenuItem, Divider, Alert, Typography, ToggleButtonGroup, ToggleButton, Tooltip } from '@mui/material';
+import { Button, Tabs, Tab, Box, Menu, MenuItem, Divider, Alert, Typography, ToggleButtonGroup, ToggleButton, Tooltip, Avatar } from '@mui/material';
 import Editor from "@monaco-editor/react";
 import FileUploadPanel from "../components/FileUploadPanel";
 import LeftSidebar from "../components/LeftSidebar";
@@ -80,6 +80,7 @@ const Dashboard = () => {
   const monacoRef = useRef(null);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [chatCollapsed, setChatCollapsed] = useState(false);
+  const [userProfile, setUserProfile] = useState({ firstName: '', tenant: '' });
   const toast = useToast();
   const { confirmProps, openConfirm, promptProps, openPrompt } = useAppDialog();
 
@@ -97,6 +98,26 @@ const Dashboard = () => {
   useEffect(() => {
     const handler = () => loadTransactionDefinitions();
     window.addEventListener('dsl-transaction-defs-changed', handler);
+
+    // Parse user profile from URL parameters and persist in sessionStorage
+    try {
+      const params = new URLSearchParams(window.location.search);
+      const urlFirstName = params.get('firstName');
+      const urlTenant = params.get('tenant');
+      
+      if (urlFirstName) sessionStorage.setItem('dsl_firstName', urlFirstName);
+      if (urlTenant) sessionStorage.setItem('dsl_tenant', urlTenant);
+      
+      const firstName = urlFirstName || sessionStorage.getItem('dsl_firstName') || '';
+      const tenant = urlTenant || sessionStorage.getItem('dsl_tenant') || '';
+      
+      if (firstName || tenant) {
+        setUserProfile({ firstName, tenant });
+      }
+    } catch (e) {
+      console.error("Error parsing user profile:", e);
+    }
+
     return () => window.removeEventListener('dsl-transaction-defs-changed', handler);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -677,7 +698,7 @@ const Dashboard = () => {
               <h1 className="text-2xl font-bold text-[#14213d] tracking-tight" style={{ fontFamily: "'Inter', sans-serif" }}>Logic Studio</h1>
               <p className="text-sm text-[#6C757D] mt-1">Design and test your financial calculation logic using built-in formulas</p>
             </div>
-            <div className="flex gap-2">
+            <div className="flex gap-2 items-center">
               <Button
                 variant="outlined"
                 size="small"
@@ -728,6 +749,25 @@ const Dashboard = () => {
               >
                 Settings
               </Button>
+              {(userProfile.firstName || userProfile.tenant) && (
+                <Box sx={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 1,
+                  bgcolor: 'rgba(145, 158, 171, 0.12)',
+                  py: 0.5,
+                  px: 1.5,
+                  borderRadius: 2,
+                  ml: 1
+                }}>
+                  <Avatar sx={{ bgcolor: '#2563EB', width: 24, height: 24, fontSize: 12, fontWeight: 700 }}>
+                    {(userProfile.firstName || userProfile.tenant || '?')[0].toUpperCase()}
+                  </Avatar>
+                  <Typography variant="body2" sx={{ color: '#1E293B', fontWeight: 500 }}>
+                    {userProfile.firstName || userProfile.tenant}{userProfile.firstName && userProfile.tenant && userProfile.tenant !== 'master' ? ` / ${userProfile.tenant}` : ''}
+                  </Typography>
+                </Box>
+              )}
               <Menu
                 anchorEl={settingsAnchorEl}
                 open={Boolean(settingsAnchorEl)}
