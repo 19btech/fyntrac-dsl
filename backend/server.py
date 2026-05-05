@@ -4276,6 +4276,7 @@ async def save_rule(request: dict):
         "customCode": request.get("customCode", ""),
         "generatedCode": request.get("generatedCode", ""),
         "steps": request.get("steps", []),
+        "disabled": bool(request.get("disabled", False)),
         "updated_at": now,
     }
 
@@ -4288,7 +4289,20 @@ async def save_rule(request: dict):
     except Exception as _norm_err:
         logger.warning(f"transaction normalisation skipped: {_norm_err}")
 
+    # Always regenerate generatedCode from the current persisted shape so UI
+    # preview/runtime combined code reflect disabled step/transaction comments
+    # even if the client sends stale generatedCode.
+    try:
+        from backend.agent.tools import _generate_rule_code
+        doc["generatedCode"] = _generate_rule_code(doc)
+    except Exception as _gen_err:
+        logger.warning(f"generatedCode regeneration skipped: {_gen_err}")
+
     if rule_id:
+        existing_doc = None
+        if rule_id:
+            existing_doc = await db.saved_rules.find_one({"id": rule_id}, {"_id": 0})
+        doc["disabled"] = bool(request.get("disabled", (existing_doc or {}).get("disabled", False)))
         doc["id"] = rule_id
         await db.saved_rules.replace_one({"id": rule_id}, doc, upsert=True)
     else:
@@ -4406,11 +4420,28 @@ async def update_saved_rule(rule_id: str, request: dict):
     """Patch specific fields of a saved rule (generatedCode, outputs, steps, etc.)."""
     allowed = {"generatedCode", "outputs", "steps", "name", "priority", "variables",
                "conditions", "elseFormula", "conditionResultVar", "iterations",
-               "iterConfig", "inlineComment", "commentText", "ruleType"}
+               "iterConfig", "inlineComment", "commentText", "ruleType", "disabled"}
     update_fields = {k: v for k, v in request.items() if k in allowed}
     if not update_fields:
         raise HTTPException(status_code=400, detail="No valid fields to update.")
-    result = await db.saved_rules.update_one({"id": rule_id}, {"$set": update_fields})
+
+    existing = await db.saved_rules.find_one({"id": rule_id}, {"_id": 0})
+    if not existing:
+        raise HTTPException(status_code=404, detail="Rule not found.")
+
+    merged = {**existing, **update_fields}
+
+    # If caller patches steps/outputs/name/etc, regenerate generatedCode so
+    # disabled step/transaction comments stay in sync.
+    if any(k in update_fields for k in {"steps", "outputs", "name"}):
+        try:
+            from backend.agent.tools import _normalise_transaction_outputs, _generate_rule_code
+            _normalise_transaction_outputs(merged.get("steps") or [], merged.get("outputs") or {})
+            merged["generatedCode"] = _generate_rule_code(merged)
+        except Exception as _gen_err:
+            logger.warning(f"update_saved_rule regeneration skipped: {_gen_err}")
+
+    result = await db.saved_rules.update_one({"id": rule_id}, {"$set": merged})
     if result.matched_count == 0:
         raise HTTPException(status_code=404, detail="Rule not found.")
     return {"success": True, "message": "Rule updated."}
@@ -4447,7 +4478,7 @@ async def reorder_saved_schedules(request: dict):
 
 # ── User Templates CRUD ─────────────────────────────────────────────────
 
-async def _mirror_user_template_to_dsl(name: str, combined_code: str, rules: list) -> None:
+async def _mirror_user_template_to_dsl(name: str, combined_code: str, rules: list, tenant_header: str = "") -> None:
     """Mirror a user_template into dsl_templates (upsert by name) and append a
     versioned artifact in dsl_template_artifacts.
 
@@ -4540,6 +4571,33 @@ async def _mirror_user_template_to_dsl(name: str, combined_code: str, rules: lis
             await db.dsl_template_artifacts.delete_many(
                 {"template_id": template_id, "version": {"$lt": next_version}}
             )
+
+        # ── Upload compiled Python to dataloader /upload-dsl-model ──────────
+        # Send the compiled Python code to the dataloader service's upload-dsl-model endpoint.
+        # This makes the model available for execution by the Java ModelRunner.
+        if python_code and not compile_error:
+            try:
+                import httpx
+                from backend.config import settings
+                url = f"{settings.dataloader_base_uri.rstrip('/')}/model/upload-dsl-model"
+                # Build a .dsl file from the python_code string
+                file_bytes = python_code.encode("utf-8")
+                safe_name = re.sub(r"[^a-zA-Z0-9_\-]", "_", name).strip("_") or "dsl_model"
+                files = {"dslModel": (f"{safe_name}.dsl", file_bytes, "text/plain")}
+                data = {"modelName": name, "modelOrderId": str(next_version)}
+                # Forward tenant header if available (passed by caller)
+                headers = {}
+                if tenant_header:
+                    headers["X-Tenant"] = tenant_header
+                async with httpx.AsyncClient(timeout=30.0) as client:
+                    resp = await client.post(url, files=files, data=data, headers=headers)
+                if resp.status_code < 300:
+                    logger.info(f"Uploaded DSL model '{name}' to dataloader: {resp.status_code}")
+                else:
+                    logger.warning(f"Dataloader upload for '{name}' returned {resp.status_code}: {resp.text[:300]}")
+            except Exception as dl_err:
+                logger.warning(f"Failed to upload DSL model '{name}' to dataloader: {dl_err}")
+
     except Exception as e:
         logger.warning(f"Failed to mirror user template '{name}' to dsl_templates: {e}")
 
@@ -4642,7 +4700,7 @@ async def update_user_template(template_id: str, request: dict):
 
 
 @api_router.post("/user-templates/{template_id}/deploy")
-async def deploy_user_template(template_id: str):
+async def deploy_user_template(template_id: str, request: Request):
     """
     Deploy a single user template to the runtime.
 
@@ -4668,7 +4726,8 @@ async def deploy_user_template(template_id: str):
     combined_code = existing.get("combinedCode") or ""
     rules = existing.get("rules") or []
 
-    await _mirror_user_template_to_dsl(name, combined_code, rules)
+    tenant = request.headers.get("X-Tenant", "")
+    await _mirror_user_template_to_dsl(name, combined_code, rules, tenant_header=tenant)
 
     # Read back the freshly-written rows so the caller gets confirmation of
     # what the runtime will see.
@@ -4854,10 +4913,15 @@ async def get_combined_code():
         items = []
         for r in rules:
             p = r.get("priority")
-            items.append({"priority": p if p is not None else float('inf'), "code": r.get("generatedCode", ""), "name": r.get("name", "")})
+            items.append({
+                "priority": p if p is not None else float('inf'),
+                "code": r.get("generatedCode", ""),
+                "name": r.get("name", ""),
+                "disabled": bool(r.get("disabled", False)),
+            })
         for s in schedules:
             p = s.get("priority")
-            items.append({"priority": p if p is not None else float('inf'), "code": s.get("generatedCode", ""), "name": s.get("name", "")})
+            items.append({"priority": p if p is not None else float('inf'), "code": s.get("generatedCode", ""), "name": s.get("name", ""), "disabled": False})
 
         items.sort(key=lambda x: (x["priority"], x["name"]))
 
@@ -4953,6 +5017,17 @@ async def get_combined_code():
         for it in items:
             it.pop('_defs', None)
             it.pop('_uses', None)
+
+        # If a rule is disabled, keep it visible in combined/runtime code but
+        # comment out every non-empty line so it never executes.
+        for it in items:
+            if not it.get('disabled'):
+                continue
+            code = it.get('code', '') or ''
+            it['code'] = '\n'.join(
+                (f"# [DISABLED RULE] {line}" if line.strip() else line)
+                for line in code.split('\n')
+            )
 
         code_blocks = [it['code'] for it in items if it.get('code')]
         combined = "\n\n".join(code_blocks)

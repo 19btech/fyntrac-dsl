@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import {
   Box, Typography, Card, CardContent, Button, IconButton, Chip, TextField,
-  CircularProgress, Alert, Tooltip, Divider,
+  CircularProgress, Alert, Tooltip, Divider, Switch,
   Dialog, DialogTitle, DialogContent, DialogContentText, DialogActions,
   Menu, MenuItem, ListItemIcon, ListItemText,
 } from "@mui/material";
@@ -154,6 +154,22 @@ const SavedRules = ({ onEditRule, onEditSchedule, refreshKey, onPlayAll, onClear
       setDuplicating(false);
     }
   }, [duplicateTarget, dupName, dupPriority, loadRules]);
+
+  const handleToggleRuleDisabled = useCallback(async (rule) => {
+    const nextDisabled = !rule.disabled;
+    // Optimistically update local list
+    setRules(prev => prev.map(r => r.id === rule.id ? { ...r, disabled: nextDisabled } : r));
+    try {
+      await fetch(`${API}/saved-rules/${rule.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ disabled: nextDisabled }),
+      });
+    } catch (err) {
+      // Revert on failure
+      setRules(prev => prev.map(r => r.id === rule.id ? { ...r, disabled: !nextDisabled } : r));
+    }
+  }, []);
 
   // Merge rules and schedules, sort by priority
   const allItems = [
@@ -540,6 +556,7 @@ const SavedRules = ({ onEditRule, onEditSchedule, refreshKey, onPlayAll, onClear
             sx={{
               mb: 1.5, cursor: 'pointer', transition: 'all 0.15s',
               border: '1px solid #E9ECEF',
+              opacity: rule.disabled ? 0.5 : 1,
               '&:hover': { borderColor: meta.color, boxShadow: `0 2px 8px ${meta.color}1F` },
             }}
             onClick={handleClick}
@@ -578,7 +595,18 @@ const SavedRules = ({ onEditRule, onEditSchedule, refreshKey, onPlayAll, onClear
                     </Typography>
                   )}
                 </Box>
-                <Box sx={{ display: 'flex', gap: 0.5, flexShrink: 0 }}>
+                <Box sx={{ display: 'flex', gap: 0.5, flexShrink: 0, alignItems: 'center' }}>
+                  {!rule._isSchedule && (
+                    <Tooltip title={rule.disabled ? 'Enable rule' : 'Disable rule'}>
+                      <Switch
+                        size="small"
+                        checked={!rule.disabled}
+                        onClick={(e) => e.stopPropagation()}
+                        onChange={(e) => { e.stopPropagation(); handleToggleRuleDisabled(rule); }}
+                        sx={{ mr: 0.5 }}
+                      />
+                    </Tooltip>
+                  )}
                   <Tooltip title={rule._isSchedule ? 'Edit schedule' : 'Edit rule'}>
                     <IconButton size="small" onClick={(e) => { e.stopPropagation(); handleClick(); }} sx={{ color: meta.color }}>
                       <Edit3 size={16} />

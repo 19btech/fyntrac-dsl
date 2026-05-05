@@ -1691,12 +1691,51 @@ async def tool_get_event_data(args: dict) -> dict:
                 doc = d
                 break
     if not doc:
-        return {"event_name": event_name, "row_count": 0, "rows": []}
+        return {"event_name": event_name, "row_count": 0, "rows": [], "subid_analysis": {}}
     rows = doc.get("data_rows") or []
+
+    # Pre-compute distinct subinstrumentid counts per instrumentid so the agent
+    # can immediately see whether collect_by_instrument is required.
+    _subids_per_instrument: dict[str, set] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        # Find instrumentid field case-insensitively
+        inst_id = None
+        sub_id = None
+        for k, v in row.items():
+            kl = k.lower()
+            if kl == "instrumentid":
+                inst_id = str(v) if v is not None else None
+            elif kl == "subinstrumentid":
+                sub_id = str(v) if v is not None else None
+        if inst_id is not None:
+            _subids_per_instrument.setdefault(inst_id, set())
+            if sub_id is not None:
+                _subids_per_instrument[inst_id].add(sub_id)
+
+    subid_by_inst = {k: sorted(v) for k, v in _subids_per_instrument.items()}
+    max_subids = max((len(v) for v in _subids_per_instrument.values()), default=0)
+    multi_subid = max_subids > 1
+
+    subid_analysis = {
+        "multi_subid_event": multi_subid,
+        "max_distinct_subids_per_instrument": max_subids,
+        "distinct_subids_by_instrument": subid_by_inst,
+        "RULE": (
+            "MULTI-SUBID EVENT: ALL fields from this event MUST use "
+            "source:'collect', collectType:'collect_by_instrument'. "
+            "Using source:'event_field' on ANY field is a hard error."
+        ) if multi_subid else (
+            "SCALAR EVENT: fields may use source:'event_field'."
+        ),
+    }
+
     return {
         "event_name": doc.get("event_name"),
         "row_count": len(rows),
         "rows": rows[:limit],
+        "subid_analysis": subid_analysis,
     }
 
 
@@ -2577,14 +2616,17 @@ def _build_iteration_lines(iters: list[dict], available: list[str]) -> list[str]
         src = it.get("sourceArray") or ""
         sec = it.get("secondArray") or "[]"
         expr = it.get("expression") or ""
+        # Replace any double-quotes inside the expression with single-quotes so
+        # they don't break the outer double-quoted string wrapper in generated code.
+        safe_expr = expr.replace('"', "'")
         if it.get("type") == "apply_each":
-            lines.append(f'{rv} = apply_each({src}, "{expr}"{ctx_str})')
+            lines.append(f'{rv} = apply_each({src}, "{safe_expr}"{ctx_str})')
         elif it.get("type") == "apply_each_paired":
-            lines.append(f'{rv} = apply_each({src}, {sec}, "{expr}"{ctx_str})')
+            lines.append(f'{rv} = apply_each({src}, {sec}, "{safe_expr}"{ctx_str})')
         else:
             vn = it.get("varName") or "each"
             sv = it.get("secondVar") or "second"
-            lines.append(f'{rv} = for_each({src}, {sec}, "{vn}", "{sv}", "{expr}")')
+            lines.append(f'{rv} = for_each({src}, {sec}, "{vn}", "{sv}", "{safe_expr}")')
         if rv:
             iter_results.append(rv)
     return lines
@@ -2619,26 +2661,40 @@ def _generate_rule_code(rule: dict) -> str:
         if st == "calc":
             line = _build_calc_line(s)
             if line:
-                lines.append(line)
-                defined.append(s["name"])
-            if s.get("printResult") and s.get("name"):
+                # Emit disabled steps as comments so they're visible but inactive
+                if s.get("disabled"):
+                    lines.append(f"# [DISABLED] {line}")
+                else:
+                    lines.append(line)
+                    defined.append(s["name"])
+            if s.get("printResult") and s.get("name") and not s.get("disabled"):
                 lines.append(f'print("{s["name"]} =", {s["name"]})')
         elif st == "condition":
-            lines.append("## Conditional Logic")
+            if not s.get("disabled"):
+                lines.append("## Conditional Logic")
             expr = _build_condition_expr(s.get("conditions") or [], s.get("elseFormula") or "")
-            lines.append(f"{s['name']} = {expr}")
-            defined.append(s["name"])
-            if s.get("printResult") and s.get("name"):
+            cond_line = f"{s['name']} = {expr}"
+            if s.get("disabled"):
+                lines.append(f"# [DISABLED] {cond_line}")
+            else:
+                lines.append(cond_line)
+                defined.append(s["name"])
+            if s.get("printResult") and s.get("name") and not s.get("disabled"):
                 lines.append(f'print("{s["name"]} =", {s["name"]})')
             lines.append("")
         elif st == "iteration":
-            lines.append("## Iteration")
+            if not s.get("disabled"):
+                lines.append("## Iteration")
             iter_lines = _build_iteration_lines(s.get("iterations") or [], list(defined))
+            if s.get("disabled"):
+                # Emit iteration lines as comments when disabled
+                iter_lines = [f"# [DISABLED] {line}" for line in iter_lines]
             lines.extend(iter_lines)
-            for it in s.get("iterations") or []:
-                if it.get("resultVar"):
-                    defined.append(it["resultVar"])
-            if s.get("printResult"):
+            if not s.get("disabled"):
+                for it in s.get("iterations") or []:
+                    if it.get("resultVar"):
+                        defined.append(it["resultVar"])
+            if s.get("printResult") and not s.get("disabled"):
                 last = (s.get("iterations") or [])
                 if last:
                     rv = last[-1].get("resultVar")
@@ -2679,41 +2735,49 @@ def _generate_rule_code(rule: dict) -> str:
             # Schedule call
             valid_cols = [c for c in (sc.get("columns") or []) if c.get("name") and c.get("formula")]
             lines.append(f'{s["name"]} = schedule(p, {{')
+            sched_lines = []
             for i, col in enumerate(valid_cols):
                 comma = "," if i < len(valid_cols) - 1 else ""
-                lines.append(f'    "{col["name"]}": "{col["formula"]}"{comma}')
+                sched_lines.append(f'    "{col["name"]}": "{col["formula"]}"{comma}')
             ctx_vars = [v for v in (sc.get("contextVars") or []) if v != s["name"]]
             if ctx_vars:
                 ctx_pairs = ", ".join(f'"{v}": {v}' for v in ctx_vars)
-                lines.append(f"}}, {{{ctx_pairs}}})")
+                sched_lines.append(f"}}, {{{ctx_pairs}}})")
             else:
-                lines.append("})")
-            lines.append(f'print({s["name"]})')
-            defined.append(s["name"])
+                sched_lines.append("})")
+            sched_lines.append(f'print({s["name"]})')
             for o in s.get("outputVars") or []:
                 otype = o.get("type")
                 oname = o.get("name")
                 col = o.get("column")
                 if otype == "first":
-                    lines.append(f'{oname} = schedule_first({s["name"]}, "{col}")')
+                    sched_lines.append(f'{oname} = schedule_first({s["name"]}, "{col}")')
                 elif otype == "last":
-                    lines.append(f'{oname} = schedule_last({s["name"]}, "{col}")')
+                    sched_lines.append(f'{oname} = schedule_last({s["name"]}, "{col}")')
                 elif otype == "sum":
-                    lines.append(f'{oname} = schedule_sum({s["name"]}, "{col}")')
+                    sched_lines.append(f'{oname} = schedule_sum({s["name"]}, "{col}")')
                 elif otype == "column":
-                    lines.append(f'{oname} = schedule_column({s["name"]}, "{col}")')
+                    sched_lines.append(f'{oname} = schedule_column({s["name"]}, "{col}")')
                 elif otype == "filter":
-                    lines.append(f'{oname} = schedule_filter({s["name"]}, "{o.get("matchCol")}", {o.get("matchValue")}, "{col}")')
-                if oname:
-                    defined.append(oname)
+                    sched_lines.append(f'{oname} = schedule_filter({s["name"]}, "{o.get("matchCol")}", {o.get("matchValue")}, "{col}")')
+
+            if s.get("disabled"):
+                lines.extend([f"# [DISABLED] {ln}" for ln in sched_lines])
+            else:
+                lines.extend(sched_lines)
+                defined.append(s["name"])
+                for o in s.get("outputVars") or []:
+                    oname = o.get("name")
+                    if oname:
+                        defined.append(oname)
             lines.append("")
 
     outputs = rule.get("outputs") or {}
-    txns = [t for t in (outputs.get("transactions") or []) if t and t.get("type")]
-    if txns:
+    all_txns = [t for t in (outputs.get("transactions") or []) if t and t.get("type")]
+    if all_txns:
         lines.append("")
         lines.append("## Create Transactions")
-        for txn in txns:
+        for txn in all_txns:
             if not (txn.get("postingDate") and txn.get("effectiveDate")):
                 continue
             amt = txn.get("amount") or (defined[-1] if defined else "0")
@@ -2721,10 +2785,11 @@ def _generate_rule_code(rule: dict) -> str:
             ed = txn["effectiveDate"]
             sid = txn.get("subInstrumentId") or ""
             ttype = txn["type"]
-            if sid:
-                lines.append(f'createTransaction({pd}, {ed}, "{ttype}", {amt}, {sid})')
+            txn_line = f'createTransaction({pd}, {ed}, "{ttype}", {amt}, {sid})' if sid else f'createTransaction({pd}, {ed}, "{ttype}", {amt})'
+            if txn.get("disabled"):
+                lines.append(f"# [DISABLED] {txn_line}")
             else:
-                lines.append(f'createTransaction({pd}, {ed}, "{ttype}", {amt})')
+                lines.append(txn_line)
 
     return "\n".join(lines)
 
@@ -3998,25 +4063,14 @@ def _scalar_event_field_warnings(steps: list[dict],
     instrument before executing the rule body.
 
     Returns a list of warning dicts (may be empty). Callers add these to the
-    tool payload so the agent knows to switch to collect_by_instrument or
-    collect_by_subinstrument where per-subId values are needed.
+    tool payload so the agent knows to switch to collect_by_instrument where
+    per-subId values are needed.
 
-    IMPORTANT: if the rule has a 'subinstrumentid' step with source='event_field',
-    the rule is in per-subinstrument mode — the engine executes the rule once per
-    (instrumentId, subInstrumentId) pair, so every event field IS scalar within
-    that single-row execution context. This function returns [] in that case,
-    because event_field is correct and collect_by_instrument would be wrong.
+    When an event has multiple distinct subinstrumentids per instrumentid,
+    EVERY field from that event MUST use collect_by_instrument — no exceptions.
+    There is no "per-subinstrument execution mode" that makes scalar event_field
+    correct; the engine collapses multi-subId rows before rule execution.
     """
-    # Detect per-subinstrument mode: subinstrumentid step using event_field means
-    # each execution sees exactly one subId's row — all fields are scalar.
-    has_per_subinstrument_mode = any(
-        isinstance(s, dict)
-        and (s.get("name") or "").strip().lower() == "subinstrumentid"
-        and (s.get("source") or "").strip().lower() == "event_field"
-        for s in (steps or [])
-    )
-    if has_per_subinstrument_mode:
-        return []
     warnings: list[dict] = []
     for s in steps or []:
         if not isinstance(s, dict):

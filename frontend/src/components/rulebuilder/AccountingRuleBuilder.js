@@ -7,7 +7,7 @@ import {
 } from "@mui/material";
 import {
   Plus, Trash2, Play, Code, Save, X,
-  Calculator, GitBranch, Repeat, GripVertical, Edit3, ChevronDown, Calendar, Copy, Receipt,
+  Calculator, GitBranch, Repeat, GripVertical, Edit3, ChevronDown, Calendar, Copy, Receipt, RotateCcw,
 } from "lucide-react";
 import { API } from "../../config";
 import FormulaBar from "./FormulaBar";
@@ -891,6 +891,7 @@ const AccountingRuleBuilder = ({ events, dslFunctions, transactionDefinitions, o
   const [saveResult, setSaveResult] = useState(null);
   const [validationMsg, setValidationMsg] = useState('');
   const [showCode, setShowCode] = useState(false);
+  const [ruleDisabled, setRuleDisabled] = useState(initialData?.disabled || false);
 
   // ── Test Posting Date (drives all per-step Test buttons in this builder) ──
   // Loaded from /event-data/posting-dates (already filtered to activity events,
@@ -1526,27 +1527,48 @@ const AccountingRuleBuilder = ({ events, dslFunctions, transactionDefinitions, o
 
       if (s.stepType === 'calc') {
         const line = buildCalcLine(s);
-        if (line) { lines.push(line); definedVars.push(s.name); }
-        if (s.printResult && s.name) lines.push(`print("${s.name} =", ${s.name})`);
+        if (line) {
+          if (s.disabled) {
+            lines.push(`# [DISABLED] ${line}`);
+          } else {
+            lines.push(line);
+            definedVars.push(s.name);
+          }
+        }
+        if (s.printResult && s.name && !s.disabled) lines.push(`print("${s.name} =", ${s.name})`);
       } else if (s.stepType === 'condition') {
-        lines.push('## Conditional Logic');
+        if (!s.disabled) lines.push('## Conditional Logic');
         const expr = buildConditionExpr(s.conditions || [], s.elseFormula);
-        lines.push(`${s.name} = ${expr}`);
-        definedVars.push(s.name);
-        if (s.printResult && s.name) lines.push(`print("${s.name} =", ${s.name})`);
+        const condLine = `${s.name} = ${expr}`;
+        if (s.disabled) {
+          lines.push(`# [DISABLED] ${condLine}`);
+        } else {
+          lines.push(condLine);
+          definedVars.push(s.name);
+        }
+        if (s.printResult && s.name && !s.disabled) lines.push(`print("${s.name} =", ${s.name})`);
         lines.push('');
       } else if (s.stepType === 'iteration') {
-        lines.push('## Iteration');
+        if (!s.disabled) lines.push('## Iteration');
         const allCtxVars = [...new Set([...definedVars, ...depLines.map(l => l.split(' = ')[0]).filter(Boolean)])];
         const iterLines = buildIterationLines(s.iterations || [], allCtxVars);
-        lines.push(...iterLines);
-        (s.iterations || []).forEach(it => { if (it.resultVar) definedVars.push(it.resultVar); });
-        if (s.printResult) {
+        if (s.disabled) {
+          lines.push(...iterLines.map(l => `# [DISABLED] ${l}`));
+        } else {
+          lines.push(...iterLines);
+          (s.iterations || []).forEach(it => { if (it.resultVar) definedVars.push(it.resultVar); });
+        }
+        if (s.printResult && !s.disabled) {
           const lastIter = (s.iterations || [])[(s.iterations || []).length - 1];
           if (lastIter?.resultVar) lines.push(`print("${lastIter.resultVar} =", ${lastIter.resultVar})`);
         }
         lines.push('');
       } else if (s.stepType === 'schedule') {
+        if (s.disabled) {
+          lines.push(...buildScheduleStepLines(s).map(l => `# [DISABLED] ${l}`));
+          lines.push('');
+          continue;
+        }
         const sc = s.scheduleConfig || {};
         lines.push('## Schedule');
         // Period definition
@@ -1601,8 +1623,15 @@ const AccountingRuleBuilder = ({ events, dslFunctions, transactionDefinitions, o
         }
         lines.push('');
       } else if (s.stepType === 'custom_code') {
-        lines.push('## Custom Code');
-        if (s.customCode) lines.push(s.customCode);
+        if (s.disabled) {
+          lines.push('# [DISABLED] ## Custom Code');
+          if (s.customCode) {
+            (s.customCode || '').split('\n').forEach(line => lines.push(`# [DISABLED] ${line}`));
+          }
+        } else {
+          lines.push('## Custom Code');
+          if (s.customCode) lines.push(s.customCode);
+        }
         lines.push('');
       }
     }
@@ -1620,8 +1649,11 @@ const AccountingRuleBuilder = ({ events, dslFunctions, transactionDefinitions, o
         const pd = txn.postingDate;
         const ed = txn.effectiveDate;
         const sid = txn.subInstrumentId || '';
-        if (sid) lines.push(`createTransaction(${pd}, ${ed}, "${txn.type}", ${amt}, ${sid})`);
-        else lines.push(`createTransaction(${pd}, ${ed}, "${txn.type}", ${amt})`);
+        const txnLine = sid
+          ? `createTransaction(${pd}, ${ed}, "${txn.type}", ${amt}, ${sid})`
+          : `createTransaction(${pd}, ${ed}, "${txn.type}", ${amt})`;
+        if (txn.disabled) lines.push(`# [DISABLED] ${txnLine}`);
+        else lines.push(txnLine);
       }
     }
 
@@ -1638,6 +1670,24 @@ const AccountingRuleBuilder = ({ events, dslFunctions, transactionDefinitions, o
     return 'simple_calc';
   }, [steps]);
 
+  const persistDisableToggle = useCallback(async (nextSteps, nextOutputs) => {
+    if (!ruleId) return;
+    try {
+      await fetch(`${API}/saved-rules/${ruleId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: (ruleName || '').trim(),
+          steps: nextSteps,
+          outputs: nextOutputs,
+        }),
+      });
+      if (onSave) onSave();
+    } catch (_) {
+      // Keep local toggle state even if immediate persistence fails.
+    }
+  }, [ruleId, ruleName, onSave]);
+
   const resetForm = useCallback(() => {
     setRuleName('');
     setRulePriority('');
@@ -1648,6 +1698,7 @@ const AccountingRuleBuilder = ({ events, dslFunctions, transactionDefinitions, o
     setCommentText('');
     setShowCode(false);
     setSaveResult(null);
+    setRuleDisabled(false);
   }, []);
 
   // ── Save ──
