@@ -1559,6 +1559,55 @@ async def tool_generate_sample_event_data(args: dict) -> dict:
             f"Event definition '{event_name}' not found. "
             f"Use create_event_definitions first."
         )
+
+    # ── Guard: do not silently overwrite existing data. ──────────────────
+    # If data already exists for this event AND the caller has not explicitly
+    # set overwrite=True, return a confirmation_required status so the agent
+    # is forced to ask the user before proceeding.  The agent MUST call
+    # `finish` to surface this choice, then re-call with overwrite=True only
+    # after the user explicitly consents.
+    overwrite = bool(args.get("overwrite", False))
+    append = bool(args.get("append", False))
+    if not overwrite and not append:
+        _existing_check = None
+        try:
+            if db is not None:
+                _existing_check = await db.event_data.find_one(
+                    {"event_name": event_def["event_name"]},
+                    {"_id": 0, "event_name": 1, "data_rows": 1},
+                )
+        except Exception:
+            pass
+        if _existing_check is None:
+            for _d in (_ServerBridge.in_memory_data or {}).get("event_data") or []:
+                if _d.get("event_name", "").lower() == event_def["event_name"].lower():
+                    _existing_check = _d
+                    break
+        if _existing_check:
+            _existing_rows = len(_existing_check.get("data_rows") or [])
+            if _existing_rows > 0:
+                _sample = (_existing_check.get("data_rows") or [{}])[:2]
+                return {
+                    "status": "confirmation_required",
+                    "event_name": event_def["event_name"],
+                    "existing_row_count": _existing_rows,
+                    "sample_existing_rows": _sample,
+                    "message": (
+                        f"Event '{event_def['event_name']}' already has "
+                        f"{_existing_rows} row(s) of sample data loaded. "
+                        f"Proceeding would OVERWRITE this data permanently. "
+                        f"You MUST call `finish` now and ask the user: "
+                        f"'Event \u2019{event_def['event_name']}\u2019 already has "
+                        f"{_existing_rows} rows of loaded data. Should I (a) keep "
+                        f"the existing data and proceed to build the template, "
+                        f"(b) overwrite it with fresh sample data, or (c) append "
+                        f"new rows to the existing data?' "
+                        f"Do NOT call generate_sample_event_data again until the "
+                        f"user has explicitly chosen option (b) or (c)."
+                    ),
+                }
+    # ─────────────────────────────────────────────────────────────────────
+
     instrument_count = int(args.get("instrument_count") or 0)
     instrument_ids = args.get("instrument_ids") or []
     reused_from: str | None = None
@@ -8418,7 +8467,8 @@ TOOL_SCHEMAS: list[dict] = [
                 "posting_dates": {"type": "array", "items": {"type": "string"}, "description": "List of YYYY-MM-DD strings — one row per (instrument × posting_date)."},
                 "field_hints": {"type": "object", "description": "Optional per-field hints, e.g. {\"rate\": {\"range\": [0.03, 0.08]}}"},
                 "seed": {"type": "integer", "default": 42},
-                "append": {"type": "boolean", "default": False},
+                "append": {"type": "boolean", "default": False, "description": "If True, add new rows to existing data instead of replacing it."},
+                "overwrite": {"type": "boolean", "default": False, "description": "Must be True to replace existing sample data. Without this the tool returns confirmation_required and the agent must ask the user first."},
             },
             "required": ["event_name"],
         },
