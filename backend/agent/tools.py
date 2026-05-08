@@ -2643,7 +2643,11 @@ def _build_condition_expr(conditions: list[dict], else_formula: str) -> str:
             then_part = _build_condition_expr(sub, c.get("nestedElse") or c.get("thenFormula") or "0")
         else:
             then_part = c.get("thenFormula") or "0"
-        nested = f"if({c['condition']}, {then_part}, {nested})"
+        # Normalize bare = to == so DSL equality checks don't become Python
+        # keyword arguments when the condition is placed inside iif(cond, ...).
+        # E.g. "DEP_X=DEP_Y" → "DEP_X==DEP_Y".  Leaves ==, !=, <=, >= intact.
+        cond_str = re.sub(r'(?<![=!<>])=(?!=)', '==', c['condition'])
+        nested = f"if({cond_str}, {then_part}, {nested})"
     return nested
 
 
