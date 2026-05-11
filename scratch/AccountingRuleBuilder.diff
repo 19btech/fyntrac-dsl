@@ -1,0 +1,253 @@
+--- /home/uabbas/Workspace/fyntrac-dsl/frontend/src/components/rulebuilder/AccountingRuleBuilder.js	2026-05-06 02:53:43.212519980 +0500
++++ /home/uabbas/Downloads/dsl_clean/AccountingRuleBuilder.js	2026-05-08 19:19:59.416739508 +0500
+@@ -161,7 +161,11 @@
+     const thenPart = (c.nestedConditions?.length > 0)
+       ? buildConditionExpr(c.nestedConditions, c.nestedElse || c.thenFormula || '0')
+       : (c.thenFormula || '0');
+-    nested = `if(${c.condition}, ${thenPart}, ${nested})`;
++    // Normalize bare = to == so DSL equality checks don't become Python
++    // keyword arguments when the condition lands inside iif(cond, ...).
++    // E.g. "DEP_X=DEP_Y" → "DEP_X==DEP_Y".  Leaves ==, !=, <=, >= intact.
++    const condStr = c.condition.replace(/(?<![=!<>])=(?!=)/g, '==');
++    nested = `if(${condStr}, ${thenPart}, ${nested})`;
+   }
+   return nested;
+ };
+@@ -890,8 +894,25 @@
+   const [saving, setSaving] = useState(false);
+   const [saveResult, setSaveResult] = useState(null);
+   const [validationMsg, setValidationMsg] = useState('');
++
++  const persistDisableToggle = useCallback(async (nextSteps, nextOutputs) => {
++    if (!ruleId) return;
++    try {
++      await fetch(`${API}/saved-rules/${ruleId}`, {
++        method: 'PUT',
++        headers: { 'Content-Type': 'application/json' },
++        body: JSON.stringify({
++          name: (ruleName || '').trim(),
++          steps: nextSteps,
++          outputs: nextOutputs,
++        }),
++      });
++      if (onSave) onSave();
++    } catch (_) {
++      // Keep local toggle state even if immediate persistence fails.
++    }
++  }, [ruleId, ruleName, onSave]);
+   const [showCode, setShowCode] = useState(false);
+-  const [ruleDisabled, setRuleDisabled] = useState(initialData?.disabled || false);
+ 
+   // ── Test Posting Date (drives all per-step Test buttons in this builder) ──
+   // Loaded from /event-data/posting-dates (already filtered to activity events,
+@@ -941,6 +962,7 @@
+   });
+   const [inlineComment, setInlineComment] = useState(initialData?.inlineComment || false);
+   const [commentText, setCommentText] = useState(initialData?.commentText || '');
++  const [ruleDisabled, setRuleDisabled] = useState(initialData?.disabled || false);
+ 
+   // ── Unified steps array ──
+   // Each step: { name, stepType: 'calc'|'condition'|'iteration', source, formula, value, eventField, collectType, conditions, elseFormula, iterations }
+@@ -972,6 +994,7 @@
+         setRulePriority(fresh.priority ?? '');
+         setInlineComment(!!fresh.inlineComment);
+         setCommentText(fresh.commentText || '');
++        setRuleDisabled(fresh.disabled || false);
+         if (fresh.outputs && fresh.outputs.printResult !== undefined) {
+           setOutputs(fresh.outputs);
+         } else if (fresh.outputs) {
+@@ -1677,24 +1700,6 @@
+     return 'simple_calc';
+   }, [steps]);
+ 
+-  const persistDisableToggle = useCallback(async (nextSteps, nextOutputs) => {
+-    if (!ruleId) return;
+-    try {
+-      await fetch(`${API}/saved-rules/${ruleId}`, {
+-        method: 'PUT',
+-        headers: { 'Content-Type': 'application/json' },
+-        body: JSON.stringify({
+-          name: (ruleName || '').trim(),
+-          steps: nextSteps,
+-          outputs: nextOutputs,
+-        }),
+-      });
+-      if (onSave) onSave();
+-    } catch (_) {
+-      // Keep local toggle state even if immediate persistence fails.
+-    }
+-  }, [ruleId, ruleName, onSave]);
+-
+   const resetForm = useCallback(() => {
+     setRuleName('');
+     setRulePriority('');
+@@ -1705,7 +1710,6 @@
+     setCommentText('');
+     setShowCode(false);
+     setSaveResult(null);
+-    setRuleDisabled(false);
+   }, []);
+ 
+   // ── Save ──
+@@ -2203,7 +2207,6 @@
+               sx={{
+                 mb: 1, borderLeft: `3px solid ${meta.color}`,
+                 transition: 'all 0.15s',
+-                opacity: step.disabled ? 0.6 : 1,
+                 '&:hover': { boxShadow: `0 2px 8px ${meta.color}1F` },
+               }}>
+               <CardContent sx={{ p: 1.5, '&:last-child': { pb: 1.5 } }}>
+@@ -2224,53 +2227,37 @@
+                   <Chip size="small" label={meta.label}
+                     sx={{ fontSize: '0.625rem', height: 18, bgcolor: `${meta.color}18`, color: meta.color, fontWeight: 600 }} />
+                   <Tooltip title={step.disabled ? "Disabled" : "Enabled"}>
+-                    <Switch
+-                      size="small"
+-                      checked={!step.disabled}
+-                      onClick={(e) => e.stopPropagation()}
+-                      onChange={(e) => {
+-                        e.stopPropagation();
+-                        const nextSteps = steps.map((s, i) => i === idx ? { ...s, disabled: !e.target.checked } : s);
+-                        setSteps(nextSteps);
+-                        persistDisableToggle(nextSteps, outputs);
+-                      }}
+-                      sx={{
+-                        mr: 0.5,
+-                        '& .MuiSwitch-switchBase.Mui-checked': { color: '#64B5F6' },
+-                        '& .MuiSwitch-switchBase.Mui-checked + .MuiSwitch-track': { backgroundColor: '#90CAF9' },
+-                      }}
+-                    />
++                    <Switch size="small" checked={!step.disabled} onChange={(e) => {
++                      const nextSteps = steps.map((s, i) => i === idx ? { ...s, disabled: !e.target.checked } : s);
++                      setSteps(nextSteps);
++                      persistDisableToggle(nextSteps, outputs);
++                    }} sx={{
++                      '& .MuiSwitch-switchBase.Mui-checked': { color: '#64B5F6' },
++                      '& .MuiSwitch-switchBase.Mui-checked + .MuiSwitch-track': { backgroundColor: '#90CAF9' },
++                    }} />
+                   </Tooltip>
+                   {step.stepType !== 'custom_code' && step.stepType !== 'schedule' && (
+                     <Tooltip title="Test up to this step">
+-                      <span>
+-                        <IconButton size="small" onClick={() => handleInlineTest(idx)}
+-                          disabled={!!stepTesting[idx] || step.disabled} sx={{ color: '#4CAF50' }}>
+-                          {stepTesting[idx] ? <CircularProgress size={14} /> : <Play size={14} />}
+-                        </IconButton>
+-                      </span>
++                      <IconButton size="small" onClick={() => handleInlineTest(idx)}
++                        disabled={!!stepTesting[idx]} sx={{ color: '#4CAF50' }}>
++                        {stepTesting[idx] ? <CircularProgress size={14} /> : <Play size={14} />}
++                      </IconButton>
+                     </Tooltip>
+                   )}
+                   <Tooltip title="Duplicate step">
+-                    <span>
+-                      <IconButton size="small" onClick={() => duplicateStep(idx)} disabled={step.disabled} sx={{ color: '#607D8B' }}>
+-                        <Copy size={14} />
+-                      </IconButton>
+-                    </span>
++                    <IconButton size="small" onClick={() => duplicateStep(idx)} sx={{ color: '#607D8B' }}>
++                      <Copy size={14} />
++                    </IconButton>
+                   </Tooltip>
+                   <Tooltip title="Edit step">
+-                    <span>
+-                      <IconButton size="small" onClick={() => openEditStep(idx)} disabled={step.disabled} sx={{ color: meta.color }}>
+-                        <Edit3 size={14} />
+-                      </IconButton>
+-                    </span>
++                    <IconButton size="small" onClick={() => openEditStep(idx)} sx={{ color: meta.color }}>
++                      <Edit3 size={14} />
++                    </IconButton>
+                   </Tooltip>
+                   <Tooltip title="Delete step">
+-                    <span>
+-                      <IconButton size="small" onClick={() => removeStep(idx)} sx={{ color: '#F44336' }}>
+-                        <Trash2 size={14} />
+-                      </IconButton>
+-                    </span>
++                    <IconButton size="small" onClick={() => removeStep(idx)} sx={{ color: '#F44336' }}>
++                      <Trash2 size={14} />
++                    </IconButton>
+                   </Tooltip>
+                 </Box>
+                 {tr && (
+@@ -2325,7 +2312,6 @@
+               sx={{
+                 mb: 1, borderLeft: `3px solid ${TXN_COLOR}`,
+                 transition: 'all 0.15s',
+-                opacity: txn.disabled ? 0.6 : 1,
+                 '&:hover': { boxShadow: `0 2px 8px ${TXN_COLOR}1F` },
+               }}>
+               <CardContent sx={{ p: 1.5, '&:last-child': { pb: 1.5 } }}>
+@@ -2346,51 +2332,38 @@
+                   <Chip size="small" label="Transaction"
+                     sx={{ fontSize: '0.625rem', height: 18, bgcolor: `${TXN_COLOR}18`, color: TXN_COLOR, fontWeight: 600 }} />
+                   <Tooltip title={txn.disabled ? "Disabled" : "Enabled"}>
+-                    <Switch
+-                      size="small"
+-                      checked={!txn.disabled}
+-                      onClick={(e) => e.stopPropagation()}
+-                      onChange={(e) => {
+-                        e.stopPropagation();
+-                        const updated = outputs.transactions.map((t, i) => i === idx ? { ...t, disabled: !e.target.checked } : t);
+-                        const nextOutputs = { ...outputs, transactions: updated };
+-                        setOutputs(nextOutputs);
+-                        persistDisableToggle(steps, nextOutputs);
+-                      }}
+-                      sx={{
+-                        '& .MuiSwitch-switchBase.Mui-checked': { color: '#64B5F6' },
+-                        '& .MuiSwitch-switchBase.Mui-checked + .MuiSwitch-track': { backgroundColor: '#90CAF9' },
+-                      }}
+-                    />
++                    <Switch size="small" checked={!txn.disabled} onChange={(e) => {
++                      const updated = outputs.transactions.map((t, i) => i === idx ? { ...t, disabled: !e.target.checked } : t);
++                      const nextOutputs = { ...outputs, transactions: updated };
++                      setOutputs(nextOutputs);
++                      persistDisableToggle(steps, nextOutputs);
++                    }} sx={{
++                      '& .MuiSwitch-switchBase.Mui-checked': { color: '#64B5F6' },
++                      '& .MuiSwitch-switchBase.Mui-checked + .MuiSwitch-track': { backgroundColor: '#90CAF9' },
++                    }} />
+                   </Tooltip>
+                   <Tooltip title="Test this transaction">
+                     <span>
+                       <IconButton size="small" onClick={() => handleTransactionTest(idx)}
+-                        disabled={!!txnTesting[idx] || !txn.type || txn.disabled} sx={{ color: '#4CAF50' }}>
++                        disabled={!!txnTesting[idx] || !txn.type} sx={{ color: '#4CAF50' }}>
+                         {txnTesting[idx] ? <CircularProgress size={14} /> : <Play size={14} />}
+                       </IconButton>
+                     </span>
+                   </Tooltip>
+                   <Tooltip title="Duplicate transaction">
+-                    <span>
+-                      <IconButton size="small" onClick={() => duplicateTransaction(idx)} disabled={txn.disabled} sx={{ color: '#607D8B' }}>
+-                        <Copy size={14} />
+-                      </IconButton>
+-                    </span>
++                    <IconButton size="small" onClick={() => duplicateTransaction(idx)} sx={{ color: '#607D8B' }}>
++                      <Copy size={14} />
++                    </IconButton>
+                   </Tooltip>
+                   <Tooltip title="Edit transaction">
+-                    <span>
+-                      <IconButton size="small" onClick={() => openEditTransaction(idx)} disabled={txn.disabled} sx={{ color: TXN_COLOR }}>
+-                        <Edit3 size={14} />
+-                      </IconButton>
+-                    </span>
++                    <IconButton size="small" onClick={() => openEditTransaction(idx)} sx={{ color: TXN_COLOR }}>
++                      <Edit3 size={14} />
++                    </IconButton>
+                   </Tooltip>
+                   <Tooltip title="Delete transaction">
+-                    <span>
+-                      <IconButton size="small" onClick={() => removeTransaction(idx)} sx={{ color: '#F44336' }}>
+-                        <Trash2 size={14} />
+-                      </IconButton>
+-                    </span>
++                    <IconButton size="small" onClick={() => removeTransaction(idx)} sx={{ color: '#F44336' }}>
++                      <Trash2 size={14} />
++                    </IconButton>
+                   </Tooltip>
+                 </Box>
+                 {tr && (

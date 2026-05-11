@@ -161,7 +161,11 @@ const buildConditionExpr = (conditions, elseFormula) => {
     const thenPart = (c.nestedConditions?.length > 0)
       ? buildConditionExpr(c.nestedConditions, c.nestedElse || c.thenFormula || '0')
       : (c.thenFormula || '0');
-    nested = `if(${c.condition}, ${thenPart}, ${nested})`;
+    // Normalize bare = to == so DSL equality checks don't become Python
+    // keyword arguments when the condition lands inside iif(cond, ...).
+    // E.g. "DEP_X=DEP_Y" → "DEP_X==DEP_Y".  Leaves ==, !=, <=, >= intact.
+    const condStr = c.condition.replace(/(?<![=!<>])=(?!=)/g, '==');
+    nested = `if(${condStr}, ${thenPart}, ${nested})`;
   }
   return nested;
 };

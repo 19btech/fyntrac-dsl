@@ -643,8 +643,11 @@ const ScheduleStepModal = ({ open, step, onClose, onSaveStep, events, dslFunctio
         : { name: o.name, type: o.type, column: o.column });
   }, [outputs]);
 
+  const isReservedName = stepName.trim().toLowerCase() === 'schedule';
+
   const handleSave = () => {
     if (!stepName) return;
+    if (isReservedName) return;
     onSaveStep({
       name: stepName,
       stepType: 'schedule',
@@ -680,7 +683,9 @@ const ScheduleStepModal = ({ open, step, onClose, onSaveStep, events, dslFunctio
         {/* Step Name */}
         <TextField size="small" fullWidth label="Variable Name *" value={stepName}
           onChange={(e) => setStepName(e.target.value.replace(/[^a-zA-Z0-9_]/g, ''))}
-          placeholder="e.g., loan_schedule" sx={{ mb: 2, mt: 1 }} />
+          placeholder="e.g., loan_schedule" sx={{ mb: 2, mt: 1 }}
+          error={isReservedName}
+          helperText={isReservedName ? '"schedule" is a reserved DSL function name — please choose a different variable name (e.g., loan_schedule, dep_schedule).' : ''} />
 
         {/* ── Time Period ── */}
         <Typography variant="body2" fontWeight={600} sx={{ mb: 1 }}>
@@ -1207,7 +1212,7 @@ const ScheduleStepModal = ({ open, step, onClose, onSaveStep, events, dslFunctio
         )}
       </DialogContent>
       <DialogActions sx={{ px: 3, pb: 2 }}>
-        <Button onClick={handleSave} disabled={!stepName} variant="contained" startIcon={<Save size={14} />}>
+        <Button onClick={handleSave} disabled={!stepName || isReservedName} variant="contained" startIcon={<Save size={14} />}>
           Save Step
         </Button>
       </DialogActions>

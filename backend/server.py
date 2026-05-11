@@ -893,6 +893,8 @@ def clear_print_outputs():
         stripped = re.sub(r'\bor\s*\(', 'or_op(', stripped)
         stripped = re.sub(r'\bnot\s*\(', 'not_op(', stripped)
         stripped = re.sub(r'\bif\s*\(', 'iif(', stripped)
+        # ^ is exponentiation in DSL (Excel-style); convert to Python **
+        stripped = re.sub(r'(?<!["\'])\^(?!["\'])', '**', stripped)
 
         # Simply add the line with DSL line marker
         processed_lines.append(f"    {stripped}  # DSL_LINE:{dsl_line_num}")
@@ -1382,6 +1384,8 @@ def collect_effectivedates_for_subinstrument(subinstrument_id=None):
         line = re.sub(r'\bor\s*\(', 'or_op(', line)
         line = re.sub(r'\bnot\s*\(', 'not_op(', line)
         line = re.sub(r'\bif\s*\(', 'iif(', line)
+        # ^ is exponentiation in DSL (Excel-style); convert to Python **
+        line = re.sub(r'(?<!["\'])\^(?!["\'])', '**', line)
 
         # Add the line with DSL line marker
         processed_lines.append(f"        {line}  # DSL_LINE:{dsl_line_num}")
@@ -1422,15 +1426,17 @@ def collect_effectivedates_for_subinstrument(subinstrument_id=None):
 
         for field in fields:
             field_name = field['name']
-            field_type = field.get('datatype', 'string')
+            field_type = (field.get('datatype', 'string') or 'string').strip().lower()
             # Variable name: EVENT_FIELD
             var_name = f"{event_name}_{field_name}"
 
-            if field_type == 'decimal':
+            # Normalise common numeric type aliases to 'decimal'
+            if field_type in ('decimal', 'number', 'numeric', 'float', 'double',
+                              'currency', 'money', 'amount', 'percent', 'rate'):
                 field_extraction_lines.append(
                     f"        {var_name} = float(get_field_case_insensitive(row, '{var_name}', 0) or 0)"
                 )
-            elif field_type in ('integer', 'int'):
+            elif field_type in ('integer', 'int', 'long', 'count'):
                 field_extraction_lines.append(
                     f"        {var_name} = int(float(get_field_case_insensitive(row, '{var_name}', 0) or 0))"
                 )
@@ -1443,8 +1449,30 @@ def collect_effectivedates_for_subinstrument(subinstrument_id=None):
                     f"        {var_name} = str(get_field_case_insensitive(row, '{var_name}', '')).lower() in ['true', '1', 'yes']"
                 )
             else:
+                # 'string' or unrecognised type: smart-cast — if the stored
+                # value is already numeric keep it; if it looks like a number
+                # coerce to float so arithmetic formulas don't fail with
+                # "unsupported operand type(s) for /: 'str' and 'str'".
                 field_extraction_lines.append(
-                    f"        {var_name} = str(get_field_case_insensitive(row, '{var_name}', ''))"
+                    f"        _fv = get_field_case_insensitive(row, '{var_name}', '')"
+                )
+                field_extraction_lines.append(
+                    f"        if isinstance(_fv, (int, float)):"
+                )
+                field_extraction_lines.append(
+                    f"            {var_name} = _fv"
+                )
+                field_extraction_lines.append(
+                    f"        else:"
+                )
+                field_extraction_lines.append(
+                    f"            _s = str(_fv if _fv is not None else '')"
+                )
+                field_extraction_lines.append(
+                    f"            try: {var_name} = float(_s) if _s.strip() else _s"
+                )
+                field_extraction_lines.append(
+                    f"            except (ValueError, TypeError): {var_name} = _s"
                 )
     
     field_extraction_code = '\n'.join(field_extraction_lines)
@@ -4953,6 +4981,17 @@ async def get_combined_code():
         for it in items:
             it['code'] = strip_dependencies_section(it.get('code', ''))
 
+        # If a rule is disabled, keep it visible in combined/runtime code but
+        # comment out every non-empty line so it never executes.
+        for it in items:
+            if not it.get('disabled'):
+                continue
+            code = it.get('code', '') or ''
+            it['code'] = '\n'.join(
+                (f"# [DISABLED RULE] {line}" if line.strip() else line)
+                for line in code.split('\n')
+            )
+
         # ── Topological reorder: if rule A's body references a symbol that
         # rule B defines, B must come before A — even if A has a lower priority
         # number. This prevents "cannot access local variable 'X'" errors when
@@ -5017,17 +5056,6 @@ async def get_combined_code():
         for it in items:
             it.pop('_defs', None)
             it.pop('_uses', None)
-
-        # If a rule is disabled, keep it visible in combined/runtime code but
-        # comment out every non-empty line so it never executes.
-        for it in items:
-            if not it.get('disabled'):
-                continue
-            code = it.get('code', '') or ''
-            it['code'] = '\n'.join(
-                (f"# [DISABLED RULE] {line}" if line.strip() else line)
-                for line in code.split('\n')
-            )
 
         code_blocks = [it['code'] for it in items if it.get('code')]
         combined = "\n\n".join(code_blocks)

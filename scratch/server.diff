@@ -1,0 +1,323 @@
+--- /home/uabbas/Workspace/fyntrac-dsl/backend/server.py	2026-05-05 05:51:53.581405634 +0500
++++ /home/uabbas/Downloads/dsl_clean/server.py	2026-05-08 19:19:59.406739618 +0500
+@@ -1,7 +1,4 @@
+-from fastapi import FastAPI, APIRouter, UploadFile, File, HTTPException, WebSocket, WebSocketDisconnect, Body, Request
+-from contextvars import ContextVar
+-from .auth import verify_jwt
+-from fastapi import Depends, Header, Request
++from fastapi import FastAPI, APIRouter, UploadFile, File, HTTPException, WebSocket, WebSocketDisconnect, Body
+ from fastapi.responses import StreamingResponse, Response
+ from starlette.middleware.cors import CORSMiddleware
+ from motor.motor_asyncio import AsyncIOMotorClient
+@@ -386,28 +383,7 @@
+ 
+ # MongoDB connection
+ client = AsyncIOMotorClient(settings.mongo_url, serverSelectionTimeoutMS=settings.mongo_timeout_ms)
+-
+-# ContextVar to hold the tenant-specific database
+-_db_ctx: ContextVar = ContextVar('db_ctx')
+-
+-class DatabaseProxy:
+-    """Proxy that delegates to the database stored in _db_ctx."""
+-    def __getattr__(self, name):
+-        try:
+-            return getattr(_db_ctx.get(), name)
+-        except LookupError:
+-            # Fallback to default database if context is not set (e.g. during startup)
+-            return getattr(client[settings.db_name], name)
+-            
+-    def __getitem__(self, name):
+-        try:
+-            return _db_ctx.get()[name]
+-        except LookupError:
+-            return client[settings.db_name][name]
+-
+-# Global db object that all routes use
+-db = DatabaseProxy()
+-
++db = client[settings.db_name]
+ 
+ # --- Shared error message table for AI chat endpoints ---
+ ERROR_MESSAGES = {
+@@ -422,48 +398,8 @@
+ 
+ # Create the main app
+ app = FastAPI()
+-
+-@app.middleware("http")
+-async def tenant_middleware(request: Request, call_next):
+-    # Extract tenant from X-Tenant header (sent by gateway)
+-    tenant = request.headers.get("X-Tenant")
+-    
+-    # User requirement: DSL_STUDIO_ + tenant (UPPERCASE)
+-    db_name_prefix = "DSL_STUDIO_"
+-    
+-    if tenant:
+-        db_name = f"{db_name_prefix}{tenant}"
+-        
+-        # Separate DB connection per tenant (as requested)
+-        # We use a cache to avoid creating too many clients
+-        if not hasattr(app.state, 'tenant_clients'):
+-            app.state.tenant_clients = {}
+-            
+-        if tenant not in app.state.tenant_clients:
+-            logger.info(f"Creating separate MongoDB connection for tenant: {tenant}")
+-            app.state.tenant_clients[tenant] = AsyncIOMotorClient(
+-                settings.mongo_url, 
+-                serverSelectionTimeoutMS=settings.mongo_timeout_ms
+-            )
+-        
+-        tenant_client = app.state.tenant_clients[tenant]
+-        _db_ctx.set(tenant_client[db_name])
+-    else:
+-        # Fallback to default
+-        db_name = f"{db_name_prefix}master" if settings.db_name == "dsl_studio_master" else settings.db_name
+-        _db_ctx.set(client[db_name])
+-    
+-    response = await call_next(request)
+-    return response
+-
+-@app.get("/health")
+-@app.get("/api/health")
+-@app.get("/api/dsl/health")
+-async def health_check():
+-    return {"status": "ok"}
+-
+ # Router without /api prefix - proxy will handle the /api part
+-api_router = APIRouter(dependencies=[Depends(verify_jwt)])
++api_router = APIRouter()
+ 
+ # Configure logging
+ logging.basicConfig(
+@@ -893,6 +829,8 @@
+         stripped = re.sub(r'\bor\s*\(', 'or_op(', stripped)
+         stripped = re.sub(r'\bnot\s*\(', 'not_op(', stripped)
+         stripped = re.sub(r'\bif\s*\(', 'iif(', stripped)
++        # ^ is exponentiation in DSL (Excel-style); convert to Python **
++        stripped = re.sub(r'(?<!["\'])\^(?!["\'])', '**', stripped)
+ 
+         # Simply add the line with DSL line marker
+         processed_lines.append(f"    {stripped}  # DSL_LINE:{dsl_line_num}")
+@@ -1382,6 +1320,8 @@
+         line = re.sub(r'\bor\s*\(', 'or_op(', line)
+         line = re.sub(r'\bnot\s*\(', 'not_op(', line)
+         line = re.sub(r'\bif\s*\(', 'iif(', line)
++        # ^ is exponentiation in DSL (Excel-style); convert to Python **
++        line = re.sub(r'(?<!["\'])\^(?!["\'])', '**', line)
+ 
+         # Add the line with DSL line marker
+         processed_lines.append(f"        {line}  # DSL_LINE:{dsl_line_num}")
+@@ -1422,15 +1362,17 @@
+ 
+         for field in fields:
+             field_name = field['name']
+-            field_type = field.get('datatype', 'string')
++            field_type = (field.get('datatype', 'string') or 'string').strip().lower()
+             # Variable name: EVENT_FIELD
+             var_name = f"{event_name}_{field_name}"
+ 
+-            if field_type == 'decimal':
++            # Normalise common numeric type aliases to 'decimal'
++            if field_type in ('decimal', 'number', 'numeric', 'float', 'double',
++                              'currency', 'money', 'amount', 'percent', 'rate'):
+                 field_extraction_lines.append(
+                     f"        {var_name} = float(get_field_case_insensitive(row, '{var_name}', 0) or 0)"
+                 )
+-            elif field_type in ('integer', 'int'):
++            elif field_type in ('integer', 'int', 'long', 'count'):
+                 field_extraction_lines.append(
+                     f"        {var_name} = int(float(get_field_case_insensitive(row, '{var_name}', 0) or 0))"
+                 )
+@@ -1443,8 +1385,30 @@
+                     f"        {var_name} = str(get_field_case_insensitive(row, '{var_name}', '')).lower() in ['true', '1', 'yes']"
+                 )
+             else:
++                # 'string' or unrecognised type: smart-cast — if the stored
++                # value is already numeric keep it; if it looks like a number
++                # coerce to float so arithmetic formulas don't fail with
++                # "unsupported operand type(s) for /: 'str' and 'str'".
+                 field_extraction_lines.append(
+-                    f"        {var_name} = str(get_field_case_insensitive(row, '{var_name}', ''))"
++                    f"        _fv = get_field_case_insensitive(row, '{var_name}', '')"
++                )
++                field_extraction_lines.append(
++                    f"        if isinstance(_fv, (int, float)):"
++                )
++                field_extraction_lines.append(
++                    f"            {var_name} = _fv"
++                )
++                field_extraction_lines.append(
++                    f"        else:"
++                )
++                field_extraction_lines.append(
++                    f"            _s = str(_fv if _fv is not None else '')"
++                )
++                field_extraction_lines.append(
++                    f"            try: {var_name} = float(_s) if _s.strip() else _s"
++                )
++                field_extraction_lines.append(
++                    f"            except (ValueError, TypeError): {var_name} = _s"
+                 )
+     
+     field_extraction_code = '\n'.join(field_extraction_lines)
+@@ -4223,6 +4187,9 @@
+ 
+     rule_id = request.get("id")
+     now = datetime.now(timezone.utc).isoformat()
++    existing_doc = None
++    if rule_id:
++        existing_doc = await db.saved_rules.find_one({"id": rule_id}, {"_id": 0})
+ 
+     # Check uniqueness: no other rule with same name (case-insensitive)
+     existing = await db.saved_rules.find_one(
+@@ -4263,6 +4230,7 @@
+     doc = {
+         "name": name,
+         "priority": priority,
++        "disabled": bool(request.get("disabled", (existing_doc or {}).get("disabled", False))),
+         "ruleType": request.get("ruleType", "simple_calc"),
+         "variables": request.get("variables", []),
+         "conditions": request.get("conditions", []),
+@@ -4276,7 +4244,6 @@
+         "customCode": request.get("customCode", ""),
+         "generatedCode": request.get("generatedCode", ""),
+         "steps": request.get("steps", []),
+-        "disabled": bool(request.get("disabled", False)),
+         "updated_at": now,
+     }
+ 
+@@ -4299,10 +4266,6 @@
+         logger.warning(f"generatedCode regeneration skipped: {_gen_err}")
+ 
+     if rule_id:
+-        existing_doc = None
+-        if rule_id:
+-            existing_doc = await db.saved_rules.find_one({"id": rule_id}, {"_id": 0})
+-        doc["disabled"] = bool(request.get("disabled", (existing_doc or {}).get("disabled", False)))
+         doc["id"] = rule_id
+         await db.saved_rules.replace_one({"id": rule_id}, doc, upsert=True)
+     else:
+@@ -4424,7 +4387,6 @@
+     update_fields = {k: v for k, v in request.items() if k in allowed}
+     if not update_fields:
+         raise HTTPException(status_code=400, detail="No valid fields to update.")
+-
+     existing = await db.saved_rules.find_one({"id": rule_id}, {"_id": 0})
+     if not existing:
+         raise HTTPException(status_code=404, detail="Rule not found.")
+@@ -4478,7 +4440,7 @@
+ 
+ # ── User Templates CRUD ─────────────────────────────────────────────────
+ 
+-async def _mirror_user_template_to_dsl(name: str, combined_code: str, rules: list, tenant_header: str = "") -> None:
++async def _mirror_user_template_to_dsl(name: str, combined_code: str, rules: list) -> None:
+     """Mirror a user_template into dsl_templates (upsert by name) and append a
+     versioned artifact in dsl_template_artifacts.
+ 
+@@ -4571,33 +4533,6 @@
+             await db.dsl_template_artifacts.delete_many(
+                 {"template_id": template_id, "version": {"$lt": next_version}}
+             )
+-
+-        # ── Upload compiled Python to dataloader /upload-dsl-model ──────────
+-        # Send the compiled Python code to the dataloader service's upload-dsl-model endpoint.
+-        # This makes the model available for execution by the Java ModelRunner.
+-        if python_code and not compile_error:
+-            try:
+-                import httpx
+-                from backend.config import settings
+-                url = f"{settings.dataloader_base_uri.rstrip('/')}/model/upload-dsl-model"
+-                # Build a .dsl file from the python_code string
+-                file_bytes = python_code.encode("utf-8")
+-                safe_name = re.sub(r"[^a-zA-Z0-9_\-]", "_", name).strip("_") or "dsl_model"
+-                files = {"dslModel": (f"{safe_name}.dsl", file_bytes, "text/plain")}
+-                data = {"modelName": name, "modelOrderId": str(next_version)}
+-                # Forward tenant header if available (passed by caller)
+-                headers = {}
+-                if tenant_header:
+-                    headers["X-Tenant"] = tenant_header
+-                async with httpx.AsyncClient(timeout=30.0) as client:
+-                    resp = await client.post(url, files=files, data=data, headers=headers)
+-                if resp.status_code < 300:
+-                    logger.info(f"Uploaded DSL model '{name}' to dataloader: {resp.status_code}")
+-                else:
+-                    logger.warning(f"Dataloader upload for '{name}' returned {resp.status_code}: {resp.text[:300]}")
+-            except Exception as dl_err:
+-                logger.warning(f"Failed to upload DSL model '{name}' to dataloader: {dl_err}")
+-
+     except Exception as e:
+         logger.warning(f"Failed to mirror user template '{name}' to dsl_templates: {e}")
+ 
+@@ -4700,7 +4635,7 @@
+ 
+ 
+ @api_router.post("/user-templates/{template_id}/deploy")
+-async def deploy_user_template(template_id: str, request: Request):
++async def deploy_user_template(template_id: str):
+     """
+     Deploy a single user template to the runtime.
+ 
+@@ -4726,8 +4661,7 @@
+     combined_code = existing.get("combinedCode") or ""
+     rules = existing.get("rules") or []
+ 
+-    tenant = request.headers.get("X-Tenant", "")
+-    await _mirror_user_template_to_dsl(name, combined_code, rules, tenant_header=tenant)
++    await _mirror_user_template_to_dsl(name, combined_code, rules)
+ 
+     # Read back the freshly-written rows so the caller gets confirmation of
+     # what the runtime will see.
+@@ -4953,6 +4887,17 @@
+         for it in items:
+             it['code'] = strip_dependencies_section(it.get('code', ''))
+ 
++        # If a rule is disabled, keep it visible in combined/runtime code but
++        # comment out every non-empty line so it never executes.
++        for it in items:
++            if not it.get('disabled'):
++                continue
++            code = it.get('code', '') or ''
++            it['code'] = '\n'.join(
++                (f"# [DISABLED RULE] {line}" if line.strip() else line)
++                for line in code.split('\n')
++            )
++
+         # ── Topological reorder: if rule A's body references a symbol that
+         # rule B defines, B must come before A — even if A has a lower priority
+         # number. This prevents "cannot access local variable 'X'" errors when
+@@ -5018,17 +4963,6 @@
+             it.pop('_defs', None)
+             it.pop('_uses', None)
+ 
+-        # If a rule is disabled, keep it visible in combined/runtime code but
+-        # comment out every non-empty line so it never executes.
+-        for it in items:
+-            if not it.get('disabled'):
+-                continue
+-            code = it.get('code', '') or ''
+-            it['code'] = '\n'.join(
+-                (f"# [DISABLED RULE] {line}" if line.strip() else line)
+-                for line in code.split('\n')
+-            )
+-
+         code_blocks = [it['code'] for it in items if it.get('code')]
+         combined = "\n\n".join(code_blocks)
+         return {"success": True, "code": combined, "count": len(code_blocks)}
+@@ -5047,12 +4981,13 @@
+     client.close()
+     logger.info("Application shutdown — MongoDB client closed")
+ 
+-# Include router under /api/dsl so frontend proxying via gateway resolves correctly
+-app.include_router(api_router, prefix="/api/dsl")
++# Include router under /api so frontend proxying to /api/* resolves correctly
++app.include_router(api_router, prefix="/api")
+ 
+ # Also include the same routes at root (no prefix) for dev environments where
+-# the frontend proxy or external clients may strip the prefix. This
+-# makes the backend tolerant to both `/api/dsl/...` and `/<route>` requests.
++# the frontend proxy or external clients may strip the `/api` prefix. This
++# makes the backend tolerant to both `/api/...` and `/<route>` requests and
++# prevents 404s when the proxy rewrites paths unexpectedly.
+ app.include_router(api_router)
+ 
+ # Set lifespan on app
