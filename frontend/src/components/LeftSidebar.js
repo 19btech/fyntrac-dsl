@@ -108,11 +108,11 @@ const LeftSidebar = ({ events, selectedEvent, onEventSelect, onDownloadEvents, o
       )}
       <Box sx={{ px: 3, height: 80, borderBottom: '1px solid #E9ECEF', display: 'flex', justifyContent: 'center', alignItems: 'center' }}>
         <img
-          src={process.env.PUBLIC_URL + '/logo.png'}
+          src={process.env.PUBLIC_URL + '/FyntracLogic.png'}
           alt="Fyntrac"
           style={{ height: 72, objectFit: 'contain' }}
           data-testid="sidebar-logo"
-          onError={(e) => { e.currentTarget.onerror = null; e.currentTarget.src = 'https://customer-assets.emergentagent.com/job_code-finance-2/artifacts/hdj19r3w_Fyntrac%20%28600%20x%20400%20px%29%20%284%29.png'; }}
+          onError={(e) => { e.currentTarget.onerror = null; e.currentTarget.src = process.env.PUBLIC_URL + '/logo.png'; }}
         />
       </Box>
 
@@ -284,7 +284,7 @@ const LeftSidebar = ({ events, selectedEvent, onEventSelect, onDownloadEvents, o
         onSuccess={({ slot, data }) => {
           try {
             if (slot === 'transactions') {
-              toast.success(`${data.count} transaction type(s) loaded.`);
+              toast.success(`${data.count} transaction name(s) loaded.`);
             } else if (slot === 'event_configurations') {
               const names = (data.names || []).join(', ');
               toast.success(`${data.count} event definition(s) loaded${names ? `: ${names}` : ''}.`);

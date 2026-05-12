@@ -1,8 +1,8 @@
 import React, { useState, useEffect, useRef } from "react";
 import axios from "axios";
 import { useToast } from "../components/ToastProvider";
-import { Upload, Code, BookOpen, Sparkles, Trash2, Search as SearchIcon, Settings, ChevronDown, Database, Calculator, Eye, Save } from "lucide-react";
-import { Button, Tabs, Tab, Box, Menu, MenuItem, Divider, Alert, Typography, ToggleButtonGroup, ToggleButton, Tooltip } from '@mui/material';
+import { Upload, Code, BookOpen, Sparkles, Trash2, Search as SearchIcon, Settings, ChevronDown, Database, Calculator, Eye, Save, Menu as MenuIcon } from "lucide-react";
+import { Button, Tabs, Tab, Box, Menu, MenuItem, Divider, Alert, Typography, ToggleButtonGroup, ToggleButton, Tooltip, CircularProgress, IconButton, useMediaQuery, useTheme } from '@mui/material';
 import Editor from "@monaco-editor/react";
 import FileUploadPanel from "../components/FileUploadPanel";
 import LeftSidebar from "../components/LeftSidebar";
@@ -63,6 +63,8 @@ const Dashboard = () => {
   const [showEventDataViewer, setShowEventDataViewer] = useState(false);
   const [showAISetup, setShowAISetup] = useState(false);
   const [providerRefreshKey, setProviderRefreshKey] = useState(0);
+  const [codeRefreshKey, setCodeRefreshKey] = useState(0);
+  const [codeRefreshing, setCodeRefreshing] = useState(false);
   // Editor mode: 'code' | 'ruleBuilder' | 'scheduleBuilder' | 'customCode' | 'preview' | 'savedRules'
   const [editorMode, setEditorMode] = useState('code');
   // Saved rules
@@ -632,14 +634,18 @@ const Dashboard = () => {
     }
   };
 
-  const loadCombinedCode = async () => {
+  const loadCombinedCode = async ({ silent = true } = {}) => {
+    if (!silent) setCodeRefreshing(true);
     try {
       const response = await axios.get(`${API}/combined-code`);
-      if (response.data?.success && response.data.code) {
-        setDslCode(response.data.code);
+      if (response.data) {
+        setDslCode(response.data.code ?? '');
+        setCodeRefreshKey(k => k + 1);
       }
     } catch (error) {
       console.error("Error loading combined code:", error);
+    } finally {
+      if (!silent) setCodeRefreshing(false);
     }
   };
 
@@ -652,7 +658,7 @@ const Dashboard = () => {
   return (
     <div className="flex h-screen bg-[#F8F9FA] overflow-auto" style={{ minWidth: '900px' }} data-testid="dashboard-container">
       {/* Left Sidebar */}
-        <div className="sidebar-enter" style={{ position: 'relative', zIndex: 1400 }}>
+        <div className="sidebar-enter" style={{ position: 'relative', zIndex: 1200 }}>
         <LeftSidebar 
           events={events} 
           selectedEvent={selectedEvent}
@@ -673,8 +679,60 @@ const Dashboard = () => {
         {/* Top Bar - Fyntrac style */}
         <div className="bg-white/80 backdrop-blur-xl border-b border-[#E9ECEF]/50 px-6 flex items-center animate-fade-in-up" style={{ height: 80 }}>
           <div className="flex items-center justify-between w-full">
-            <div>
-              <h1 className="text-xl font-bold text-[#14213d] tracking-tight" style={{ fontFamily: "'Inter', sans-serif" }}>Logic Studio</h1>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              {/* Hamburger — mobile only (xs) */}
+              <IconButton
+                onClick={() => setSidebarCollapsed(c => !c)}
+                color="inherit"
+                edge="start"
+                size="small"
+                sx={{ display: { xs: 'inline-flex', sm: 'none' }, width: 32, height: 32, '& svg': { fontSize: 26 } }}
+              >
+                <MenuIcon size={26} />
+              </IconButton>
+              {/* Hamburger — desktop only (sm+) */}
+              <IconButton
+                onClick={() => setSidebarCollapsed(c => !c)}
+                edge="start"
+                size="small"
+                sx={{
+                  display: { xs: 'none', sm: 'inline-flex' },
+                  color: '#64748b',
+                  '&:hover': { bgcolor: '#f1f5f9', color: '#14213d' },
+                  '& svg': { fontSize: 26 },
+                }}
+              >
+                <MenuIcon size={26} />
+              </IconButton>
+              <div>
+                <Typography
+                  component="span"
+                  sx={{
+                    fontFamily: '"Inter", "Helvetica Neue", Arial, sans-serif',
+                    fontSize: '0.6875rem',
+                    fontWeight: 700,
+                    color: '#64748b',
+                    textTransform: 'uppercase',
+                    letterSpacing: '0.08em',
+                    lineHeight: 1.1,
+                    display: 'block',
+                  }}
+                >
+                  Workspace
+                </Typography>
+                <Typography
+                  sx={{
+                    fontFamily: '"Inter", "Helvetica Neue", Arial, sans-serif',
+                    fontSize: '1rem',
+                    fontWeight: 700,
+                    color: '#14213d',
+                    lineHeight: 1.3,
+                    mt: 0,
+                  }}
+                >
+                  Logic Studio
+                </Typography>
+              </div>
             </div>
             <div className="flex gap-2">
               <Button 
@@ -732,6 +790,7 @@ const Dashboard = () => {
                 open={Boolean(settingsAnchorEl)}
                 onClose={() => setSettingsAnchorEl(null)}
                 data-testid="settings-menu"
+                sx={{ zIndex: 1500 }}
                 PaperProps={{
                   sx: {
                     borderRadius: '8px',
@@ -824,7 +883,6 @@ const Dashboard = () => {
             <TabPanel value={tabValue} index={1}>
               {/* Editor Mode Switcher */}
               <Box sx={{ px: 2, py: 1, bgcolor: 'white', borderBottom: '1px solid #E9ECEF', display: 'flex', alignItems: 'center', gap: 2 }}>
-                <Typography variant="caption" fontWeight={600} color="text.secondary" sx={{ whiteSpace: 'nowrap' }}>BUILD WITH:</Typography>
                 <ToggleButtonGroup
                   value={editorMode}
                   exclusive
@@ -866,13 +924,16 @@ const Dashboard = () => {
                     <Typography variant="body2" color="text.secondary" sx={{ flex: 1 }}>
                       This editor shows the combined output of all rules (sorted by priority). To edit, use the <strong>Rule Builder</strong> or create a <strong>Custom Code</strong> rule.
                     </Typography>
-                    <Button size="small" variant="outlined" onClick={() => { loadCombinedCode(); }}
+                    <Button size="small" variant="outlined" onClick={() => { loadCombinedCode({ silent: false }); }}
+                      disabled={codeRefreshing}
+                      startIcon={codeRefreshing ? <CircularProgress size={12} color="inherit" /> : undefined}
                       sx={{ textTransform: 'none', fontSize: '0.75rem', borderColor: '#5B5FED', color: '#5B5FED' }}>
-                      Refresh
+                      {codeRefreshing ? 'Refreshing…' : 'Refresh'}
                     </Button>
                   </Box>
                   <div className="flex-1 bg-[#0A0A0A] min-w-0" data-testid="dsl-editor">
                     <Editor
+                      key={codeRefreshKey}
                       height="100%"
                       defaultLanguage="python"
                       value={dslCode}
@@ -1127,7 +1188,7 @@ const Dashboard = () => {
           </Box>
 
           {/* Right Sidebar - Chat Assistant */}
-          <div className="flex-shrink-0 chat-panel-enter" style={{ position: 'relative', zIndex: 1400 }}>
+          <div className="flex-shrink-0 chat-panel-enter" style={{ position: 'relative', zIndex: 1200 }}>
             <ChatAssistant 
               ref={chatAssistantRef}
               dslFunctions={dslFunctions} 

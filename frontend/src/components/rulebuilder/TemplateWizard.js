@@ -834,7 +834,7 @@ const TemplateWizard = ({ template, events, onGenerate, onClose }) => {
                       <Typography variant="body2" fontWeight={600}>{output.label}</Typography>
                       {output.txnType && config[`outputs_${output.key}`] && (
                         <TextField
-                          size="small" label="Transaction Type" sx={{ mt: 1, minWidth: 200 }}
+                          size="small" label="Transaction Name" sx={{ mt: 1, minWidth: 200 }}
                           value={config.txn_type || output.txnType}
                           onChange={(e) => setConfig(prev => ({ ...prev, txn_type: e.target.value }))}
                         />
@@ -1162,6 +1162,7 @@ const ImportFynModal = ({ open, onClose, onImported }) => {
   const [importName, setImportName] = useState('');
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState('');
+  const [isDragOver, setIsDragOver] = useState(false);
   const fileInputRef = React.useRef(null);
 
   const reset = () => {
@@ -1241,33 +1242,73 @@ const ImportFynModal = ({ open, onClose, onImported }) => {
     }
   };
 
+  const handleDrop = (e) => {
+    e.preventDefault();
+    setIsDragOver(false);
+    const file = e.dataTransfer?.files?.[0];
+    if (!file) return;
+    setFileName(file.name);
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      try {
+        const obj = JSON.parse(ev.target.result);
+        const { valid, error } = validateFynFile(obj);
+        if (!valid) { setParseError(error); setParsed(null); return; }
+        setParseError('');
+        setParsed(obj);
+        const baseName = obj.template.name || '';
+        setImportName(obj.type === 'standard' ? `${baseName} (imported)` : baseName);
+      } catch {
+        setParseError('Could not parse file. Make sure it is a valid .fyn JSON file.');
+        setParsed(null);
+      }
+    };
+    reader.readAsText(file);
+  };
+
   return (
     <Dialog open={open} onClose={handleClose} maxWidth="sm" fullWidth
       TransitionComponent={Slide}
       TransitionProps={{ direction: 'up' }}
       PaperProps={{ sx: { borderRadius: 4, boxShadow: '0 32px 64px rgba(0,0,0,0.14)', overflow: 'hidden', border: '1px solid', borderColor: 'divider' } }}>
       <DialogTitle sx={{ p: 0 }}>
-        <ModalHeader
-          badge="TEMPLATE"
-          title="Import Template (.fyn)"
-          onClose={handleClose}
-        />
+        <ModalHeader badge="TEMPLATE" title="Import Template (.fyn)" onClose={handleClose} />
       </DialogTitle>
-      <DialogContent sx={{ pt: 1 }}>
+      <DialogContent>
         <input type="file" accept=".fyn,application/json" ref={fileInputRef}
           style={{ display: 'none' }} onChange={handleFileChange} />
 
-        {/* File picker */}
-        <Box sx={{ mb: 2 }}>
-          <Button variant="outlined" size="small" startIcon={<Upload size={14} />}
-            onClick={() => fileInputRef.current?.click()}
-            sx={{ textTransform: 'none', borderColor: '#5B5FED', color: '#5B5FED' }}>
-            {fileName ? `Change file` : 'Choose .fyn file'}
-          </Button>
-          {fileName && (
-            <Typography variant="caption" color="text.secondary" sx={{ ml: 1.5 }}>
-              {fileName}
-            </Typography>
+        {/* Drop zone */}
+        <Box
+          onClick={() => !saving && fileInputRef.current?.click()}
+          onDragOver={(e) => { e.preventDefault(); setIsDragOver(true); }}
+          onDragLeave={() => setIsDragOver(false)}
+          onDrop={handleDrop}
+          sx={{
+            border: '2px dashed',
+            borderColor: isDragOver ? '#5B5FED' : fileName ? '#5B5FED' : 'divider',
+            borderRadius: 2,
+            p: 3,
+            textAlign: 'center',
+            cursor: saving ? 'default' : 'pointer',
+            bgcolor: isDragOver ? 'rgba(91,95,237,0.07)' : fileName ? 'rgba(91,95,237,0.04)' : 'background.default',
+            transition: 'all 0.2s ease',
+            mb: 2,
+            '&:hover': saving ? {} : { borderColor: '#5B5FED', bgcolor: 'rgba(91,95,237,0.04)' },
+          }}
+        >
+          {fileName ? (
+            <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 1 }}>
+              <FileText size={18} color="#5B5FED" />
+              <Typography variant="body2" sx={{ fontWeight: 600, color: '#5B5FED' }}>{fileName}</Typography>
+              <Typography variant="caption" color="text.secondary">· click to change</Typography>
+            </Box>
+          ) : (
+            <>
+              <Upload size={28} color="#ADB5BD" style={{ marginBottom: 8 }} />
+              <Typography variant="body2" sx={{ fontWeight: 600, mb: 0.5 }}>Drop a .fyn file here</Typography>
+              <Typography variant="caption" color="text.secondary">or click to browse</Typography>
+            </>
           )}
         </Box>
 
@@ -1278,80 +1319,83 @@ const ImportFynModal = ({ open, onClose, onImported }) => {
           </Alert>
         )}
 
-        {/* Preview */}
+        {/* Preview card */}
         {parsed && (
-          <Box>
-            <Alert severity="info" sx={{ mb: 2, py: 0.5 }}>
-              <Typography variant="caption">
-                {parsed.type === 'standard'
-                  ? 'This is a standard template — it will be imported as an editable copy.'
-                  : 'User template ready to import.'}
-                {parsed.exported_at && ` Exported: ${new Date(parsed.exported_at).toLocaleString()}`}
+          <Box sx={{ border: '1px solid', borderColor: 'divider', borderRadius: 2, overflow: 'hidden' }}>
+            <Box sx={{ px: 2.5, py: 1.5, bgcolor: 'rgba(91,95,237,0.05)', borderBottom: '1px solid', borderColor: 'divider', display: 'flex', alignItems: 'center', gap: 1, flexWrap: 'wrap' }}>
+              <CheckCircle2 size={15} color="#2E7D32" />
+              <Typography variant="caption" fontWeight={700} color="text.secondary" sx={{ textTransform: 'uppercase', letterSpacing: 0.6, mr: 'auto' }}>
+                Template Preview
               </Typography>
-            </Alert>
-
-            {/* Editable name */}
-            <TextField fullWidth size="small" label="Template Name" value={importName}
-              onChange={(e) => setImportName(e.target.value)}
-              sx={{ mb: 2 }} required />
-
-            {/* Summary chips */}
-            <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.75, mb: 2 }}>
-              <Chip size="small" label={parsed.template.category || 'User Created'}
-                sx={{ bgcolor: '#EEF0FE', color: '#5B5FED', fontSize: '0.6875rem', height: 20 }} />
-              <Chip size="small" label={`${(parsed.template.rules || []).length} rules`}
-                sx={{ bgcolor: '#F8F9FA', fontSize: '0.6875rem', height: 20 }} />
-              {parsed.template.standard && (
-                <Chip size="small" label={parsed.template.standard}
+              <Box sx={{ display: 'flex', gap: 0.75, flexWrap: 'wrap' }}>
+                <Chip size="small" label={parsed.template.category || 'User Created'}
                   sx={{ bgcolor: '#EEF0FE', color: '#5B5FED', fontSize: '0.6875rem', height: 20 }} />
-              )}
+                <Chip size="small" label={`${(parsed.template.rules || []).length} rules`}
+                  sx={{ bgcolor: '#F8F9FA', fontSize: '0.6875rem', height: 20 }} />
+                {parsed.template.standard && (
+                  <Chip size="small" label={parsed.template.standard}
+                    sx={{ bgcolor: '#EEF0FE', color: '#5B5FED', fontSize: '0.6875rem', height: 20 }} />
+                )}
+              </Box>
             </Box>
 
-            {/* Description */}
-            {parsed.template.description && (
-              <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
-                {parsed.template.description}
-              </Typography>
-            )}
+            <Box sx={{ p: 2.5 }}>
+              <TextField fullWidth size="small" label="Template Name" value={importName}
+                onChange={(e) => setImportName(e.target.value)}
+                sx={{ mb: 2 }} required />
 
-            {/* Rules list */}
-            {(parsed.template.rules || []).length > 0 && (
-              <Box>
-                <Typography variant="caption" fontWeight={600} color="text.secondary" sx={{ display: 'block', mb: 0.5 }}>
-                  Rules included:
-                </Typography>
-                <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.5 }}>
-                  {parsed.template.rules.map((r, i) => (
-                    <Chip key={i} size="small" label={r.name || `Rule ${i + 1}`}
-                      icon={<CheckCircle2 size={11} />}
-                      sx={{ bgcolor: '#D4EDDA', color: '#155724', fontSize: '0.6875rem', height: 20 }} />
-                  ))}
+              {(parsed.template.description || parsed.exported_at) && (
+                <Box sx={{ mb: 1.5 }}>
+                  {parsed.template.description && (
+                    <Typography variant="body2" color="text.secondary" sx={{ mb: 0.5 }}>
+                      {parsed.template.description}
+                    </Typography>
+                  )}
+                  {parsed.exported_at && (
+                    <Typography variant="caption" color="text.secondary">
+                      Exported: {new Date(parsed.exported_at).toLocaleString()}
+                      {parsed.type === 'standard' && ' · Will be imported as an editable copy'}
+                    </Typography>
+                  )}
                 </Box>
-              </Box>
-            )}
+              )}
 
-            {/* Parameters list (for standard templates) */}
-            {parsed.type === 'standard' && Array.isArray(parsed.template.fields) && parsed.template.fields.length > 0 && (
-              <Box sx={{ mt: 1.5 }}>
-                <Typography variant="caption" fontWeight={600} color="text.secondary" sx={{ display: 'block', mb: 0.5 }}>
-                  Parameters ({parsed.template.fields.length}):
-                </Typography>
-                <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.5 }}>
-                  {parsed.template.fields.map((f) => (
-                    <Chip key={f.key} size="small" label={f.label}
-                      sx={{ bgcolor: '#F8F9FA', fontSize: '0.6875rem', height: 20 }} />
-                  ))}
+              {(parsed.template.rules || []).length > 0 && (
+                <Box sx={{ mb: 1 }}>
+                  <Typography variant="caption" fontWeight={600} color="text.secondary" sx={{ display: 'block', mb: 0.5 }}>
+                    Rules included:
+                  </Typography>
+                  <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.5 }}>
+                    {parsed.template.rules.map((r, i) => (
+                      <Chip key={i} size="small" label={r.name || `Rule ${i + 1}`}
+                        icon={<CheckCircle2 size={11} />}
+                        sx={{ bgcolor: '#D4EDDA', color: '#155724', fontSize: '0.6875rem', height: 20 }} />
+                    ))}
+                  </Box>
                 </Box>
-              </Box>
-            )}
+              )}
 
-            {/* Save error */}
-            {saveError && (
-              <Alert severity="error" icon={<AlertCircle size={16} />} sx={{ mt: 2 }}>
-                {saveError}
-              </Alert>
-            )}
+              {parsed.type === 'standard' && Array.isArray(parsed.template.fields) && parsed.template.fields.length > 0 && (
+                <Box>
+                  <Typography variant="caption" fontWeight={600} color="text.secondary" sx={{ display: 'block', mb: 0.5 }}>
+                    Parameters ({parsed.template.fields.length}):
+                  </Typography>
+                  <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.5 }}>
+                    {parsed.template.fields.map((f) => (
+                      <Chip key={f.key} size="small" label={f.label}
+                        sx={{ bgcolor: '#F8F9FA', fontSize: '0.6875rem', height: 20 }} />
+                    ))}
+                  </Box>
+                </Box>
+              )}
+            </Box>
           </Box>
+        )}
+
+        {saveError && (
+          <Alert severity="error" icon={<AlertCircle size={16} />} sx={{ mt: 2 }}>
+            {saveError}
+          </Alert>
         )}
       </DialogContent>
       <DialogActions sx={{ px: 3, py: 2 }}>

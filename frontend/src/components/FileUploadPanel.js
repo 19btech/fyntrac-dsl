@@ -301,7 +301,7 @@ const FileUploadPanel = ({ onUploadSuccess, events, transactions = [], addConsol
   return (
     <Box sx={{ p: 3, bgcolor: '#F8F9FA', minHeight: '100%' }} data-testid="file-upload-panel">
       <Box sx={{ mb: 3 }}>
-        <Typography variant="h3" sx={{ mb: 0.5 }}>Upload Data Files</Typography>
+        <Typography variant="h5" sx={{ mb: 0.5 }}>Upload Data Files</Typography>
       </Box>
 
       {uploading && (
@@ -368,7 +368,7 @@ const FileUploadPanel = ({ onUploadSuccess, events, transactions = [], addConsol
                   </Tooltip>
                 </Box>
                 <Typography variant="body2" color="text.secondary" sx={{ lineHeight: 1.6 }}>
-                  Upload .xlsx file with events and transaction types
+                  Upload .xlsx file with events and transaction names
                 </Typography>
               </Box>
               <Tooltip title="Download">
@@ -477,7 +477,7 @@ const FileUploadPanel = ({ onUploadSuccess, events, transactions = [], addConsol
                         `Generate production-quality, accounting-standards-coherent sample event data for exactly 2 instruments and load it into the system.`,
                         ``,
                         `Event definitions: ${eventNames.length ? eventNames.join(', ') : '(use whatever is loaded)'}.`,
-                        txnNames.length ? `Transaction types: ${txnNames.join(', ')}.` : '',
+                        txnNames.length ? `Transaction names: ${txnNames.join(', ')}.` : '',
                         ``,
                         `MANDATORY REQUIREMENTS — read carefully:`,
                         `1. Use instrument IDs: "${inst1}" and "${inst2}".`,

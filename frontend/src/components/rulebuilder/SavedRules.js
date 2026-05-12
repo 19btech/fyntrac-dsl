@@ -3,12 +3,13 @@ import {
   Box, Typography, Card, CardContent, Button, IconButton, Chip, TextField,
   CircularProgress, Alert, Tooltip, Divider, Switch,
   Dialog, DialogTitle, DialogContent, DialogContentText, DialogActions,
-  Menu, MenuItem, ListItemIcon, ListItemText,
+  Menu, MenuItem, ListItemIcon, ListItemText, Slide,
 } from "@mui/material";
 import { Trash2, Edit3, Calculator, GitBranch, Repeat, Database, Clock, Play, GripVertical, BookmarkPlus, RotateCcw, Code, Calendar, Copy, ChevronDown, Save, FilePlus } from "lucide-react";
 import { API } from "../../config";
 import { useToast } from "./../ToastProvider";
 import PostingDateModal from "../PostingDateModal";
+import ModalHeader from "../ModalHeader";
 
 const RULE_TYPE_META = {
   simple_calc: { label: 'Calculation', color: '#5B5FED', icon: Calculator },
@@ -657,8 +658,12 @@ const SavedRules = ({ onEditRule, onEditSchedule, refreshKey, onPlayAll, onClear
         onCancel={handlePostingDateCancel}
       />
 
-      {/* Clear All Confirmation Dialog */}      <Dialog open={showClearAll} onClose={() => setShowClearAll(false)} maxWidth="sm" fullWidth>
-        <DialogTitle sx={{ color: '#D32F2F' }}>Clear Rules & Editor</DialogTitle>
+      {/* Clear All Confirmation Dialog */}      <Dialog open={showClearAll} onClose={() => setShowClearAll(false)} maxWidth="sm" fullWidth
+        TransitionComponent={Slide} TransitionProps={{ direction: 'up' }}
+        PaperProps={{ sx: { borderRadius: 4, boxShadow: '0 32px 64px rgba(0,0,0,0.14)', overflow: 'hidden', border: '1px solid', borderColor: 'divider' } }}>
+        <DialogTitle sx={{ p: 0 }}>
+          <ModalHeader badge="WORKSPACE" title="Clear Rules & Editor" onClose={() => setShowClearAll(false)} />
+        </DialogTitle>
         <DialogContent>
           <DialogContentText sx={{ mb: 2 }}>
             This will reset your workspace by clearing:
@@ -709,8 +714,12 @@ const SavedRules = ({ onEditRule, onEditSchedule, refreshKey, onPlayAll, onClear
       </Dialog>
 
       {/* Delete Confirmation Dialog */}
-      <Dialog open={!!deleteTarget} onClose={() => setDeleteTarget(null)}>
-        <DialogTitle>Delete {deleteTarget?._isSchedule ? 'Schedule' : 'Rule'}</DialogTitle>
+      <Dialog open={!!deleteTarget} onClose={() => setDeleteTarget(null)}
+        TransitionComponent={Slide} TransitionProps={{ direction: 'up' }}
+        PaperProps={{ sx: { borderRadius: 4, boxShadow: '0 32px 64px rgba(0,0,0,0.14)', overflow: 'hidden', border: '1px solid', borderColor: 'divider' } }}>
+        <DialogTitle sx={{ p: 0 }}>
+          <ModalHeader badge="CONFIRM" title={`Delete ${deleteTarget?._isSchedule ? 'Schedule' : 'Rule'}`} onClose={() => setDeleteTarget(null)} />
+        </DialogTitle>
         <DialogContent>
           <DialogContentText>
             Delete {deleteTarget?._isSchedule ? 'schedule' : 'rule'} "{deleteTarget?.name}"? This cannot be undone.
@@ -723,8 +732,12 @@ const SavedRules = ({ onEditRule, onEditSchedule, refreshKey, onPlayAll, onClear
       </Dialog>
 
       {/* Duplicate Rule/Schedule Dialog */}
-      <Dialog open={!!duplicateTarget} onClose={() => setDuplicateTarget(null)} maxWidth="xs" fullWidth>
-        <DialogTitle>Duplicate {duplicateTarget?._isSchedule ? 'Schedule' : 'Rule'}</DialogTitle>
+      <Dialog open={!!duplicateTarget} onClose={() => setDuplicateTarget(null)} maxWidth="xs" fullWidth
+        TransitionComponent={Slide} TransitionProps={{ direction: 'up' }}
+        PaperProps={{ sx: { borderRadius: 4, boxShadow: '0 32px 64px rgba(0,0,0,0.14)', overflow: 'hidden', border: '1px solid', borderColor: 'divider' } }}>
+        <DialogTitle sx={{ p: 0 }}>
+          <ModalHeader badge="RULE MANAGER" title={`Duplicate ${duplicateTarget?._isSchedule ? 'Schedule' : 'Rule'}`} onClose={() => setDuplicateTarget(null)} />
+        </DialogTitle>
         <DialogContent>
           <DialogContentText sx={{ mb: 2 }}>
             Create a copy of "{duplicateTarget?.name}" with a new name and priority.
@@ -752,8 +765,12 @@ const SavedRules = ({ onEditRule, onEditSchedule, refreshKey, onPlayAll, onClear
       </Dialog>
 
       {/* Save as Template Dialog */}
-      <Dialog open={showSaveTemplate} onClose={() => setShowSaveTemplate(false)} maxWidth="sm" fullWidth>
-        <DialogTitle>Save as Template</DialogTitle>
+      <Dialog open={showSaveTemplate} onClose={() => setShowSaveTemplate(false)} maxWidth="sm" fullWidth
+        TransitionComponent={Slide} TransitionProps={{ direction: 'up' }}
+        PaperProps={{ sx: { borderRadius: 4, boxShadow: '0 32px 64px rgba(0,0,0,0.14)', overflow: 'hidden', border: '1px solid', borderColor: 'divider' } }}>
+        <DialogTitle sx={{ p: 0 }}>
+          <ModalHeader badge="TEMPLATE" title="Save as Template" onClose={() => setShowSaveTemplate(false)} />
+        </DialogTitle>
         <DialogContent>
           <DialogContentText sx={{ mb: 2 }}>
             Create a reusable template from all {sortedRules.length} saved rule{sortedRules.length !== 1 ? 's' : ''}. This template will appear in the Accounting Templates library.

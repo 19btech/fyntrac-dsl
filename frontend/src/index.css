@@ -183,6 +183,11 @@ h1, h2, h3, h4, h5, h6 {
     box-shadow: 0 1px 4px rgba(0, 0, 0, 0.12) !important;
 }
 
+/* Breathing space after ModalHeader — MUI collapses DialogContent pt when following DialogTitle */
+.MuiDialog-root .MuiDialogContent-root {
+    padding-top: 20px !important;
+}
+
 /* Smooth list item animations */
 .list-item-animate {
     animation: fadeInUp 0.3s cubic-bezier(0.4, 0, 0.2, 1) forwards;

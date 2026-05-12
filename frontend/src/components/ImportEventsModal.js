@@ -16,7 +16,7 @@ const SLOTS = [
     Icon: FileJson,
     endpoint: "/import/transactions",
     hint: "JSON array of transaction-type objects.",
-    summary: (r) => `${r.count} transaction type(s) loaded.`,
+    summary: (r) => `${r.count} transaction name(s) loaded.`,
   },
   {
     key: "event_configurations",

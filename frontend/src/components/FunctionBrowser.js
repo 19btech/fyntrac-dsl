@@ -223,12 +223,6 @@ const FunctionBrowser = ({ dslFunctions, onClose, onAskAI }) => {
             </Box>
           )}
         </Box>
-
-        <Box sx={{ pt: 2, borderTop: '1px solid #E9ECEF', bgcolor: '#F8F9FA', px: 2, py: 1.5, mx: -3, mb: -3, mt: 2 }}>
-          <Typography variant="caption" color="text.secondary" sx={{ textAlign: 'center', display: 'block' }}>
-            Use "Build Formula" to create your own custom formulas
-          </Typography>
-        </Box>
       </DialogContent>
     </Dialog>
   );

@@ -287,7 +287,7 @@ const validateData = (events, transactions) => {
         severity: "error",
         scope: "Transaction",
         target: "—",
-        message: "Transaction type is blank.",
+        message: "Transaction name is blank.",
       });
       continue;
     }
@@ -297,7 +297,7 @@ const validateData = (events, transactions) => {
         severity: "warning",
         scope: "Transaction",
         target: String(name),
-        message: `Duplicate transaction type "${name}".`,
+        message: `Duplicate transaction name "${name}".`,
       });
     } else {
       seenTxns.set(lower, true);
@@ -308,7 +308,7 @@ const validateData = (events, transactions) => {
         scope: "Transaction",
         target: String(name),
         message:
-          "Transaction type contains whitespace — rules reference it by exact name.",
+          "Transaction name contains whitespace — rules reference it by exact name.",
       });
     }
   }
@@ -583,12 +583,12 @@ const DataPreviewPanel = ({ events = [], transactions = [] }) => {
               count={filteredTxns.length}
               query={txnQuery}
               onQueryChange={setTxnQuery}
-              label="transaction types"
+              label="transaction names"
             />
             {filteredTxns.length === 0 ? (
               <EmptyState
                 icon={Inbox}
-                title={txnQuery ? "No matches" : "No transaction types yet"}
+                title={txnQuery ? "No matches" : "No transaction names yet"}
                 hint={
                   txnQuery
                     ? "Try a different search term."
@@ -606,7 +606,7 @@ const DataPreviewPanel = ({ events = [], transactions = [] }) => {
                   <TableHead>
                     <TableRow>
                       <TableCell sx={{ width: 56 }}>#</TableCell>
-                      <TableCell>Transaction Type</TableCell>
+                      <TableCell>Transaction Name</TableCell>
                     </TableRow>
                   </TableHead>
                   <TableBody>

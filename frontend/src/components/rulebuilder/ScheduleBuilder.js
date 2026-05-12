@@ -4,12 +4,13 @@ import {
   Tooltip, Divider, Select, FormControl, InputLabel, Paper, Switch, FormControlLabel,
   Alert, Table, TableBody, TableCell, TableContainer, TableHead, TableRow,
   ToggleButtonGroup, ToggleButton, CircularProgress, Dialog, DialogTitle, DialogContent, DialogContentText, DialogActions,
-  Autocomplete,
+  Autocomplete, Slide,
 } from "@mui/material";
 import {
   Plus, Trash2, ArrowUp, ArrowDown, GripVertical, Play, Code, Eye, Calendar,
   Table as TableIcon, BarChart3, RefreshCw, Save,
 } from "lucide-react";
+import ModalHeader from "../ModalHeader";
 import { API } from "../../config";
 import FormulaBar from "./FormulaBar";
 
@@ -1368,7 +1369,7 @@ const ScheduleBuilder = ({ events, dslFunctions, onClose, onSave, initialData })
               );
               return (
                 <Box sx={{ mt: 1, display: 'flex', gap: 1 }}>
-                  <TextField size="small" label="Transaction Type" value={txnType}
+                  <TextField size="small" label="Transaction Name" value={txnType}
                     onChange={(e) => setTxnType(e.target.value)} sx={{ flex: 1 }}
                     placeholder="e.g., Interest Accrual" />
                   <FormControl size="small" sx={{ flex: 1 }}>
@@ -1411,8 +1412,12 @@ const ScheduleBuilder = ({ events, dslFunctions, onClose, onSave, initialData })
       </Box>
 
       {/* Validation Dialog */}
-      <Dialog open={!!validationMsg} onClose={() => setValidationMsg('')}>
-        <DialogTitle>Missing Required Field</DialogTitle>
+      <Dialog open={!!validationMsg} onClose={() => setValidationMsg('')}
+        TransitionComponent={Slide} TransitionProps={{ direction: 'up' }}
+        PaperProps={{ sx: { borderRadius: 4, boxShadow: '0 32px 64px rgba(0,0,0,0.14)', overflow: 'hidden', border: '1px solid', borderColor: 'divider' } }}>
+        <DialogTitle sx={{ p: 0 }}>
+          <ModalHeader badge="VALIDATION" title="Missing Required Field" onClose={() => setValidationMsg('')} />
+        </DialogTitle>
         <DialogContent>
           <DialogContentText>{validationMsg}</DialogContentText>
         </DialogContent>
