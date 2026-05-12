@@ -1,9 +1,10 @@
 import React, { useState } from "react";
 import {
   Dialog, DialogTitle, DialogContent, DialogActions,
-  Button, Box, Typography, FormControl, InputLabel, Select, MenuItem,
+  Button, Box, Typography, FormControl, InputLabel, Select, MenuItem, Slide,
 } from "@mui/material";
 import { CalendarDays } from "lucide-react";
+import ModalHeader from "./ModalHeader";
 
 /**
  * Modal presented when the user clicks Run on the Console and multiple posting dates
@@ -23,17 +24,17 @@ const PostingDateModal = ({ open, postingDates, onConfirm, onCancel }) => {
   };
 
   return (
-    <Dialog open={open} onClose={onCancel} maxWidth="xs" fullWidth>
-      <DialogTitle>
-        <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
-          <CalendarDays size={20} color="#5B5FED" />
-          <Typography variant="h6" component="span">
-            Select Posting Date
-          </Typography>
-        </Box>
-        <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
-          Multiple posting dates found. Choose one to run the console against.
-        </Typography>
+    <Dialog open={open} onClose={onCancel} maxWidth="xs" fullWidth
+      TransitionComponent={Slide}
+      TransitionProps={{ direction: 'up' }}
+      PaperProps={{ sx: { borderRadius: 4, boxShadow: '0 32px 64px rgba(0,0,0,0.14)', overflow: 'hidden', border: '1px solid', borderColor: 'divider' } }}
+    >
+      <DialogTitle sx={{ p: 0 }}>
+        <ModalHeader
+          badge="CONFIGURATION"
+          title="Select Posting Date"
+          onClose={onCancel}
+        />
       </DialogTitle>
 
       <DialogContent sx={{ pt: 3, pb: 1, overflow: 'visible' }}>

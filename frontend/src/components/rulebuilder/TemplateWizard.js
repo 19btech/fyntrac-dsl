@@ -3,7 +3,7 @@ import {
   Box, Typography, Card, CardContent, Button, TextField, MenuItem, Chip, Stepper, Step,
   StepLabel, FormControlLabel, Checkbox, Switch, Alert, IconButton, Tooltip, Divider,
   Dialog, DialogTitle, DialogContent, DialogActions, Paper, InputAdornment, Select, FormControl,
-  InputLabel, CircularProgress,
+  InputLabel, CircularProgress, Slide,
 } from "@mui/material";
 import {
   BookOpen, Search, ArrowRight, ArrowLeft, Play, Code, Eye, CheckCircle2,
@@ -14,6 +14,7 @@ import {
 import ACCOUNTING_TEMPLATES from "./AccountingTemplates";
 import { API } from "../../config";
 import { useToast } from "../ToastProvider";
+import ModalHeader from "../ModalHeader";
 
 /**
  * Parse generated DSL code into multiple Rule Builder-compatible rules.
@@ -753,18 +754,16 @@ const TemplateWizard = ({ template, events, onGenerate, onClose }) => {
   const Icon = ICON_MAP[template.icon] || Settings2;
 
   return (
-    <Dialog open={true} onClose={onClose} maxWidth="md" fullWidth PaperProps={{ sx: { height: '85vh' } }}>
-      <DialogTitle>
-        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
-          <Icon size={22} color="#5B5FED" />
-          <Box>
-            <Typography variant="h5">{template.title}</Typography>
-            <Typography variant="caption" color="text.secondary">{template.description}</Typography>
-          </Box>
-          {template.standard && (
-            <Chip label={template.standard} size="small" sx={{ ml: 'auto', bgcolor: '#EEF0FE', color: '#5B5FED' }} />
-          )}
-        </Box>
+    <Dialog open={true} onClose={onClose} maxWidth="md" fullWidth
+      TransitionComponent={Slide}
+      TransitionProps={{ direction: 'up' }}
+      PaperProps={{ sx: { height: '85vh', borderRadius: 4, boxShadow: '0 32px 64px rgba(0,0,0,0.14)', overflow: 'hidden', border: '1px solid', borderColor: 'divider' } }}>
+      <DialogTitle sx={{ p: 0 }}>
+        <ModalHeader
+          badge={template.standard || 'TEMPLATE'}
+          title={template.title}
+          onClose={onClose}
+        />
       </DialogTitle>
 
       <DialogContent sx={{ display: 'flex', flexDirection: 'column', p: 3 }}>
@@ -959,19 +958,16 @@ const UserTemplateWizard = ({ template, onApply, onClose }) => {
   };
 
   return (
-    <Dialog open maxWidth="md" fullWidth PaperProps={{ sx: { height: '85vh' } }}>
-      <DialogTitle>
-        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
-          <Users size={22} color="#FF9800" />
-          <Box>
-            <Typography variant="h5">{template.name}</Typography>
-            <Typography variant="caption" color="text.secondary">
-              {template.description || 'User created template'}
-            </Typography>
-          </Box>
-          <Chip label={template.category || 'User Created'} size="small"
-            sx={{ ml: 'auto', bgcolor: '#FFF3E0', color: '#FF9800' }} />
-        </Box>
+    <Dialog open maxWidth="md" fullWidth
+      TransitionComponent={Slide}
+      TransitionProps={{ direction: 'up' }}
+      PaperProps={{ sx: { height: '85vh', borderRadius: 4, boxShadow: '0 32px 64px rgba(0,0,0,0.14)', overflow: 'hidden', border: '1px solid', borderColor: 'divider' } }}>
+      <DialogTitle sx={{ p: 0 }}>
+        <ModalHeader
+          badge={template.category || 'USER TEMPLATE'}
+          title={template.name}
+          onClose={onClose}
+        />
       </DialogTitle>
 
       <DialogContent sx={{ display: 'flex', flexDirection: 'column', p: 3 }}>
@@ -1246,12 +1242,16 @@ const ImportFynModal = ({ open, onClose, onImported }) => {
   };
 
   return (
-    <Dialog open={open} onClose={handleClose} maxWidth="sm" fullWidth>
-      <DialogTitle>
-        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
-          <Upload size={20} color="#5B5FED" />
-          <Typography variant="h6">Import Template (.fyn)</Typography>
-        </Box>
+    <Dialog open={open} onClose={handleClose} maxWidth="sm" fullWidth
+      TransitionComponent={Slide}
+      TransitionProps={{ direction: 'up' }}
+      PaperProps={{ sx: { borderRadius: 4, boxShadow: '0 32px 64px rgba(0,0,0,0.14)', overflow: 'hidden', border: '1px solid', borderColor: 'divider' } }}>
+      <DialogTitle sx={{ p: 0 }}>
+        <ModalHeader
+          badge="TEMPLATE"
+          title="Import Template (.fyn)"
+          onClose={handleClose}
+        />
       </DialogTitle>
       <DialogContent sx={{ pt: 1 }}>
         <input type="file" accept=".fyn,application/json" ref={fileInputRef}

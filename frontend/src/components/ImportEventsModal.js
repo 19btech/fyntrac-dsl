@@ -2,10 +2,11 @@ import React, { useState, useRef } from "react";
 import axios from "axios";
 import {
   Box, Button, Dialog, DialogTitle, DialogContent, DialogActions,
-  Typography, CircularProgress, Alert, Divider,
+  Typography, CircularProgress, Alert, Divider, Slide,
 } from "@mui/material";
 import { Upload, FileJson, CheckCircle2 } from "lucide-react";
 import { API } from "../config";
+import ModalHeader from "./ModalHeader";
 
 const SLOTS = [
   {
@@ -90,9 +91,11 @@ const ImportEventsModal = ({ open, onClose, onSuccess }) => {
 
   return (
     <Dialog open={open} onClose={handleClose} maxWidth="sm" fullWidth
-            PaperProps={{ sx: { borderRadius: 2 } }}>
-      <DialogTitle sx={{ fontWeight: 700, fontSize: "1rem", pb: 1 }}>
-        Import
+            TransitionComponent={Slide}
+            TransitionProps={{ direction: 'up' }}
+            PaperProps={{ sx: { borderRadius: 4, boxShadow: '0 32px 64px rgba(0,0,0,0.14)', overflow: 'hidden', border: '1px solid', borderColor: 'divider' } }}>
+      <DialogTitle sx={{ p: 0 }}>
+        <ModalHeader badge="DATA IMPORT" title="Import" onClose={handleClose} />
       </DialogTitle>
       <DialogContent sx={{ pt: 1 }}>
         <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>

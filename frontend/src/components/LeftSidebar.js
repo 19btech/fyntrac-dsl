@@ -1,6 +1,6 @@
 import React from "react";
 import { Box, Button, Card, Collapse, List, ListItemButton, ListItemIcon, ListItemText, Tooltip, IconButton } from '@mui/material';
-import { FileText, RefreshCw, ChevronDown, ChevronRight, ChevronLeft, Upload, Eye, PanelLeftClose, PanelLeftOpen } from "lucide-react";
+import { FileText, RefreshCw, ChevronDown, ChevronRight, ChevronLeft, Upload, Eye } from "lucide-react";
 import { useToast } from "./ToastProvider";
 import ImportEventsModal from "./ImportEventsModal";
 
@@ -33,18 +33,36 @@ const LeftSidebar = ({ events, selectedEvent, onEventSelect, onDownloadEvents, o
           height: '100vh',
           py: 1,
           transition: 'width 200ms ease',
+          position: 'relative',
         }}
         data-testid="left-sidebar-collapsed"
       >
-        <Tooltip title="Expand events panel" placement="right">
-          <IconButton size="small" onClick={onToggleCollapsed} aria-label="Expand sidebar">
-            <PanelLeftOpen size={18} />
-          </IconButton>
-        </Tooltip>
         <Tooltip title={`${events?.length || 0} events`} placement="right">
           <Box sx={{ mt: 1, color: '#6C757D' }}>
             <FileText size={18} />
           </Box>
+        </Tooltip>
+        <Tooltip title="Expand events panel" placement="right">
+          <IconButton
+            size="small"
+            onClick={onToggleCollapsed}
+            aria-label="Expand sidebar"
+            className="panel-toggle-btn"
+            sx={{
+              position: 'absolute',
+              top: 66,
+              right: -14,
+              width: 28,
+              height: 28,
+              bgcolor: '#FFFFFF',
+              border: '1px solid #E9ECEF',
+              boxShadow: '0 1px 4px rgba(0,0,0,0.12)',
+              zIndex: 1300,
+              '&:hover': { bgcolor: '#F1F3F5' },
+            }}
+          >
+            <ChevronRight size={15} />
+          </IconButton>
         </Tooltip>
       </Box>
     );
@@ -70,20 +88,25 @@ const LeftSidebar = ({ events, selectedEvent, onEventSelect, onDownloadEvents, o
             size="small"
             onClick={onToggleCollapsed}
             aria-label="Collapse sidebar"
+            className="panel-toggle-btn"
             sx={{
               position: 'absolute',
-              top: 8,
-              right: 4,
-              zIndex: 2,
-              bgcolor: 'rgba(255,255,255,0.85)',
+              top: 66,
+              right: -14,
+              width: 28,
+              height: 28,
+              bgcolor: '#FFFFFF',
+              border: '1px solid #E9ECEF',
+              boxShadow: '0 1px 4px rgba(0,0,0,0.12)',
+              zIndex: 1300,
               '&:hover': { bgcolor: '#F1F3F5' },
             }}
           >
-            <PanelLeftClose size={16} />
+            <ChevronLeft size={15} />
           </IconButton>
         </Tooltip>
       )}
-      <Box sx={{ p: 3, borderBottom: '1px solid #E9ECEF', display: 'flex', justifyContent: 'center' }}>
+      <Box sx={{ px: 3, height: 80, borderBottom: '1px solid #E9ECEF', display: 'flex', justifyContent: 'center', alignItems: 'center' }}>
         <img
           src={process.env.PUBLIC_URL + '/logo.png'}
           alt="Fyntrac"

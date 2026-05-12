@@ -9,8 +9,10 @@ import {
   TextField,
   IconButton,
   Box,
+  Slide,
 } from "@mui/material";
 import { X } from "lucide-react";
+import ModalHeader from "./ModalHeader";
 
 /**
  * Shared reusable dialog component.
@@ -46,27 +48,20 @@ const AppDialog = ({
       onClose={handleClose}
       maxWidth={maxWidth}
       fullWidth
+      TransitionComponent={Slide}
+      TransitionProps={{ direction: 'up' }}
       PaperProps={{
         sx: {
-          borderRadius: 2,
-          boxShadow: "0 8px 32px rgba(0,0,0,0.12)",
+          borderRadius: 4,
+          boxShadow: "0 32px 64px rgba(0,0,0,0.14)",
+          overflow: 'hidden',
+          border: '1px solid',
+          borderColor: 'divider',
         },
       }}
     >
-      <DialogTitle
-        sx={{
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "space-between",
-          pb: 1,
-          fontSize: "1rem",
-          fontWeight: 600,
-        }}
-      >
-        {title}
-        <IconButton size="small" onClick={onClose} sx={{ color: "#6C757D" }}>
-          <X size={18} />
-        </IconButton>
+      <DialogTitle sx={{ p: 0 }}>
+        <ModalHeader title={title} onClose={onClose} />
       </DialogTitle>
 
       <DialogContent sx={{ pt: 0.5 }}>

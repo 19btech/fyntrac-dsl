@@ -4,11 +4,12 @@ import {
   Dialog, DialogTitle, DialogContent, DialogActions,
   Button, TextField, Box, Typography, IconButton,
   Stepper, Step, StepLabel, CircularProgress, InputAdornment,
-  Card, CardContent, CardActionArea, Alert, Chip,
+  Card, CardContent, CardActionArea, Alert, Chip, Slide,
 } from "@mui/material";
-import { X, Eye, EyeOff, Check, AlertTriangle, ExternalLink, Unplug, RefreshCw } from "lucide-react";
+import { X, Eye, EyeOff, Check, AlertTriangle, ExternalLink, Unplug, RefreshCw, Sparkles } from "lucide-react";
 import { useToast } from "./ToastProvider";
 import { API } from "../config";
+import ModalHeader from "./ModalHeader";
 
 // Inline SVG logos
 const GeminiLogo = () => (
@@ -435,13 +436,12 @@ const AIAgentSetupWizard = ({ open, onClose, onSaved }) => {
       onClose={onClose}
       maxWidth="sm"
       fullWidth
-      PaperProps={{ sx: { borderRadius: 3 } }}
+      TransitionComponent={Slide}
+      TransitionProps={{ direction: 'up' }}
+      PaperProps={{ sx: { borderRadius: 4, boxShadow: '0 32px 64px rgba(0,0,0,0.14)', overflow: 'hidden', border: '1px solid', borderColor: 'divider' } }}
     >
-      <DialogTitle sx={{ display: "flex", alignItems: "center", justifyContent: "space-between", pb: 1 }}>
-        <Typography variant="h6" sx={{ fontWeight: 600 }}>AI Agent Setup</Typography>
-        <IconButton size="small" onClick={onClose}>
-          <X size={18} />
-        </IconButton>
+      <DialogTitle sx={{ p: 0 }}>
+        <ModalHeader badge="AI SETUP" title="AI Agent Setup" onClose={onClose} />
       </DialogTitle>
 
       <DialogContent>

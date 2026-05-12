@@ -652,7 +652,7 @@ const Dashboard = () => {
   return (
     <div className="flex h-screen bg-[#F8F9FA] overflow-auto" style={{ minWidth: '900px' }} data-testid="dashboard-container">
       {/* Left Sidebar */}
-        <div className="sidebar-enter">
+        <div className="sidebar-enter" style={{ position: 'relative', zIndex: 1400 }}>
         <LeftSidebar 
           events={events} 
           selectedEvent={selectedEvent}
@@ -671,11 +671,10 @@ const Dashboard = () => {
       {/* Main Content */}
       <div className="flex-1 flex flex-col min-w-0">
         {/* Top Bar - Fyntrac style */}
-        <div className="bg-white/80 backdrop-blur-xl border-b border-[#E9ECEF]/50 px-6 py-4 animate-fade-in-up">
-          <div className="flex items-center justify-between">
+        <div className="bg-white/80 backdrop-blur-xl border-b border-[#E9ECEF]/50 px-6 flex items-center animate-fade-in-up" style={{ height: 80 }}>
+          <div className="flex items-center justify-between w-full">
             <div>
-              <h1 className="text-2xl font-bold text-[#14213d] tracking-tight" style={{ fontFamily: "'Inter', sans-serif" }}>Logic Studio</h1>
-              <p className="text-sm text-[#6C757D] mt-1">Design and test your financial calculation logic using built-in formulas</p>
+              <h1 className="text-xl font-bold text-[#14213d] tracking-tight" style={{ fontFamily: "'Inter', sans-serif" }}>Logic Studio</h1>
             </div>
             <div className="flex gap-2">
               <Button 
@@ -1128,7 +1127,7 @@ const Dashboard = () => {
           </Box>
 
           {/* Right Sidebar - Chat Assistant */}
-          <div className="flex-shrink-0 chat-panel-enter">
+          <div className="flex-shrink-0 chat-panel-enter" style={{ position: 'relative', zIndex: 1400 }}>
             <ChatAssistant 
               ref={chatAssistantRef}
               dslFunctions={dslFunctions} 

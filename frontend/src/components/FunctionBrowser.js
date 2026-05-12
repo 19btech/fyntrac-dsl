@@ -1,8 +1,9 @@
 import React, { useState, useMemo } from "react";
-import { Dialog, DialogContent, DialogTitle, Card, CardContent, Button, TextField, IconButton, InputAdornment, Chip, Box, Typography, Tooltip } from '@mui/material';
+import { Dialog, DialogContent, DialogTitle, Card, CardContent, Button, TextField, IconButton, InputAdornment, Chip, Box, Typography, Tooltip, Slide } from '@mui/material';
 import { Search, BookOpen, Copy, X, Sparkles } from "lucide-react";
 import { useToast } from "./ToastProvider";
 import { getExplanation } from "../agent/testing/explanationStore";
+import ModalHeader from "./ModalHeader";
 
 const FunctionBrowser = ({ dslFunctions, onClose, onAskAI }) => {
   const [searchQuery, setSearchQuery] = useState("");
@@ -45,26 +46,14 @@ const FunctionBrowser = ({ dslFunctions, onClose, onAskAI }) => {
       PaperProps={{ sx: { height: '85vh' } }}
       data-testid="function-browser"
     >
-      <DialogTitle>
-        <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
-            <BookOpen size={24} color="#5B5FED" />
-            <Box>
-              <Typography variant="h4">Formula Library</Typography>
-              <Typography variant="body2" color="text.secondary">
-                {dslFunctions.length} formulas available
-                {customCount > 0 && (
-                  <Box component="span" sx={{ ml: 1, color: '#7C3AED' }}>
-                    ({customCount} user-created)
-                  </Box>
-                )}
-              </Typography>
-            </Box>
-          </Box>
-          <IconButton onClick={onClose} data-testid="close-browser">
-            <X size={20} />
-          </IconButton>
-        </Box>
+      <DialogTitle sx={{ p: 0 }}>
+        <ModalHeader
+          badge="FORMULA LIBRARY"
+          BadgeIcon={BookOpen}
+          title="Formula Library"
+          subtitle={`${dslFunctions.length} formula${dslFunctions.length !== 1 ? 's' : ''} available${customCount > 0 ? ` · ${customCount} user-created` : ''}`}
+          onClose={onClose}
+        />
       </DialogTitle>
 
       <DialogContent sx={{ display: 'flex', flexDirection: 'column', p: 3 }}>

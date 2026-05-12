@@ -4,7 +4,7 @@ import {
   Tooltip, Divider, Select, FormControl, InputLabel, Paper, Switch, FormControlLabel,
   Alert, Table, TableBody, TableCell, TableContainer, TableHead, TableRow,
   ToggleButtonGroup, ToggleButton, CircularProgress, Dialog, DialogTitle, DialogContent, DialogActions,
-  Autocomplete,
+  Autocomplete, Slide,
 } from "@mui/material";
 import {
   Plus, Trash2, ArrowUp, ArrowDown, Play, Calendar, Save, X,
@@ -13,6 +13,7 @@ import {
 import { API } from "../../config";
 import FormulaBar from "./FormulaBar";
 import TestResultCard from "./TestResultCard";
+import ModalHeader from "../ModalHeader";
 
 const FREQUENCY_OPTIONS = [
   { value: 'M', label: 'Monthly', description: '12 periods per year' },
@@ -671,13 +672,15 @@ const ScheduleStepModal = ({ open, step, onClose, onSaveStep, events, dslFunctio
 
   return (
     <Dialog open={open} onClose={onClose} maxWidth="lg" fullWidth
-      PaperProps={{ sx: { maxHeight: '90vh', height: '90vh' } }}>
-      <DialogTitle sx={{ pb: 1, borderBottom: '1px solid #E9ECEF' }}>
-        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flex: 1 }}>
-          <TableIcon size={20} color="#9C27B0" />
-          <Typography variant="h6" sx={{ flex: 1 }}>{step?.name ? `Edit Schedule Step: ${step.name}` : 'Add Schedule Step'}</Typography>
-          <IconButton size="small" onClick={onClose} sx={{ color: '#6C757D' }}><X size={18} /></IconButton>
-        </Box>
+      TransitionComponent={Slide}
+      TransitionProps={{ direction: 'up' }}
+      PaperProps={{ sx: { maxHeight: '90vh', height: '90vh', borderRadius: 4, boxShadow: '0 32px 64px rgba(0,0,0,0.14)', overflow: 'hidden', border: '1px solid', borderColor: 'divider' } }}>
+      <DialogTitle sx={{ p: 0 }}>
+        <ModalHeader
+          badge="SCHEDULE"
+          title={step?.name ? `Edit Schedule Step: ${step.name}` : 'Add Schedule Step'}
+          onClose={onClose}
+        />
       </DialogTitle>
       <DialogContent sx={{ pt: 2, overflow: 'auto' }}>
         {/* Step Name */}

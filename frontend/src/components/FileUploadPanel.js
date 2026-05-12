@@ -302,7 +302,6 @@ const FileUploadPanel = ({ onUploadSuccess, events, transactions = [], addConsol
     <Box sx={{ p: 3, bgcolor: '#F8F9FA', minHeight: '100%' }} data-testid="file-upload-panel">
       <Box sx={{ mb: 3 }}>
         <Typography variant="h3" sx={{ mb: 0.5 }}>Upload Data Files</Typography>
-        <Typography variant="body2" color="text.secondary">Upload reference data (.xlsx) and event data (Excel)</Typography>
       </Box>
 
       {uploading && (
