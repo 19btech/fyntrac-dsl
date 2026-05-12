@@ -13,6 +13,7 @@ import {
 import ModalHeader from "../ModalHeader";
 import { API } from "../../config";
 import FormulaBar from "./FormulaBar";
+import { useToast } from "../ToastProvider";
 
 const FREQUENCY_OPTIONS = [
   { value: 'M', label: 'Monthly', description: '12 periods per year' },
@@ -105,6 +106,7 @@ const ColumnCard = ({ column, index, events, variables, onUpdate, onRemove, onMo
  * Builds schedule() DSL code using a column palette and formula bars.
  */
 const ScheduleBuilder = ({ events, dslFunctions, onClose, onSave, initialData }) => {
+  const toast = useToast();
   const cfg = initialData?.config || {};
   const [scheduleName, setScheduleName] = useState(initialData?.name || '');
   const [schedulePriority, setSchedulePriority] = useState(initialData?.priority ?? '');
@@ -782,17 +784,20 @@ const ScheduleBuilder = ({ events, dslFunctions, onClose, onSave, initialData })
       if (response.ok && data.success) {
         setScheduleId(data.id);
         setSaveResult({ success: true, output: data.message || 'Schedule saved successfully.' });
+        toast.success(data.message || 'Schedule saved successfully.');
         if (onSave) onSave();
       } else {
         const errMsg = data.detail || data.error || 'Save failed';
         setSaveResult({ success: false, error: typeof errMsg === 'string' ? errMsg : JSON.stringify(errMsg) });
+        toast.error(typeof errMsg === 'string' ? errMsg : JSON.stringify(errMsg));
       }
     } catch (err) {
       setSaveResult({ success: false, error: err.message || 'Network error' });
+      toast.error(err.message || 'Network error');
     } finally {
       setSaving(false);
     }
-  }, [scheduleName, schedulePriority, scheduleId, generatedCode, periodType, startDate, startDateSource, startDateField, startDateFormula, endDate, endDateSource, endDateField, endDateFormula, periodCount, periodCountSource, periodCountField, periodCountFormula, frequency, convention, columns, createTxn, txnType, txnAmountCol, extractFirst, extractLast, extractColumn, enableSum, sumColumn, sumVarName, enableCol, colColumn, colVarName, enableFilter, filterVarName, filterMatchCol, filterMatchValue, filterReturnCol, onSave]);
+  }, [scheduleName, schedulePriority, scheduleId, generatedCode, periodType, startDate, startDateSource, startDateField, startDateFormula, endDate, endDateSource, endDateField, endDateFormula, periodCount, periodCountSource, periodCountField, periodCountFormula, frequency, convention, columns, createTxn, txnType, txnAmountCol, extractFirst, extractLast, extractColumn, enableSum, sumColumn, sumVarName, enableCol, colColumn, colVarName, enableFilter, filterVarName, filterMatchCol, filterMatchValue, filterReturnCol, onSave, toast]);
 
   // Compute a simple mock preview of what the schedule table would look like
   const previewHeaders = useMemo(() => columns.filter(c => c.name).map(c => c.name), [columns]);

@@ -106,13 +106,17 @@ const SavedRules = ({ onEditRule, onEditSchedule, refreshKey, onPlayAll, onClear
         } else {
           setRules(prev => prev.filter(r => r.id !== item.id));
         }
+        toast.success(`${item.name || (item._isSchedule ? 'Schedule' : 'Rule')} deleted.`);
+      } else {
+        toast.error(`Failed to delete "${item.name || 'item'}".`);
       }
     } catch (err) {
       setError(err.message);
+      toast.error(err.message || 'Failed to delete.');
     } finally {
       setDeleting(null);
     }
-  }, []);
+  }, [toast]);
 
   const handleToggleRuleDisabled = useCallback(async (item, nextDisabled) => {
     if (item._isSchedule) return;
@@ -128,6 +132,7 @@ const SavedRules = ({ onEditRule, onEditSchedule, refreshKey, onPlayAll, onClear
         setRules(prevRules);
         const data = await res.json().catch(() => ({}));
         setError(data.detail || data.error || 'Failed to update rule state');
+        toast.error(data.detail || data.error || 'Failed to update rule state');
         return;
       }
       await loadRules();
@@ -137,8 +142,9 @@ const SavedRules = ({ onEditRule, onEditSchedule, refreshKey, onPlayAll, onClear
     } catch (err) {
       setRules(prevRules);
       setError(err?.message || 'Failed to update rule state');
+      toast.error(err?.message || 'Failed to update rule state');
     }
-  }, [rules, loadRules, onReorder]);
+  }, [rules, loadRules, onReorder, toast]);
 
   const formatDate = (iso) => {
     if (!iso) return '';
@@ -171,16 +177,19 @@ const SavedRules = ({ onEditRule, onEditSchedule, refreshKey, onPlayAll, onClear
       if (res.ok) {
         await loadRules();
         setDuplicateTarget(null);
+        toast.success(`"${dupName.trim()}" created.`);
       } else {
         const data = await res.json();
         setError(data.detail || data.error || 'Duplicate failed');
+        toast.error(data.detail || data.error || 'Duplicate failed');
       }
     } catch (err) {
       setError(err.message || 'Duplicate failed');
+      toast.error(err.message || 'Duplicate failed');
     } finally {
       setDuplicating(false);
     }
-  }, [duplicateTarget, dupName, dupPriority, loadRules]);
+  }, [duplicateTarget, dupName, dupPriority, loadRules, toast]);
 
   // Merge rules and schedules, sort by priority
   const allItems = [

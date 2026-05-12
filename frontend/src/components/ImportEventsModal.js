@@ -7,6 +7,7 @@ import {
 import { Upload, FileJson, CheckCircle2 } from "lucide-react";
 import { API } from "../config";
 import ModalHeader from "./ModalHeader";
+import { useToast } from "./ToastProvider";
 
 const SLOTS = [
   {
@@ -30,6 +31,7 @@ const SLOTS = [
 ];
 
 const ImportEventsModal = ({ open, onClose, onSuccess }) => {
+  const toast = useToast();
   const [files, setFiles] = useState({});
   const [results, setResults] = useState({});
   const [errors, setErrors] = useState({});
@@ -77,6 +79,7 @@ const ImportEventsModal = ({ open, onClose, onSuccess }) => {
         headers: { "Content-Type": "multipart/form-data" },
       });
       setResults((s) => ({ ...s, [slot.key]: data }));
+      toast.success(slot.summary(data));
       onSuccess && onSuccess({ slot: slot.key, data });
     } catch (err) {
       const detail = err?.response?.data?.detail || err?.message || "Upload failed.";
@@ -84,6 +87,7 @@ const ImportEventsModal = ({ open, onClose, onSuccess }) => {
         ...s,
         [slot.key]: typeof detail === "string" ? detail : JSON.stringify(detail),
       }));
+      toast.error(typeof detail === "string" ? detail : JSON.stringify(detail));
     } finally {
       setBusy((s) => ({ ...s, [slot.key]: false }));
     }

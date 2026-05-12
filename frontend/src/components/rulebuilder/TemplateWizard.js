@@ -1156,6 +1156,7 @@ function validateFynFile(obj) {
  * ImportFynModal — upload & preview a .fyn file, then create a user template.
  */
 const ImportFynModal = ({ open, onClose, onImported }) => {
+  const toast = useToast();
   const [parsed, setParsed] = useState(null);
   const [parseError, setParseError] = useState('');
   const [fileName, setFileName] = useState('');
@@ -1234,6 +1235,7 @@ const ImportFynModal = ({ open, onClose, onImported }) => {
         return;
       }
       onImported();
+      toast.success(`"${importName.trim() || parsed.template.name}" imported successfully.`);
       handleClose();
     } catch (err) {
       setSaveError(err.message || 'Network error during import.');
@@ -1491,6 +1493,7 @@ const TemplateLibrary = ({ events, onLoadTemplate, onClose, inline }) => {
     try {
       await fetch(`${API}/user-templates/${id}`, { method: 'DELETE' });
       setUserTemplates(prev => prev.filter(t => t.id !== id));
+      toast.success('Template deleted.');
       // Clear the saved template id from localStorage so Rule Manager doesn't
       // try to overwrite this deleted template on the next bookmark save.
       try {
@@ -1498,9 +1501,11 @@ const TemplateLibrary = ({ events, onLoadTemplate, onClose, inline }) => {
           localStorage.removeItem('savedRulesTemplateId');
         }
       } catch { /* ignore */ }
-    } catch { /* ignore */ }
+    } catch {
+      toast.error('Failed to delete template.');
+    }
     finally { setDeletingId(null); }
-  }, []);
+  }, [toast]);
 
   const handleDeployUserTemplate = useCallback(async (template) => {
     setDeployingId(template.id);

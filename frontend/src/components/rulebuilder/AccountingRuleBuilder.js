@@ -15,6 +15,7 @@ import ScheduleStepModal from "./ScheduleStepModal";
 import CustomCodeStepModal from "./CustomCodeStepModal";
 import ModalHeader from "../ModalHeader";
 import TestResultCard from "./TestResultCard";
+import { useToast } from "../ToastProvider";
 
 // ─── Date-type detection helpers ───────────────────────────────────────
 // Used by the Create Transaction modal to restrict postingDate / effectiveDate
@@ -849,6 +850,7 @@ const TransactionModal = ({ open, txn, onClose, onSaveTxn, onTest, transactionDe
 // a modal for calc / condition / iteration. Steps are draggable.
 // ═══════════════════════════════════════════════════════════════════════
 const AccountingRuleBuilder = ({ events, dslFunctions, transactionDefinitions, onClose, onSave, initialData }) => {
+  const toast = useToast();
   // ── Rule-level state ──
   const [ruleName, setRuleName] = useState(initialData?.name || '');
   const [rulePriority, setRulePriority] = useState(initialData?.priority ?? '');
@@ -1726,18 +1728,21 @@ const AccountingRuleBuilder = ({ events, dslFunctions, transactionDefinitions, o
       if (response.ok && data.success) {
         setRuleId(data.id);
         setSaveResult({ success: true, output: data.message || 'Rule saved successfully.' });
+        toast.success(data.message || 'Rule saved successfully.');
         if (onSave) onSave();
         setTimeout(() => resetForm(), 1500);
       } else {
         const errMsg = data.detail || data.error || 'Save failed';
         setSaveResult({ success: false, error: typeof errMsg === 'string' ? errMsg : JSON.stringify(errMsg) });
+        toast.error(typeof errMsg === 'string' ? errMsg : JSON.stringify(errMsg));
       }
     } catch (err) {
       setSaveResult({ success: false, error: err.message || 'Network error' });
+      toast.error(err.message || 'Network error');
     } finally {
       setSaving(false);
     }
-  }, [ruleName, rulePriority, ruleId, ruleDisabled, effectiveRuleType, steps, outputs, inlineComment, commentText, generatedCode, onSave, resetForm]);
+  }, [ruleName, rulePriority, ruleId, ruleDisabled, effectiveRuleType, steps, outputs, inlineComment, commentText, generatedCode, onSave, resetForm, toast]);
 
   // ── Step CRUD ──
   const openAddStep = (type) => {
