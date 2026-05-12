@@ -4,14 +4,16 @@ import {
   Tooltip, Divider, Select, FormControl, InputLabel, Paper, Switch, FormControlLabel,
   Alert, Table, TableBody, TableCell, TableContainer, TableHead, TableRow,
   ToggleButtonGroup, ToggleButton, CircularProgress, Dialog, DialogTitle, DialogContent, DialogContentText, DialogActions,
-  Autocomplete,
+  Autocomplete, Slide,
 } from "@mui/material";
 import {
   Plus, Trash2, ArrowUp, ArrowDown, GripVertical, Play, Code, Eye, Calendar,
   Table as TableIcon, BarChart3, RefreshCw, Save,
 } from "lucide-react";
+import ModalHeader from "../ModalHeader";
 import { API } from "../../config";
 import FormulaBar from "./FormulaBar";
+import { useToast } from "../ToastProvider";
 
 const FREQUENCY_OPTIONS = [
   { value: 'M', label: 'Monthly', description: '12 periods per year' },
@@ -104,6 +106,7 @@ const ColumnCard = ({ column, index, events, variables, onUpdate, onRemove, onMo
  * Builds schedule() DSL code using a column palette and formula bars.
  */
 const ScheduleBuilder = ({ events, dslFunctions, onClose, onSave, initialData }) => {
+  const toast = useToast();
   const cfg = initialData?.config || {};
   const [scheduleName, setScheduleName] = useState(initialData?.name || '');
   const [schedulePriority, setSchedulePriority] = useState(initialData?.priority ?? '');
@@ -781,17 +784,20 @@ const ScheduleBuilder = ({ events, dslFunctions, onClose, onSave, initialData })
       if (response.ok && data.success) {
         setScheduleId(data.id);
         setSaveResult({ success: true, output: data.message || 'Schedule saved successfully.' });
+        toast.success(data.message || 'Schedule saved successfully.');
         if (onSave) onSave();
       } else {
         const errMsg = data.detail || data.error || 'Save failed';
         setSaveResult({ success: false, error: typeof errMsg === 'string' ? errMsg : JSON.stringify(errMsg) });
+        toast.error(typeof errMsg === 'string' ? errMsg : JSON.stringify(errMsg));
       }
     } catch (err) {
       setSaveResult({ success: false, error: err.message || 'Network error' });
+      toast.error(err.message || 'Network error');
     } finally {
       setSaving(false);
     }
-  }, [scheduleName, schedulePriority, scheduleId, generatedCode, periodType, startDate, startDateSource, startDateField, startDateFormula, endDate, endDateSource, endDateField, endDateFormula, periodCount, periodCountSource, periodCountField, periodCountFormula, frequency, convention, columns, createTxn, txnType, txnAmountCol, extractFirst, extractLast, extractColumn, enableSum, sumColumn, sumVarName, enableCol, colColumn, colVarName, enableFilter, filterVarName, filterMatchCol, filterMatchValue, filterReturnCol, onSave]);
+  }, [scheduleName, schedulePriority, scheduleId, generatedCode, periodType, startDate, startDateSource, startDateField, startDateFormula, endDate, endDateSource, endDateField, endDateFormula, periodCount, periodCountSource, periodCountField, periodCountFormula, frequency, convention, columns, createTxn, txnType, txnAmountCol, extractFirst, extractLast, extractColumn, enableSum, sumColumn, sumVarName, enableCol, colColumn, colVarName, enableFilter, filterVarName, filterMatchCol, filterMatchValue, filterReturnCol, onSave, toast]);
 
   // Compute a simple mock preview of what the schedule table would look like
   const previewHeaders = useMemo(() => columns.filter(c => c.name).map(c => c.name), [columns]);
@@ -1368,7 +1374,7 @@ const ScheduleBuilder = ({ events, dslFunctions, onClose, onSave, initialData })
               );
               return (
                 <Box sx={{ mt: 1, display: 'flex', gap: 1 }}>
-                  <TextField size="small" label="Transaction Type" value={txnType}
+                  <TextField size="small" label="Transaction Name" value={txnType}
                     onChange={(e) => setTxnType(e.target.value)} sx={{ flex: 1 }}
                     placeholder="e.g., Interest Accrual" />
                   <FormControl size="small" sx={{ flex: 1 }}>
@@ -1411,8 +1417,12 @@ const ScheduleBuilder = ({ events, dslFunctions, onClose, onSave, initialData })
       </Box>
 
       {/* Validation Dialog */}
-      <Dialog open={!!validationMsg} onClose={() => setValidationMsg('')}>
-        <DialogTitle>Missing Required Field</DialogTitle>
+      <Dialog open={!!validationMsg} onClose={() => setValidationMsg('')}
+        TransitionComponent={Slide} TransitionProps={{ direction: 'up' }}
+        PaperProps={{ sx: { borderRadius: 4, boxShadow: '0 32px 64px rgba(0,0,0,0.14)', overflow: 'hidden', border: '1px solid', borderColor: 'divider' } }}>
+        <DialogTitle sx={{ p: 0 }}>
+          <ModalHeader badge="VALIDATION" title="Missing Required Field" onClose={() => setValidationMsg('')} />
+        </DialogTitle>
         <DialogContent>
           <DialogContentText>{validationMsg}</DialogContentText>
         </DialogContent>

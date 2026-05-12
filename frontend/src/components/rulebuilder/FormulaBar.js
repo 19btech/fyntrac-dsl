@@ -2,9 +2,10 @@ import React, { useState, useMemo, useCallback, useRef } from "react";
 import {
   Box, Typography, TextField, Paper, IconButton, Chip, Tooltip,
   Popper, ClickAwayListener, InputAdornment, Divider,
-  Dialog, DialogTitle, DialogContent,
+  Dialog, DialogTitle, DialogContent, Slide,
 } from "@mui/material";
 import { FunctionSquare, X, Search, Variable } from "lucide-react";
+import ModalHeader from "../ModalHeader";
 
 /**
  * DSL functions organized into user-friendly categories with aliases.
@@ -387,13 +388,11 @@ const FormulaBar = ({ value, onChange, events, variables, label, placeholder }) 
       </Popper>
 
       {/* Function catalog modal */}
-      <Dialog open={showCatalog} onClose={() => setShowCatalog(false)} maxWidth="sm" fullWidth PaperProps={{ sx: { maxHeight: '80vh' } }}>
-        <DialogTitle sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', pb: 1 }}>
-          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-            <FunctionSquare size={18} color="#5B5FED" />
-            <Typography variant="subtitle1" fontWeight={700}>Function Browser</Typography>
-          </Box>
-          <IconButton size="small" onClick={() => setShowCatalog(false)}><X size={16} /></IconButton>
+      <Dialog open={showCatalog} onClose={() => setShowCatalog(false)} maxWidth="sm" fullWidth
+        TransitionComponent={Slide} TransitionProps={{ direction: 'up' }}
+        PaperProps={{ sx: { maxHeight: '80vh', borderRadius: 4, boxShadow: '0 32px 64px rgba(0,0,0,0.14)', overflow: 'hidden', border: '1px solid', borderColor: 'divider' } }}>
+        <DialogTitle sx={{ p: 0 }}>
+          <ModalHeader badge="FORMULA LIBRARY" title="Function Browser" onClose={() => setShowCatalog(false)} />
         </DialogTitle>
         <DialogContent sx={{ display: 'flex', flexDirection: 'column', gap: 1, px: 2, pb: 2, pt: '0 !important' }}>
           {/* Search */}

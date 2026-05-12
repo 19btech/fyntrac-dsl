@@ -3,12 +3,13 @@ import {
   Box, Typography, Card, CardContent, Button, IconButton, Chip, TextField,
   CircularProgress, Alert, Tooltip, Divider, Switch,
   Dialog, DialogTitle, DialogContent, DialogContentText, DialogActions,
-  Menu, MenuItem, ListItemIcon, ListItemText,
+  Menu, MenuItem, ListItemIcon, ListItemText, Slide,
 } from "@mui/material";
 import { Trash2, Edit3, Calculator, GitBranch, Repeat, Database, Clock, Play, GripVertical, BookmarkPlus, RotateCcw, Code, Calendar, Copy, ChevronDown, Save, FilePlus } from "lucide-react";
 import { API } from "../../config";
 import { useToast } from "./../ToastProvider";
 import PostingDateModal from "../PostingDateModal";
+import ModalHeader from "../ModalHeader";
 
 const RULE_TYPE_META = {
   simple_calc: { label: 'Calculation', color: '#5B5FED', icon: Calculator },
@@ -105,13 +106,45 @@ const SavedRules = ({ onEditRule, onEditSchedule, refreshKey, onPlayAll, onClear
         } else {
           setRules(prev => prev.filter(r => r.id !== item.id));
         }
+        toast.success(`${item.name || (item._isSchedule ? 'Schedule' : 'Rule')} deleted.`);
+      } else {
+        toast.error(`Failed to delete "${item.name || 'item'}".`);
       }
     } catch (err) {
       setError(err.message);
+      toast.error(err.message || 'Failed to delete.');
     } finally {
       setDeleting(null);
     }
-  }, []);
+  }, [toast]);
+
+  const handleToggleRuleDisabled = useCallback(async (item, nextDisabled) => {
+    if (item._isSchedule) return;
+    const prevRules = rules;
+    setRules(prev => prev.map(r => r.id === item.id ? { ...r, disabled: nextDisabled } : r));
+    try {
+      const res = await fetch(`${API}/saved-rules/${item.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ disabled: nextDisabled }),
+      });
+      if (!res.ok) {
+        setRules(prevRules);
+        const data = await res.json().catch(() => ({}));
+        setError(data.detail || data.error || 'Failed to update rule state');
+        toast.error(data.detail || data.error || 'Failed to update rule state');
+        return;
+      }
+      await loadRules();
+      if (typeof onReorder === 'function') {
+        try { onReorder(); } catch { /* ignore */ }
+      }
+    } catch (err) {
+      setRules(prevRules);
+      setError(err?.message || 'Failed to update rule state');
+      toast.error(err?.message || 'Failed to update rule state');
+    }
+  }, [rules, loadRules, onReorder, toast]);
 
   const formatDate = (iso) => {
     if (!iso) return '';
@@ -144,42 +177,19 @@ const SavedRules = ({ onEditRule, onEditSchedule, refreshKey, onPlayAll, onClear
       if (res.ok) {
         await loadRules();
         setDuplicateTarget(null);
+        toast.success(`"${dupName.trim()}" created.`);
       } else {
         const data = await res.json();
         setError(data.detail || data.error || 'Duplicate failed');
+        toast.error(data.detail || data.error || 'Duplicate failed');
       }
     } catch (err) {
       setError(err.message || 'Duplicate failed');
+      toast.error(err.message || 'Duplicate failed');
     } finally {
       setDuplicating(false);
     }
-  }, [duplicateTarget, dupName, dupPriority, loadRules]);
-
-  const handleToggleRuleDisabled = useCallback(async (item, nextDisabled) => {
-    if (item._isSchedule) return;
-    const prevRules = rules;
-    setRules(prev => prev.map(r => r.id === item.id ? { ...r, disabled: nextDisabled } : r));
-    try {
-      const res = await fetch(`${API}/saved-rules/${item.id}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ disabled: nextDisabled }),
-      });
-      if (!res.ok) {
-        setRules(prevRules);
-        const data = await res.json().catch(() => ({}));
-        setError(data.detail || data.error || 'Failed to update rule state');
-        return;
-      }
-      await loadRules();
-      if (typeof onReorder === 'function') {
-        try { onReorder(); } catch { /* ignore */ }
-      }
-    } catch (err) {
-      setRules(prevRules);
-      setError(err?.message || 'Failed to update rule state');
-    }
-  }, [rules, loadRules, onReorder]);
+  }, [duplicateTarget, dupName, dupPriority, loadRules, toast]);
 
   // Merge rules and schedules, sort by priority
   const allItems = [
@@ -566,7 +576,6 @@ const SavedRules = ({ onEditRule, onEditSchedule, refreshKey, onPlayAll, onClear
             sx={{
               mb: 1.5, cursor: 'pointer', transition: 'all 0.15s',
               border: '1px solid #E9ECEF',
-              opacity: rule.disabled ? 0.5 : 1,
               '&:hover': { borderColor: meta.color, boxShadow: `0 2px 8px ${meta.color}1F` },
             }}
             onClick={handleClick}
@@ -605,19 +614,15 @@ const SavedRules = ({ onEditRule, onEditSchedule, refreshKey, onPlayAll, onClear
                     </Typography>
                   )}
                 </Box>
-                <Box sx={{ display: 'flex', gap: 0.5, flexShrink: 0, alignItems: 'center' }}>
+                <Box sx={{ display: 'flex', gap: 0.5, flexShrink: 0 }}>
                   {!rule._isSchedule && (
-                    <Tooltip title={rule.disabled ? "Disabled" : "Enabled"}>
+                    <Tooltip title={rule.disabled ? 'Disabled' : 'Enabled'}>
                       <Switch
                         size="small"
                         checked={!rule.disabled}
                         onClick={(e) => e.stopPropagation()}
-                        onChange={(e) => {
-                          e.stopPropagation();
-                          handleToggleRuleDisabled(rule, !e.target.checked);
-                        }}
+                        onChange={(e) => handleToggleRuleDisabled(rule, !e.target.checked)}
                         sx={{
-                          mr: 0.5,
                           '& .MuiSwitch-switchBase.Mui-checked': { color: '#64B5F6' },
                           '& .MuiSwitch-switchBase.Mui-checked + .MuiSwitch-track': { backgroundColor: '#90CAF9' },
                         }}
@@ -662,8 +667,12 @@ const SavedRules = ({ onEditRule, onEditSchedule, refreshKey, onPlayAll, onClear
         onCancel={handlePostingDateCancel}
       />
 
-      {/* Clear All Confirmation Dialog */}      <Dialog open={showClearAll} onClose={() => setShowClearAll(false)} maxWidth="sm" fullWidth>
-        <DialogTitle sx={{ color: '#D32F2F' }}>Clear Rules & Editor</DialogTitle>
+      {/* Clear All Confirmation Dialog */}      <Dialog open={showClearAll} onClose={() => setShowClearAll(false)} maxWidth="sm" fullWidth
+        TransitionComponent={Slide} TransitionProps={{ direction: 'up' }}
+        PaperProps={{ sx: { borderRadius: 4, boxShadow: '0 32px 64px rgba(0,0,0,0.14)', overflow: 'hidden', border: '1px solid', borderColor: 'divider' } }}>
+        <DialogTitle sx={{ p: 0 }}>
+          <ModalHeader badge="WORKSPACE" title="Clear Rules & Editor" onClose={() => setShowClearAll(false)} />
+        </DialogTitle>
         <DialogContent>
           <DialogContentText sx={{ mb: 2 }}>
             This will reset your workspace by clearing:
@@ -714,8 +723,12 @@ const SavedRules = ({ onEditRule, onEditSchedule, refreshKey, onPlayAll, onClear
       </Dialog>
 
       {/* Delete Confirmation Dialog */}
-      <Dialog open={!!deleteTarget} onClose={() => setDeleteTarget(null)}>
-        <DialogTitle>Delete {deleteTarget?._isSchedule ? 'Schedule' : 'Rule'}</DialogTitle>
+      <Dialog open={!!deleteTarget} onClose={() => setDeleteTarget(null)}
+        TransitionComponent={Slide} TransitionProps={{ direction: 'up' }}
+        PaperProps={{ sx: { borderRadius: 4, boxShadow: '0 32px 64px rgba(0,0,0,0.14)', overflow: 'hidden', border: '1px solid', borderColor: 'divider' } }}>
+        <DialogTitle sx={{ p: 0 }}>
+          <ModalHeader badge="CONFIRM" title={`Delete ${deleteTarget?._isSchedule ? 'Schedule' : 'Rule'}`} onClose={() => setDeleteTarget(null)} />
+        </DialogTitle>
         <DialogContent>
           <DialogContentText>
             Delete {deleteTarget?._isSchedule ? 'schedule' : 'rule'} "{deleteTarget?.name}"? This cannot be undone.
@@ -728,8 +741,12 @@ const SavedRules = ({ onEditRule, onEditSchedule, refreshKey, onPlayAll, onClear
       </Dialog>
 
       {/* Duplicate Rule/Schedule Dialog */}
-      <Dialog open={!!duplicateTarget} onClose={() => setDuplicateTarget(null)} maxWidth="xs" fullWidth>
-        <DialogTitle>Duplicate {duplicateTarget?._isSchedule ? 'Schedule' : 'Rule'}</DialogTitle>
+      <Dialog open={!!duplicateTarget} onClose={() => setDuplicateTarget(null)} maxWidth="xs" fullWidth
+        TransitionComponent={Slide} TransitionProps={{ direction: 'up' }}
+        PaperProps={{ sx: { borderRadius: 4, boxShadow: '0 32px 64px rgba(0,0,0,0.14)', overflow: 'hidden', border: '1px solid', borderColor: 'divider' } }}>
+        <DialogTitle sx={{ p: 0 }}>
+          <ModalHeader badge="RULE MANAGER" title={`Duplicate ${duplicateTarget?._isSchedule ? 'Schedule' : 'Rule'}`} onClose={() => setDuplicateTarget(null)} />
+        </DialogTitle>
         <DialogContent>
           <DialogContentText sx={{ mb: 2 }}>
             Create a copy of "{duplicateTarget?.name}" with a new name and priority.
@@ -757,8 +774,12 @@ const SavedRules = ({ onEditRule, onEditSchedule, refreshKey, onPlayAll, onClear
       </Dialog>
 
       {/* Save as Template Dialog */}
-      <Dialog open={showSaveTemplate} onClose={() => setShowSaveTemplate(false)} maxWidth="sm" fullWidth>
-        <DialogTitle>Save as Template</DialogTitle>
+      <Dialog open={showSaveTemplate} onClose={() => setShowSaveTemplate(false)} maxWidth="sm" fullWidth
+        TransitionComponent={Slide} TransitionProps={{ direction: 'up' }}
+        PaperProps={{ sx: { borderRadius: 4, boxShadow: '0 32px 64px rgba(0,0,0,0.14)', overflow: 'hidden', border: '1px solid', borderColor: 'divider' } }}>
+        <DialogTitle sx={{ p: 0 }}>
+          <ModalHeader badge="TEMPLATE" title="Save as Template" onClose={() => setShowSaveTemplate(false)} />
+        </DialogTitle>
         <DialogContent>
           <DialogContentText sx={{ mb: 2 }}>
             Create a reusable template from all {sortedRules.length} saved rule{sortedRules.length !== 1 ? 's' : ''}. This template will appear in the Accounting Templates library.

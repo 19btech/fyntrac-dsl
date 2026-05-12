@@ -5,6 +5,7 @@ import {
 } from "@mui/material";
 import { Sparkles, Play, Wand2, ArrowRight, RefreshCw, Code, Eye, EyeOff } from "lucide-react";
 import { API } from "../../config";
+import { useToast } from "../ToastProvider";
 
 const SUGGESTION_PROMPTS = [
   "Calculate monthly loan payment for a $500K mortgage at 4.5% over 30 years",
@@ -24,6 +25,7 @@ const SUGGESTION_PROMPTS = [
  * DSL code through the AI backend, with a preview step before inserting.
  */
 const AIRuleTranslator = ({ events, dslFunctions, onGenerate, selectedModel }) => {
+  const toast = useToast();
   const [description, setDescription] = useState('');
   const [loading, setLoading] = useState(false);
   const [generatedCode, setGeneratedCode] = useState(null);
@@ -144,16 +146,18 @@ Return ONLY the DSL code, no explanations or markdown fences.`;
       setGeneratedCode(code);
     } catch (err) {
       setError(err.message || 'Failed to generate code. Check AI provider configuration.');
+      toast.error(err.message || 'Failed to generate code.');
     } finally {
       setLoading(false);
     }
-  }, [description, events, dslFunctions, selectedModel, sessionId]);
+  }, [description, events, dslFunctions, selectedModel, sessionId, toast]);
 
   const handleApply = useCallback(() => {
     if (generatedCode) {
       onGenerate(generatedCode);
+      toast.success('Logic loaded into editor.');
     }
-  }, [generatedCode, onGenerate]);
+  }, [generatedCode, onGenerate, toast]);
 
   return (
     <Box sx={{ display: 'flex', flexDirection: 'column', height: '100%' }}>

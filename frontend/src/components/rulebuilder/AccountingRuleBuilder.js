@@ -3,7 +3,7 @@ import {
   Box, Typography, Card, CardContent, Button, TextField, MenuItem, Chip, IconButton,
   Tooltip, Divider, Select, FormControl, InputLabel, Paper, Switch, FormControlLabel,
   Alert, CircularProgress, Dialog, DialogTitle, DialogContent, DialogContentText, DialogActions,
-  Menu, Autocomplete,
+  Menu, Autocomplete, Slide,
 } from "@mui/material";
 import {
   Plus, Trash2, Play, Code, Save, X,
@@ -13,7 +13,9 @@ import { API } from "../../config";
 import FormulaBar from "./FormulaBar";
 import ScheduleStepModal from "./ScheduleStepModal";
 import CustomCodeStepModal from "./CustomCodeStepModal";
+import ModalHeader from "../ModalHeader";
 import TestResultCard from "./TestResultCard";
+import { useToast } from "../ToastProvider";
 
 // ─── Date-type detection helpers ───────────────────────────────────────
 // Used by the Create Transaction modal to restrict postingDate / effectiveDate
@@ -547,13 +549,11 @@ const StepModal = ({ open, step, stepType, onClose, onSaveStep, events, definedV
 
   return (
     <Dialog open={open} onClose={onClose} maxWidth="md" fullWidth
-      PaperProps={{ sx: { maxHeight: '85vh' } }}>
-      <DialogTitle sx={{ pb: 1, borderBottom: '1px solid #E9ECEF' }}>
-        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flex: 1 }}>
-          {React.createElement(STEP_TYPE_META[local.stepType || stepType]?.icon || Calculator, { size: 20, color: STEP_TYPE_META[local.stepType || stepType]?.color })}
-          <Typography variant="h6" sx={{ flex: 1 }}>{title}</Typography>
-          <IconButton size="small" onClick={onClose} sx={{ color: '#6C757D' }}><X size={18} /></IconButton>
-        </Box>
+      TransitionComponent={Slide}
+      TransitionProps={{ direction: 'up' }}
+      PaperProps={{ sx: { maxHeight: '85vh', borderRadius: 4, boxShadow: '0 32px 64px rgba(0,0,0,0.14)', overflow: 'hidden', border: '1px solid', borderColor: 'divider' } }}>
+      <DialogTitle sx={{ p: 0 }}>
+        <ModalHeader badge="RULE STEP" title={title} onClose={onClose} />
       </DialogTitle>
       <DialogContent sx={{ pt: 1, overflow: 'auto' }}>
         <TextField size="small" fullWidth label="Variable Name *" value={local.name || ''}
@@ -672,11 +672,11 @@ const TransactionModal = ({ open, txn, onClose, onSaveTxn, onTest, transactionDe
 
   const handleSave = () => {
     if (!local.type) {
-      setSaveError('Transaction Type is required.');
+      setSaveError('Transaction Name is required.');
       return;
     }
     if (transactionDefinitions && transactionDefinitions.length > 0 && !transactionDefinitions.includes(local.type)) {
-      setSaveError(`Transaction type "${local.type}" is not in the loaded transaction list. Select a valid type or upload a Reference Data File with the required types.`);
+      setSaveError(`Transaction name "${local.type}" is not in the loaded transaction list. Select a valid name or upload a Reference Data File with the required names.`);
       return;
     }
     if (!local.postingDate) {
@@ -692,28 +692,20 @@ const TransactionModal = ({ open, txn, onClose, onSaveTxn, onTest, transactionDe
   };
 
   const title = txn?.type ? `Edit Transaction: ${txn.type}` : 'Define Transaction';
-  const SectionLabel = ({ children }) => (
-    <Typography variant="caption" fontWeight={700} sx={{ color: '#5F6B7A', textTransform: 'uppercase', letterSpacing: 0.5, display: 'block', mb: 0.75 }}>
-      {children}
-    </Typography>
-  );
 
   return (
     <Dialog open={open} onClose={onClose} maxWidth="sm" fullWidth
-      PaperProps={{ sx: { maxHeight: '85vh' } }}>
-      <DialogTitle sx={{ pb: 1, borderBottom: '1px solid #E9ECEF' }}>
-        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flex: 1 }}>
-          <Receipt size={20} color={TXN_COLOR} />
-          <Typography variant="h6" sx={{ flex: 1 }}>{title}</Typography>
-          <IconButton size="small" onClick={onClose} sx={{ color: '#6C757D' }}><X size={18} /></IconButton>
-        </Box>
+      TransitionComponent={Slide}
+      TransitionProps={{ direction: 'up' }}
+      PaperProps={{ sx: { maxHeight: '85vh', borderRadius: 4, boxShadow: '0 32px 64px rgba(0,0,0,0.14)', overflow: 'hidden', border: '1px solid', borderColor: 'divider' } }}>
+      <DialogTitle sx={{ p: 0 }}>
+        <ModalHeader badge="TRANSACTION" title={title} onClose={onClose} />
       </DialogTitle>
       <DialogContent sx={{ pt: 2, overflow: 'auto' }}>
-        {/* ── Identity ── */}
-        <SectionLabel>Transaction Identity</SectionLabel>
+        {/* Transaction Name */}
         {transactionDefinitions && transactionDefinitions.length === 0 && (
-          <Alert severity="warning" sx={{ mb: 1.5, fontSize: '0.75rem' }}>
-            No transaction types loaded. Upload a Reference Data File (.xlsx) with a <em>transactions</em> sheet to populate this list.
+          <Alert severity="warning" sx={{ mb: 2, fontSize: '0.75rem' }}>
+            No transaction names loaded. Upload a Reference Data File (.xlsx) with a <em>transactions</em> sheet first.
           </Alert>
         )}
         <Autocomplete
@@ -728,24 +720,16 @@ const TransactionModal = ({ open, txn, onClose, onSaveTxn, onTest, transactionDe
           renderInput={(params) => (
             <TextField {...params}
               required
-              label="Transaction Type *"
-              placeholder={transactionDefinitions && transactionDefinitions.length > 0 ? 'Select a transaction type' : 'Upload a Reference Data File first'}
-              helperText="A short label that identifies this transaction in the ledger."
+              label="Transaction Name *"
+              placeholder={transactionDefinitions && transactionDefinitions.length > 0 ? 'Select a transaction name' : 'Upload a Reference Data File first'}
               error={!!saveError && (!local.type || (transactionDefinitions?.length > 0 && !transactionDefinitions.includes(local.type)))}
             />
           )}
-          noOptionsText={
-            <Typography variant="caption" color="text.secondary">
-              No transaction types loaded. Upload a Reference Data File first.
-            </Typography>
-          }
-          sx={{ mb: 2 }}
+          noOptionsText={<Typography variant="caption" color="text.secondary">No transaction names loaded.</Typography>}
+          sx={{ mb: 2.5 }}
         />
 
-        <Divider sx={{ my: 1.5 }} />
-
-        {/* ── Amount ── */}
-        <SectionLabel>Amount</SectionLabel>
+        {/* Amount */}
         <Autocomplete
           size="small"
           fullWidth
@@ -756,28 +740,20 @@ const TransactionModal = ({ open, txn, onClose, onSaveTxn, onTest, transactionDe
           onChange={(_, val) => update('amount', val || '')}
           renderInput={(params) => (
             <TextField {...params}
-              label="Amount Variable or Expression"
+              label="Amount"
               placeholder="e.g., interest_amount"
-              helperText="Pick a variable defined by a step above, or type any expression."
               inputProps={{ ...params.inputProps, style: { fontFamily: 'monospace', fontSize: '0.8125rem' } }}
             />
           )}
           renderOption={(props, option) => (
             <li {...props} style={{ fontFamily: 'monospace', fontSize: '0.8125rem' }}>{option}</li>
           )}
-          noOptionsText={
-            <Typography variant="caption" color="text.secondary">
-              No variables found. Add a step above first.
-            </Typography>
-          }
-          sx={{ mb: 2 }}
+          noOptionsText={<Typography variant="caption" color="text.secondary">No variables found. Add a step above first.</Typography>}
+          sx={{ mb: 2.5 }}
         />
 
-        <Divider sx={{ my: 1.5 }} />
-
-        {/* ── Dates ── */}
-        <SectionLabel>Dates</SectionLabel>
-        <Box sx={{ display: 'flex', gap: 1.5, mb: 1 }}>
+        {/* Dates — side by side */}
+        <Box sx={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 1.5, mb: 2.5 }}>
           <Autocomplete
             size="small"
             fullWidth
@@ -788,19 +764,14 @@ const TransactionModal = ({ open, txn, onClose, onSaveTxn, onTest, transactionDe
             renderInput={(params) => (
               <TextField {...params}
                 label="Posting Date *"
-                placeholder="Select a date field or date variable"
-                helperText="Date-typed event fields and rule variables only."
+                placeholder="Select date field"
                 inputProps={{ ...params.inputProps, style: { fontFamily: 'monospace', fontSize: '0.8125rem' } }}
               />
             )}
             renderOption={(props, option) => (
               <li {...props} style={{ fontFamily: 'monospace', fontSize: '0.8125rem' }}>{option}</li>
             )}
-            noOptionsText={
-              <Typography variant="caption" color="text.secondary">
-                No date-typed fields or variables available. Define a date variable or add a date event field first.
-              </Typography>
-            }
+            noOptionsText={<Typography variant="caption" color="text.secondary">No date fields available.</Typography>}
           />
           <Autocomplete
             size="small"
@@ -812,29 +783,18 @@ const TransactionModal = ({ open, txn, onClose, onSaveTxn, onTest, transactionDe
             renderInput={(params) => (
               <TextField {...params}
                 label="Effective Date *"
-                placeholder="Select a date field or date variable"
-                helperText="Date-typed event fields and rule variables only."
+                placeholder="Select date field"
                 inputProps={{ ...params.inputProps, style: { fontFamily: 'monospace', fontSize: '0.8125rem' } }}
               />
             )}
             renderOption={(props, option) => (
               <li {...props} style={{ fontFamily: 'monospace', fontSize: '0.8125rem' }}>{option}</li>
             )}
-            noOptionsText={
-              <Typography variant="caption" color="text.secondary">
-                No date-typed fields or variables available. Define a date variable or add a date event field first.
-              </Typography>
-            }
+            noOptionsText={<Typography variant="caption" color="text.secondary">No date fields available.</Typography>}
           />
         </Box>
-        {saveError && (
-          <Alert severity="error" sx={{ mb: 1.5, fontSize: '0.75rem' }}>{saveError}</Alert>
-        )}
 
-        <Divider sx={{ my: 1.5 }} />
-
-        {/* ── Sub-Instrument ── */}
-        <SectionLabel>Sub-Instrument</SectionLabel>
+        {/* Sub-Instrument */}
         <Autocomplete
           size="small"
           fullWidth
@@ -847,7 +807,6 @@ const TransactionModal = ({ open, txn, onClose, onSaveTxn, onTest, transactionDe
             <TextField {...params}
               label="Sub-Instrument ID"
               placeholder="default (1.0)"
-              helperText="Use a defined sub-instrument list, or leave the default."
               inputProps={{ ...params.inputProps, style: { fontFamily: 'monospace', fontSize: '0.8125rem' } }}
             />
           )}
@@ -855,6 +814,10 @@ const TransactionModal = ({ open, txn, onClose, onSaveTxn, onTest, transactionDe
             <li {...props} style={{ fontFamily: 'monospace', fontSize: '0.8125rem' }}>{option}</li>
           )}
         />
+
+        {saveError && (
+          <Alert severity="error" sx={{ mt: 2, fontSize: '0.75rem' }}>{saveError}</Alert>
+        )}
 
         {testResult && (
           <TestResultCard
@@ -887,6 +850,7 @@ const TransactionModal = ({ open, txn, onClose, onSaveTxn, onTest, transactionDe
 // a modal for calc / condition / iteration. Steps are draggable.
 // ═══════════════════════════════════════════════════════════════════════
 const AccountingRuleBuilder = ({ events, dslFunctions, transactionDefinitions, onClose, onSave, initialData }) => {
+  const toast = useToast();
   // ── Rule-level state ──
   const [ruleName, setRuleName] = useState(initialData?.name || '');
   const [rulePriority, setRulePriority] = useState(initialData?.priority ?? '');
@@ -894,8 +858,25 @@ const AccountingRuleBuilder = ({ events, dslFunctions, transactionDefinitions, o
   const [saving, setSaving] = useState(false);
   const [saveResult, setSaveResult] = useState(null);
   const [validationMsg, setValidationMsg] = useState('');
+
+  const persistDisableToggle = useCallback(async (nextSteps, nextOutputs) => {
+    if (!ruleId) return;
+    try {
+      await fetch(`${API}/saved-rules/${ruleId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: (ruleName || '').trim(),
+          steps: nextSteps,
+          outputs: nextOutputs,
+        }),
+      });
+      if (onSave) onSave();
+    } catch (_) {
+      // Keep local toggle state even if immediate persistence fails.
+    }
+  }, [ruleId, ruleName, onSave]);
   const [showCode, setShowCode] = useState(false);
-  const [ruleDisabled, setRuleDisabled] = useState(initialData?.disabled || false);
 
   // ── Test Posting Date (drives all per-step Test buttons in this builder) ──
   // Loaded from /event-data/posting-dates (already filtered to activity events,
@@ -945,6 +926,7 @@ const AccountingRuleBuilder = ({ events, dslFunctions, transactionDefinitions, o
   });
   const [inlineComment, setInlineComment] = useState(initialData?.inlineComment || false);
   const [commentText, setCommentText] = useState(initialData?.commentText || '');
+  const [ruleDisabled, setRuleDisabled] = useState(initialData?.disabled || false);
 
   // ── Unified steps array ──
   // Each step: { name, stepType: 'calc'|'condition'|'iteration', source, formula, value, eventField, collectType, conditions, elseFormula, iterations }
@@ -976,6 +958,7 @@ const AccountingRuleBuilder = ({ events, dslFunctions, transactionDefinitions, o
         setRulePriority(fresh.priority ?? '');
         setInlineComment(!!fresh.inlineComment);
         setCommentText(fresh.commentText || '');
+        setRuleDisabled(fresh.disabled || false);
         if (fresh.outputs && fresh.outputs.printResult !== undefined) {
           setOutputs(fresh.outputs);
         } else if (fresh.outputs) {
@@ -1681,24 +1664,6 @@ const AccountingRuleBuilder = ({ events, dslFunctions, transactionDefinitions, o
     return 'simple_calc';
   }, [steps]);
 
-  const persistDisableToggle = useCallback(async (nextSteps, nextOutputs) => {
-    if (!ruleId) return;
-    try {
-      await fetch(`${API}/saved-rules/${ruleId}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          name: (ruleName || '').trim(),
-          steps: nextSteps,
-          outputs: nextOutputs,
-        }),
-      });
-      if (onSave) onSave();
-    } catch (_) {
-      // Keep local toggle state even if immediate persistence fails.
-    }
-  }, [ruleId, ruleName, onSave]);
-
   const resetForm = useCallback(() => {
     setRuleName('');
     setRulePriority('');
@@ -1709,7 +1674,6 @@ const AccountingRuleBuilder = ({ events, dslFunctions, transactionDefinitions, o
     setCommentText('');
     setShowCode(false);
     setSaveResult(null);
-    setRuleDisabled(false);
   }, []);
 
   // ── Save ──
@@ -1764,18 +1728,21 @@ const AccountingRuleBuilder = ({ events, dslFunctions, transactionDefinitions, o
       if (response.ok && data.success) {
         setRuleId(data.id);
         setSaveResult({ success: true, output: data.message || 'Rule saved successfully.' });
+        toast.success(data.message || 'Rule saved successfully.');
         if (onSave) onSave();
         setTimeout(() => resetForm(), 1500);
       } else {
         const errMsg = data.detail || data.error || 'Save failed';
         setSaveResult({ success: false, error: typeof errMsg === 'string' ? errMsg : JSON.stringify(errMsg) });
+        toast.error(typeof errMsg === 'string' ? errMsg : JSON.stringify(errMsg));
       }
     } catch (err) {
       setSaveResult({ success: false, error: err.message || 'Network error' });
+      toast.error(err.message || 'Network error');
     } finally {
       setSaving(false);
     }
-  }, [ruleName, rulePriority, ruleId, ruleDisabled, effectiveRuleType, steps, outputs, inlineComment, commentText, generatedCode, onSave, resetForm]);
+  }, [ruleName, rulePriority, ruleId, ruleDisabled, effectiveRuleType, steps, outputs, inlineComment, commentText, generatedCode, onSave, resetForm, toast]);
 
   // ── Step CRUD ──
   const openAddStep = (type) => {
@@ -2207,7 +2174,6 @@ const AccountingRuleBuilder = ({ events, dslFunctions, transactionDefinitions, o
               sx={{
                 mb: 1, borderLeft: `3px solid ${meta.color}`,
                 transition: 'all 0.15s',
-                opacity: step.disabled ? 0.6 : 1,
                 '&:hover': { boxShadow: `0 2px 8px ${meta.color}1F` },
               }}>
               <CardContent sx={{ p: 1.5, '&:last-child': { pb: 1.5 } }}>
@@ -2228,53 +2194,37 @@ const AccountingRuleBuilder = ({ events, dslFunctions, transactionDefinitions, o
                   <Chip size="small" label={meta.label}
                     sx={{ fontSize: '0.625rem', height: 18, bgcolor: `${meta.color}18`, color: meta.color, fontWeight: 600 }} />
                   <Tooltip title={step.disabled ? "Disabled" : "Enabled"}>
-                    <Switch
-                      size="small"
-                      checked={!step.disabled}
-                      onClick={(e) => e.stopPropagation()}
-                      onChange={(e) => {
-                        e.stopPropagation();
-                        const nextSteps = steps.map((s, i) => i === idx ? { ...s, disabled: !e.target.checked } : s);
-                        setSteps(nextSteps);
-                        persistDisableToggle(nextSteps, outputs);
-                      }}
-                      sx={{
-                        mr: 0.5,
-                        '& .MuiSwitch-switchBase.Mui-checked': { color: '#64B5F6' },
-                        '& .MuiSwitch-switchBase.Mui-checked + .MuiSwitch-track': { backgroundColor: '#90CAF9' },
-                      }}
-                    />
+                    <Switch size="small" checked={!step.disabled} onChange={(e) => {
+                      const nextSteps = steps.map((s, i) => i === idx ? { ...s, disabled: !e.target.checked } : s);
+                      setSteps(nextSteps);
+                      persistDisableToggle(nextSteps, outputs);
+                    }} sx={{
+                      '& .MuiSwitch-switchBase.Mui-checked': { color: '#64B5F6' },
+                      '& .MuiSwitch-switchBase.Mui-checked + .MuiSwitch-track': { backgroundColor: '#90CAF9' },
+                    }} />
                   </Tooltip>
                   {step.stepType !== 'custom_code' && step.stepType !== 'schedule' && (
                     <Tooltip title="Test up to this step">
-                      <span>
-                        <IconButton size="small" onClick={() => handleInlineTest(idx)}
-                          disabled={!!stepTesting[idx] || step.disabled} sx={{ color: '#4CAF50' }}>
-                          {stepTesting[idx] ? <CircularProgress size={14} /> : <Play size={14} />}
-                        </IconButton>
-                      </span>
+                      <IconButton size="small" onClick={() => handleInlineTest(idx)}
+                        disabled={!!stepTesting[idx]} sx={{ color: '#4CAF50' }}>
+                        {stepTesting[idx] ? <CircularProgress size={14} /> : <Play size={14} />}
+                      </IconButton>
                     </Tooltip>
                   )}
                   <Tooltip title="Duplicate step">
-                    <span>
-                      <IconButton size="small" onClick={() => duplicateStep(idx)} disabled={step.disabled} sx={{ color: '#607D8B' }}>
-                        <Copy size={14} />
-                      </IconButton>
-                    </span>
+                    <IconButton size="small" onClick={() => duplicateStep(idx)} sx={{ color: '#607D8B' }}>
+                      <Copy size={14} />
+                    </IconButton>
                   </Tooltip>
                   <Tooltip title="Edit step">
-                    <span>
-                      <IconButton size="small" onClick={() => openEditStep(idx)} disabled={step.disabled} sx={{ color: meta.color }}>
-                        <Edit3 size={14} />
-                      </IconButton>
-                    </span>
+                    <IconButton size="small" onClick={() => openEditStep(idx)} sx={{ color: meta.color }}>
+                      <Edit3 size={14} />
+                    </IconButton>
                   </Tooltip>
                   <Tooltip title="Delete step">
-                    <span>
-                      <IconButton size="small" onClick={() => removeStep(idx)} sx={{ color: '#F44336' }}>
-                        <Trash2 size={14} />
-                      </IconButton>
-                    </span>
+                    <IconButton size="small" onClick={() => removeStep(idx)} sx={{ color: '#F44336' }}>
+                      <Trash2 size={14} />
+                    </IconButton>
                   </Tooltip>
                 </Box>
                 {tr && (
@@ -2329,7 +2279,6 @@ const AccountingRuleBuilder = ({ events, dslFunctions, transactionDefinitions, o
               sx={{
                 mb: 1, borderLeft: `3px solid ${TXN_COLOR}`,
                 transition: 'all 0.15s',
-                opacity: txn.disabled ? 0.6 : 1,
                 '&:hover': { boxShadow: `0 2px 8px ${TXN_COLOR}1F` },
               }}>
               <CardContent sx={{ p: 1.5, '&:last-child': { pb: 1.5 } }}>
@@ -2350,51 +2299,38 @@ const AccountingRuleBuilder = ({ events, dslFunctions, transactionDefinitions, o
                   <Chip size="small" label="Transaction"
                     sx={{ fontSize: '0.625rem', height: 18, bgcolor: `${TXN_COLOR}18`, color: TXN_COLOR, fontWeight: 600 }} />
                   <Tooltip title={txn.disabled ? "Disabled" : "Enabled"}>
-                    <Switch
-                      size="small"
-                      checked={!txn.disabled}
-                      onClick={(e) => e.stopPropagation()}
-                      onChange={(e) => {
-                        e.stopPropagation();
-                        const updated = outputs.transactions.map((t, i) => i === idx ? { ...t, disabled: !e.target.checked } : t);
-                        const nextOutputs = { ...outputs, transactions: updated };
-                        setOutputs(nextOutputs);
-                        persistDisableToggle(steps, nextOutputs);
-                      }}
-                      sx={{
-                        '& .MuiSwitch-switchBase.Mui-checked': { color: '#64B5F6' },
-                        '& .MuiSwitch-switchBase.Mui-checked + .MuiSwitch-track': { backgroundColor: '#90CAF9' },
-                      }}
-                    />
+                    <Switch size="small" checked={!txn.disabled} onChange={(e) => {
+                      const updated = outputs.transactions.map((t, i) => i === idx ? { ...t, disabled: !e.target.checked } : t);
+                      const nextOutputs = { ...outputs, transactions: updated };
+                      setOutputs(nextOutputs);
+                      persistDisableToggle(steps, nextOutputs);
+                    }} sx={{
+                      '& .MuiSwitch-switchBase.Mui-checked': { color: '#64B5F6' },
+                      '& .MuiSwitch-switchBase.Mui-checked + .MuiSwitch-track': { backgroundColor: '#90CAF9' },
+                    }} />
                   </Tooltip>
                   <Tooltip title="Test this transaction">
                     <span>
                       <IconButton size="small" onClick={() => handleTransactionTest(idx)}
-                        disabled={!!txnTesting[idx] || !txn.type || txn.disabled} sx={{ color: '#4CAF50' }}>
+                        disabled={!!txnTesting[idx] || !txn.type} sx={{ color: '#4CAF50' }}>
                         {txnTesting[idx] ? <CircularProgress size={14} /> : <Play size={14} />}
                       </IconButton>
                     </span>
                   </Tooltip>
                   <Tooltip title="Duplicate transaction">
-                    <span>
-                      <IconButton size="small" onClick={() => duplicateTransaction(idx)} disabled={txn.disabled} sx={{ color: '#607D8B' }}>
-                        <Copy size={14} />
-                      </IconButton>
-                    </span>
+                    <IconButton size="small" onClick={() => duplicateTransaction(idx)} sx={{ color: '#607D8B' }}>
+                      <Copy size={14} />
+                    </IconButton>
                   </Tooltip>
                   <Tooltip title="Edit transaction">
-                    <span>
-                      <IconButton size="small" onClick={() => openEditTransaction(idx)} disabled={txn.disabled} sx={{ color: TXN_COLOR }}>
-                        <Edit3 size={14} />
-                      </IconButton>
-                    </span>
+                    <IconButton size="small" onClick={() => openEditTransaction(idx)} sx={{ color: TXN_COLOR }}>
+                      <Edit3 size={14} />
+                    </IconButton>
                   </Tooltip>
                   <Tooltip title="Delete transaction">
-                    <span>
-                      <IconButton size="small" onClick={() => removeTransaction(idx)} sx={{ color: '#F44336' }}>
-                        <Trash2 size={14} />
-                      </IconButton>
-                    </span>
+                    <IconButton size="small" onClick={() => removeTransaction(idx)} sx={{ color: '#F44336' }}>
+                      <Trash2 size={14} />
+                    </IconButton>
                   </Tooltip>
                 </Box>
                 {tr && (
@@ -2421,8 +2357,12 @@ const AccountingRuleBuilder = ({ events, dslFunctions, transactionDefinitions, o
       </Box>
 
       {/* Validation Dialog */}
-      <Dialog open={!!validationMsg} onClose={() => setValidationMsg('')}>
-        <DialogTitle>Missing Required Field</DialogTitle>
+      <Dialog open={!!validationMsg} onClose={() => setValidationMsg('')}
+        TransitionComponent={Slide} TransitionProps={{ direction: 'up' }}
+        PaperProps={{ sx: { borderRadius: 4, boxShadow: '0 32px 64px rgba(0,0,0,0.14)', overflow: 'hidden', border: '1px solid', borderColor: 'divider' } }}>
+        <DialogTitle sx={{ p: 0 }}>
+          <ModalHeader badge="VALIDATION" title="Missing Required Field" onClose={() => setValidationMsg('')} />
+        </DialogTitle>
         <DialogContent>
           <DialogContentText>{validationMsg}</DialogContentText>
         </DialogContent>

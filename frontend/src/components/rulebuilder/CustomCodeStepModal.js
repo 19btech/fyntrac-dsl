@@ -1,12 +1,13 @@
 import React, { useState, useCallback, useRef, useEffect } from "react";
 import {
   Box, Typography, Button, TextField, Paper, CircularProgress, Alert, IconButton,
-  Dialog, DialogTitle, DialogContent, DialogActions,
+  Dialog, DialogTitle, DialogContent, DialogActions, Slide,
 } from "@mui/material";
 import { Code, Play, Save, X } from "lucide-react";
 import Editor from "@monaco-editor/react";
 import { API } from "../../config";
 import { PrintOutputRenderer } from "../ConsoleOutput";
+import ModalHeader from "../ModalHeader";
 
 /**
  * CustomCodeStepModal — Full-screen modal for writing raw DSL code
@@ -77,13 +78,15 @@ const CustomCodeStepModal = ({ open, step, onClose, onSaveStep, events, dslFunct
 
   return (
     <Dialog open={open} onClose={onClose} maxWidth="lg" fullWidth
-      PaperProps={{ sx: { maxHeight: '90vh', height: '90vh' } }}>
-      <DialogTitle sx={{ pb: 1, borderBottom: '1px solid #E9ECEF' }}>
-        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flex: 1 }}>
-          <Code size={20} color="#607D8B" />
-          <Typography variant="h6" sx={{ flex: 1 }}>{step?.name ? `Edit Custom Code Step: ${step.name}` : 'Add Custom Code Step'}</Typography>
-          <IconButton size="small" onClick={onClose} sx={{ color: '#6C757D' }}><X size={18} /></IconButton>
-        </Box>
+      TransitionComponent={Slide}
+      TransitionProps={{ direction: 'up' }}
+      PaperProps={{ sx: { maxHeight: '90vh', height: '90vh', borderRadius: 4, boxShadow: '0 32px 64px rgba(0,0,0,0.14)', overflow: 'hidden', border: '1px solid', borderColor: 'divider' } }}>
+      <DialogTitle sx={{ p: 0 }}>
+        <ModalHeader
+          badge="CUSTOM CODE"
+          title={step?.name ? `Edit Custom Code Step: ${step.name}` : 'Add Custom Code Step'}
+          onClose={onClose}
+        />
       </DialogTitle>
       <DialogContent sx={{ pt: 2, overflow: 'auto' }}>
         {/* Step Name */}

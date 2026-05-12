@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect, useCallback } from "react";
 import { useToast } from "./ToastProvider";
-import { Send, RotateCcw, AlertTriangle, Square, Sparkles, Bot, MessageSquare, PanelRightClose, PanelRightOpen } from "lucide-react";
+import { Send, RotateCcw, AlertTriangle, Square, Sparkles, Bot, MessageSquare, ChevronLeft, ChevronRight } from "lucide-react";
 import ModelSelector from "./ModelSelector";
 import AgentMessage from "./agent/AgentMessage";
 import AgentRunMessage from "./agent/AgentRunMessage";
@@ -277,15 +277,30 @@ const ChatAssistantComponent = ({ dslFunctions, events, onInsertCode, onOverwrit
           padding: '8px 0',
           gap: 8,
           transition: 'width 200ms ease',
+          position: 'relative',
         }}
       >
         <button
-          className="vsc-icon-btn"
           onClick={onToggleCollapsed}
           title="Expand AI Assistant"
           aria-label="Expand AI Assistant"
+          className="panel-toggle-btn"
+          style={{
+            width: 28,
+            height: 28,
+            borderRadius: '50%',
+            background: '#FFFFFF',
+            border: '1px solid #E9ECEF',
+            boxShadow: '0 1px 4px rgba(0,0,0,0.12)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            cursor: 'pointer',
+            padding: 0,
+            marginBottom: 4,
+          }}
         >
-          <PanelRightOpen size={18} />
+          <ChevronLeft size={15} />
         </button>
         <div title="AI Assistant" style={{ color: '#6C757D', marginTop: 4 }}>
           <Sparkles size={18} />
@@ -300,7 +315,7 @@ const ChatAssistantComponent = ({ dslFunctions, events, onInsertCode, onOverwrit
         )}
       </div>
     ) : (
-    <div className="vsc-chat" data-testid="chat-assistant" style={{ transition: 'width 200ms ease' }}>
+    <div className="vsc-chat" data-testid="chat-assistant" style={{ transition: 'width 200ms ease', position: 'relative' }}>
       {/* Header - Fyntrac style */}
       <div className="vsc-chat-header">
         <div className="vsc-header-left">
@@ -317,12 +332,25 @@ const ChatAssistantComponent = ({ dslFunctions, events, onInsertCode, onOverwrit
           )}
           {onToggleCollapsed && (
             <button
-              className="vsc-icon-btn"
               onClick={onToggleCollapsed}
               title="Collapse AI Assistant"
               aria-label="Collapse AI Assistant"
+              className="panel-toggle-btn"
+              style={{
+                width: 28,
+                height: 28,
+                borderRadius: '50%',
+                background: '#FFFFFF',
+                border: '1px solid #E9ECEF',
+                boxShadow: '0 1px 4px rgba(0,0,0,0.12)',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                cursor: 'pointer',
+                padding: 0,
+              }}
             >
-              <PanelRightClose size={14} />
+              <ChevronRight size={15} />
             </button>
           )}
         </div>

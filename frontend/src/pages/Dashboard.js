@@ -1,8 +1,8 @@
 import React, { useState, useEffect, useRef } from "react";
 import axios from "axios";
 import { useToast } from "../components/ToastProvider";
-import { Upload, Code, BookOpen, Sparkles, Trash2, Search as SearchIcon, Settings, ChevronDown, Database, Calculator, Eye, Save } from "lucide-react";
-import { Button, Tabs, Tab, Box, Menu, MenuItem, Divider, Alert, Typography, ToggleButtonGroup, ToggleButton, Tooltip, Avatar } from '@mui/material';
+import { Upload, Code, BookOpen, Sparkles, Trash2, Search as SearchIcon, Settings, ChevronDown, Database, Calculator, Eye, Save, Menu as MenuIcon } from "lucide-react";
+import { Button, Tabs, Tab, Box, Menu, MenuItem, Divider, Alert, Typography, ToggleButtonGroup, ToggleButton, Tooltip, CircularProgress, IconButton, useMediaQuery, useTheme, Avatar } from '@mui/material';
 import Editor from "@monaco-editor/react";
 import FileUploadPanel from "../components/FileUploadPanel";
 import LeftSidebar from "../components/LeftSidebar";
@@ -63,6 +63,8 @@ const Dashboard = () => {
   const [showEventDataViewer, setShowEventDataViewer] = useState(false);
   const [showAISetup, setShowAISetup] = useState(false);
   const [providerRefreshKey, setProviderRefreshKey] = useState(0);
+  const [codeRefreshKey, setCodeRefreshKey] = useState(0);
+  const [codeRefreshing, setCodeRefreshing] = useState(false);
   // Editor mode: 'code' | 'ruleBuilder' | 'scheduleBuilder' | 'customCode' | 'preview' | 'savedRules'
   const [editorMode, setEditorMode] = useState('code');
   // Saved rules
@@ -94,7 +96,7 @@ const Dashboard = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Reload transaction definitions when a template wizard seeds them
+  // Reload transaction definitions when a template wizard seeds them and parse user profile
   useEffect(() => {
     const handler = () => loadTransactionDefinitions();
     window.addEventListener('dsl-transaction-defs-changed', handler);
@@ -200,9 +202,9 @@ const Dashboard = () => {
         try {
           addConsoleLog("Clearing all data...", "info");
           const response = await axios.delete(`${API}/clear-all-data`);
-
+          
           addConsoleLog(`✓ ${response.data.message}`, "success");
-
+          
           setEvents([]);
           setDslFunctions([]);
           setTemplates([]);
@@ -231,8 +233,8 @@ const Dashboard = () => {
             localStorage.removeItem('lastEventDataUploadStatus');
             localStorage.removeItem('lastEventDataUploadErrors');
             localStorage.removeItem('importSelectedInstruments');
-            try { window.dispatchEvent(new Event('dsl-clear-uploaded-files')); } catch (e) { }
-            try { window.dispatchEvent(new Event('dsl-clear-event-viewer')); } catch (e) { }
+            try { window.dispatchEvent(new Event('dsl-clear-uploaded-files')); } catch(e) {}
+            try { window.dispatchEvent(new Event('dsl-clear-event-viewer')); } catch(e) {}
           } catch (e) {
             // ignore
           }
@@ -333,7 +335,7 @@ const Dashboard = () => {
       toast.error("Please select an event first");
       return;
     }
-
+    
     openPrompt({
       title: "Save Template",
       message: "Enter a name for this template.",
@@ -341,7 +343,7 @@ const Dashboard = () => {
       onSubmit: async (templateName) => {
         try {
           const checkResponse = await axios.get(`${API}/templates/check-name/${encodeURIComponent(templateName)}`);
-
+          
           if (checkResponse.data.exists) {
             openConfirm({
               title: "Replace Template",
@@ -412,7 +414,7 @@ const Dashboard = () => {
       // Zero or one posting date — run exactly as before (pass the single date if present)
       try {
         // Wipe previous transaction reports before running
-        try { await axios.delete(`${API}/transaction-reports/all`); } catch (_) { }
+        try { await axios.delete(`${API}/transaction-reports/all`); } catch (_) {}
         addConsoleLog("Executing template on event data...", "info");
         const response = await axios.post(`${API}/templates/execute`, {
           template_id: templateId,
@@ -432,7 +434,7 @@ const Dashboard = () => {
 
     // Multiple posting dates — run sequentially across all dates
     // Wipe previous transaction reports before batch run
-    try { await axios.delete(`${API}/transaction-reports/all`); } catch (_) { }
+    try { await axios.delete(`${API}/transaction-reports/all`); } catch (_) {}
     setBatchRunning(true);
     setBatchStatus({ total: postingDates.length, current: 0, currentDate: null, results: [], errors: [] });
     addConsoleLog(`Starting batch execution across ${postingDates.length} posting dates...`, "info");
@@ -503,7 +505,7 @@ const Dashboard = () => {
     try {
       addConsoleLog(`Deleting template '${templateName}'...`, "info");
       await axios.delete(`${API}/templates/${templateId}`);
-
+      
       addConsoleLog(`✓ Template deleted successfully!`, "success");
       toast.success("Template deleted!");
       loadTemplates();
@@ -653,14 +655,18 @@ const Dashboard = () => {
     }
   };
 
-  const loadCombinedCode = async () => {
+  const loadCombinedCode = async ({ silent = true } = {}) => {
+    if (!silent) setCodeRefreshing(true);
     try {
       const response = await axios.get(`${API}/combined-code`);
-      if (response.data?.success && response.data.code) {
-        setDslCode(response.data.code);
+      if (response.data) {
+        setDslCode(response.data.code ?? '');
+        setCodeRefreshKey(k => k + 1);
       }
     } catch (error) {
       console.error("Error loading combined code:", error);
+    } finally {
+      if (!silent) setCodeRefreshing(false);
     }
   };
 
@@ -673,9 +679,9 @@ const Dashboard = () => {
   return (
     <div className="flex h-screen bg-[#F8F9FA] overflow-auto" style={{ minWidth: '900px' }} data-testid="dashboard-container">
       {/* Left Sidebar */}
-      <div className="sidebar-enter">
-        <LeftSidebar
-          events={events}
+        <div className="sidebar-enter" style={{ position: 'relative', zIndex: 1200 }}>
+        <LeftSidebar 
+          events={events} 
           selectedEvent={selectedEvent}
           onEventSelect={setSelectedEvent}
           onDownloadEvents={handleDownloadEvents}
@@ -692,16 +698,67 @@ const Dashboard = () => {
       {/* Main Content */}
       <div className="flex-1 flex flex-col min-w-0">
         {/* Top Bar - Fyntrac style */}
-        <div className="bg-white/80 backdrop-blur-xl border-b border-[#E9ECEF]/50 px-6 py-4 animate-fade-in-up">
-          <div className="flex items-center justify-between">
-            <div>
-              <h1 className="text-2xl font-bold text-[#14213d] tracking-tight" style={{ fontFamily: "'Inter', sans-serif" }}>Logic Studio</h1>
-              <p className="text-sm text-[#6C757D] mt-1">Design and test your financial calculation logic using built-in formulas</p>
-            </div>
-            <div className="flex gap-2 items-center">
-              <Button
-                variant="outlined"
+        <div className="bg-white/80 backdrop-blur-xl border-b border-[#E9ECEF]/50 px-6 flex items-center animate-fade-in-up" style={{ height: 80 }}>
+          <div className="flex items-center justify-between w-full">
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              {/* Hamburger — mobile only (xs) */}
+              <IconButton
+                onClick={() => setSidebarCollapsed(c => !c)}
+                color="inherit"
+                edge="start"
                 size="small"
+                sx={{ display: { xs: 'inline-flex', sm: 'none' }, width: 32, height: 32, '& svg': { fontSize: 26 } }}
+              >
+                <MenuIcon size={26} />
+              </IconButton>
+              {/* Hamburger — desktop only (sm+) */}
+              <IconButton
+                onClick={() => setSidebarCollapsed(c => !c)}
+                edge="start"
+                size="small"
+                sx={{
+                  display: { xs: 'none', sm: 'inline-flex' },
+                  color: '#64748b',
+                  '&:hover': { bgcolor: '#f1f5f9', color: '#14213d' },
+                  '& svg': { fontSize: 26 },
+                }}
+              >
+                <MenuIcon size={26} />
+              </IconButton>
+              <div>
+                <Typography
+                  component="span"
+                  sx={{
+                    fontFamily: '"Inter", "Helvetica Neue", Arial, sans-serif',
+                    fontSize: '0.6875rem',
+                    fontWeight: 700,
+                    color: '#64748b',
+                    textTransform: 'uppercase',
+                    letterSpacing: '0.08em',
+                    lineHeight: 1.1,
+                    display: 'block',
+                  }}
+                >
+                  Workspace
+                </Typography>
+                <Typography
+                  sx={{
+                    fontFamily: '"Inter", "Helvetica Neue", Arial, sans-serif',
+                    fontSize: '1rem',
+                    fontWeight: 700,
+                    color: '#14213d',
+                    lineHeight: 1.3,
+                    mt: 0,
+                  }}
+                >
+                  Logic Studio
+                </Typography>
+              </div>
+            </div>
+            <div className="flex gap-2">
+              <Button 
+                variant="outlined" 
+                size="small" 
                 onClick={() => setShowFunctionBrowser(true)}
                 data-testid="browse-functions-button"
                 title={`${dslFunctions.length} formulas loaded`}
@@ -725,9 +782,9 @@ const Dashboard = () => {
                 Browse Formulas ({dslFunctions.length})
               </Button>
               {/* Build Function removed */}
-              <Button
-                variant="outlined"
-                size="small"
+              <Button 
+                variant="outlined" 
+                size="small" 
                 onClick={(e) => setSettingsAnchorEl(e.currentTarget)}
                 data-testid="settings-button"
                 startIcon={<Settings className="w-4 h-4" />}
@@ -773,6 +830,7 @@ const Dashboard = () => {
                 open={Boolean(settingsAnchorEl)}
                 onClose={() => setSettingsAnchorEl(null)}
                 data-testid="settings-menu"
+                sx={{ zIndex: 1500 }}
                 PaperProps={{
                   sx: {
                     borderRadius: '8px',
@@ -816,7 +874,7 @@ const Dashboard = () => {
                   <Sparkles className="w-4 h-4 text-[#6C757D] mr-2" />
                   AI Agent Setup
                 </MenuItem>
-
+                
               </Menu>
             </div>
           </div>
@@ -828,17 +886,17 @@ const Dashboard = () => {
           <Box sx={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0, overflow: 'hidden' }}>
             <Box sx={{ borderBottom: 1, borderColor: 'divider', bgcolor: 'white', px: 3 }}>
               <Tabs value={tabValue} onChange={(e, newValue) => { setTabValue(newValue); if (newValue === 1) { setEditorMode('savedRules'); } }}>
-                <Tab
-                  icon={<Upload className="w-4 h-4" />}
-                  iconPosition="start"
-                  label="Upload Data"
+                <Tab 
+                  icon={<Upload className="w-4 h-4" />} 
+                  iconPosition="start" 
+                  label="Upload Data" 
                   data-testid="upload-tab"
                   sx={{ textTransform: 'none', fontSize: '0.875rem' }}
                 />
-                <Tab
-                  icon={<Code className="w-4 h-4" />}
-                  iconPosition="start"
-                  label="Logic Builder"
+                <Tab 
+                  icon={<Code className="w-4 h-4" />} 
+                  iconPosition="start" 
+                  label="Logic Builder" 
                   data-testid="editor-tab"
                   sx={{ textTransform: 'none', fontSize: '0.875rem' }}
                 />
@@ -846,26 +904,25 @@ const Dashboard = () => {
             </Box>
 
             <TabPanel value={tabValue} index={0}>
-              <FileUploadPanel
-                onUploadSuccess={() => { loadEvents(); loadTransactionDefinitions(); }}
-                events={events}
-                transactions={transactionDefinitions}
-                addConsoleLog={addConsoleLog}
-                selectedEvent={selectedEvent}
-                onViewEvent={(eventName) => { setSelectedEvent(eventName); setShowEventDataViewer(true); }}
-                onGenerateSample={(message) => {
-                  if (chatAssistantRef.current && chatAssistantRef.current.sendAgentMessage) {
-                    setChatCollapsed(false);
-                    chatAssistantRef.current.sendAgentMessage(message);
-                  }
-                }}
-              />
+              <FileUploadPanel 
+                  onUploadSuccess={() => { loadEvents(); loadTransactionDefinitions(); }} 
+                  events={events}
+                  transactions={transactionDefinitions}
+                  addConsoleLog={addConsoleLog}
+                  selectedEvent={selectedEvent}
+                  onViewEvent={(eventName) => { setSelectedEvent(eventName); setShowEventDataViewer(true); }}
+                  onGenerateSample={(message) => {
+                    if (chatAssistantRef.current && chatAssistantRef.current.sendAgentMessage) {
+                      setChatCollapsed(false);
+                      chatAssistantRef.current.sendAgentMessage(message);
+                    }
+                  }}
+                />
             </TabPanel>
 
             <TabPanel value={tabValue} index={1}>
               {/* Editor Mode Switcher */}
               <Box sx={{ px: 2, py: 1, bgcolor: 'white', borderBottom: '1px solid #E9ECEF', display: 'flex', alignItems: 'center', gap: 2 }}>
-                <Typography variant="caption" fontWeight={600} color="text.secondary" sx={{ whiteSpace: 'nowrap' }}>BUILD WITH:</Typography>
                 <ToggleButtonGroup
                   value={editorMode}
                   exclusive
@@ -907,13 +964,16 @@ const Dashboard = () => {
                     <Typography variant="body2" color="text.secondary" sx={{ flex: 1 }}>
                       This editor shows the combined output of all rules (sorted by priority). To edit, use the <strong>Rule Builder</strong> or create a <strong>Custom Code</strong> rule.
                     </Typography>
-                    <Button size="small" variant="outlined" onClick={() => { loadCombinedCode(); }}
+                    <Button size="small" variant="outlined" onClick={() => { loadCombinedCode({ silent: false }); }}
+                      disabled={codeRefreshing}
+                      startIcon={codeRefreshing ? <CircularProgress size={12} color="inherit" /> : undefined}
                       sx={{ textTransform: 'none', fontSize: '0.75rem', borderColor: '#5B5FED', color: '#5B5FED' }}>
-                      Refresh
+                      {codeRefreshing ? 'Refreshing…' : 'Refresh'}
                     </Button>
                   </Box>
                   <div className="flex-1 bg-[#0A0A0A] min-w-0" data-testid="dsl-editor">
                     <Editor
+                      key={codeRefreshKey}
                       height="100%"
                       defaultLanguage="python"
                       value={dslCode}
@@ -1045,9 +1105,9 @@ const Dashboard = () => {
                       }}
                     />
                   </div>
-                  <ConsoleOutput
-                    output={consoleOutput}
-                    onClear={() => setConsoleOutput([])}
+                  <ConsoleOutput 
+                    output={consoleOutput} 
+                    onClear={() => setConsoleOutput([])} 
                     dslCode={dslCode}
                     addConsoleLog={addConsoleLog}
                     onCodeChange={setDslCode}
@@ -1121,7 +1181,7 @@ const Dashboard = () => {
                       // Only delete rules and schedules — event definitions and event data are preserved
                       await Promise.all([
                         axios.delete(`${API}/saved-rules`),
-                        axios.delete(`${API}/saved-schedules`).catch(() => { }),
+                        axios.delete(`${API}/saved-schedules`).catch(() => {}),
                       ]);
 
                       setDslCode('');
@@ -1168,10 +1228,10 @@ const Dashboard = () => {
           </Box>
 
           {/* Right Sidebar - Chat Assistant */}
-          <div className="flex-shrink-0 chat-panel-enter">
-            <ChatAssistant
+          <div className="flex-shrink-0 chat-panel-enter" style={{ position: 'relative', zIndex: 1200 }}>
+            <ChatAssistant 
               ref={chatAssistantRef}
-              dslFunctions={dslFunctions}
+              dslFunctions={dslFunctions} 
               events={events}
               collapsed={chatCollapsed}
               onToggleCollapsed={() => setChatCollapsed(c => !c)}
@@ -1184,14 +1244,14 @@ const Dashboard = () => {
               providerRefreshKey={providerRefreshKey}
               onAgentDataChange={(toolName, ev) => {
                 // Agent just mutated server state — refresh affected panels.
-                try { loadEvents(); } catch (_) { }
-                try { loadTemplates(); } catch (_) { }
-                try { loadDslFunctions(); } catch (_) { }
-                try { loadTransactionDefinitions(); } catch (_) { }
+                try { loadEvents(); } catch (_) {}
+                try { loadTemplates(); } catch (_) {}
+                try { loadDslFunctions(); } catch (_) {}
+                try { loadTransactionDefinitions(); } catch (_) {}
                 // Rules / schedules list and the combined-code preview.
-                try { setSavedRulesRefreshKey(k => k + 1); } catch (_) { }
-                try { loadCombinedCode(); } catch (_) { }
-                try { window.dispatchEvent(new CustomEvent('dsl-templates-changed', { detail: { source: 'agent', tool: toolName } })); } catch (_) { }
+                try { setSavedRulesRefreshKey(k => k + 1); } catch (_) {}
+                try { loadCombinedCode(); } catch (_) {}
+                try { window.dispatchEvent(new CustomEvent('dsl-templates-changed', { detail: { source: 'agent', tool: toolName } })); } catch (_) {}
                 // Targeted refresh for an open Rule Builder when the agent
                 // mutated a specific rule (add_transaction_to_rule, update_step,
                 // add_step_to_rule, delete_step, update_saved_rule, ...).
@@ -1202,7 +1262,7 @@ const Dashboard = () => {
                       detail: { rule_id: ruleId, tool: toolName, source: 'agent' },
                     }));
                   }
-                } catch (_) { }
+                } catch (_) {}
                 addConsoleLog(`Agent updated: ${toolName}`, "info");
               }}
               uiContext={{
@@ -1221,7 +1281,7 @@ const Dashboard = () => {
 
       {/* Modals */}
       {showFunctionBrowser && (
-        <FunctionBrowser
+        <FunctionBrowser 
           dslFunctions={dslFunctions}
           onClose={() => setShowFunctionBrowser(false)}
           onAskAI={handleAskAIAboutFunction}
@@ -1230,7 +1290,7 @@ const Dashboard = () => {
 
 
       {showEventDataViewer && (
-        <EventDataViewer
+        <EventDataViewer 
           onClose={() => setShowEventDataViewer(false)}
         />
       )}

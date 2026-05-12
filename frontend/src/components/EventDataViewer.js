@@ -2,9 +2,10 @@ import React, { useState, useEffect, useCallback, useMemo } from "react";
 import axios from "axios";
 import * as XLSX from "xlsx";
 import { useToast } from "./ToastProvider";
-import { X, Database, Download, ArrowUp, ArrowDown, ArrowUpDown } from "lucide-react";
-import { Button, IconButton, Chip, Box, Typography, Table, TableHead, TableBody, TableRow, TableCell, Card, Tabs, Tab, Alert, TextField, CircularProgress, Tooltip } from '@mui/material';
+import { Database, Download, ArrowUp, ArrowDown, ArrowUpDown } from "lucide-react";
+import { Button, IconButton, Chip, Box, Typography, Table, TableHead, TableBody, TableRow, TableCell, Card, Tabs, Tab, Alert, TextField, CircularProgress, Tooltip, Dialog, DialogTitle, DialogContent, Slide } from '@mui/material';
 import { API } from '../config';
+import ModalHeader from './ModalHeader';
 
 const EventDataViewer = ({ onClose }) => {
   const [eventDataSummary, setEventDataSummary] = useState([]);
@@ -339,59 +340,49 @@ const EventDataViewer = ({ onClose }) => {
   };
 
   return (
-    <Box 
-      sx={{ 
-        position: 'fixed', 
-        inset: 0, 
-        bgcolor: 'rgba(0,0,0,0.5)', 
-        display: 'flex', 
-        alignItems: 'center', 
-        justifyContent: 'center', 
-        zIndex: 1300 
-      }} 
-      data-testid="event-data-viewer"
-    >
-      <Card 
-        sx={{ 
-          width: '95vw', 
-          maxWidth: 1200, 
-          height: '85vh', 
-          display: 'flex', 
+    <Dialog
+      open={true}
+      onClose={onClose}
+      maxWidth={false}
+      TransitionComponent={Slide}
+      TransitionProps={{ direction: 'up' }}
+      PaperProps={{
+        'data-testid': 'event-data-viewer',
+        sx: {
+          width: '95vw',
+          maxWidth: 1200,
+          height: '85vh',
+          borderRadius: 4,
+          boxShadow: '0 32px 64px rgba(0,0,0,0.14)',
+          overflow: 'hidden',
+          border: '1px solid',
+          borderColor: 'divider',
+          display: 'flex',
           flexDirection: 'column',
-          borderRadius: 2
-        }}
-      >
-        {/* Header */}
-        <Box sx={{ px: 3, py: 2.5, borderBottom: '1px solid #E9ECEF', display: 'flex', alignItems: 'center', justifyContent: 'space-between', bgcolor: '#F8F9FA' }}>
-          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
-            <Database size={24} color="#5B5FED" />
-            <Box>
-              <Typography variant="h4">Event Data Viewer</Typography>
-              <Typography variant="body2" color="text.secondary">
-                View uploaded event data by event type
-              </Typography>
-            </Box>
-          </Box>
-          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-            <Button
-              variant="outlined"
-              size="small"
-              onClick={exportAllEventsToExcel}
-              startIcon={<Download size={16} />}
-              disabled={exporting || eventDataSummary.length === 0}
-              data-testid="export-events-excel"
-            >
-              {exporting ? 'Exporting…' : 'Export Excel'}
-            </Button>
-            <IconButton onClick={onClose} data-testid="close-data-viewer">
-              <X size={20} />
-            </IconButton>
-          </Box>
-        </Box>
+        }
+      }}
+    >
+      <DialogTitle sx={{ p: 0 }}>
+        <ModalHeader badge="EVENT DATA" title="Event Data Viewer" onClose={onClose} badgeColor="#5B5FED" />
+      </DialogTitle>
+      {/* Toolbar: Export Excel */}
+      <Box sx={{ px: 3, py: 1, borderBottom: '1px solid', borderColor: 'divider', display: 'flex', alignItems: 'center', justifyContent: 'flex-end' }}>
+        <Button
+          variant="outlined"
+          size="small"
+          onClick={exportAllEventsToExcel}
+          startIcon={<Download size={16} />}
+          disabled={exporting || eventDataSummary.length === 0}
+          data-testid="export-events-excel"
+        >
+          {exporting ? 'Exporting…' : 'Export Excel'}
+        </Button>
+      </Box>
 
+      <DialogContent sx={{ p: '0 !important', display: 'flex', flexDirection: 'column', flex: 1, overflow: 'hidden' }}>
         {/* Instrument scope warning banner (from JSON import) */}
         {instrumentWarning && instrumentWarning.length > 0 && (
-          <Box sx={{ px: 2, pt: 1.5, pb: 0.5 }}>
+          <Box sx={{ px: 2, pt: 1.5, pb: 0.5, flexShrink: 0 }}>
             <Alert
               severity="warning"
               onClose={() => setInstrumentWarning(null)}
@@ -403,7 +394,6 @@ const EventDataViewer = ({ onClose }) => {
             </Alert>
           </Box>
         )}
-
         <Box sx={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
           {/* Left Panel - Event List */}
           <Box sx={{ width: 280, borderRight: '1px solid #E9ECEF', display: 'flex', flexDirection: 'column' }}>
@@ -624,8 +614,8 @@ const EventDataViewer = ({ onClose }) => {
             )}
           </Box>
         </Box>
-      </Card>
-    </Box>
+      </DialogContent>
+    </Dialog>
   );
 };
 

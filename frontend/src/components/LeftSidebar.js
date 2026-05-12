@@ -1,9 +1,8 @@
 import React from "react";
-import { Box, Button, Card, Collapse, List, ListItemButton, ListItemIcon, ListItemText, Tooltip, IconButton, CircularProgress } from '@mui/material';
-import { FileText, RefreshCw, ChevronDown, ChevronRight, ChevronLeft, Upload, Eye, PanelLeftClose, PanelLeftOpen } from "lucide-react";
+import { Box, Button, Card, Collapse, List, ListItemButton, ListItemIcon, ListItemText, Tooltip, IconButton } from '@mui/material';
+import { FileText, RefreshCw, ChevronDown, ChevronRight, ChevronLeft, Upload, Eye } from "lucide-react";
 import { useToast } from "./ToastProvider";
-import axios from "axios";
-import { API } from "../config";
+import ImportEventsModal from "./ImportEventsModal";
 
 const formatDataType = (dt) => {
   const map = { string: 'text', decimal: 'number', integer: 'whole number', int: 'whole number', boolean: 'yes/no', bool: 'yes/no', date: 'date' };
@@ -14,71 +13,8 @@ const formatEventType = (t) => t;
 
 const LeftSidebar = ({ events, selectedEvent, onEventSelect, onDownloadEvents, onImportSuccess, onViewEventData, collapsed = false, onToggleCollapsed }) => {
   const [expandedEvent, setExpandedEvent] = React.useState(null);
-  const [isPulling, setIsPulling] = React.useState(false);
+  const [importModalOpen, setImportModalOpen] = React.useState(false);
   const toast = useToast();
-
-  const handlePull = async () => {
-    setIsPulling(true);
-    let txCount = 0;
-    let evCount = 0;
-
-    // ── Step 1: Pull Transaction Definitions ──────────────────────────────
-    try {
-      const txRes = await axios.get('/api/dataloader/transaction/get/all');
-      const txData = txRes.data;
-      console.log('[Import] Transactions fetched from dataloader:', txData?.length, 'items');
-
-      if (Array.isArray(txData) && txData.length > 0) {
-        const txBlob = new Blob([JSON.stringify(txData)], { type: 'application/json' });
-        const txFile = new File([txBlob], 'transactions.json', { type: 'application/json' });
-        const txFd = new FormData();
-        txFd.append('file', txFile);
-        const txUploadRes = await axios.post(`${API}/import/transactions`, txFd);
-        txCount = txUploadRes.data?.count || 0;
-        console.log('[Import] Transactions imported into DSL:', txCount);
-      } else {
-        console.warn('[Import] No transactions returned from dataloader');
-      }
-    } catch (err) {
-      console.error('[Import] Transaction pull failed:', err?.response?.data || err.message);
-      toast.error('Failed to pull transactions: ' + (err?.response?.data?.detail || err?.message || 'Unknown error'));
-    }
-
-    // ── Step 2: Pull Event Configurations ─────────────────────────────────
-    try {
-      const evRes = await axios.get('/api/dataloader/fyntrac/event-configurations/all');
-      const evData = evRes.data;
-      console.log('[Import] Event configs fetched from dataloader:', evData?.length, 'items');
-
-      if (Array.isArray(evData) && evData.length > 0) {
-        const evBlob = new Blob([JSON.stringify(evData)], { type: 'application/json' });
-        const evFile = new File([evBlob], 'event-configurations.json', { type: 'application/json' });
-        const evFd = new FormData();
-        evFd.append('file', evFile);
-        const evUploadRes = await axios.post(`${API}/import/event-configurations`, evFd);
-        evCount = evUploadRes.data?.count || 0;
-        console.log('[Import] Event configs imported into DSL:', evCount);
-      } else {
-        console.warn('[Import] No event configurations returned from dataloader');
-      }
-    } catch (err) {
-      console.error('[Import] Event config pull failed:', err?.response?.data || err.message);
-      toast.error('Failed to pull event configs: ' + (err?.response?.data?.detail || err?.message || 'Unknown error'));
-    }
-
-    // ── Summary ───────────────────────────────────────────────────────────
-    if (txCount > 0 || evCount > 0) {
-      toast.success('Data loaded successfully');
-      localStorage.setItem('uploadedEventFileName', 'EventConfigurations.json');
-      window.dispatchEvent(new CustomEvent('dsl-event-def-loaded', { detail: { filename: 'EventConfigurations.json' } }));
-      window.dispatchEvent(new CustomEvent('dsl-transaction-defs-changed'));
-      if (onImportSuccess) onImportSuccess();
-    } else {
-      toast.info('Data is not available');
-    }
-
-    setIsPulling(false);
-  };
 
   const toggleExpand = (eventName) => {
     setExpandedEvent(prev => (prev === eventName ? null : eventName));
@@ -97,18 +33,36 @@ const LeftSidebar = ({ events, selectedEvent, onEventSelect, onDownloadEvents, o
           height: '100vh',
           py: 1,
           transition: 'width 200ms ease',
+          position: 'relative',
         }}
         data-testid="left-sidebar-collapsed"
       >
-        <Tooltip title="Expand events panel" placement="right">
-          <IconButton size="small" onClick={onToggleCollapsed} aria-label="Expand sidebar">
-            <PanelLeftOpen size={18} />
-          </IconButton>
-        </Tooltip>
         <Tooltip title={`${events?.length || 0} events`} placement="right">
           <Box sx={{ mt: 1, color: '#6C757D' }}>
             <FileText size={18} />
           </Box>
+        </Tooltip>
+        <Tooltip title="Expand events panel" placement="right">
+          <IconButton
+            size="small"
+            onClick={onToggleCollapsed}
+            aria-label="Expand sidebar"
+            className="panel-toggle-btn"
+            sx={{
+              position: 'absolute',
+              top: 66,
+              right: -14,
+              width: 28,
+              height: 28,
+              bgcolor: '#FFFFFF',
+              border: '1px solid #E9ECEF',
+              boxShadow: '0 1px 4px rgba(0,0,0,0.12)',
+              zIndex: 1300,
+              '&:hover': { bgcolor: '#F1F3F5' },
+            }}
+          >
+            <ChevronRight size={15} />
+          </IconButton>
         </Tooltip>
       </Box>
     );
@@ -134,26 +88,31 @@ const LeftSidebar = ({ events, selectedEvent, onEventSelect, onDownloadEvents, o
             size="small"
             onClick={onToggleCollapsed}
             aria-label="Collapse sidebar"
+            className="panel-toggle-btn"
             sx={{
               position: 'absolute',
-              top: 8,
-              right: 4,
-              zIndex: 2,
-              bgcolor: 'rgba(255,255,255,0.85)',
+              top: 66,
+              right: -14,
+              width: 28,
+              height: 28,
+              bgcolor: '#FFFFFF',
+              border: '1px solid #E9ECEF',
+              boxShadow: '0 1px 4px rgba(0,0,0,0.12)',
+              zIndex: 1300,
               '&:hover': { bgcolor: '#F1F3F5' },
             }}
           >
-            <PanelLeftClose size={16} />
+            <ChevronLeft size={15} />
           </IconButton>
         </Tooltip>
       )}
-      <Box sx={{ p: 3, borderBottom: '1px solid #E9ECEF', display: 'flex', justifyContent: 'center' }}>
+      <Box sx={{ px: 3, height: 80, borderBottom: '1px solid #E9ECEF', display: 'flex', justifyContent: 'center', alignItems: 'center' }}>
         <img
-          src={process.env.PUBLIC_URL + '/logo.png'}
+          src={process.env.PUBLIC_URL + '/FyntracLogic.png'}
           alt="Fyntrac"
           style={{ height: 72, objectFit: 'contain' }}
           data-testid="sidebar-logo"
-          onError={(e) => { e.currentTarget.onerror = null; e.currentTarget.src = 'https://customer-assets.emergentagent.com/job_code-finance-2/artifacts/hdj19r3w_Fyntrac%20%28600%20x%20400%20px%29%20%284%29.png'; }}
+          onError={(e) => { e.currentTarget.onerror = null; e.currentTarget.src = process.env.PUBLIC_URL + '/logo.png'; }}
         />
       </Box>
 
@@ -169,10 +128,9 @@ const LeftSidebar = ({ events, selectedEvent, onEventSelect, onDownloadEvents, o
             <Button
               variant="contained"
               size="small"
-              onClick={handlePull}
-              disabled={isPulling}
+              onClick={() => setImportModalOpen(true)}
               fullWidth
-              startIcon={isPulling ? <CircularProgress size={14} color="inherit" /> : <Upload size={14} color="#FFFFFF" />}
+              startIcon={<Upload size={14} color="#FFFFFF" />}
               data-testid="import-events-button"
               sx={{
                 fontSize: '0.8125rem',
@@ -320,6 +278,23 @@ const LeftSidebar = ({ events, selectedEvent, onEventSelect, onDownloadEvents, o
           )}
         </Box>
       </Box>
+      <ImportEventsModal
+        open={importModalOpen}
+        onClose={() => setImportModalOpen(false)}
+        onSuccess={({ slot, data }) => {
+          try {
+            if (slot === 'transactions') {
+              toast.success(`${data.count} transaction name(s) loaded.`);
+            } else if (slot === 'event_configurations') {
+              const names = (data.names || []).join(', ');
+              toast.success(`${data.count} event definition(s) loaded${names ? `: ${names}` : ''}.`);
+              localStorage.setItem('uploadedEventFileName', 'EventConfigurations.json');
+              window.dispatchEvent(new CustomEvent('dsl-event-def-loaded', { detail: { filename: 'EventConfigurations.json' } }));
+            }
+          } catch (e) {}
+          if (onImportSuccess) onImportSuccess();
+        }}
+      />
     </Box>
   );
 };
