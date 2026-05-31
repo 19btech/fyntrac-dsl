@@ -2823,6 +2823,17 @@ def _generate_rule_code(rule: dict) -> str:
                     if oname:
                         defined.append(oname)
             lines.append("")
+        elif st == "custom_code":
+            custom = (s.get("customCode") or "").strip()
+            if custom:
+                if s.get("disabled"):
+                    lines.append("# [DISABLED] ## Custom Code")
+                    for ln in custom.split("\n"):
+                        lines.append(f"# [DISABLED] {ln}")
+                else:
+                    lines.append("## Custom Code")
+                    lines.append(custom)
+                lines.append("")
 
     outputs = rule.get("outputs") or {}
     all_txns = [t for t in (outputs.get("transactions") or []) if t and t.get("type")]

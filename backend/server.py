@@ -4844,18 +4844,28 @@ async def get_combined_code():
         rules = await db.saved_rules.find({}, {"_id": 0}).to_list(500)
         schedules = await db.saved_schedules.find({}, {"_id": 0}).to_list(500)
 
+        from backend.agent.tools import _generate_rule_code as _gen_code
+
         items = []
         for r in rules:
             p = r.get("priority")
+            try:
+                code = _gen_code(r)
+            except Exception:
+                code = r.get("generatedCode", "")
             items.append({
                 "priority": p if p is not None else float('inf'),
-                "code": r.get("generatedCode", ""),
+                "code": code,
                 "name": r.get("name", ""),
                 "disabled": bool(r.get("disabled", False)),
             })
         for s in schedules:
             p = s.get("priority")
-            items.append({"priority": p if p is not None else float('inf'), "code": s.get("generatedCode", ""), "name": s.get("name", ""), "disabled": False})
+            try:
+                code = _gen_code(s)
+            except Exception:
+                code = s.get("generatedCode", "")
+            items.append({"priority": p if p is not None else float('inf'), "code": code, "name": s.get("name", ""), "disabled": False})
 
         items.sort(key=lambda x: (x["priority"], x["name"]))
 
