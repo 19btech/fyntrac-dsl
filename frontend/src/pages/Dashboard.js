@@ -971,7 +971,8 @@ const Dashboard = () => {
                       {codeRefreshing ? 'Refreshing…' : 'Refresh'}
                     </Button>
                   </Box>
-                  <div className="flex-1 bg-[#0A0A0A] min-w-0" data-testid="dsl-editor">
+                  <Box sx={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0, overflow: 'hidden' }}>
+                    <div className="flex-1 bg-[#0A0A0A] min-w-0 min-h-0 overflow-hidden" data-testid="dsl-editor">
                     <Editor
                       key={codeRefreshKey}
                       height="100%"
@@ -1115,6 +1116,7 @@ const Dashboard = () => {
                     handleSaveTemplate={handleSaveTemplate}
                     onExecutionResult={setLastExecutionResult}
                   />
+                  </Box>
                 </>
               )}
 

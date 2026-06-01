@@ -2,7 +2,7 @@ import React, { useState } from "react";
 import axios from "axios";
 import { Button, Box } from '@mui/material';
 import AppDialog, { useAppDialog } from './AppDialog';
-import { Trash2, Terminal, Play, Table2, Code, Wand2, Download, Save, X } from "lucide-react";
+import { Trash2, Terminal, Play, Table2, Code, Wand2, Download, Save, X, ChevronDown, ChevronUp } from "lucide-react";
 import { useToast } from "./ToastProvider";
 import { API } from '../config';
 import { formatErrorForConsole } from '../agent/testing/translateError';
@@ -249,6 +249,7 @@ const ConsoleOutput = ({ output, onClear, dslCode, addConsoleLog, onCodeChange, 
   const [running, setRunning] = useState(false);
   const [postingDateModalOpen, setPostingDateModalOpen] = useState(false);
   const [availablePostingDates, setAvailablePostingDates] = useState([]);
+  const [isMinimized, setIsMinimized] = useState(false);
   const toast = useToast();
 
   // Import all event fields as variables into the editor
@@ -506,11 +507,23 @@ const ConsoleOutput = ({ output, onClear, dslCode, addConsoleLog, onCodeChange, 
   };
 
   return (
-    <div className="h-80 w-full max-w-full bg-[#0D1117] border-t border-[#30363D] min-w-0 overflow-hidden" data-testid="console-output">
+    <div className={`w-full max-w-full bg-[#0D1117] border-t border-[#30363D] min-w-0 overflow-hidden transition-all duration-200 ${isMinimized ? 'h-auto' : 'h-80'}`} data-testid="console-output">
       <div className="flex items-center justify-between px-4 py-1 bg-[#161B22] border-b border-[#30363D]">
         <div className="flex items-center gap-2">
           <Terminal className="w-3 h-3 text-[#8B949E]" />
           <span className="text-sm font-semibold text-[#E6EDF3]" style={{ fontFamily: 'Inter' }}>Console</span>
+          <button
+            onClick={() => setIsMinimized(!isMinimized)}
+            className="ml-2 p-0.5 hover:bg-[#21262D] rounded transition-colors"
+            title={isMinimized ? "Expand console" : "Minimize console"}
+            aria-label={isMinimized ? "Expand console" : "Minimize console"}
+          >
+            {isMinimized ? (
+              <ChevronUp size={14} className="text-[#8B949E]" />
+            ) : (
+              <ChevronDown size={14} className="text-[#8B949E]" />
+            )}
+          </button>
         </div>
         
         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
@@ -593,29 +606,31 @@ const ConsoleOutput = ({ output, onClear, dslCode, addConsoleLog, onCodeChange, 
         </Box>
       </div>
       
-      <Box sx={{ height: 'calc(100% - 52px)', p: 2, maxWidth: '100%', width: '100%', overflow: 'auto' }}>
-        <div className="space-y-1 font-mono text-xs">
-          {output.length === 0 ? (
-            <div className="text-[#484F58]">Console output will appear here... Click "Run" to execute DSL code</div>
-          ) : (
-            output.map((log, idx) => (
-              <div key={idx} data-testid={`console-log-${idx}`}>
-                {log.type !== "print" && (
-                  <div className="flex gap-2">
-                    <span className="text-[#484F58]">[{log.timestamp}]</span>
-                    {renderLogMessage(log)}
-                  </div>
-                )}
-                {log.type === "print" && (
-                  <div>
-                    {renderLogMessage(log)}
-                  </div>
-                )}
-              </div>
-            ))
-          )}
-        </div>
-      </Box>
+      {!isMinimized && (
+        <Box sx={{ height: 'calc(100% - 52px)', p: 2, maxWidth: '100%', width: '100%', overflow: 'auto' }}>
+          <div className="space-y-1 font-mono text-xs">
+            {output.length === 0 ? (
+              <div className="text-[#484F58]">Console output will appear here... Click "Run" to execute DSL code</div>
+            ) : (
+              output.map((log, idx) => (
+                <div key={idx} data-testid={`console-log-${idx}`}>
+                  {log.type !== "print" && (
+                    <div className="flex gap-2">
+                      <span className="text-[#484F58]">[{log.timestamp}]</span>
+                      {renderLogMessage(log)}
+                    </div>
+                  )}
+                  {log.type === "print" && (
+                    <div>
+                      {renderLogMessage(log)}
+                    </div>
+                  )}
+                </div>
+              ))
+            )}
+          </div>
+        </Box>
+      )}
       <AppDialog {...confirmProps} />
     </div>
   );

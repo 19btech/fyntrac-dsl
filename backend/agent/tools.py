@@ -2722,6 +2722,17 @@ def _generate_rule_code(rule: dict) -> str:
                     defined.append(s["name"])
             if s.get("printResult") and s.get("name") and not s.get("disabled"):
                 lines.append(f'print("{s["name"]} =", {s["name"]})')
+        elif st == "custom_code":
+            custom = (s.get("customCode") or "").strip()
+            if custom:
+                if s.get("disabled"):
+                    lines.append("# [DISABLED] ## Custom Code")
+                    for ln in custom.split("\n"):
+                        lines.append(f"# [DISABLED] {ln}")
+                else:
+                    lines.append("## Custom Code")
+                    lines.append(custom)
+                lines.append("")
         elif st == "condition":
             if not s.get("disabled"):
                 lines.append("## Conditional Logic")

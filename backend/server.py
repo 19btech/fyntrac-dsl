@@ -4251,6 +4251,9 @@ async def save_rule(request: dict):
 
     rule_id = request.get("id")
     now = datetime.now(timezone.utc).isoformat()
+    existing_doc = None
+    if rule_id:
+        existing_doc = await db.saved_rules.find_one({"id": rule_id}, {"_id": 0})
 
     # Check uniqueness: no other rule with same name (case-insensitive)
     existing = await db.saved_rules.find_one(
@@ -4304,7 +4307,7 @@ async def save_rule(request: dict):
         "customCode": request.get("customCode", ""),
         "generatedCode": request.get("generatedCode", ""),
         "steps": request.get("steps", []),
-        "disabled": bool(request.get("disabled", False)),
+        "disabled": bool(request.get("disabled", (existing_doc or {}).get("disabled", False))),
         "updated_at": now,
     }
 
@@ -4327,10 +4330,6 @@ async def save_rule(request: dict):
         logger.warning(f"generatedCode regeneration skipped: {_gen_err}")
 
     if rule_id:
-        existing_doc = None
-        if rule_id:
-            existing_doc = await db.saved_rules.find_one({"id": rule_id}, {"_id": 0})
-        doc["disabled"] = bool(request.get("disabled", (existing_doc or {}).get("disabled", False)))
         doc["id"] = rule_id
         await db.saved_rules.replace_one({"id": rule_id}, doc, upsert=True)
     else:
@@ -4938,18 +4937,28 @@ async def get_combined_code():
         rules = await db.saved_rules.find({}, {"_id": 0}).to_list(500)
         schedules = await db.saved_schedules.find({}, {"_id": 0}).to_list(500)
 
+        from backend.agent.tools import _generate_rule_code as _gen_code
+
         items = []
         for r in rules:
             p = r.get("priority")
+            try:
+                code = _gen_code(r)
+            except Exception:
+                code = r.get("generatedCode", "")
             items.append({
                 "priority": p if p is not None else float('inf'),
-                "code": r.get("generatedCode", ""),
+                "code": code,
                 "name": r.get("name", ""),
                 "disabled": bool(r.get("disabled", False)),
             })
         for s in schedules:
             p = s.get("priority")
-            items.append({"priority": p if p is not None else float('inf'), "code": s.get("generatedCode", ""), "name": s.get("name", ""), "disabled": False})
+            try:
+                code = _gen_code(s)
+            except Exception:
+                code = s.get("generatedCode", "")
+            items.append({"priority": p if p is not None else float('inf'), "code": code, "name": s.get("name", ""), "disabled": False})
 
         items.sort(key=lambda x: (x["priority"], x["name"]))
 

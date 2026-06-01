@@ -858,6 +858,7 @@ const AccountingRuleBuilder = ({ events, dslFunctions, transactionDefinitions, o
   const [saving, setSaving] = useState(false);
   const [saveResult, setSaveResult] = useState(null);
   const [validationMsg, setValidationMsg] = useState('');
+  const [confirmAction, setConfirmAction] = useState(null); // null | 'new' | 'refresh'
 
   const persistDisableToggle = useCallback(async (nextSteps, nextOutputs) => {
     if (!ruleId) return;
@@ -1020,6 +1021,15 @@ const AccountingRuleBuilder = ({ events, dslFunctions, transactionDefinitions, o
                   allVars.push({ name: ov.name, source: 'formula', formula, value: '', eventField: '', collectType: 'collect_by_instrument', _isScheduleOutput: true });
                 }
               });
+            } else if (step.stepType === 'custom_code' && step.customCode) {
+              const ccRegex = /^\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*=/gm;
+              let m;
+              while ((m = ccRegex.exec(step.customCode)) !== null) {
+                if (!names.has(m[1])) {
+                  names.add(m[1]);
+                  allVars.push({ name: m[1], source: 'formula', formula: m[1], value: '', eventField: '', collectType: 'collect_by_instrument' });
+                }
+              }
             }
           });
           // Legacy iteration result vars (old-format rules without unified steps)
@@ -1070,6 +1080,7 @@ const AccountingRuleBuilder = ({ events, dslFunctions, transactionDefinitions, o
   // ── Derived: all variable names defined so far (steps + saved rules) ──
   const allDefinedVarNames = useMemo(() => {
     const names = new Set(savedRulesVarNames);
+    const assignRegex = /^\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*=/gm;
     for (const s of steps) {
       if (s.name) names.add(s.name);
       if (s.stepType === 'iteration') {
@@ -1077,6 +1088,13 @@ const AccountingRuleBuilder = ({ events, dslFunctions, transactionDefinitions, o
       }
       if (s.stepType === 'schedule') {
         (s.outputVars || []).forEach(ov => { if (ov.name) names.add(ov.name); });
+      }
+      if (s.stepType === 'custom_code' && s.customCode) {
+        let m;
+        assignRegex.lastIndex = 0;
+        while ((m = assignRegex.exec(s.customCode)) !== null) {
+          names.add(m[1]);
+        }
       }
     }
     return [...names];
@@ -1296,7 +1314,7 @@ const AccountingRuleBuilder = ({ events, dslFunctions, transactionDefinitions, o
     const definedVars = [];
     for (let i = 0; i <= targetIndex; i++) {
       const s = steps[i];
-      if (!s.name) continue;
+      if (!s.name && s.stepType !== 'custom_code') continue;
       if (s.stepType === 'calc') {
         const line = buildCalcLine(s);
         if (line) { lines.push(line); definedVars.push(s.name); }
@@ -1358,7 +1376,7 @@ const AccountingRuleBuilder = ({ events, dslFunctions, transactionDefinitions, o
     // Emit ALL existing steps (since this step depends on them)
     const definedVars = [];
     for (const s of steps) {
-      if (!s.name) continue;
+      if (!s.name && s.stepType !== 'custom_code') continue;
       // If editing, skip the original version of the step being edited
       if (editingStepIndex !== null && s === steps[editingStepIndex]) continue;
       if (s.stepType === 'calc') {
@@ -1676,11 +1694,56 @@ const AccountingRuleBuilder = ({ events, dslFunctions, transactionDefinitions, o
     setSaveResult(null);
   }, []);
 
+  const reloadFromSaved = useCallback(async () => {
+    if (ruleId) {
+      try {
+        const res = await fetch(`${API}/saved-rules/${ruleId}`);
+        if (!res.ok) throw new Error('fetch failed');
+        const fresh = await res.json();
+        if (!fresh?.id) throw new Error('bad response');
+        setRuleName(fresh.name || '');
+        setRulePriority(fresh.priority ?? '');
+        setInlineComment(!!fresh.inlineComment);
+        setCommentText(fresh.commentText || '');
+        setRuleDisabled(fresh.disabled || false);
+        const src = fresh.outputs || {};
+        setOutputs({
+          printResult: src.printResult !== undefined ? src.printResult : true,
+          createTransaction: src.createTransaction ?? ((src.transactions || []).length > 0),
+          transactions: Array.isArray(src.transactions) ? src.transactions : [],
+        });
+        setSteps(convertInitialDataToSteps(fresh));
+        setSaveResult(null);
+        toast.success('Rule reverted to saved state');
+      } catch (_) {
+        toast.error('Failed to reload rule');
+      }
+    } else if (initialData) {
+      setRuleName(initialData.name || '');
+      setRulePriority(initialData.priority ?? '');
+      setRuleId(initialData.id || null);
+      const src = initialData.outputs || {};
+      setOutputs({
+        printResult: src.printResult !== undefined ? src.printResult : true,
+        createTransaction: src.createTransaction ?? ((src.transactions || []).length > 0),
+        transactions: Array.isArray(src.transactions) ? src.transactions : [],
+      });
+      setInlineComment(initialData.inlineComment || false);
+      setCommentText(initialData.commentText || '');
+      setRuleDisabled(initialData.disabled || false);
+      setSteps(convertInitialDataToSteps(initialData));
+      setSaveResult(null);
+      toast.success('Rule reverted to saved state');
+    } else {
+      resetForm();
+    }
+  }, [ruleId, initialData, resetForm, toast]);
+
   // ── Save ──
   const handleSave = useCallback(async () => {
     if (!ruleName.trim()) { setValidationMsg('Rule Name is required.'); return; }
     if (rulePriority === '' || rulePriority === null || rulePriority === undefined) { setValidationMsg('Priority is required.'); return; }
-    const emptySteps = steps.filter(s => !s.name);
+    const emptySteps = steps.filter(s => !s.name && s.stepType !== 'custom_code');
     if (emptySteps.length > 0) { setValidationMsg('All steps must have a variable name.'); return; }
 
     setSaving(true);
@@ -1815,7 +1878,7 @@ const AccountingRuleBuilder = ({ events, dslFunctions, transactionDefinitions, o
       if (priorCode) lines.push(priorCode);
       const definedVars = [];
       for (const s of steps) {
-        if (!s.name) continue;
+        if (!s.name && s.stepType !== 'custom_code') continue;
         if (s.stepType === 'calc') {
           const line = buildCalcLine(s);
           if (line) { lines.push(line); definedVars.push(s.name); }
@@ -1985,7 +2048,7 @@ const AccountingRuleBuilder = ({ events, dslFunctions, transactionDefinitions, o
     if (priorCode) lines.push(priorCode);
     const definedVars = [];
     for (const s of steps) {
-      if (!s.name) continue;
+      if (!s.name && s.stepType !== 'custom_code') continue;
       if (s.stepType === 'calc') {
         const line = buildCalcLine(s);
         if (line) { lines.push(line); definedVars.push(s.name); }
@@ -2085,12 +2148,18 @@ const AccountingRuleBuilder = ({ events, dslFunctions, transactionDefinitions, o
           <Typography variant="h5">Rule Builder</Typography>
           <Box sx={{ flex: 1 }} />
           <Tooltip title="Refresh Rule">
-            <IconButton size="small" onClick={resetForm} sx={{ color: '#5B5FED' }}>
+            <IconButton size="small" onClick={() => {
+              const dirty = ruleName.trim() !== '' || steps.length > 0 || outputs.transactions.length > 0;
+              if (dirty) setConfirmAction('refresh'); else reloadFromSaved();
+            }} sx={{ color: '#5B5FED' }}>
               <RotateCcw size={18} />
             </IconButton>
           </Tooltip>
           <Tooltip title="New Rule">
-            <IconButton size="small" onClick={resetForm} sx={{ color: '#5B5FED' }}>
+            <IconButton size="small" onClick={() => {
+              const dirty = ruleName.trim() !== '' || steps.length > 0 || outputs.transactions.length > 0;
+              if (dirty) setConfirmAction('new'); else resetForm();
+            }} sx={{ color: '#5B5FED' }}>
               <Plus size={18} />
             </IconButton>
           </Tooltip>
@@ -2355,6 +2424,39 @@ const AccountingRuleBuilder = ({ events, dslFunctions, transactionDefinitions, o
           </Alert>
         )}
       </Box>
+
+      {/* Discard / Revert Confirmation */}
+      <Dialog open={!!confirmAction} onClose={() => setConfirmAction(null)}
+        TransitionComponent={Slide} TransitionProps={{ direction: 'up' }}
+        PaperProps={{ sx: { borderRadius: 4, boxShadow: '0 32px 64px rgba(0,0,0,0.14)', overflow: 'hidden', border: '1px solid', borderColor: 'divider' } }}>
+        <DialogTitle sx={{ p: 0 }}>
+          <ModalHeader
+            badge="RULE BUILDER"
+            title={confirmAction === 'refresh' ? 'Revert Changes?' : 'Discard Changes?'}
+            onClose={() => setConfirmAction(null)}
+          />
+        </DialogTitle>
+        <DialogContent sx={{ pt: 2 }}>
+          <DialogContentText>
+            {confirmAction === 'refresh'
+              ? 'You have unsaved changes. Refreshing will revert the rule to its last saved state.'
+              : 'You have unsaved changes. Starting a new rule will discard your current work.'}
+          </DialogContentText>
+        </DialogContent>
+        <DialogActions sx={{ px: 3, pb: 2 }}>
+          <Button onClick={() => setConfirmAction(null)}>Cancel</Button>
+          <Button
+            onClick={() => {
+              const action = confirmAction;
+              setConfirmAction(null);
+              if (action === 'refresh') reloadFromSaved(); else resetForm();
+            }}
+            color="error" variant="contained"
+          >
+            {confirmAction === 'refresh' ? 'Revert to Saved' : 'Discard & Start New'}
+          </Button>
+        </DialogActions>
+      </Dialog>
 
       {/* Validation Dialog */}
       <Dialog open={!!validationMsg} onClose={() => setValidationMsg('')}

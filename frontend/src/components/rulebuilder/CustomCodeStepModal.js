@@ -67,9 +67,8 @@ const CustomCodeStepModal = ({ open, step, onClose, onSaveStep, events, dslFunct
   }, [customCode, appendLog]);
 
   const handleSave = () => {
-    if (!stepName) return;
     onSaveStep({
-      name: stepName,
+      name: stepName.trim() || 'Custom Code',
       stepType: 'custom_code',
       customCode,
     });
@@ -89,10 +88,10 @@ const CustomCodeStepModal = ({ open, step, onClose, onSaveStep, events, dslFunct
         />
       </DialogTitle>
       <DialogContent sx={{ pt: 2, overflow: 'auto' }}>
-        {/* Step Name */}
-        <TextField size="small" fullWidth label="Variable Name *" value={stepName}
-          onChange={(e) => setStepName(e.target.value.replace(/[^a-zA-Z0-9_]/g, ''))}
-          placeholder="e.g., custom_logic" sx={{ mb: 2, mt: 1 }} />
+        {/* Step Label */}
+        <TextField size="small" fullWidth label="Step Label" value={stepName}
+          onChange={(e) => setStepName(e.target.value)}
+          placeholder="e.g., Compute Interest (optional)" sx={{ mb: 2, mt: 1 }} />
 
         {/* Code Editor */}
         <Typography variant="body2" fontWeight={600} sx={{ mb: 1 }}>
@@ -249,7 +248,7 @@ const CustomCodeStepModal = ({ open, step, onClose, onSaveStep, events, dslFunct
         </Box>
       </DialogContent>
       <DialogActions sx={{ px: 3, pb: 2 }}>
-        <Button onClick={handleSave} disabled={!stepName} variant="contained" startIcon={<Save size={14} />}>
+        <Button onClick={handleSave} disabled={!customCode.trim()} variant="contained" startIcon={<Save size={14} />}>
           Save Step
         </Button>
       </DialogActions>
