@@ -2454,63 +2454,95 @@ async def upload_event_data_excel(file: UploadFile = File(...)):
             if row_count > MAX_ROWS_PER_SHEET:
                 raise HTTPException(status_code=400, detail="Upload failed: This file exceeds the allowed row limit. A maximum of 500 rows per table is supported.")
         
+        def _normalize(s: str) -> str:
+            import re
+            return re.sub(r'[^A-Za-z0-9]', '_', (s or '').strip()).strip('_').upper()
+
+        # Standard system columns accepted for activity events (not in event definition fields)
+        ACTIVITY_STANDARD_NORM = {'INSTRUMENTID', 'POSTINGDATE', 'EFFECTIVEDATE', 'SUBINSTRUMENTID'}
+
+        # Validation pass: check every sheet's columns against its event definition before saving anything
+        header_errors = []
+        for sheet_name in sheet_names:
+            event = sheet_event_defs.get(sheet_name)
+            if not event:
+                continue  # will be caught as a missing-definition error below
+            df = sheet_data_cache.get(sheet_name)
+            if df is None or df.empty:
+                continue
+            is_reference = (event.get('eventTable') == 'custom' and event.get('eventType') == 'reference')
+            field_names = [f['name'] for f in event.get('fields', [])]
+            norm_to_field = {_normalize(fn): fn for fn in field_names}
+            unknown = []
+            for col in df.columns:
+                col_norm = _normalize(str(col))
+                if col_norm not in norm_to_field:
+                    if not is_reference and col_norm in ACTIVITY_STANDARD_NORM:
+                        continue  # allowed system column for activity events
+                    unknown.append(str(col))
+            if unknown:
+                event_type_label = "reference" if is_reference else "activity"
+                header_errors.append(
+                    f"Sheet '{sheet_name}' ({event_type_label} event): unrecognized columns not in event definition — {', '.join(unknown)}"
+                )
+
+        if header_errors:
+            raise HTTPException(
+                status_code=400,
+                detail={"message": "Upload rejected: columns do not match event definition", "errors": header_errors}
+            )
+
         uploaded_events = []
         errors = []
-        
+
         # Note: do not wipe all event data here; only replace data for the target event below.
-        
+
         for sheet_name in sheet_names:
             # Use pre-fetched event definition from first pass
             event = sheet_event_defs.get(sheet_name)
-            
+
             if not event:
                 errors.append(f"Sheet '{sheet_name}' - No matching event definition found")
                 continue
-            
+
             # Determine if this is a custom reference event
             is_reference = (event.get('eventTable') == 'custom' and event.get('eventType') == 'reference')
-            
+
             # Use cached data
             df = sheet_data_cache.get(sheet_name)
-            
+
             if df is None or df.empty:
                 errors.append(f"Sheet '{sheet_name}' - No data rows found")
                 continue
-            
+
             # Convert DataFrame to list of dicts and normalize headers to event field names
             df = df.fillna('')
             raw_rows = df.to_dict('records')
 
-            # Normalizer for header/field names
-            def _normalize(s: str) -> str:
-                import re
-                return re.sub(r'[^A-Za-z0-9]', '_', (s or '').strip()).strip('_').upper()
-
             field_names = [f['name'] for f in event.get('fields', [])]
             norm_to_field = { _normalize(fn): fn for fn in field_names }
 
-            # Build header mapping summary for reporting
-            remapped_headers = []
-            # Determine mapping from actual sheet columns to canonical field names
+            # Build header mapping (validation already passed — all columns are known)
             sheet_columns = list(df.columns)
+            remapped_headers = []
             col_to_field = {}
             for col in sheet_columns:
-                mapped_to = None
-                col_norm = _normalize(col)
+                col_norm = _normalize(str(col))
                 if col_norm in norm_to_field:
-                    mapped_to = norm_to_field[col_norm]
-                    col_to_field[col] = mapped_to
+                    canonical = norm_to_field[col_norm]
+                    col_to_field[col] = canonical
+                    remapped_headers.append({"incoming": str(col), "mapped_to": canonical, "status": "mapped"})
                 else:
-                    # leave as original column name
-                    col_to_field[col] = col
-                remapped_headers.append({"incoming": str(col), "mapped_to": mapped_to})
+                    # Must be a standard activity column (already validated above)
+                    col_to_field[col] = str(col)
+                    remapped_headers.append({"incoming": str(col), "mapped_to": str(col), "status": "standard"})
 
             data_rows = []
             for raw in raw_rows:
                 mapped = {}
                 for h, v in raw.items():
-                    mapped_key = col_to_field.get(h, h)
-                    mapped[mapped_key] = v
+                    if h in col_to_field:
+                        mapped[col_to_field[h]] = v
                 data_rows.append(mapped)
 
             # Get field types from event definition

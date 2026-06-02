@@ -252,30 +252,45 @@ const FileUploadPanel = ({ onUploadSuccess, events, transactions = [], addConsol
         setUploadedExcelFileName(excelDataFile.name);
         try { localStorage.setItem('uploadedExcelFileName', excelDataFile.name); } catch (e) {}
       }
-      setExcelDataFile(null);
       onUploadSuccess();
     } catch (error) {
-      const detailMsg = error.response?.data?.detail || error.message;
-      toast.error("Failed to upload Excel data");
-      addConsoleLog(`✗ Error: ${detailMsg}`, "error");
+      const detail = error.response?.data?.detail;
+      // Structured header-validation error: { message, errors: [...] }
+      const isStructured = detail && typeof detail === 'object' && Array.isArray(detail.errors);
+      const topMsg = isStructured ? detail.message : (detail || error.message);
+      toast.error("Upload failed — check event data viewer for errors");
+      addConsoleLog(`✗ ${topMsg}`, "error");
+      const structured = isStructured
+        ? detail.errors.map(msg => ({ ErrorType: 'Error', message: String(msg) }))
+        : [{ ErrorType: 'Error', message: String(topMsg) }];
+      structured.forEach(e => {
+        if (structured.length > 1) addConsoleLog(`  ✗ ${e.message}`, "error");
+      });
       // mark this filename as failed so viewer can highlight it
       try {
         if (excelDataFile && excelDataFile.name) {
           localStorage.setItem('lastEventDataUploadFailedFile', excelDataFile.name);
           setLastFailedUploadFile(excelDataFile.name);
+          setUploadedExcelFileName(excelDataFile.name);
           try { localStorage.setItem('lastEventDataUploadFileName', excelDataFile.name); } catch(e) {}
+          try { localStorage.setItem('uploadedExcelFileName', excelDataFile.name); } catch(e) {}
         }
         setLastUploadStatus('error');
         try { localStorage.setItem('lastEventDataUploadStatus', 'error'); } catch(e) {}
       } catch(e) {}
-      // Persist structured upload error for viewer
+      // Persist structured upload errors for viewer
       try {
-        const structured = [{ ErrorType: 'Error', message: String(detailMsg) }];
         localStorage.setItem('lastEventDataUploadErrors', JSON.stringify(structured));
         try { window.dispatchEvent(new CustomEvent('dsl-upload-errors', { detail: structured })); } catch(e) {}
       } catch(e) {}
     } finally {
+      setExcelDataFile(null);
       setUploading(false);
+      // Reset the file input so selecting the same file again triggers onChange
+      try {
+        const input = document.getElementById('excel-data-file-input');
+        if (input) input.value = '';
+      } catch(e) {}
     }
   };
 
@@ -301,7 +316,56 @@ const FileUploadPanel = ({ onUploadSuccess, events, transactions = [], addConsol
   return (
     <Box sx={{ p: 3, bgcolor: '#F8F9FA', minHeight: '100%' }} data-testid="file-upload-panel">
       <Box sx={{ mb: 3 }}>
-        <Typography variant="h5" sx={{ mb: 0.5 }}>Upload Data Files</Typography>
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 0.5 }}>
+          <Typography variant="h5">Upload Data Files</Typography>
+          <Tooltip
+            arrow
+            placement="right"
+            componentsProps={{
+              tooltip: {
+                sx: {
+                  bgcolor: '#1A1D23',
+                  color: '#F8F9FA',
+                  maxWidth: 460,
+                  p: 2,
+                  fontSize: '0.78rem',
+                  lineHeight: 1.55,
+                  borderRadius: 1.5,
+                  boxShadow: 4,
+                  '& code': {
+                    bgcolor: 'rgba(255,255,255,0.08)',
+                    px: 0.5,
+                    py: 0.1,
+                    borderRadius: 0.5,
+                    fontSize: '0.72rem',
+                  },
+                  '& strong': { color: '#A5B4FC' },
+                  '& em': { color: '#F8F9FA', fontStyle: 'normal' },
+                },
+              },
+              arrow: { sx: { color: '#1A1D23' } },
+            }}
+            title={(
+              <Box>
+                <Typography variant="caption" sx={{ display: 'block', fontWeight: 700, mb: 1, color: '#A5B4FC', textTransform: 'uppercase', letterSpacing: '0.06em', fontSize: '0.68rem' }}>
+                  Upload Instructions
+                </Typography>
+                <Box component="ul" sx={{ m: 0, pl: 2, '& li': { mb: 0.75 } }}>
+                  <li><strong>Reference Data File (Excel):</strong> Two sheets — <em>events</em> (columns: EventName, EventField, DataType, EventType, EventTable) and <em>transactions</em> (column: transactiontype, no spaces e.g. <code>InterestAccrual</code>)</li>
+                  <li><strong>Event Table:</strong> <code>standard</code> (always a transaction event) or <code>custom</code> (transaction event or reference table)</li>
+                  <li><strong>Event Data (Excel):</strong> Sheet name must match event name</li>
+                  <li><strong>Required Columns (transaction events):</strong> PostingDate, EffectiveDate, InstrumentId + event fields</li>
+                  <li><strong>Reference table events (custom):</strong> Tenant-level data — no PostingDate, EffectiveDate, or InstrumentId needed</li>
+                  <li><strong>Financial Formulas:</strong> 100+ built-in financial calculation formulas are available</li>
+                </Box>
+              </Box>
+            )}
+          >
+            <IconButton size="small" sx={{ p: 0.25, color: '#5B5FED' }} aria-label="Upload instructions" data-testid="reference-data-info">
+              <Info size={15} />
+            </IconButton>
+          </Tooltip>
+        </Box>
       </Box>
 
       {uploading && (
@@ -319,57 +383,7 @@ const FileUploadPanel = ({ onUploadSuccess, events, transactions = [], addConsol
                 <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1 }}>
                   <FileText size={20} color="#5B5FED" />
                   <Typography variant="h5">Reference Data File</Typography>
-                  <Tooltip
-                    arrow
-                    placement="right"
-                    componentsProps={{
-                      tooltip: {
-                        sx: {
-                          bgcolor: '#1A1D23',
-                          color: '#F8F9FA',
-                          maxWidth: 460,
-                          p: 2,
-                          fontSize: '0.78rem',
-                          lineHeight: 1.55,
-                          borderRadius: 1.5,
-                          boxShadow: 4,
-                          '& code': {
-                            bgcolor: 'rgba(255,255,255,0.08)',
-                            px: 0.5,
-                            py: 0.1,
-                            borderRadius: 0.5,
-                            fontSize: '0.72rem',
-                          },
-                          '& strong': { color: '#A5B4FC' },
-                          '& em': { color: '#F8F9FA', fontStyle: 'normal' },
-                        },
-                      },
-                      arrow: { sx: { color: '#1A1D23' } },
-                    }}
-                    title={(
-                      <Box>
-                        <Typography variant="caption" sx={{ display: 'block', fontWeight: 700, mb: 1, color: '#A5B4FC', textTransform: 'uppercase', letterSpacing: '0.06em', fontSize: '0.68rem' }}>
-                          Upload Instructions
-                        </Typography>
-                        <Box component="ul" sx={{ m: 0, pl: 2, '& li': { mb: 0.75 } }}>
-                          <li><strong>Reference Data File (Excel):</strong> Two sheets — <em>events</em> (columns: EventName, EventField, DataType, EventType, EventTable) and <em>transactions</em> (column: transactiontype, no spaces e.g. <code>InterestAccrual</code>)</li>
-                          <li><strong>Event Table:</strong> <code>standard</code> (always a transaction event) or <code>custom</code> (transaction event or reference table)</li>
-                          <li><strong>Event Data (Excel):</strong> Sheet name must match event name</li>
-                          <li><strong>Required Columns (transaction events):</strong> PostingDate, EffectiveDate, InstrumentId + event fields</li>
-                          <li><strong>Reference table events (custom):</strong> Tenant-level data — no PostingDate, EffectiveDate, or InstrumentId needed</li>
-                          <li><strong>Financial Formulas:</strong> 100+ built-in financial calculation formulas are available</li>
-                        </Box>
-                      </Box>
-                    )}
-                  >
-                    <IconButton size="small" sx={{ p: 0.25, color: '#5B5FED' }} aria-label="Upload instructions" data-testid="reference-data-info">
-                      <Info size={15} />
-                    </IconButton>
-                  </Tooltip>
                 </Box>
-                <Typography variant="body2" color="text.secondary" sx={{ lineHeight: 1.6 }}>
-                  Upload .xlsx file with events and transaction names
-                </Typography>
               </Box>
               <Tooltip title="Download">
                 <span>
@@ -434,7 +448,7 @@ const FileUploadPanel = ({ onUploadSuccess, events, transactions = [], addConsol
               <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1, justifyContent: 'space-between' }}>
                 <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
                   <FileSpreadsheet size={20} color="#4CAF50" />
-                  <Typography variant="h5">Event Data (Excel)</Typography>
+                  <Typography variant="h5">Event Data</Typography>
                 </Box>
                 <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
                   {(() => {
@@ -551,9 +565,6 @@ const FileUploadPanel = ({ onUploadSuccess, events, transactions = [], addConsol
                   </Tooltip>
                 </Box>
               </Box>
-              <Typography variant="body2" color="text.secondary" sx={{ lineHeight: 1.6 }}>
-                Excel file with event data (each sheet = one event)
-              </Typography>
             </Box>
             <Box sx={{ mb: 2 }}>
               <input
@@ -576,16 +587,10 @@ const FileUploadPanel = ({ onUploadSuccess, events, transactions = [], addConsol
                 </Button>
               </label>
             </Box>
-            {excelDataFile && (
-              <Typography variant="caption" sx={{ display: 'flex', alignItems: 'center', gap: 0.5, mb: 1, color: lastFailedUploadFile === excelDataFile.name ? 'error.main' : 'success.main' }}>
-                {lastFailedUploadFile === excelDataFile.name ? <X size={12} /> : <CheckCircle size={12} />}
-                {excelDataFile.name}
-              </Typography>
-            )}
             {uploadedExcelFileName && !excelDataFile && (
               <Typography variant="caption" sx={{ display: 'flex', alignItems: 'center', gap: 0.5, mb: 1, color: lastFailedUploadFile === uploadedExcelFileName ? 'error.main' : 'success.main' }}>
                 {lastFailedUploadFile === uploadedExcelFileName ? <X size={12} /> : <CheckCircle size={12} />}
-                {uploadedExcelFileName}
+                {uploadedExcelFileName}{lastFailedUploadFile === uploadedExcelFileName ? ' — Loaded with errors' : ''}
               </Typography>
             )}
             <Button 
@@ -601,7 +606,7 @@ const FileUploadPanel = ({ onUploadSuccess, events, transactions = [], addConsol
                 '&:hover': { bgcolor: '#388E3C' },
               }}
             >
-              Upload Excel Data
+              Upload Event Data
             </Button>
           </CardContent>
         </Card>
