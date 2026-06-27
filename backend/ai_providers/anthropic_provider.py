@@ -233,6 +233,27 @@ class AnthropicProvider(AIProvider):
                         "content": m.get("content") or "",
                     })
 
+            # Coalesce consecutive same-role messages. Anthropic requires roles
+            # to alternate; our runtime legitimately emits a tool_result (user
+            # role) immediately followed by a steering/refresh user message, and
+            # a user message can hold both tool_result and text blocks. Merging
+            # them keeps the request valid. Also normalises string content into
+            # a single text block and drops empty messages.
+            coalesced: list[dict] = []
+            for m in anth_messages:
+                content = m.get("content")
+                if isinstance(content, str):
+                    content = [{"type": "text", "text": content}] if content.strip() else []
+                elif not isinstance(content, list):
+                    content = []
+                if not content:
+                    continue
+                if coalesced and coalesced[-1]["role"] == m["role"]:
+                    coalesced[-1]["content"].extend(content)
+                else:
+                    coalesced.append({"role": m["role"], "content": list(content)})
+            anth_messages = coalesced
+
             anth_tools = [
                 {
                     "name": t["name"],
@@ -241,6 +262,23 @@ class AnthropicProvider(AIProvider):
                 }
                 for t in tools
             ]
+
+            # Prompt caching: the agent's system prompt (~850 lines) and tool
+            # schemas are large and identical across every turn of a run. Mark
+            # them with cache_control so Anthropic serves them from cache (5-min
+            # TTL), cutting input-token cost and latency on the 2nd+ turn. Cache
+            # ordering is tools → system → messages, so a breakpoint on the last
+            # tool plus the system block caches the entire static prefix.
+            if anth_tools:
+                anth_tools[-1] = {
+                    **anth_tools[-1],
+                    "cache_control": {"type": "ephemeral"},
+                }
+            system_param = [{
+                "type": "text",
+                "text": system_text or "You are a helpful assistant.",
+                "cache_control": {"type": "ephemeral"},
+            }]
 
             # I19: tool_choice mapping. Internal "required" → Anthropic
             # {"type":"any"}; "none"/None → default (auto).
@@ -254,7 +292,7 @@ class AnthropicProvider(AIProvider):
                 model=model,
                 max_tokens=4096,
                 temperature=temperature,
-                system=system_text or "You are a helpful assistant.",
+                system=system_param,
                 messages=anth_messages,
                 tools=anth_tools,
             )

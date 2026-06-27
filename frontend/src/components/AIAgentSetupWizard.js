@@ -32,22 +32,15 @@ const AnthropicLogo = () => (
   </svg>
 );
 
-const DeepSeekLogo = () => (
-  <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
-    <circle cx="12" cy="12" r="10" fill="#4D6BFE"/>
-    <path d="M8 12.5c0-2.5 1.5-4 4-4s4 1.5 4 4-1.5 4-4 4" stroke="#fff" strokeWidth="2" strokeLinecap="round" fill="none"/>
-    <circle cx="12" cy="8.5" r="1.2" fill="#fff"/>
-  </svg>
-);
-
-const PROVIDER_LOGOS = { gemini: GeminiLogo, openai: OpenAILogo, anthropic: AnthropicLogo, deepseek: DeepSeekLogo };
+const PROVIDER_LOGOS = { gemini: GeminiLogo, openai: OpenAILogo, anthropic: AnthropicLogo };
 
 const PROVIDERS = {
-  gemini: {
-    name: "Google Gemini",
-    description: "Google's multimodal AI models",
-    keyUrl: "https://aistudio.google.com/apikey",
-    color: "#4285F4",
+  anthropic: {
+    name: "Anthropic (Claude)",
+    description: "Claude Sonnet & Opus — most reliable tool calling for rule authoring",
+    keyUrl: "https://console.anthropic.com/settings/keys",
+    color: "#D97757",
+    recommended: true,
   },
   openai: {
     name: "OpenAI (ChatGPT)",
@@ -55,17 +48,11 @@ const PROVIDERS = {
     keyUrl: "https://platform.openai.com/api-keys",
     color: "#10A37F",
   },
-  anthropic: {
-    name: "Anthropic (Claude)",
-    description: "Claude 3.5 Sonnet, Opus, and Haiku",
-    keyUrl: "https://console.anthropic.com/settings/keys",
-    color: "#D97757",
-  },
-  deepseek: {
-    name: "DeepSeek",
-    description: "DeepSeek-V3, DeepSeek-R1, and more",
-    keyUrl: "https://platform.deepseek.com/api_keys",
-    color: "#4D6BFE",
+  gemini: {
+    name: "Google Gemini",
+    description: "Google's multimodal AI models (no autonomous tool calling yet)",
+    keyUrl: "https://aistudio.google.com/apikey",
+    color: "#4285F4",
   },
 };
 
@@ -276,9 +263,21 @@ const AIAgentSetupWizard = ({ open, onClose, onSaved }) => {
                       <ProviderLogo provider={key} />
                     </Box>
                     <Box sx={{ flex: 1 }}>
-                      <Typography variant="subtitle1" sx={{ fontWeight: 600 }}>
-                        {p.name}
-                      </Typography>
+                      <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
+                        <Typography variant="subtitle1" sx={{ fontWeight: 600 }}>
+                          {p.name}
+                        </Typography>
+                        {p.recommended && (
+                          <Chip
+                            label="Recommended"
+                            size="small"
+                            sx={{
+                              height: 18, fontSize: "0.65rem", fontWeight: 600,
+                              bgcolor: `${p.color}22`, color: p.color,
+                            }}
+                          />
+                        )}
+                      </Box>
                       <Typography variant="body2" color="text.secondary">
                         {p.description}
                       </Typography>

@@ -3,11 +3,11 @@ import {
   Box, Typography, Card, CardContent, Button, TextField, MenuItem, Chip, IconButton,
   Tooltip, Divider, Select, FormControl, InputLabel, Paper, Switch, FormControlLabel,
   Alert, CircularProgress, Dialog, DialogTitle, DialogContent, DialogContentText, DialogActions,
-  Menu, Autocomplete, Slide,
+  Menu, Autocomplete, Slide, InputAdornment,
 } from "@mui/material";
 import {
   Plus, Trash2, Play, Code, Save, X,
-  Calculator, GitBranch, Repeat, GripVertical, Edit3, ChevronDown, Calendar, Copy, Receipt, RotateCcw,
+  Calculator, GitBranch, Repeat, GripVertical, Edit3, ChevronDown, Calendar, Copy, Receipt, RotateCcw, Search,
 } from "lucide-react";
 import { API } from "../../config";
 import FormulaBar from "./FormulaBar";
@@ -152,6 +152,22 @@ const buildCalcLine = (v) => {
   return null;
 };
 
+// ─── Helper: turn a bare `=` into `==` OUTSIDE string literals ─────────
+// So a DSL equality check isn't read as a Python kwarg when wrapped in if(...),
+// while string-literal contents (e.g. eq(code, "A=1")) are left intact. Mirrors
+// backend tools.py _normalize_bare_equals.
+const normalizeBareEquals = (cond) => {
+  if (!cond) return cond;
+  const bareEq = (s) => s.replace(/(?<![=!<>])=(?!=)/g, '==');
+  let out = '';
+  let last = 0;
+  for (const m of cond.matchAll(/'(?:[^'\\]|\\.)*'|"(?:[^"\\]|\\.)*"/g)) {
+    out += bareEq(cond.slice(last, m.index)) + m[0];
+    last = m.index + m[0].length;
+  }
+  return out + bareEq(cond.slice(last));
+};
+
 // ─── Helper: build nested condition expression ─────────────────────────
 const buildConditionExpr = (conditions, elseFormula) => {
   const valid = conditions.filter(c => c.condition);
@@ -163,10 +179,9 @@ const buildConditionExpr = (conditions, elseFormula) => {
     const thenPart = (c.nestedConditions?.length > 0)
       ? buildConditionExpr(c.nestedConditions, c.nestedElse || c.thenFormula || '0')
       : (c.thenFormula || '0');
-    // Normalize bare = to == so DSL equality checks don't become Python
-    // keyword arguments when the condition lands inside iif(cond, ...).
-    // E.g. "DEP_X=DEP_Y" → "DEP_X==DEP_Y".  Leaves ==, !=, <=, >= intact.
-    const condStr = c.condition.replace(/(?<![=!<>])=(?!=)/g, '==');
+    // Normalize bare = to == (string-aware: "DEP_X=DEP_Y" → "DEP_X==DEP_Y",
+    // but eq(code, "A=1") is preserved). Leaves ==, !=, <=, >= intact.
+    const condStr = normalizeBareEquals(c.condition);
     nested = `if(${condStr}, ${thenPart}, ${nested})`;
   }
   return nested;
@@ -183,12 +198,17 @@ const buildIterationLines = (iters, availableVarNames) => {
     if (iter.secondArray && /^[a-zA-Z_]\w*$/.test(iter.secondArray)) exprIds.add(iter.secondArray);
     const ctx = available.filter(v => exprIds.has(v));
     const ctxStr = ctx.length ? `, {${ctx.map(v => `"${v}": ${v}`).join(', ')}}` : '';
+    // Embed the expression as a fully-escaped string literal (JSON.stringify
+    // yields a double-quoted, escaped literal that is also valid Python) so
+    // quotes/apostrophes inside it can't break the generated code — e.g.
+    // eq(status, "active") survives instead of producing mismatched quotes.
+    const exprLit = JSON.stringify(iter.expression || '');
     if (iter.type === 'apply_each') {
-      lines.push(`${iter.resultVar} = apply_each(${iter.sourceArray}, "${iter.expression}"${ctxStr})`);
+      lines.push(`${iter.resultVar} = apply_each(${iter.sourceArray}, ${exprLit}${ctxStr})`);
     } else if (iter.type === 'apply_each_paired') {
-      lines.push(`${iter.resultVar} = apply_each(${iter.sourceArray}, ${iter.secondArray || '[]'}, "${iter.expression}"${ctxStr})`);
+      lines.push(`${iter.resultVar} = apply_each(${iter.sourceArray}, ${iter.secondArray || '[]'}, ${exprLit}${ctxStr})`);
     } else {
-      lines.push(`${iter.resultVar} = for_each(${iter.sourceArray}, ${iter.secondArray || '[]'}, "${iter.varName}", "${iter.secondVar}", "${iter.expression}")`);
+      lines.push(`${iter.resultVar} = for_each(${iter.sourceArray}, ${iter.secondArray || '[]'}, "${iter.varName}", "${iter.secondVar}", ${exprLit})`);
     }
     iterResultVars.push(iter.resultVar);
   }
@@ -711,18 +731,26 @@ const TransactionModal = ({ open, txn, onClose, onSaveTxn, onTest, transactionDe
         <Autocomplete
           size="small"
           fullWidth
+          autoHighlight
           options={transactionDefinitions || []}
           value={local.type || null}
           onChange={(_, val) => update('type', val || '')}
-          onInputChange={(_, val, reason) => { if (reason === 'input') update('type', val); }}
           isOptionEqualToValue={(opt, val) => opt === val}
           freeSolo={false}
           renderInput={(params) => (
             <TextField {...params}
               required
               label="Transaction Name *"
-              placeholder={transactionDefinitions && transactionDefinitions.length > 0 ? 'Select a transaction name' : 'Upload a Reference Data File first'}
+              placeholder={transactionDefinitions && transactionDefinitions.length > 0 ? 'Search transaction names…' : 'Upload a Reference Data File first'}
               error={!!saveError && (!local.type || (transactionDefinitions?.length > 0 && !transactionDefinitions.includes(local.type)))}
+              InputProps={{
+                ...params.InputProps,
+                startAdornment: (
+                  <InputAdornment position="start">
+                    <Search size={16} color="#6C757D" />
+                  </InputAdornment>
+                ),
+              }}
             />
           )}
           noOptionsText={<Typography variant="caption" color="text.secondary">No transaction names loaded.</Typography>}
@@ -757,6 +785,7 @@ const TransactionModal = ({ open, txn, onClose, onSaveTxn, onTest, transactionDe
           <Autocomplete
             size="small"
             fullWidth
+            autoHighlight
             options={dateOptions || []}
             value={local.postingDate || null}
             onChange={(_, val) => update('postingDate', val || '')}
@@ -764,8 +793,16 @@ const TransactionModal = ({ open, txn, onClose, onSaveTxn, onTest, transactionDe
             renderInput={(params) => (
               <TextField {...params}
                 label="Posting Date *"
-                placeholder="Select date field"
+                placeholder="Search date fields…"
                 inputProps={{ ...params.inputProps, style: { fontFamily: 'monospace', fontSize: '0.8125rem' } }}
+                InputProps={{
+                  ...params.InputProps,
+                  startAdornment: (
+                    <InputAdornment position="start">
+                      <Search size={16} color="#6C757D" />
+                    </InputAdornment>
+                  ),
+                }}
               />
             )}
             renderOption={(props, option) => (
@@ -776,6 +813,7 @@ const TransactionModal = ({ open, txn, onClose, onSaveTxn, onTest, transactionDe
           <Autocomplete
             size="small"
             fullWidth
+            autoHighlight
             options={dateOptions || []}
             value={local.effectiveDate || null}
             onChange={(_, val) => update('effectiveDate', val || '')}
@@ -783,8 +821,16 @@ const TransactionModal = ({ open, txn, onClose, onSaveTxn, onTest, transactionDe
             renderInput={(params) => (
               <TextField {...params}
                 label="Effective Date *"
-                placeholder="Select date field"
+                placeholder="Search date fields…"
                 inputProps={{ ...params.inputProps, style: { fontFamily: 'monospace', fontSize: '0.8125rem' } }}
+                InputProps={{
+                  ...params.InputProps,
+                  startAdornment: (
+                    <InputAdornment position="start">
+                      <Search size={16} color="#6C757D" />
+                    </InputAdornment>
+                  ),
+                }}
               />
             )}
             renderOption={(props, option) => (
@@ -1161,25 +1207,38 @@ const AccountingRuleBuilder = ({ events, dslFunctions, transactionDefinitions, o
       if (line) lines.push(line);
     }
     return lines;
-  }, [savedRulesVars, steps]);
+  }, [savedRulesVars]);
 
   // ── Test a step (builds code for all saved rules + all steps up to this one) ──
   const buildScheduleStepLines = useCallback((s) => {
     const lines = [];
     const sc = s.scheduleConfig || {};
+    // runIf: gate the period so it materialises ZERO rows when the condition is
+    // false (count→0 / end→""). Schedule accessors then return 0/[] safely, so
+    // the schedule effectively "does not fire". Pair two schedules with inverse
+    // runIf for if/else selection. Mirrors backend tools.py code generation.
+    const _runIf = (sc.runIf || '').trim();
+    // frequencyFormula: when set, the frequency itself is dynamic — emit it
+    // UNQUOTED so it resolves at runtime (e.g. if(is_monthly,"M","Q")). Otherwise
+    // quote the static code. Mirrors backend tools.py; without this the dynamic
+    // frequency is silently dropped when the rule is regenerated from the UI.
+    const _freqFormula = (sc.frequencyFormula || '').trim();
+    const freqToken = _freqFormula ? _freqFormula : `"${sc.frequency || 'M'}"`;
     if (sc.periodType === 'number') {
-      const countExpr = sc.periodCountSource === 'field' && sc.periodCountField ? sc.periodCountField
+      let countExpr = sc.periodCountSource === 'field' && sc.periodCountField ? sc.periodCountField
         : sc.periodCountSource === 'formula' && sc.periodCountFormula ? sc.periodCountFormula
         : (sc.periodCount || 12);
-      lines.push(`p = period(${countExpr}, "${sc.frequency || 'M'}")`);
+      if (_runIf) countExpr = `if(${_runIf}, ${countExpr}, 0)`;
+      lines.push(`p = period(${countExpr}, ${freqToken})`);
     } else {
       const startExpr = sc.startDateSource === 'field' && sc.startDateField ? sc.startDateField
         : sc.startDateSource === 'formula' && sc.startDateFormula ? sc.startDateFormula
         : `"${sc.startDate || '2026-01-01'}"`;
-      const endExpr = sc.endDateSource === 'field' && sc.endDateField ? sc.endDateField
+      let endExpr = sc.endDateSource === 'field' && sc.endDateField ? sc.endDateField
         : sc.endDateSource === 'formula' && sc.endDateFormula ? sc.endDateFormula
         : `"${sc.endDate || '2026-12-31'}"`;
-      let periodCall = `p = period(${startExpr}, ${endExpr}, "${sc.frequency || 'M'}"`;
+      if (_runIf) endExpr = `if(${_runIf}, ${endExpr}, "")`;
+      let periodCall = `p = period(${startExpr}, ${endExpr}, ${freqToken}`;
       if (sc.convention) periodCall += `, "${sc.convention}"`;
       periodCall += ')';
       lines.push(periodCall);
@@ -1670,7 +1729,7 @@ const AccountingRuleBuilder = ({ events, dslFunctions, transactionDefinitions, o
         .join('\n');
     }
     return code;
-  }, [ruleName, ruleDisabled, steps, outputs, savedRulesVars]);
+  }, [ruleName, ruleDisabled, steps, outputs, savedRulesVars, buildScheduleStepLines]);
 
   // Determine the ruleType for backward-compatible saving
   const effectiveRuleType = useMemo(() => {
@@ -2179,19 +2238,30 @@ const AccountingRuleBuilder = ({ events, dslFunctions, transactionDefinitions, o
             onChange={(e) => { const v = e.target.value; if (v === '' || /^\d+$/.test(v)) setRulePriority(v === '' ? '' : Number(v)); }}
             placeholder="e.g., 1" type="number" inputProps={{ min: 0, step: 1 }} sx={{ width: 140 }} />
           {availablePostingDates.length > 0 && (
-            <FormControl size="small" sx={{ width: 200 }}>
-              <InputLabel id="test-posting-date-label">Test Posting Date</InputLabel>
-              <Select
-                labelId="test-posting-date-label"
-                label="Test Posting Date"
-                value={testPostingDate}
-                onChange={(e) => setTestPostingDate(e.target.value)}
-              >
-                {availablePostingDates.map(d => (
-                  <MenuItem key={d} value={d}>{d}</MenuItem>
-                ))}
-              </Select>
-            </FormControl>
+            <Autocomplete
+              size="small"
+              autoHighlight
+              disableClearable
+              options={availablePostingDates}
+              value={testPostingDate || null}
+              onChange={(_, val) => setTestPostingDate(val || '')}
+              isOptionEqualToValue={(opt, val) => opt === val}
+              sx={{ width: 200 }}
+              renderInput={(params) => (
+                <TextField {...params}
+                  label="Test Posting Date"
+                  placeholder="Search dates…"
+                  InputProps={{
+                    ...params.InputProps,
+                    startAdornment: (
+                      <InputAdornment position="start">
+                        <Search size={16} color="#6C757D" />
+                      </InputAdornment>
+                    ),
+                  }}
+                />
+              )}
+            />
           )}
         </Box>
 

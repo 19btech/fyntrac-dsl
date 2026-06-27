@@ -8,12 +8,13 @@ import {
 } from "@mui/material";
 import {
   Plus, Trash2, ArrowUp, ArrowDown, Play, Calendar, Save, X,
-  Table as TableIcon, BarChart3, Filter as FilterIcon, Sigma, ListOrdered, ChevronsDown, ChevronsUp,
+  Table as TableIcon, BarChart3, Filter as FilterIcon, Sigma, ListOrdered, ChevronsDown, ChevronsUp, GitBranch, Info,
 } from "lucide-react";
 import { API } from "../../config";
 import FormulaBar from "./FormulaBar";
 import TestResultCard from "./TestResultCard";
 import ModalHeader from "../ModalHeader";
+import FunctionBrowser from "../FunctionBrowser";
 
 const FREQUENCY_OPTIONS = [
   { value: 'M', label: 'Monthly', description: '12 periods per year' },
@@ -133,6 +134,9 @@ const ScheduleStepModal = ({ open, step, onClose, onSaveStep, events, dslFunctio
   const [frequency, setFrequency] = useState(cfg.frequency || 'M');
   const [convention, setConvention] = useState(cfg.convention || '');
   const [columns, setColumns] = useState(cfg.columns?.length ? cfg.columns : [{ name: 'date', formula: 'period_date' }]);
+  const [runIf, setRunIf] = useState(cfg.runIf || '');
+  const [runIfTest, setRunIfTest] = useState(null); // {testing} | {success, output} | {success:false, error}
+  const [showFunctionBrowser, setShowFunctionBrowser] = useState(false);
   const [stepName, setStepName] = useState(step?.name || '');
 
   // Output options — unified list. Each entry has a stable id and a `type`
@@ -296,6 +300,9 @@ const ScheduleStepModal = ({ open, step, onClose, onSaveStep, events, dslFunctio
     setFrequency(c.frequency || 'M');
     setConvention(c.convention || '');
     setColumns(c.columns?.length ? c.columns : [{ name: 'date', formula: 'period_date' }]);
+    setRunIf(c.runIf || '');
+    setRunIfTest(null);
+    setShowFunctionBrowser(false);
     setOutputs(_migrateLegacyOutputs(c, step?.outputVars));
     setLocalInlineComment(step?.inlineComment || false);
     setLocalCommentText(step?.commentText || '');
@@ -305,7 +312,7 @@ const ScheduleStepModal = ({ open, step, onClose, onSaveStep, events, dslFunctio
     setSchedulePreviewError(null);
     setPreviewSelectedSubId('__all__');
     setOutputTests({});
-  }, [open, step]);
+  }, [open, step, _migrateLegacyOutputs]);
 
   // All var names (parent-defined + saved rules)
   const allVarNames = useMemo(() => [...new Set([...(definedVarNames || []), ...savedRulesVarNames])], [definedVarNames, savedRulesVarNames]);
@@ -399,19 +406,29 @@ const ScheduleStepModal = ({ open, step, onClose, onSaveStep, events, dslFunctio
   // Build schedule-only DSL code (for testing)
   const buildScheduleCode = useCallback(() => {
     const lines = [];
+    // runIf: gate the period so it materialises ZERO rows when the condition is
+    // false (count→0 / end→""), mirroring the backend. Schedule accessors then
+    // return 0/[] safely, so the schedule effectively "does not fire".
+    const _runIf = (runIf || '').trim();
+    // Dynamic frequency (set by the agent) is emitted unquoted so it resolves at
+    // runtime; otherwise the static code is quoted. Mirrors buildScheduleStepLines.
+    const _freqFormula = (cfg.frequencyFormula || '').trim();
+    const freqToken = _freqFormula ? _freqFormula : `"${frequency}"`;
     if (periodType === 'number') {
-      const countExpr = periodCountSource === 'field' && periodCountField ? periodCountField
+      let countExpr = periodCountSource === 'field' && periodCountField ? periodCountField
         : periodCountSource === 'formula' && periodCountFormula ? periodCountFormula
         : (periodCount || 12);
-      lines.push(`p = period(${countExpr}, "${frequency}")`);
+      if (_runIf) countExpr = `if(${_runIf}, ${countExpr}, 0)`;
+      lines.push(`p = period(${countExpr}, ${freqToken})`);
     } else {
       const startExpr = startDateSource === 'field' && startDateField ? startDateField
         : startDateSource === 'formula' && startDateFormula ? startDateFormula
         : `"${startDate || '2026-01-01'}"`;
-      const endExpr = endDateSource === 'field' && endDateField ? endDateField
+      let endExpr = endDateSource === 'field' && endDateField ? endDateField
         : endDateSource === 'formula' && endDateFormula ? endDateFormula
         : `"${endDate || '2026-12-31'}"`;
-      let periodCall = `p = period(${startExpr}, ${endExpr}, "${frequency}"`;
+      if (_runIf) endExpr = `if(${_runIf}, ${endExpr}, "")`;
+      let periodCall = `p = period(${startExpr}, ${endExpr}, ${freqToken}`;
       if (convention) periodCall += `, "${convention}"`;
       periodCall += ')';
       lines.push(periodCall);
@@ -432,7 +449,7 @@ const ScheduleStepModal = ({ open, step, onClose, onSaveStep, events, dslFunctio
   }, [periodType, periodCount, periodCountSource, periodCountField, periodCountFormula,
       startDate, startDateSource, startDateField, startDateFormula,
       endDate, endDateSource, endDateField, endDateFormula,
-      frequency, convention, columns, autoDetectedVars]);
+      frequency, convention, columns, autoDetectedVars, runIf, cfg.frequencyFormula]);
 
   // Test column
   const testColumn = useCallback(async (colIndex) => {
@@ -488,6 +505,45 @@ const ScheduleStepModal = ({ open, step, onClose, onSaveStep, events, dslFunctio
   }, [columns, autoDetectedVars, priorRulesCode, currentRulePreStepCode, periodType, periodCount, periodCountSource, periodCountField, periodCountFormula,
       startDateSource, startDateField, startDateFormula, startDate,
       endDateSource, endDateField, endDateFormula, endDate, frequency, convention, testPostingDate]);
+
+  // Validate the runIf condition — evaluate it against event data and show
+  // the resulting true/false per instrument, so the user can confirm the gate
+  // fires as intended before saving.
+  const testRunIf = useCallback(async () => {
+    const expr = (runIf || '').trim();
+    if (!expr) { setRunIfTest({ success: false, error: 'Enter a condition first.' }); return; }
+    setRunIfTest({ testing: true });
+    try {
+      const allPriorCode = [priorRulesCode, currentRulePreStepCode].filter(Boolean).join('\n\n');
+      const hasEventRefs = /\b[A-Z][A-Z0-9_]*\.[a-zA-Z_]\w*/.test([allPriorCode, expr].join('\n'));
+      const printLine = hasEventRefs
+        ? `print("__TEST_ROW__|" + str(instrumentid) + "|" + str(subinstrumentid) + "| runIf =", (${expr}))`
+        : `print("runIf =", (${expr}))`;
+      const combinedCode = [allPriorCode, printLine].filter(Boolean).join('\n\n');
+      let postingDate = testPostingDate || new Date().toISOString().split('T')[0];
+      if (!testPostingDate) {
+        try {
+          const pdRes = await fetch(`${API}/event-data/posting-dates`);
+          const pdData = await pdRes.json();
+          if (pdData?.posting_dates?.length) postingDate = pdData.posting_dates[0];
+        } catch { /* ignore */ }
+      }
+      const response = await fetch(`${API}/dsl/run`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ dsl_code: combinedCode, posting_date: postingDate }),
+      });
+      const data = await response.json();
+      if (response.ok && data.success) {
+        const out = (data.print_outputs || []).map(String).join('\n') || 'Ran (no output)';
+        setRunIfTest({ success: true, output: out });
+      } else {
+        setRunIfTest({ success: false, error: data.error || data.detail || 'Execution failed' });
+      }
+    } catch (err) {
+      setRunIfTest({ success: false, error: err.message || 'Network error' });
+    }
+  }, [runIf, priorRulesCode, currentRulePreStepCode, testPostingDate]);
 
   // Test schedule preview
   const testSchedulePreview = useCallback(async () => {
@@ -660,6 +716,12 @@ const ScheduleStepModal = ({ open, step, onClose, onSaveStep, events, dslFunctio
         endDate, endDateSource, endDateField, endDateFormula,
         periodCount, periodCountSource, periodCountField, periodCountFormula,
         frequency, convention, columns,
+        // frequencyFormula: dynamic frequency set by the agent (no UI field yet).
+        // Preserve it unchanged so editing other fields here doesn't drop it.
+        frequencyFormula: (cfg.frequencyFormula || '').trim(),
+        // runIf: optional boolean DSL expression. When false the schedule
+        // produces ZERO rows. Pair two schedules with inverse runIf for if/else.
+        runIf: (runIf || '').trim(),
         // Persist the unified outputs array on the config too so re-opens fully
         // round-trip (parent only reads outputVars for code generation).
         outputs,
@@ -671,6 +733,7 @@ const ScheduleStepModal = ({ open, step, onClose, onSaveStep, events, dslFunctio
   };
 
   return (
+    <>
     <Dialog open={open} onClose={onClose} maxWidth="lg" fullWidth
       TransitionComponent={Slide}
       TransitionProps={{ direction: 'up' }}
@@ -689,6 +752,63 @@ const ScheduleStepModal = ({ open, step, onClose, onSaveStep, events, dslFunctio
           placeholder="e.g., loan_schedule" sx={{ mb: 2, mt: 1 }}
           error={isReservedName}
           helperText={isReservedName ? '"schedule" is a reserved DSL function name — please choose a different variable name (e.g., loan_schedule, dep_schedule).' : ''} />
+
+        {/* ── Conditional Execution (runIf) ── */}
+        <Box sx={{ mb: 2, px: 1.5, py: 1.25, bgcolor: '#F0F4FF', borderRadius: 1, border: '1px solid #E0E7FF' }}>
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, mb: 0.75 }}>
+            <GitBranch size={14} style={{ verticalAlign: 'middle' }} />
+            <Typography variant="body2" fontWeight={600}>
+              Run this schedule only if <Box component="span" sx={{ color: 'text.secondary', fontWeight: 400 }}>(optional)</Box>
+            </Typography>
+            <Tooltip arrow placement="right"
+              title={
+                <Box sx={{ p: 0.5, maxWidth: 260 }}>
+                  <Typography variant="caption" sx={{ display: 'block', mb: 0.5 }}>
+                    Leave blank to always run. When the condition is false, this schedule produces zero rows — it does not fire.
+                  </Typography>
+                  <Typography variant="caption" sx={{ display: 'block' }}>
+                    For if / else, add a second schedule with the inverse condition (wrap it in not(…)), then a Condition step picks whichever fired.
+                  </Typography>
+                </Box>
+              }>
+              <Box component="span" sx={{ display: 'inline-flex', color: 'text.secondary', cursor: 'help' }}>
+                <Info size={13} />
+              </Box>
+            </Tooltip>
+          </Box>
+          <Box sx={{ display: 'flex', gap: 1, alignItems: 'flex-start' }}>
+            <Box sx={{ flex: 1, minWidth: 0 }}>
+              <FormulaBar
+                value={runIf}
+                onChange={(v) => { setRunIf(v); setRunIfTest(null); }}
+                events={events}
+                variables={allVarNames}
+                label="Condition"
+                placeholder='e.g., eq(amortizationmethod, "OFFBS")'
+              />
+            </Box>
+            <Tooltip title="Validate this condition against your event data">
+              <span>
+                <IconButton size="small" onClick={testRunIf}
+                  disabled={!runIf.trim() || runIfTest?.testing}
+                  sx={{ color: '#4CAF50', mt: 0.25 }}>
+                  {runIfTest?.testing ? <CircularProgress size={16} /> : <Play size={16} />}
+                </IconButton>
+              </span>
+            </Tooltip>
+          </Box>
+          {runIfTest && !runIfTest.testing && (
+            <Box sx={{ mt: 1 }}>
+              <TestResultCard
+                success={!!runIfTest.success}
+                output={runIfTest.output}
+                error={runIfTest.error}
+                variableName="runIf"
+                onClose={() => setRunIfTest(null)}
+              />
+            </Box>
+          )}
+        </Box>
 
         {/* ── Time Period ── */}
         <Typography variant="body2" fontWeight={600} sx={{ mb: 1 }}>
@@ -840,7 +960,7 @@ const ScheduleStepModal = ({ open, step, onClose, onSaveStep, events, dslFunctio
         </Box>
         <Box sx={{ mb: 1.5, px: 1.5, py: 1, bgcolor: '#F0F4FF', borderRadius: 1, border: '1px solid #E0E7FF' }}>
           <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 0.5, fontWeight: 600, fontSize: '0.7rem' }}>
-            Built-in variables you can use in column formulas:
+            Built-in variables you can use in column formulas <Box component="span" sx={{ fontWeight: 400 }}>(click any to browse the full function library):</Box>
           </Typography>
           <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.5 }}>
             {[
@@ -854,10 +974,11 @@ const ScheduleStepModal = ({ open, step, onClose, onSaveStep, events, dslFunctio
               { name: 'dcf', tip: 'Day count fraction' },
               { name: 'lag(col, n)', tip: 'Previous row value' },
             ].map(v => (
-              <Tooltip key={v.name} title={v.tip} arrow>
+              <Tooltip key={v.name} title={`${v.tip} · Click to browse functions`} arrow>
                 <Chip label={v.name} size="small"
+                  onClick={() => setShowFunctionBrowser(true)}
                   sx={{ fontSize: '0.675rem', height: 20, bgcolor: '#fff', border: '1px solid #C7D2FE',
-                    fontFamily: 'monospace', cursor: 'help', '&:hover': { bgcolor: '#EEF2FF' } }} />
+                    fontFamily: 'monospace', cursor: 'pointer', '&:hover': { bgcolor: '#EEF2FF' } }} />
               </Tooltip>
             ))}
           </Box>
@@ -912,7 +1033,7 @@ const ScheduleStepModal = ({ open, step, onClose, onSaveStep, events, dslFunctio
                   } rows`} size="small"
                     sx={{ fontSize: '0.6875rem', height: 20, bgcolor: '#EEF0FE', color: '#5B5FED' }} />
                 )}
-                <Tooltip title="Run schedule and show real data">
+                <Tooltip title="Run the schedule with your event data and show the results">
                   <Button size="small" variant="outlined"
                     startIcon={schedulePreviewTesting ? <CircularProgress size={12} /> : <Play size={12} />}
                     onClick={testSchedulePreview} disabled={schedulePreviewTesting}
@@ -1094,7 +1215,7 @@ const ScheduleStepModal = ({ open, step, onClose, onSaveStep, events, dslFunctio
                           <Typography variant="body2" fontWeight={600} sx={{ color: meta.color }}>{meta.label}</Typography>
                           <Typography variant="caption" color="text.secondary" sx={{ fontFamily: 'monospace', fontSize: '0.65rem' }}>{meta.fn}(…)</Typography>
                         </Box>
-                        <Tooltip title="Test this output">
+                        <Tooltip title="Test this output variable">
                           <span>
                             <IconButton size="small" onClick={() => testOutputEntry(o.id)} disabled={!o.name || test.testing}
                               sx={{ color: '#4CAF50' }}>
@@ -1220,6 +1341,17 @@ const ScheduleStepModal = ({ open, step, onClose, onSaveStep, events, dslFunctio
         </Button>
       </DialogActions>
     </Dialog>
+
+    {/* Function library — opens ON TOP of this schedule modal (separate Dialog),
+        so the schedule modal stays open behind it. */}
+    {showFunctionBrowser && (
+      <FunctionBrowser
+        dslFunctions={dslFunctions || []}
+        initialCategory="Schedule (column-only)"
+        onClose={() => setShowFunctionBrowser(false)}
+      />
+    )}
+    </>
   );
 };
 

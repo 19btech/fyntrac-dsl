@@ -16,6 +16,7 @@ Usage:
     result = runner.run_from_json(python_code, raw_json_records)
 """
 
+import ast
 import os
 import re
 from typing import Any, Dict, List, Optional
@@ -24,6 +25,72 @@ try:
     from FyntracPythonModel.data_transformer import transform
 except ImportError:
     from data_transformer import transform
+
+
+# ---------------------------------------------------------------------------
+# Execution-sandbox security (mirrors backend/server.py)
+# ---------------------------------------------------------------------------
+# Modules a generated template legitimately imports (after import-path rewriting
+# in _fix_import_paths). Used by BOTH the AST validator below and the guarded
+# __import__ in _build_safe_builtins so the allow-list has a single source.
+_ALLOWED_IMPORT_MODULES = frozenset({
+    'sys', 'os', 'json', 'datetime', 'inspect',
+    'dsl_functions', 'backend', 'backend.dsl_functions',
+    'FyntracPythonModel', 'FyntracPythonModel.dsl_functions',
+})
+
+# Dunders the trusted scaffolding itself uses; everything else is blocked.
+_ALLOWED_DUNDER_NAMES = frozenset({'__file__', '__name__'})
+
+
+class ModelSecurityError(Exception):
+    """Raised when a generated template contains a forbidden construct."""
+
+
+def _validate_template_ast(source: str, label: str = '<dsl_template>') -> None:
+    """Defense-in-depth: walk the AST of a generated template BEFORE exec and
+    reject any import outside the allow-list, or any dunder reference/attribute
+    outside the small allow-list (e.g. __import__, __class__, __subclasses__,
+    __globals__). Mirrors backend/server.py._validate_template_ast so the export
+    runtime is no more permissive than the playground that produced the code."""
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        # Let the caller's normal syntax-error handling surface the message.
+        return
+
+    def _is_forbidden_dunder(name: str) -> bool:
+        if not isinstance(name, str):
+            return False
+        if not (name.startswith('__') and name.endswith('__') and len(name) > 4):
+            return False
+        return name not in _ALLOWED_DUNDER_NAMES
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                root = (alias.name or '').split('.')[0]
+                if alias.name not in _ALLOWED_IMPORT_MODULES and root not in _ALLOWED_IMPORT_MODULES:
+                    raise ModelSecurityError(
+                        f"Disallowed import '{alias.name}' in {label}."
+                    )
+            continue
+        if isinstance(node, ast.ImportFrom):
+            module = node.module or ''
+            root = module.split('.')[0]
+            if module not in _ALLOWED_IMPORT_MODULES and root not in _ALLOWED_IMPORT_MODULES:
+                raise ModelSecurityError(
+                    f"Disallowed import 'from {module} import ...' in {label}."
+                )
+            continue
+        if isinstance(node, ast.Name) and _is_forbidden_dunder(node.id):
+            raise ModelSecurityError(
+                f"Use of '{node.id}' is not allowed in {label}."
+            )
+        if isinstance(node, ast.Attribute) and _is_forbidden_dunder(node.attr):
+            raise ModelSecurityError(
+                f"Access to attribute '{node.attr}' is not allowed in {label}."
+            )
 
 
 class TransactionOutput:
@@ -79,15 +146,27 @@ class ModelRunner:
     # Safe execution sandbox
     # ------------------------------------------------------------------
     def _build_safe_builtins(self) -> dict:
-        """Return a restricted __builtins__ dict that blocks dangerous operations."""
+        """Return a restricted __builtins__ dict that blocks dangerous operations
+        and confines __import__ to the fixed module allow-list
+        (_ALLOWED_IMPORT_MODULES) — defense in depth beyond blocking exec/eval/
+        open, and beyond the AST validator."""
         import builtins
         blocked = {'exec', 'eval', 'compile', 'open', 'input', 'breakpoint'}
         safe = {}
         for name in dir(builtins):
             if name not in blocked:
                 safe[name] = getattr(builtins, name)
-        # Allow __import__ so the template's own import statements work
-        safe['__import__'] = __import__
+        real_import = getattr(builtins, '__import__')
+
+        def _guarded_import(name, _globals=None, _locals=None, fromlist=(), level=0):
+            root = (name or '').split('.')[0]
+            if name in _ALLOWED_IMPORT_MODULES or root in _ALLOWED_IMPORT_MODULES:
+                return real_import(name, _globals, _locals, fromlist, level)
+            raise ImportError(
+                f"Import of '{name}' is not permitted in the model execution sandbox."
+            )
+
+        safe['__import__'] = _guarded_import
         return safe
 
     # ------------------------------------------------------------------
@@ -142,6 +221,11 @@ class ModelRunner:
         """
         try:
             python_code = self._fix_import_paths(python_code)
+
+            # Defense-in-depth: AST-validate the (rewritten) template BEFORE exec
+            # so a malformed/tampered artifact cannot import arbitrary modules or
+            # reach dunder introspection, even though exec/eval/open are blocked.
+            _validate_template_ast(python_code, label='<dsl_template>')
 
             exec_globals = {
                 '__file__': os.path.abspath(__file__),

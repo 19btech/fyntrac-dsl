@@ -8,11 +8,13 @@ import { X } from "lucide-react";
  *
  * Props:
  *   badge      – uppercase label for the category chip  (e.g. "TRANSACTION")
- *   badgeColor – hex color for the chip accent  (default #3f51b5)
+ *   BadgeIcon  – optional lucide icon component rendered inside the badge chip
+ *   badgeColor – hex color for the chip accent  (default #5B5FED)
  *   title      – main heading string or ReactNode
+ *   subtitle   – optional secondary line under the title (string or ReactNode)
  *   onClose    – close handler (omit to hide the close button)
  */
-const ModalHeader = ({ badge, title, onClose, badgeColor = "#3f51b5" }) => (
+const ModalHeader = ({ badge, BadgeIcon, title, subtitle, onClose, badgeColor = "#5B5FED" }) => (
   <Box
     sx={{
       display: "flex",
@@ -41,10 +43,11 @@ const ModalHeader = ({ badge, title, onClose, badgeColor = "#3f51b5" }) => (
       <Box>
         {badge && (
           <Chip
+            icon={BadgeIcon ? <BadgeIcon size={11} /> : undefined}
             label={badge}
             size="small"
             sx={{
-              height: 18,
+              height: 20,
               fontSize: "0.6rem",
               fontWeight: 700,
               letterSpacing: 0.8,
@@ -53,6 +56,7 @@ const ModalHeader = ({ badge, title, onClose, badgeColor = "#3f51b5" }) => (
               color: badgeColor,
               mb: 0.5,
               borderRadius: 1,
+              "& .MuiChip-icon": { color: badgeColor, ml: 0.5, mr: -0.25 },
             }}
           />
         )}
@@ -63,6 +67,14 @@ const ModalHeader = ({ badge, title, onClose, badgeColor = "#3f51b5" }) => (
         >
           {title}
         </Typography>
+        {subtitle && (
+          <Typography
+            variant="body2"
+            sx={{ color: "text.secondary", mt: 0.25, lineHeight: 1.3 }}
+          >
+            {subtitle}
+          </Typography>
+        )}
       </Box>
     </Box>
 

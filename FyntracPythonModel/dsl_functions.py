@@ -3579,6 +3579,26 @@ DSL_FUNCTION_METADATA = [
     {"name": "schedule_column", "params": "schedule, column", "description": "Return all values from a specified column of a schedule as a list.", "category": "Schedule"},
     {"name": "schedule_filter", "params": "schedule, match_column, match_value, return_column", "description": "Find the first row in a schedule where a column matches a given value and return the corresponding value from another column.", "category": "Schedule"},
 
+    # Schedule column-only built-ins (15) — these are ONLY available INSIDE a
+    # schedule step's column formulas (and create_saved_schedule columns). They
+    # are not callable in calc/condition/iteration steps. `scope` flags them so
+    # the function browser can show them in a dedicated, clearly-labelled group.
+    {"name": "lag", "params": "column_name, offset, default", "description": "ONLY inside a schedule column formula: return a PRIOR row's value of a column (offset rows back), or `default` on the first rows. The key to rolling-balance schedules, e.g. opening_nbv = lag('closing_nbv', 1, opening_seed).", "category": "Schedule (column-only)", "scope": "schedule_column"},
+    {"name": "period_date", "params": "", "description": "Schedule column built-in: the current row's period date (YYYY-MM-DD string).", "category": "Schedule (column-only)", "scope": "schedule_column"},
+    {"name": "period_index", "params": "", "description": "Schedule column built-in: the current row's 0-based index in the schedule.", "category": "Schedule (column-only)", "scope": "schedule_column"},
+    {"name": "period_number", "params": "", "description": "Schedule column built-in: the current row's 1-based period number.", "category": "Schedule (column-only)", "scope": "schedule_column"},
+    {"name": "period_start", "params": "", "description": "Schedule column built-in: the next period's start date (used for day-count fraction).", "category": "Schedule (column-only)", "scope": "schedule_column"},
+    {"name": "total_periods", "params": "", "description": "Schedule column built-in: the total number of periods (rows) in the schedule.", "category": "Schedule (column-only)", "scope": "schedule_column"},
+    {"name": "dcf", "params": "", "description": "Schedule column built-in: the day-count fraction for the current period (per the schedule's convention).", "category": "Schedule (column-only)", "scope": "schedule_column"},
+    {"name": "days_in_current_period", "params": "", "description": "Schedule column built-in: the number of days in the current period.", "category": "Schedule (column-only)", "scope": "schedule_column"},
+    {"name": "daily_basis", "params": "", "description": "Schedule column built-in: the per-day basis amount for the current period.", "category": "Schedule (column-only)", "scope": "schedule_column"},
+    {"name": "start_date", "params": "", "description": "Schedule column built-in: the schedule's overall start date.", "category": "Schedule (column-only)", "scope": "schedule_column"},
+    {"name": "end_date", "params": "", "description": "Schedule column built-in: the schedule's overall end date.", "category": "Schedule (column-only)", "scope": "schedule_column"},
+    {"name": "s_no", "params": "", "description": "Schedule column built-in: the serial number of the current row.", "category": "Schedule (column-only)", "scope": "schedule_column"},
+    {"name": "index", "params": "", "description": "Schedule column built-in: alias for the current row index.", "category": "Schedule (column-only)", "scope": "schedule_column"},
+    {"name": "item_name", "params": "", "description": "Schedule column built-in: the name of the current item (per-item / array schedules).", "category": "Schedule (column-only)", "scope": "schedule_column"},
+    {"name": "subinstrument_id", "params": "", "description": "Schedule column built-in: the sub-instrument id for the current schedule (per-item / array schedules).", "category": "Schedule (column-only)", "scope": "schedule_column"},
+
     # Aggregation (13)
     {"name": "sum", "params": "col", "description": "Add up all values in a list, ignoring any empty entries.", "category": "Aggregation"},
     {"name": "sum_field", "params": "array, field", "description": "Add up a specific named field from a list of records, treating any missing values as zero.", "category": "Aggregation"},

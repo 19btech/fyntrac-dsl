@@ -220,7 +220,6 @@ class OpenAIProvider(AIProvider):
 
 # ──────────────────────────────────────────────────────────────────────────
 # Shared OpenAI-compatible tool-calling implementation.
-# Used by both OpenAI and DeepSeek providers.
 # ──────────────────────────────────────────────────────────────────────────
 
 import json as _json

@@ -25,6 +25,7 @@ from __future__ import annotations
 import contextvars
 import json
 import logging
+import os
 import random
 import re
 import uuid
@@ -48,6 +49,33 @@ def set_current_run_id(run_id: str) -> None:
         current_run_id.set(run_id or "")
     except Exception:
         pass
+
+
+# Stable per-conversation id (survives across the many run_ids of one chat).
+# The plan store keys off this so a follow-up turn finds the plan submitted in
+# an earlier turn without the old "inherit from the most recent run" hack.
+current_session_id: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "current_session_id", default=""
+)
+
+
+def set_current_session_id(session_id: str) -> None:
+    """Called by runtime.py alongside set_current_run_id. Safe with ''."""
+    try:
+        current_session_id.set(session_id or "")
+    except Exception:
+        pass
+
+
+# Maker-checker. When REQUIRE_AGENT_APPROVAL is set, every agent rule write is
+# marked `pending` (recording the agent as maker) and a human must approve it
+# via the approval endpoints before the rule's template can be deployed. Read
+# from the environment so server.py (settings.require_agent_approval) and the
+# agent tools stay in sync off the SAME variable, and so tests can toggle it.
+def _require_agent_approval() -> bool:
+    return os.environ.get("REQUIRE_AGENT_APPROVAL", "").strip().lower() in (
+        "1", "true", "yes", "on",
+    )
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -1820,7 +1848,7 @@ def _enforce_dsl_guardrails(dsl_code: str) -> None:
 
 # ──────────────────────────────────────────────────────────────────────────
 # Boolean / null literal coercion.
-# Weak / non-Python-trained models (gpt-5-mini, deepseek-chat, …) routinely
+# Weak / non-Python-trained models (gpt-5-mini, smaller GPT tiers, …) routinely
 # emit JS-style `true` / `false` / `null` inside DSL formulas. The validator
 # then surfaces those as `undefined name`, the agent loops, and the run
 # halts with a "what's the boolean syntax?" question to the user. Auto-fix
@@ -1865,6 +1893,36 @@ def _coerce_lower_booleans(text):
     return "".join(parts)
 
 
+def _strip_string_literals(expr: str) -> str:
+    """Return `expr` with the CONTENTS of every string literal blanked to
+    spaces (same length, positions preserved). Lets structural checks match
+    only OUTSIDE quoted text, so a legitimate `[`, `;`, `{`, etc. inside a
+    string literal is not mistaken for unsupported syntax."""
+    if not isinstance(expr, str) or not expr:
+        return expr or ""
+    return _STRING_LITERAL_RE.sub(lambda m: " " * len(m.group(0)), expr)
+
+
+_BARE_EQ_RE = re.compile(r'(?<![=!<>])=(?!=)')
+
+
+def _normalize_bare_equals(cond: str) -> str:
+    """Turn a bare `=` into `==` OUTSIDE string literals (so a DSL equality
+    check isn't read as a Python keyword argument when wrapped in if(...)).
+    String-literal contents are left byte-for-byte intact, so `eq(code,
+    "A=1")` is preserved instead of corrupted to `"A==1"`."""
+    if not isinstance(cond, str) or not cond:
+        return cond
+    parts: list[str] = []
+    last = 0
+    for m in _STRING_LITERAL_RE.finditer(cond):
+        parts.append(_BARE_EQ_RE.sub("==", cond[last:m.start()]))
+        parts.append(m.group(0))
+        last = m.end()
+    parts.append(_BARE_EQ_RE.sub("==", cond[last:]))
+    return "".join(parts)
+
+
 # ──────────────────────────────────────────────────────────────────────────
 # Pre-flight expression validators — catch the structural mistakes that
 # show up as cryptic 'unterminated string literal' or 'invalid syntax'
@@ -1891,7 +1949,9 @@ _UNSUPPORTED_EXPR_PATTERNS: list[tuple[re.Pattern, str]] = [
         "effectivedate, \"TxnType\", amount) directly in a calc step's formula."),
     (re.compile(r"[A-Za-z_]\w*\s*\["),
         "Bracket indexing `arr[i]` is not supported in DSL expressions. "
-        "Use lookup(arr, idx) or element_at(arr, idx) instead."),
+        "Use array_get(arr, i) to read an element (array_first(arr) / "
+        "array_last(arr) for the ends), or lag('col', n, default) inside a "
+        "schedule column."),
     (re.compile(r"\blet\s+[A-Za-z_]\w*\s*="),
         "`let` bindings are not supported. Each step has ONE expression. "
         "Break multi-step logic into multiple steps."),
@@ -1926,9 +1986,12 @@ def _check_iteration_expression(expr: str, *, where: str) -> None:
             f"To do multiple things, add more iteration entries or split "
             f"into multiple steps. Got: {expr[:120]!r}"
         )
-    # Generic structural patterns (push/createEventRow/brackets/let/semicolons)
+    # Generic structural patterns (push/createEventRow/brackets/let/semicolons).
+    # Match against the string-masked expression so a `[` / `;` INSIDE a quoted
+    # literal isn't mistaken for unsupported syntax.
+    masked = _strip_string_literals(expr)
     for pat, reason in _UNSUPPORTED_EXPR_PATTERNS:
-        if pat.search(expr):
+        if pat.search(masked):
             raise ToolError(f"In {where}: {reason} Got: {expr[:120]!r}")
 
 
@@ -1937,11 +2000,15 @@ def _check_formula_expression(expr: str, *, where: str) -> None:
     in some contexts but the structural patterns are always wrong."""
     if not isinstance(expr, str) or not expr:
         return
+    # Structural checks run against the string-masked expression so a legitimate
+    # `[`, `;`, `for`, `{`, etc. INSIDE a quoted literal isn't flagged as bad
+    # syntax. (The paren-balance scan below is already string-literal aware.)
+    masked = _strip_string_literals(expr)
     for pat, reason in _UNSUPPORTED_EXPR_PATTERNS:
-        if pat.search(expr):
+        if pat.search(masked):
             raise ToolError(f"In {where}: {reason} Got: {expr[:120]!r}")
     # Python `for ... in` / `while` loops inside an expression are never valid
-    if re.search(r"\bfor\s+[A-Za-z_]\w*\s+in\b", expr) or re.search(r"\bwhile\b", expr):
+    if re.search(r"\bfor\s+[A-Za-z_]\w*\s+in\b", masked) or re.search(r"\bwhile\b", masked):
         raise ToolError(
             f"In {where}: Python loops (`for`/`while`) are not allowed inside "
             f"an expression. Use stepType='iteration' with sourceArray instead. "
@@ -1952,7 +2019,7 @@ def _check_formula_expression(expr: str, *, where: str) -> None:
     # `if(cond, {field: value}, ...)` or `f"{x}"` which trips the Python
     # tokenizer with a cryptic "closing parenthesis '}' does not match
     # opening parenthesis '('" message at code-gen time. Reject up front.
-    if "{" in expr or "}" in expr:
+    if "{" in masked or "}" in masked:
         raise ToolError(
             f"In {where}: curly braces `{{` `}}` are not allowed in DSL "
             f"expressions. The DSL has NO dict/set literals and NO f-strings. "
@@ -2645,8 +2712,9 @@ def _build_condition_expr(conditions: list[dict], else_formula: str) -> str:
             then_part = c.get("thenFormula") or "0"
         # Normalize bare = to == so DSL equality checks don't become Python
         # keyword arguments when the condition is placed inside iif(cond, ...).
-        # E.g. "DEP_X=DEP_Y" → "DEP_X==DEP_Y".  Leaves ==, !=, <=, >= intact.
-        cond_str = re.sub(r'(?<![=!<>])=(?!=)', '==', c['condition'])
+        # E.g. "DEP_X=DEP_Y" → "DEP_X==DEP_Y".  Leaves ==, !=, <=, >= AND string
+        # literals (e.g. eq(code, "A=1")) intact — see _normalize_bare_equals.
+        cond_str = _normalize_bare_equals(c['condition'])
         nested = f"if({cond_str}, {then_part}, {nested})"
     return nested
 
@@ -2669,17 +2737,19 @@ def _build_iteration_lines(iters: list[dict], available: list[str]) -> list[str]
         src = it.get("sourceArray") or ""
         sec = it.get("secondArray") or "[]"
         expr = it.get("expression") or ""
-        # Replace any double-quotes inside the expression with single-quotes so
-        # they don't break the outer double-quoted string wrapper in generated code.
-        safe_expr = expr.replace('"', "'")
+        # Embed the expression as a fully-escaped string literal (json.dumps
+        # yields a double-quoted, escaped literal that is also valid Python) so
+        # quotes/apostrophes inside it can't break the generated code — e.g.
+        # concat("it's", x) survives instead of producing mismatched quotes.
+        expr_lit = json.dumps(expr)
         if it.get("type") == "apply_each":
-            lines.append(f'{rv} = apply_each({src}, "{safe_expr}"{ctx_str})')
+            lines.append(f'{rv} = apply_each({src}, {expr_lit}{ctx_str})')
         elif it.get("type") == "apply_each_paired":
-            lines.append(f'{rv} = apply_each({src}, {sec}, "{safe_expr}"{ctx_str})')
+            lines.append(f'{rv} = apply_each({src}, {sec}, {expr_lit}{ctx_str})')
         else:
             vn = it.get("varName") or "each"
             sv = it.get("secondVar") or "second"
-            lines.append(f'{rv} = for_each({src}, {sec}, "{vn}", "{sv}", "{safe_expr}")')
+            lines.append(f'{rv} = for_each({src}, {sec}, "{vn}", "{sv}", {expr_lit})')
         if rv:
             iter_results.append(rv)
     return lines
@@ -2757,6 +2827,16 @@ def _generate_rule_code(rule: dict) -> str:
         elif st == "schedule":
             sc = s.get("scheduleConfig") or {}
             sched_lines: list[str] = ["## Schedule"]
+            # Frequency: normally a fixed enum, but a `frequencyFormula` (e.g.
+            # if(is_monthly,"M","Q")) is emitted UNQUOTED so it resolves at
+            # runtime to one of the valid frequency codes.
+            _freq_formula = (sc.get("frequencyFormula") or "").strip()
+            freq_token = _freq_formula if _freq_formula else f'"{sc.get("frequency") or "M"}"'
+            # runIf: when set, gate the period so it materialises ZERO rows when
+            # the condition is false (count→0 / end→""). Schedule accessors then
+            # return 0/[] safely, so the schedule effectively "does not fire".
+            # Pair two schedules with inverse runIf for if/else selection.
+            _run_if = (sc.get("runIf") or "").strip()
             # Period definition
             if sc.get("periodType") == "number":
                 src_t = sc.get("periodCountSource")
@@ -2766,7 +2846,9 @@ def _generate_rule_code(rule: dict) -> str:
                     count_expr = sc["periodCountFormula"]
                 else:
                     count_expr = sc.get("periodCount") or 12
-                sched_lines.append(f'p = period({count_expr}, "{sc.get("frequency") or "M"}")')
+                if _run_if:
+                    count_expr = f'if({_run_if}, {count_expr}, 0)'
+                sched_lines.append(f'p = period({count_expr}, {freq_token})')
             else:
                 if sc.get("startDateSource") == "field" and sc.get("startDateField"):
                     start_expr = sc["startDateField"]
@@ -2780,7 +2862,9 @@ def _generate_rule_code(rule: dict) -> str:
                     end_expr = sc["endDateFormula"]
                 else:
                     end_expr = f'"{sc.get("endDate") or "2026-12-31"}"'
-                period_call = f'p = period({start_expr}, {end_expr}, "{sc.get("frequency") or "M"}"'
+                if _run_if:
+                    end_expr = f'if({_run_if}, {end_expr}, "")'
+                period_call = f'p = period({start_expr}, {end_expr}, {freq_token}'
                 if sc.get("convention"):
                     period_call += f', "{sc["convention"]}"'
                 period_call += ")"
@@ -3005,6 +3089,32 @@ def _validate_schedule_step_shape(name: str, sc: dict, outputVars: list,
             f"invalid. Must be one of {sorted(_VALID_DC_CONVENTIONS - {''})}."
         )
     sc["convention"] = convention
+
+    # runIf: optional DSL boolean expression. When false at runtime the schedule
+    # materialises ZERO rows (so it "does not fire"); pair two schedules with
+    # inverse runIf for if/else selection. Validate it like any other formula.
+    run_if = (sc.get("runIf") or "").strip()
+    if run_if:
+        run_if = _coerce_lower_booleans(run_if)
+        _enforce_dsl_guardrails(run_if)
+        _check_formula_expression(run_if, where=f"step '{name}'.scheduleConfig.runIf")
+        _check_function_calls(run_if, where=f"step '{name}'.scheduleConfig.runIf")
+        sc["runIf"] = run_if
+    else:
+        sc.pop("runIf", None)
+
+    # frequencyFormula: optional DSL expression resolving to a frequency code at
+    # runtime (e.g. if(is_monthly,"M","Q")). Overrides the static `frequency`,
+    # which is kept as a fallback default. Validated like any other formula.
+    freq_formula = (sc.get("frequencyFormula") or "").strip()
+    if freq_formula:
+        freq_formula = _coerce_lower_booleans(freq_formula)
+        _enforce_dsl_guardrails(freq_formula)
+        _check_formula_expression(freq_formula, where=f"step '{name}'.scheduleConfig.frequencyFormula")
+        _check_function_calls(freq_formula, where=f"step '{name}'.scheduleConfig.frequencyFormula")
+        sc["frequencyFormula"] = freq_formula
+    else:
+        sc.pop("frequencyFormula", None)
 
     # Aggregate errors so the agent sees ALL schedule-config problems in one
     # turn instead of one-error-per-round-trip. Synonym aliases (eg. the
@@ -3736,9 +3846,13 @@ def _validate_step_shape(step: dict) -> dict:
     return out
 
 
-async def _save_rule_doc(rule: dict, *, is_new: bool) -> dict:
+async def _save_rule_doc(rule: dict, *, is_new: bool, snapshot: bool = True) -> dict:
     """Insert or replace a saved_rules document. Refreshes generatedCode &
-    legacy denorm fields so the rule loads cleanly in the UI."""
+    legacy denorm fields so the rule loads cleanly in the UI.
+
+    `snapshot=False` skips writing a rule_history entry — used by revert_rule so
+    a revert consumes history monotonically (step-back) instead of pushing a new
+    forward snapshot that would make reverts oscillate between two versions."""
     db = _ServerBridge.db
     if db is None:
         raise ToolError("Database is not available")
@@ -3785,6 +3899,26 @@ async def _save_rule_doc(rule: dict, *, is_new: bool) -> dict:
         )
     rule["generatedCode"] = _generate_rule_code(rule)
     rule["updated_at"] = datetime.now(timezone.utc).isoformat()
+    # Maker-checker: when enabled, every agent write lands as `pending` and
+    # records the agent as maker. A human checker must approve it (via the
+    # approval endpoints) before the rule's template can be deployed. Editing an
+    # already-approved rule correctly sends it back to pending (re-approval).
+    if _require_agent_approval():
+        _steps_n = len(rule.get("steps") or [])
+        _txns_n = len((rule.get("outputs") or {}).get("transactions") or [])
+        _verb = "Create" if is_new else "Update"
+        rule["approval_status"] = "pending"
+        rule["approval"] = {
+            "maker": "agent",
+            "submitted_at": rule["updated_at"],
+            "checker": None,
+            "decided_at": None,
+            "note": "",
+            "change_summary": (
+                f"{_verb} rule '{rule.get('name')}' — {_steps_n} step(s), "
+                f"{_txns_n} transaction(s)."
+            ),
+        }
     if is_new:
         rule.setdefault("id", str(uuid.uuid4()))
         rule.setdefault("created_at", rule["updated_at"])
@@ -3799,7 +3933,7 @@ async def _save_rule_doc(rule: dict, *, is_new: bool) -> dict:
         try:
             existing = await db.saved_rules.find_one(
                 {"id": rule["id"]}, {"_id": 0}
-            )
+            ) if snapshot else None
             if existing:
                 existing.pop("_id", None)
                 snap = {
@@ -3820,6 +3954,36 @@ async def _save_rule_doc(rule: dict, *, is_new: bool) -> dict:
         await db.saved_rules.replace_one({"id": rule["id"]}, rule, upsert=True)
     rule.pop("_id", None)
     return rule
+
+
+async def unapproved_rules_in_template(db, template_doc: dict) -> list[dict]:
+    """Maker-checker deploy gate. Return the rules referenced by a user_template
+    that are NOT approved (live status 'pending' or 'rejected'), looked up by id
+    in saved_rules. Rules with no approval_status (legacy / human-authored) are
+    treated as approved so pre-existing templates are never blocked. Returns a
+    list of {id, name, approval_status}."""
+    if db is None:
+        return []
+    out: list[dict] = []
+    seen: set[str] = set()
+    for r in (template_doc.get("rules") or []):
+        rid = (r.get("id") if isinstance(r, dict) else None)
+        if not rid or rid in seen:
+            continue
+        seen.add(rid)
+        try:
+            live = await db.saved_rules.find_one(
+                {"id": rid}, {"_id": 0, "name": 1, "approval_status": 1}
+            )
+        except Exception:
+            continue
+        if not live:
+            continue  # rule no longer exists — not blocked by this gate
+        status = live.get("approval_status")
+        if status in ("pending", "rejected"):
+            out.append({"id": rid, "name": live.get("name"),
+                        "approval_status": status})
+    return out
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -4037,7 +4201,8 @@ async def _detect_multi_subid_events(steps: list[dict]) -> list[str]:
             if isinstance(c, dict) and c.get("formula"):
                 blob_parts.append(str(c["formula"]))
         for k in ("startDateField", "endDateField", "periodCountField",
-                  "startDateFormula", "endDateFormula", "periodCountFormula"):
+                  "startDateFormula", "endDateFormula", "periodCountFormula",
+                  "runIf", "frequencyFormula"):
             v = sc.get(k)
             if v:
                 blob_parts.append(str(v))
@@ -4398,7 +4563,8 @@ def _step_referenced_names(step: dict) -> list[tuple[str, str]]:
                 ))
             if cname:
                 prior_cols.append(cname)
-        for k in ("periodCountFormula", "startDateFormula", "endDateFormula"):
+        for k in ("periodCountFormula", "startDateFormula", "endDateFormula",
+                  "runIf", "frequencyFormula"):
             v = sc.get(k) or ""
             if v:
                 refs.append((f"step '{nm}'.scheduleConfig.{k}", v))
@@ -5134,7 +5300,15 @@ def _ptr_get_parent(root: Any, parts: list[str]) -> tuple[Any, str | int]:
     last = parts[-1]
     if isinstance(cur, list):
         # '-' means "append" per RFC 6901
-        return cur, (last if last == "-" else int(last))
+        if last == "-":
+            return cur, "-"
+        try:
+            return cur, int(last)
+        except ValueError:
+            raise ToolError(
+                f"JSON Pointer step '/{last}' must be a list index (integer) "
+                f"or '-' (append) — the target is a list."
+            )
     return cur, last
 
 
@@ -5632,9 +5806,60 @@ async def tool_find_similar_template(args: dict) -> dict:
     }
 
 
-# Per-process plan registry. Lightweight — survives until process restart;
-# real persistence not needed because plans are advisory only.
+# Plan store. Persisted to db.agent_plans when a DB is available (durable
+# across turns / restarts / workers); the in-process dict below is the
+# write-through cache AND the fallback when running in in-memory mode.
+# Keyed by session id (stable across the turns of one conversation), falling
+# back to run id, so a continuation turn finds the plan submitted earlier
+# WITHOUT the old "inherit the most recent run's plan" heuristic.
 _RUN_PLANS: dict[str, dict] = {}
+
+
+def _plan_key_from_context() -> str:
+    """Storage key for the active plan: prefer the stable session id, else the
+    per-turn run id, else 'default'."""
+    sid = (current_session_id.get() or "").strip()
+    if sid:
+        return f"session:{sid}"
+    rid = (current_run_id.get() or "").strip()
+    return rid or "default"
+
+
+async def _store_plan(key: str, plan: dict) -> None:
+    """Write-through: update the in-process cache and persist to Mongo (best
+    effort). Falls back to cache-only when no DB is configured."""
+    _RUN_PLANS[key] = plan
+    db = _ServerBridge.db
+    if db is None:
+        return
+    try:
+        await db.agent_plans.update_one(
+            {"_key": key},
+            {"$set": {"_key": key, "plan": plan,
+                      "updated_at": datetime.now(timezone.utc).isoformat()}},
+            upsert=True,
+        )
+    except Exception as exc:
+        logger.warning("persist agent_plan failed: %s", exc)
+
+
+async def _get_plan(key: str) -> dict | None:
+    """Return the stored plan for `key`, consulting the cache first, then Mongo
+    (warming the cache on hit). Returns None if no plan exists anywhere."""
+    cached = _RUN_PLANS.get(key)
+    if cached is not None:
+        return cached
+    db = _ServerBridge.db
+    if db is None:
+        return None
+    try:
+        doc = await db.agent_plans.find_one({"_key": key}, {"_id": 0})
+        if doc and doc.get("plan"):
+            _RUN_PLANS[key] = doc["plan"]  # warm cache
+            return doc["plan"]
+    except Exception as exc:
+        logger.warning("load agent_plan failed: %s", exc)
+    return None
 
 
 async def tool_submit_plan(args: dict) -> dict:
@@ -5690,7 +5915,9 @@ async def tool_submit_plan(args: dict) -> dict:
             "steps_outline": [str(s).strip() for s in (r.get("steps_outline") or []) if str(s).strip()],
             "transactions": [str(t).strip() for t in (r.get("transactions") or []) if str(t).strip()],
         })
+    key = _plan_key_from_context()
     plan = {
+        "key": key,
         "run_id": (args.get("run_id") or "").strip() or "default",
         "intent": intent,
         "pattern_id": pid,
@@ -5699,7 +5926,7 @@ async def tool_submit_plan(args: dict) -> dict:
         "rules": norm_rules,
         "submitted_at": datetime.now(timezone.utc).isoformat(),
     }
-    _RUN_PLANS[plan["run_id"]] = plan
+    await _store_plan(key, plan)
     return {
         "ok": True,
         "plan": plan,
@@ -7214,7 +7441,18 @@ async def tool_finish(args: dict) -> dict:
                 f"'would you like'. Example: 'Need the user to confirm whether "
                 f"the PD floor is 0.0001 or 0.001 before continuing.'"
             )
-    return {"summary": summary, "done": True}
+    result = {"summary": summary, "done": True}
+    # Maker-checker transparency: when approval is enforced, tell the user the
+    # rules are pending human sign-off and cannot be deployed until approved.
+    if _require_agent_approval() and rule_ids:
+        result["approval_required"] = True
+        result["approval_note"] = (
+            "Maker-checker is enabled: the rule(s) above are saved as PENDING "
+            "and must be approved by a reviewer (GET /api/agent/approvals → "
+            "POST /api/agent/approvals/{rule_id}/approve) before the template "
+            "can be deployed."
+        )
+    return result
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -8281,6 +8519,259 @@ async def tool_dry_run_rule(args: dict) -> dict:
 
 
 # ──────────────────────────────────────────────────────────────────────────
+# Self-correctness / introspection tools (Phase 4)
+# These let the agent CHECK its own work cheaply (no side effects) before it
+# commits — turning trial-and-error round-trips into a single self-review.
+# They reuse the exact validators the write path enforces, so what passes here
+# is what will pass at save time (no drift).
+# ──────────────────────────────────────────────────────────────────────────
+
+async def tool_lint_expression(args: dict) -> dict:
+    """Statically lint ONE DSL expression without saving anything. Returns
+    {ok, errors[], coerced} and never raises on a lint failure — so the agent
+    can self-check a formula/condition/iteration expression BEFORE committing
+    it to a step. Same checks the write path enforces."""
+    expr = args.get("expression")
+    if not isinstance(expr, str) or not expr.strip():
+        raise ToolError("`expression` (a non-empty DSL expression string) is required")
+    kind = (args.get("kind") or "formula").strip().lower()
+    if kind not in ("formula", "value", "condition", "iteration"):
+        kind = "formula"
+    coerced = _coerce_lower_booleans(expr)
+    errors: list[dict] = []
+    where = f"lint:{kind}"
+    try:
+        _enforce_dsl_guardrails(coerced)
+    except ToolError as te:
+        errors.append({"code": "forbidden_construct", "message": str(te)})
+    try:
+        if kind == "iteration":
+            _check_iteration_expression(coerced, where=where)
+        else:
+            _check_formula_expression(coerced, where=where)
+    except ToolError as te:
+        errors.append({"code": "expr_structure", "message": str(te)})
+    try:
+        _check_function_calls(coerced, where=where, extra_names={"each", "second"})
+    except ToolError as te:
+        errors.append({"code": "unknown_function", "message": str(te)})
+    return {
+        "ok": not errors,
+        "expression": expr,
+        "coerced": (coerced if coerced != expr else None),
+        "kind": kind,
+        "errors": errors,
+        "hint": (
+            "Passes static lint (syntax/shape/function names only). This does "
+            "NOT confirm referenced variables exist — use debug_step for that."
+            if not errors else
+            "Fix the listed errors before committing this expression to a step. "
+            "If `coerced` is non-null, the write path will auto-rewrite to it."
+        ),
+    }
+
+
+async def tool_preview_generated_code(args: dict) -> dict:
+    """Return the Python a saved rule compiles to, so the agent can see exactly
+    what its DSL generates (variable assignments, transaction emission) BEFORE
+    dry-running. Read-only; no execution."""
+    rule = await _load_rule((args.get("rule_id") or "").strip())
+    try:
+        code = _generate_rule_code(rule)
+    except Exception as exc:
+        raise ToolError(f"Could not generate code for rule: {exc}") from exc
+    # Surface any static-validation findings alongside the code so the agent
+    # gets a single, complete picture of why a rule would fail at dry-run.
+    try:
+        static_errs = await _validate_rule_static(rule)
+    except Exception:
+        static_errs = []
+    return {
+        "rule_id": rule["id"],
+        "name": rule.get("name"),
+        "generated_code": code,
+        "line_count": len(code.splitlines()),
+        "static_errors": static_errs,
+        "hint": (
+            "This is the Python the engine will execute. Verify every variable "
+            "used in outputs.transactions[] and in each formula is assigned "
+            "ABOVE its first use. static_errors lists undefined references the "
+            "save gate would reject."
+        ),
+    }
+
+
+async def tool_explain_error(args: dict) -> dict:
+    """Map an engine/tool error string to its root-cause category and a
+    targeted, copy-pasteable fix recipe — the same diagnosis the runtime's
+    loop detector injects, but callable on demand. Use this the FIRST time an
+    error confuses you instead of guessing a second variation."""
+    err = args.get("error_text") or args.get("error") or ""
+    if not isinstance(err, str) or not err.strip():
+        raise ToolError("`error_text` (the exact error message you received) is required")
+    tool_name = (args.get("tool_name") or "").strip() or "unknown"
+    sig = "other"
+    guidance = ""
+    try:
+        # Lazy import: runtime imports tools, so import runtime only at call
+        # time to avoid a circular import at module load.
+        from .runtime import _error_signature, _build_loop_nudge
+        sig = _error_signature(err)
+        guidance = _build_loop_nudge(tool_name, sig, err)
+    except Exception:
+        guidance = (
+            "No specific recovery pattern matched. Re-read get_dsl_syntax_guide, "
+            "and copy the step shape from a working rule via get_saved_rule."
+        )
+    return {
+        "error_signature": sig,
+        "tool_name": tool_name,
+        "guidance": guidance,
+        "hint": (
+            "Apply the guidance above before retrying. If the same error class "
+            "recurs, call get_dsl_syntax_guide or get_saved_rule on a working "
+            "rule of the same shape and copy its structure exactly."
+        ),
+    }
+
+
+# Date field-name detector. Date fields are auto-handled by the sample-data
+# generator's built-in date heuristic (origination < maturity < posting), and
+# the date generator ignores `range` — so suggest_field_hints does NOT emit a
+# range for them; it just reports them as auto-handled.
+_DATE_NAME_RE = re.compile(
+    r"(date|maturity|acquisition|origination|posting|effective|revaluation|"
+    r"inception|expiry|start|end)", re.IGNORECASE)
+
+# Numeric field-name → (range, fractional?) rules. First match wins. Only the
+# `range` key is consumed by the generator (it picks the value TYPE from the
+# field's declared datatype), so that is all we emit. `fractional=True` ranges
+# (rates/ratios in [0,1]) are valid ONLY on decimal fields — on an integer
+# field random.randint(0.01, 0.15) would raise, so we skip them there.
+_NUMERIC_HINT_RULES: list[tuple[re.Pattern, tuple, bool]] = [
+    (re.compile(r"(rate|pd$|_pd|lgd|ltv|ccf|coupon|yield|discount|ead_rate|"
+                r"haircut|recovery|prob|ratio|pct|percent)", re.IGNORECASE),
+     (0.01, 0.15), True),
+    (re.compile(r"(months|life|term|tenor|periods?|duration|age)", re.IGNORECASE),
+     (12, 360), False),
+    (re.compile(r"(count|qty|quantity|num_|units?|number_of)", re.IGNORECASE),
+     (1, 100), False),
+    (re.compile(r"(principal|balance|amount|cost|exposure|ead$|_ead|upb|"
+                r"value|price|fee|payment|notional|carrying|fair_value|"
+                r"premium|loss|allowance|provision)", re.IGNORECASE),
+     (1000, 1000000), False),
+]
+
+
+async def tool_suggest_field_hints(args: dict) -> dict:
+    """Propose accounting-sensible `field_hints` for generate_sample_event_data
+    from an event's fields (rates as decimals in [0,1], money under $10M, tenors
+    as integer months). Datatype-aware: only emits a `range` (the key the
+    generator consumes) and never a fractional range on an integer field. Date
+    fields are auto-handled by the generator's date heuristic. Prevents the
+    zero/garbage-data loops from unbounded random sample values. Read-only."""
+    event_name = (args.get("event_name") or "").strip()
+    if not event_name:
+        raise ToolError("`event_name` is required")
+    evt = await _find_event_def(event_name)
+    if not evt:
+        raise ToolError(
+            f"Event '{event_name}' not found. Create it with "
+            f"create_event_definitions before requesting field hints."
+        )
+    fields = evt.get("fields") or []
+    hints: dict[str, dict] = {}
+    dates_auto: list[str] = []
+    skipped: list[str] = []
+    _skip = {"instrumentid", "subinstrumentid", "postingdate", "effectivedate"}
+    for f in fields:
+        fname = (f.get("name") if isinstance(f, dict) else str(f)) or ""
+        dtype = ((f.get("datatype") if isinstance(f, dict) else "") or "").lower()
+        if not fname or fname.strip().lower() in _skip:
+            continue
+        if dtype == "date" or _DATE_NAME_RE.search(fname):
+            dates_auto.append(fname)
+            continue
+        rng = None
+        for pat, spec, fractional in _NUMERIC_HINT_RULES:
+            if pat.search(fname):
+                # Fractional (rate) ranges only make sense on decimal fields.
+                if fractional and dtype in ("integer", "int"):
+                    break
+                rng = list(spec)
+                break
+        if rng is not None:
+            hints[fname] = {"range": rng}
+        else:
+            skipped.append(fname)
+    return {
+        "event_name": evt.get("event_name"),
+        "field_hints": hints,
+        "date_fields_auto_handled": dates_auto,
+        "unmapped_fields": skipped,
+        "hint": (
+            "Pass `field_hints` straight into generate_sample_event_data. Date "
+            "fields are auto-handled — no range needed. Review unmapped_fields: "
+            "give them explicit ranges if numeric. Rates are decimals (0.05 = "
+            "5%); money is under $10M/row."
+        ),
+    }
+
+
+async def tool_revert_rule(args: dict) -> dict:
+    """Undo the last edit to a rule by restoring its most recent saved
+    snapshot. Every rule write snapshots the prior version to rule_history
+    (20 kept); this restores the newest. The pre-revert state is itself
+    snapshotted, so a revert can be undone by reverting again. Use this to
+    back out a bad change instead of trying to manually reconstruct the
+    previous step shapes."""
+    db = _ServerBridge.db
+    if db is None:
+        raise ToolError("Database is not available")
+    rule = await _load_rule((args.get("rule_id") or "").strip())
+    rid = rule["id"]
+    # Most recent snapshot = the version immediately before the current one.
+    snap = await db.rule_history.find_one(
+        {"rule_id": rid}, sort=[("snapshot_at", -1)]
+    )
+    if not snap or not snap.get("rule_doc"):
+        raise ToolError(
+            f"No prior snapshot exists for rule '{rule.get('name')}' "
+            f"(id={rid}); there is nothing to revert to."
+        )
+    prior = dict(snap["rule_doc"])
+    prior.pop("_id", None)
+    prior["id"] = rid  # preserve identity
+    # Consume the snapshot we are restoring so a subsequent revert steps to the
+    # version BEFORE it (monotonic step-back), and re-save WITHOUT taking a new
+    # forward snapshot (snapshot=False) — otherwise reverts would oscillate.
+    try:
+        await db.rule_history.delete_one({"_id": snap.get("_id")})
+    except Exception:
+        pass
+    restored = await _save_rule_doc(prior, is_new=False, snapshot=False)
+    remaining = 0
+    try:
+        remaining = await db.rule_history.count_documents({"rule_id": rid})
+    except Exception:
+        pass
+    return {
+        "rule_id": rid,
+        "name": restored.get("name"),
+        "reverted_to_snapshot_at": snap.get("snapshot_at"),
+        "step_count": len(restored.get("steps") or []),
+        "earlier_versions_remaining": remaining,
+        "hint": (
+            "Rule restored to its previous saved version. Run debug_step / "
+            "dry_run_template to confirm the restored state behaves as expected. "
+            + (f"Revert again to step back another version "
+               f"({remaining} older version(s) available)."
+               if remaining else "This was the oldest saved version.")
+        ),
+    }
+
+
+# ──────────────────────────────────────────────────────────────────────────
 # Tool registry
 # ──────────────────────────────────────────────────────────────────────────
 
@@ -8334,6 +8825,12 @@ TOOLS: dict[str, Callable[[dict], Awaitable[dict]]] = {
     "debug_schedule": tool_debug_schedule,
     "verify_rule_complete": tool_verify_rule_complete,
     "attach_rules_to_template": tool_attach_rules_to_template,
+    # Self-correctness / introspection (Phase 4)
+    "lint_expression": tool_lint_expression,
+    "preview_generated_code": tool_preview_generated_code,
+    "explain_error": tool_explain_error,
+    "suggest_field_hints": tool_suggest_field_hints,
+    "revert_rule": tool_revert_rule,
     "finish": tool_finish,
     "validate_rule": tool_validate_rule,
 }
@@ -8613,7 +9110,7 @@ _STEP_SCHEMA = {
         "conditions": {"type": "array", "items": {"type": "object"}},
         "elseFormula": {"type": "string"},
         "iterations": {"type": "array", "items": {"type": "object"}},
-        "scheduleConfig": {"type": "object", "description": "For stepType:'schedule'. {periodType:'number'|'date_range', frequency:'D'|'M'|'Y', periodCount?:int, startDate?, endDate?, columns:[{name, formula}], contextVars?:[varname], convention?}"},
+        "scheduleConfig": {"type": "object", "description": "For stepType:'schedule'. {periodType:'number'|'date_range', frequency:'D'|'M'|'Y', periodCount?:int, startDate?, endDate?, columns:[{name, formula}], convention?, runIf?:'<bool DSL expr>' (schedule produces ZERO rows when false — pair two schedules with inverse runIf for if/else), frequencyFormula?:'<DSL expr -> freq code>' (dynamic frequency, overrides frequency). contextVars is auto-derived — do not set it.}"},
         "outputVars": {
             "type": "array",
             "items": {"type": "object"},
@@ -9213,6 +9710,95 @@ TOOL_SCHEMAS.extend([
             },
         },
     },
+    {
+        "name": "lint_expression",
+        "description": (
+            "Statically check ONE DSL expression for syntax/shape/function-name "
+            "errors WITHOUT saving anything. Use this to self-verify a formula, "
+            "condition, or iteration expression BEFORE committing it to a step — "
+            "it runs the exact checks the save path enforces, so what passes "
+            "here will pass at write time. Returns {ok, errors[], coerced}. It "
+            "does NOT verify referenced variables exist (use debug_step for that)."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "expression": {"type": "string", "description": "The DSL expression to lint."},
+                "kind": {"type": "string", "enum": ["formula", "value", "condition", "iteration"],
+                          "description": "Which expression slot this is for. Iteration is strictest (single-line)."},
+            },
+            "required": ["expression"],
+        },
+    },
+    {
+        "name": "preview_generated_code",
+        "description": (
+            "Return the Python a saved rule compiles to, plus any static-"
+            "validation findings. Use this to SEE what your DSL generates "
+            "(variable assignments, transaction emission) and catch undefined "
+            "references before dry-running. Read-only; nothing is executed."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "rule_id": {"type": "string", "description": "Id (or name) of the saved rule."},
+            },
+            "required": ["rule_id"],
+        },
+    },
+    {
+        "name": "explain_error",
+        "description": (
+            "Diagnose an engine/tool error: maps the message to its root-cause "
+            "category and returns a targeted, copy-pasteable fix recipe (the "
+            "same diagnosis the runtime injects when it detects a loop). Call "
+            "this the FIRST time an error confuses you, instead of guessing a "
+            "second variation of the failing call."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "error_text": {"type": "string", "description": "The exact error message you received."},
+                "tool_name": {"type": "string", "description": "Optional: the tool that produced the error."},
+            },
+            "required": ["error_text"],
+        },
+    },
+    {
+        "name": "suggest_field_hints",
+        "description": (
+            "Propose accounting-sensible `field_hints` for an event's fields "
+            "(rates as decimals in [0,1], money under $10M, dates spanning ~2 "
+            "years, tenors as integer months) based on field names. Pass the "
+            "result straight into generate_sample_event_data to avoid the "
+            "zero/garbage-data loops that come from unbounded random values. "
+            "Read-only."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "event_name": {"type": "string", "description": "Event whose fields to generate hints for."},
+            },
+            "required": ["event_name"],
+        },
+    },
+    {
+        "name": "revert_rule",
+        "description": (
+            "Undo the last edit to a rule by restoring its most recent saved "
+            "snapshot (rule_history keeps the last 20 versions). The pre-revert "
+            "state is snapshotted too, so a revert is itself undoable. Use this "
+            "to back out a bad change cleanly instead of manually reconstructing "
+            "the previous step shapes."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "rule_id": {"type": "string", "description": "Id (or name) of the rule to revert."},
+            },
+            "required": ["rule_id"],
+        },
+    },
 ])
 
 
@@ -9248,48 +9834,31 @@ async def dispatch_tool(name: str, args: dict) -> dict:
     if not isinstance(args, dict):
         args = {}
     # ── A1 + A2 gate ─────────────────────────────────────────────────
+    # Plans are keyed by session id and persisted, so a continuation turn of
+    # the same conversation finds the plan submitted earlier directly — no
+    # cross-run inheritance heuristic needed. If no plan exists for this
+    # session/run (brand-new conversation, or a caller with no session), we
+    # auto-synthesise a minimal one so the gate is never a dead-end.
     if name in PLAN_GATED_TOOLS and not bool(args.get("force_unplanned")):
-        rid = (current_run_id.get() or "").strip()
-        plan_key = rid or "default"
-        if plan_key not in _RUN_PLANS:
-            # Self-healing: if a plan already exists for ANY recent run_id
-            # in this process, inherit the most-recent one. This handles the
-            # common case where the user kicks off a follow-up turn ("yes go
-            # ahead") that gets a fresh run_id but is semantically the same
-            # build. Without this, plan-gating becomes a one-shot footgun
-            # that strands every continuation turn.
-            if _RUN_PLANS:
-                last_key = next(reversed(_RUN_PLANS))
-                _RUN_PLANS[plan_key] = dict(_RUN_PLANS[last_key])
-                _RUN_PLANS[plan_key]["run_id"] = plan_key
-                _RUN_PLANS[plan_key]["inherited_from"] = last_key
-                logger.info(
-                    "plan-gate: inheriting plan from run_id=%s into %s for "
-                    "tool '%s' (continuation turn)", last_key, plan_key, name)
-            else:
-                # Genuinely brand-new conversation, no prior plan anywhere.
-                # Synthesise a minimal default so the gate never becomes a
-                # dead-end. The model can still submit a richer plan later;
-                # this only ensures the build is unblocked. Pattern A is
-                # the most common (schedule-with-filter); for a bare
-                # create_saved_rule we don't actually need a real pattern,
-                # we just need the gate to pass.
-                from .knowledge import get_pattern
-                default_intent = (
-                    (isinstance(args, dict) and (args.get("name") or args.get("intent")))
-                    or "auto-synthesised plan (no submit_plan was called)"
-                )
-                _RUN_PLANS[plan_key] = {
-                    "run_id": plan_key,
-                    "intent": str(default_intent),
-                    "pattern_id": "A",
-                    "events_needed": [],
-                    "transaction_types": [],
-                    "rules": [],
-                    "submitted_at": datetime.now(timezone.utc).isoformat(),
-                    "auto_synthesised": True,
-                }
-                logger.info(
-                    "plan-gate: auto-synthesised default plan for run_id=%s "
-                    "(tool '%s' was called without submit_plan)", plan_key, name)
+        plan_key = _plan_key_from_context()
+        existing = await _get_plan(plan_key)
+        if existing is None:
+            default_intent = (
+                (isinstance(args, dict) and (args.get("name") or args.get("intent")))
+                or "auto-synthesised plan (no submit_plan was called)"
+            )
+            await _store_plan(plan_key, {
+                "key": plan_key,
+                "run_id": (current_run_id.get() or "").strip() or "default",
+                "intent": str(default_intent),
+                "pattern_id": "A",
+                "events_needed": [],
+                "transaction_types": [],
+                "rules": [],
+                "submitted_at": datetime.now(timezone.utc).isoformat(),
+                "auto_synthesised": True,
+            })
+            logger.info(
+                "plan-gate: auto-synthesised default plan for key=%s "
+                "(tool '%s' was called without submit_plan)", plan_key, name)
     return await fn(args)

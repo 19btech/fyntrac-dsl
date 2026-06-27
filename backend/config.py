@@ -20,6 +20,13 @@ class Settings:
     host: str = os.environ.get('HOST', '0.0.0.0')
     port: int = int(os.environ.get('PORT', '8000'))
     log_level: str = os.environ.get('LOG_LEVEL', 'INFO')
+    # Maker-checker: when true, agent-authored rule writes are marked
+    # `pending` and a template cannot be deployed until every rule it contains
+    # has been approved by a human via the approval endpoints. Default off to
+    # preserve existing behaviour; turn ON for regulated/production use.
+    require_agent_approval: bool = os.environ.get(
+        'REQUIRE_AGENT_APPROVAL', 'false'
+    ).strip().lower() in ('1', 'true', 'yes', 'on')
 
 
 settings = Settings()

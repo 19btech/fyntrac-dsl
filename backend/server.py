@@ -115,6 +115,43 @@ def _validate_template_ast(source: str, label: str = '<dsl_template>') -> None:
 
 
 # ---------------------------------------------------------------------------
+# Sandbox builtins for DSL exec sites
+# ---------------------------------------------------------------------------
+# Every generated template is run via exec() with a restricted __builtins__.
+# Beyond removing the obvious code-exec / file / IO escape hatches, we replace
+# __import__ with a guard bound to _ALLOWED_IMPORT_MODULES. Previously __import__
+# was left fully available, so a bypass of the AST validator could reach
+# `__import__('os').system(...)`. The scaffolding's legitimate `import json` /
+# `import datetime` still work because those modules are on the allow-list.
+# ---------------------------------------------------------------------------
+
+_SANDBOX_BLOCKED_BUILTINS = ('exec', 'eval', 'compile', 'open', 'input', 'breakpoint')
+
+
+def _make_sandbox_builtins() -> dict:
+    """Return the restricted __builtins__ mapping used at every DSL exec site."""
+    if isinstance(__builtins__, dict):
+        base = dict(__builtins__)
+    else:
+        base = {k: getattr(__builtins__, k) for k in dir(__builtins__)}
+    real_import = base.get('__import__')
+    for _k in _SANDBOX_BLOCKED_BUILTINS:
+        base.pop(_k, None)
+
+    def _guarded_import(name, _globals=None, _locals=None, fromlist=(), level=0):
+        root = (name or '').split('.')[0]
+        if name in _ALLOWED_IMPORT_MODULES or root in _ALLOWED_IMPORT_MODULES:
+            return real_import(name, _globals, _locals, fromlist, level)
+        raise ImportError(
+            f"Import of '{name}' is not permitted in the DSL execution sandbox."
+        )
+
+    if real_import is not None:
+        base['__import__'] = _guarded_import
+    return base
+
+
+# ---------------------------------------------------------------------------
 # DSL *user code* AST safety validator (strict)
 # ---------------------------------------------------------------------------
 # The template scaffolding we generate is trusted and legitimately uses
@@ -1497,7 +1534,7 @@ async def execute_python_template(python_code: str, event_data: List[Dict[str, A
         exec_globals = {
             '__file__': os.path.abspath(__file__),
             '__name__': '__dsl_template__',
-            '__builtins__': {k: v for k, v in __builtins__.items() if k not in ('exec', 'eval', 'compile', 'open', 'input', 'breakpoint')} if isinstance(__builtins__, dict) else {k: getattr(__builtins__, k) for k in dir(__builtins__) if k not in ('exec', 'eval', 'compile', 'open', 'input', 'breakpoint')},
+            '__builtins__': _make_sandbox_builtins(),
         }
         # Defense-in-depth: AST-validate the generated template before exec
         # so user-injected Custom Code cannot reach __import__, dunder
@@ -2764,7 +2801,7 @@ async def run_dsl_code(request: DSLRunRequest):
                 exec_globals = {
                     '__file__': os.path.abspath(__file__),
                     '__name__': '__dsl_standalone__',
-                    '__builtins__': {k: v for k, v in __builtins__.items() if k not in ('exec', 'eval', 'compile', 'open', 'input', 'breakpoint')} if isinstance(__builtins__, dict) else {k: getattr(__builtins__, k) for k in dir(__builtins__) if k not in ('exec', 'eval', 'compile', 'open', 'input', 'breakpoint')},
+                    '__builtins__': _make_sandbox_builtins(),
                 }
                 # Defense-in-depth: AST-validate the generated standalone
                 # template before exec to block __import__, dunder
@@ -3805,6 +3842,12 @@ class AgentApprovalRequest(BaseModel):
     decision: str  # "approve" | "deny"
 
 
+class AgentRuleApprovalRequest(BaseModel):
+    """Maker-checker decision on an agent-authored rule."""
+    checker: str                     # identity of the human reviewer
+    note: Optional[str] = ""         # rationale / rejection reason
+
+
 @api_router.post("/agent/run")
 async def agent_run_endpoint(req: AgentRunRequest):
     """SSE stream of an autonomous agent run.
@@ -3941,8 +3984,66 @@ async def agent_reset_session(session_id: str):
             from .agent import reset_session_history  # type: ignore
         except Exception:
             from agent import reset_session_history  # type: ignore
-    cleared = reset_session_history(session_id)
+    cleared = await reset_session_history(session_id, db=db)
     return {"ok": True, "session_id": session_id, "cleared": cleared}
+
+
+# ── Maker-checker: human review queue for agent-authored rules ──────────────
+
+@api_router.get("/agent/approvals")
+async def agent_list_approvals():
+    """List rules awaiting human approval (maker-checker). Each entry carries the
+    agent's change_summary and submission time so a reviewer can triage."""
+    try:
+        rules = await db.saved_rules.find(
+            {"approval_status": "pending"},
+            {"_id": 0, "id": 1, "name": 1, "priority": 1, "approval": 1,
+             "updated_at": 1},
+        ).sort("updated_at", -1).to_list(200)
+    except Exception:
+        rules = []
+    return {"pending": rules, "count": len(rules),
+            "enforced": settings.require_agent_approval}
+
+
+async def _decide_rule_approval(rule_id: str, req: AgentRuleApprovalRequest,
+                                decision: str) -> dict:
+    checker = (req.checker or "").strip()
+    if not checker:
+        raise HTTPException(status_code=400,
+                            detail="`checker` (reviewer identity) is required.")
+    rule = await db.saved_rules.find_one(
+        {"id": rule_id}, {"_id": 0, "approval": 1, "approval_status": 1, "name": 1}
+    )
+    if not rule:
+        raise HTTPException(status_code=404, detail="Rule not found.")
+    maker = ((rule.get("approval") or {}).get("maker") or "").strip()
+    if checker.lower() == maker.lower() and maker:
+        raise HTTPException(
+            status_code=400,
+            detail="Checker must differ from maker (segregation of duties).",
+        )
+    now = datetime.now(timezone.utc).isoformat()
+    await db.saved_rules.update_one({"id": rule_id}, {"$set": {
+        "approval_status": decision,
+        "approval.checker": checker,
+        "approval.decided_at": now,
+        "approval.note": (req.note or "").strip(),
+    }})
+    return {"ok": True, "rule_id": rule_id, "name": rule.get("name"),
+            "approval_status": decision, "checker": checker, "decided_at": now}
+
+
+@api_router.post("/agent/approvals/{rule_id}/approve")
+async def agent_approve_rule(rule_id: str, req: AgentRuleApprovalRequest):
+    """Approve an agent-authored rule so its template can be deployed."""
+    return await _decide_rule_approval(rule_id, req, "approved")
+
+
+@api_router.post("/agent/approvals/{rule_id}/reject")
+async def agent_reject_rule(rule_id: str, req: AgentRuleApprovalRequest):
+    """Reject an agent-authored rule (records the reviewer + reason)."""
+    return await _decide_rule_approval(rule_id, req, "rejected")
 
 
 @api_router.post("/import/transactions")
@@ -4689,6 +4790,30 @@ async def deploy_user_template(template_id: str):
     name = existing.get("name") or ""
     if not name:
         raise HTTPException(status_code=400, detail="Template has no name; cannot deploy.")
+
+    # Maker-checker gate: refuse to deploy if any rule in the template is still
+    # awaiting (or was denied) human approval. Only enforced when enabled.
+    if settings.require_agent_approval:
+        try:
+            from backend.agent.tools import unapproved_rules_in_template
+        except Exception:
+            try:
+                from agent.tools import unapproved_rules_in_template  # type: ignore
+            except Exception:
+                from .agent.tools import unapproved_rules_in_template  # type: ignore
+        blocked = await unapproved_rules_in_template(db, existing)
+        if blocked:
+            listing = ", ".join(
+                f"{b.get('name')} ({b.get('approval_status')})" for b in blocked
+            )
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"Cannot deploy \"{name}\": {len(blocked)} rule(s) await "
+                    f"approval: {listing}. A reviewer must approve each via "
+                    f"POST /api/agent/approvals/{{rule_id}}/approve before deploy."
+                ),
+            )
 
     combined_code = existing.get("combinedCode") or ""
     rules = existing.get("rules") or []
