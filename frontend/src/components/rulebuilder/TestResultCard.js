@@ -101,6 +101,9 @@ function humanizeError(err) {
   const exprMatch = text.match(/'([^']{2,})'/);
   const expr = exprMatch ? exprMatch[1] : null;
 
+  if (/leading zero/i.test(text)) {
+    return { message: `A number has a leading zero (like 08 or 007). Remove it — write 8, not 08. For a text code, wrap it in quotes: "007".`, detail: text, expr };
+  }
   if (/not defined/i.test(text)) {
     return { message: `A variable used here isn't defined yet.`, detail: text, expr };
   }

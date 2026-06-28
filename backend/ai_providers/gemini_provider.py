@@ -1,7 +1,9 @@
 """Google Gemini provider implementation using the modern google-genai SDK."""
 
 import asyncio
+import json as _json
 import re
+import uuid
 import logging
 from typing import AsyncIterator
 from .base import (
@@ -41,6 +43,114 @@ def _get_client(api_key: str):
     """Create a google.genai Client instance (thread-safe, no global state)."""
     from google import genai
     return genai.Client(api_key=api_key)
+
+
+def _max_output_tokens(model: str) -> int:
+    """Output-token ceiling for Gemini turns. All current gemini-* models
+    support at least 8192 output tokens, which the agent needs for large
+    tool-call payloads (a full create_saved_rule with many steps)."""
+    return 8192
+
+
+# JSON-schema keywords Gemini's function-calling schema validator rejects.
+# `parameters_json_schema` accepts standard JSON schema but still chokes on
+# these, so we strip them recursively before sending. Notably it tolerates an
+# object with no `properties` (a free-form dict), which the Schema path does
+# not — that's why we prefer parameters_json_schema here.
+_GEMINI_SCHEMA_DROP_KEYS = frozenset({
+    "additionalProperties", "$schema", "title", "examples",
+    "patternProperties", "unevaluatedProperties", "$id", "$ref",
+})
+
+
+def _sanitize_json_schema(node):
+    """Recursively strip JSON-schema keywords Gemini rejects. Returns a new
+    structure; never mutates the caller's schema."""
+    if isinstance(node, dict):
+        return {
+            k: _sanitize_json_schema(v)
+            for k, v in node.items()
+            if k not in _GEMINI_SCHEMA_DROP_KEYS
+        }
+    if isinstance(node, list):
+        return [_sanitize_json_schema(x) for x in node]
+    return node
+
+
+def _coerce_function_response(content) -> dict:
+    """Gemini's FunctionResponse.response must be a dict. Our tool observations
+    are JSON strings (or dicts). Parse them, wrapping non-dict values."""
+    if isinstance(content, dict):
+        return content
+    if isinstance(content, str):
+        try:
+            parsed = _json.loads(content)
+        except Exception:
+            return {"result": content}
+        return parsed if isinstance(parsed, dict) else {"result": parsed}
+    return {"result": content}
+
+
+def _build_gemini_contents(messages: list[dict], types):
+    """Convert our internal OpenAI-style messages into (system_text, contents)
+    for Gemini. System messages are pulled out (Gemini takes them separately);
+    assistant tool_calls become function_call parts (role 'model'); tool
+    results become function_response parts (role 'user', the only non-model
+    role Gemini supports). Consecutive same-role contents are merged."""
+    # Orphan pruning: only replay an assistant function_call if its id has a
+    # matching tool reply, otherwise Gemini 400s (mirrors the other providers).
+    replied_ids: set[str] = set()
+    for m in messages:
+        if m.get("role") == "tool" and m.get("tool_call_id"):
+            replied_ids.add(str(m["tool_call_id"]))
+
+    system_chunks: list[str] = []
+    contents: list = []
+
+    def _append(role: str, parts: list):
+        if not parts:
+            return
+        if contents and contents[-1].role == role:
+            contents[-1].parts.extend(parts)
+        else:
+            contents.append(types.Content(role=role, parts=list(parts)))
+
+    for m in messages:
+        role = m.get("role")
+        if role == "system":
+            if m.get("content"):
+                system_chunks.append(m["content"])
+            continue
+        if role == "assistant":
+            parts = []
+            if m.get("content"):
+                parts.append(types.Part.from_text(text=m["content"]))
+            for tc in (m.get("tool_calls") or []):
+                if str(tc.get("id") or "") not in replied_ids:
+                    continue  # orphan — skip
+                args = tc.get("arguments")
+                if isinstance(args, str):
+                    try:
+                        args = _json.loads(args)
+                    except Exception:
+                        args = {}
+                if not isinstance(args, dict):
+                    args = {}
+                parts.append(types.Part(function_call=types.FunctionCall(
+                    id=tc.get("id"), name=tc.get("name"), args=args)))
+            _append("model", parts)
+        elif role == "tool":
+            part = types.Part(function_response=types.FunctionResponse(
+                id=m.get("tool_call_id"),
+                name=m.get("name") or "tool",
+                response=_coerce_function_response(m.get("content")),
+            ))
+            _append("user", [part])
+        else:  # user
+            if m.get("content"):
+                _append("user", [types.Part.from_text(text=m["content"])])
+
+    return "\n".join(system_chunks).strip(), contents
 
 
 class GeminiProvider(AIProvider):
@@ -179,3 +289,111 @@ class GeminiProvider(AIProvider):
         except Exception as exc:
             error_type, detail = _classify_error(exc)
             raise AIError(error_type, "gemini", detail) from exc
+
+    async def chat_with_tools(
+        self,
+        *,
+        api_key: str,
+        model: str,
+        messages: list[dict],
+        tools: list[dict],
+        temperature: float = 0.1,
+        tool_choice: str | None = None,
+    ) -> dict:
+        """Tool-calling chat for the autonomous agent runtime.
+
+        Uses google-genai function calling. We drive the tool loop ourselves
+        (the runtime executes tools and feeds results back), so automatic
+        function calling is left off — passing FunctionDeclarations (not Python
+        callables) means the SDK returns function_call parts without executing.
+        """
+        from google.genai import types
+        try:
+            client = _get_client(api_key)
+            system_text, contents = _build_gemini_contents(messages, types)
+
+            func_decls = []
+            for t in tools:
+                params = t.get("parameters") or {"type": "object", "properties": {}}
+                func_decls.append(types.FunctionDeclaration(
+                    name=t["name"],
+                    description=t.get("description", ""),
+                    parameters_json_schema=_sanitize_json_schema(params),
+                ))
+            gem_tools = [types.Tool(function_declarations=func_decls)] if func_decls else None
+
+            # tool_choice → Gemini ToolConfig. "required" forces a call (ANY);
+            # a specific tool name restricts to that function; "none" disables.
+            tool_config = None
+            mode_any = types.FunctionCallingConfigMode.ANY
+            if tool_choice == "required":
+                tool_config = types.ToolConfig(
+                    function_calling_config=types.FunctionCallingConfig(mode=mode_any))
+            elif tool_choice == "none":
+                tool_config = types.ToolConfig(
+                    function_calling_config=types.FunctionCallingConfig(
+                        mode=types.FunctionCallingConfigMode.NONE))
+            elif tool_choice and tool_choice != "auto":
+                tool_config = types.ToolConfig(
+                    function_calling_config=types.FunctionCallingConfig(
+                        mode=mode_any, allowed_function_names=[tool_choice]))
+
+            config = types.GenerateContentConfig(
+                system_instruction=system_text or None,
+                temperature=temperature,
+                max_output_tokens=_max_output_tokens(model),
+                tools=gem_tools,
+                tool_config=tool_config,
+            )
+            response = await asyncio.to_thread(
+                client.models.generate_content,
+                model=model,
+                contents=contents,
+                config=config,
+            )
+
+            text_chunks: list[str] = []
+            tool_calls_out: list[dict] = []
+            cand = (response.candidates or [None])[0]
+            parts = []
+            if cand is not None and cand.content and cand.content.parts:
+                parts = cand.content.parts
+            for part in parts:
+                if getattr(part, "text", None):
+                    text_chunks.append(part.text)
+                fc = getattr(part, "function_call", None)
+                if fc:
+                    tool_calls_out.append({
+                        # Gemini may omit ids — synthesise one so the runtime
+                        # can pair the eventual tool result back to this call.
+                        "id": getattr(fc, "id", None) or uuid.uuid4().hex,
+                        "name": fc.name,
+                        "arguments": dict(fc.args) if fc.args else {},
+                    })
+
+            finish_reason = None
+            if cand is not None:
+                fr = getattr(cand, "finish_reason", None)
+                finish_reason = getattr(fr, "name", None) or (str(fr) if fr else None)
+
+            usage = None
+            um = getattr(response, "usage_metadata", None)
+            if um:
+                usage = {
+                    "prompt_tokens": getattr(um, "prompt_token_count", None),
+                    "completion_tokens": getattr(um, "candidates_token_count", None),
+                }
+
+            return {
+                "message": {
+                    "role": "assistant",
+                    "content": "".join(text_chunks) or None,
+                    "tool_calls": tool_calls_out,
+                },
+                "tool_calls": tool_calls_out,
+                "finish_reason": finish_reason,
+                "usage": usage,
+            }
+        except Exception as exc:
+            err_type, detail = _classify_error(exc)
+            raise AIError(err_type, "gemini", detail) from exc

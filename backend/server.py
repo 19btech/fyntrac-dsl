@@ -3833,7 +3833,7 @@ except Exception as _agent_bridge_exc:
 class AgentRunRequest(BaseModel):
     task: str
     model: Optional[str] = None
-    max_steps: Optional[int] = 50
+    max_steps: Optional[int] = 80
     auto_approve_destructive: Optional[bool] = False
     session_id: Optional[str] = None
 
@@ -3897,7 +3897,7 @@ async def agent_run_endpoint(req: AgentRunRequest):
                     model=selected_model,
                     db=db,
                     in_memory_data=in_memory_data,
-                    max_steps=int(req.max_steps or 50),
+                    max_steps=int(req.max_steps or 80),
                     auto_approve_destructive=bool(req.auto_approve_destructive),
                     session_id=req.session_id,
                 ):

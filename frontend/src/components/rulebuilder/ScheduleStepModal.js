@@ -36,6 +36,10 @@ const ColumnCard = ({ column, index, events, variables, onUpdate, onRemove, onMo
   const [colTesting, setColTesting] = useState(false);
   const [colTestResult, setColTestResult] = useState(null);
 
+  // Editing this column invalidates its prior test result — clear it so a stale
+  // success/error doesn't linger and look like it applies to the edited formula.
+  useEffect(() => { setColTestResult(null); }, [column.formula, column.name]);
+
   return (
     <Card sx={{ mb: 1, borderLeft: `3px solid ${column.formula === 'period_date' ? '#2196F3' : '#4CAF50'}` }}>
       <CardContent sx={{ p: 1.5, '&:last-child': { pb: 1.5 } }}>
@@ -313,6 +317,17 @@ const ScheduleStepModal = ({ open, step, onClose, onSaveStep, events, dslFunctio
     setPreviewSelectedSubId('__all__');
     setOutputTests({});
   }, [open, step, _migrateLegacyOutputs]);
+
+  // Editing the columns or period config makes a rendered preview stale —
+  // clear it so an old table/error doesn't linger and look current. (Mirrors
+  // the per-step result clearing in the calc/condition/iteration modal.)
+  useEffect(() => {
+    setSchedulePreviewData(null);
+    setSchedulePreviewError(null);
+  }, [columns, periodType, frequency, convention, runIf,
+      startDate, startDateSource, startDateField, startDateFormula,
+      endDate, endDateSource, endDateField, endDateFormula,
+      periodCount, periodCountSource, periodCountField, periodCountFormula]);
 
   // All var names (parent-defined + saved rules)
   const allVarNames = useMemo(() => [...new Set([...(definedVarNames || []), ...savedRulesVarNames])], [definedVarNames, savedRulesVarNames]);
@@ -1146,7 +1161,14 @@ const ScheduleStepModal = ({ open, step, onClose, onSaveStep, events, dslFunctio
             id: `o_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
             type, name: '', column: '', matchCol: '', matchValue: '',
           }]);
-          const updateOutput = (id, patch) => setOutputs(prev => prev.map(o => o.id === id ? { ...o, ...patch } : o));
+          const updateOutput = (id, patch) => {
+            setOutputs(prev => prev.map(o => o.id === id ? { ...o, ...patch } : o));
+            // Editing an output invalidates its prior test result — drop it.
+            setOutputTests(prev => {
+              if (!prev[id]) return prev;
+              const next = { ...prev }; delete next[id]; return next;
+            });
+          };
           const removeOutput = (id) => setOutputs(prev => prev.filter(o => o.id !== id));
 
           return (

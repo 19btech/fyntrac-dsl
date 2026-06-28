@@ -561,6 +561,14 @@ const StepModal = ({ open, step, stepType, onClose, onSaveStep, events, definedV
     }
   };
 
+  // Editing any field invalidates a prior test result — clear it so a stale
+  // success/error doesn't linger and look like it applies to the edited step
+  // (e.g. you fix a formula but the old "syntax error" stays on screen).
+  const updateLocal = (next) => {
+    setLocal(next);
+    setTestResult(prev => (prev ? null : prev));
+  };
+
   const handleSave = () => {
     if (!local.name) return;
     onSaveStep({ ...local, stepType: local.stepType || stepType, inlineComment: localInlineComment, commentText: localCommentText, printResult: localPrintResult });
@@ -577,18 +585,18 @@ const StepModal = ({ open, step, stepType, onClose, onSaveStep, events, definedV
       </DialogTitle>
       <DialogContent sx={{ pt: 1, overflow: 'auto' }}>
         <TextField size="small" fullWidth label="Variable Name *" value={local.name || ''}
-          onChange={(e) => setLocal(prev => ({ ...prev, name: e.target.value.replace(/[^a-zA-Z0-9_]/g, '') }))}
+          onChange={(e) => updateLocal(prev => ({ ...prev, name: e.target.value.replace(/[^a-zA-Z0-9_]/g, '') }))}
           placeholder="e.g., monthly_payment"
           sx={{ mb: 2, mt: 1 }} />
 
         {(local.stepType || stepType) === 'calc' && (
-          <CalcForm step={local} onChange={setLocal} events={events} definedVarNames={definedVarNames} />
+          <CalcForm step={local} onChange={updateLocal} events={events} definedVarNames={definedVarNames} />
         )}
         {(local.stepType || stepType) === 'condition' && (
-          <ConditionForm step={local} onChange={setLocal} events={events} definedVarNames={definedVarNames} />
+          <ConditionForm step={local} onChange={updateLocal} events={events} definedVarNames={definedVarNames} />
         )}
         {(local.stepType || stepType) === 'iteration' && (
-          <IterationForm step={local} onChange={setLocal} events={events} definedVarNames={definedVarNames} />
+          <IterationForm step={local} onChange={updateLocal} events={events} definedVarNames={definedVarNames} />
         )}
 
         {testResult && (
@@ -1635,20 +1643,28 @@ const AccountingRuleBuilder = ({ events, dslFunctions, transactionDefinitions, o
         }
         const sc = s.scheduleConfig || {};
         lines.push('## Schedule');
+        // NOTE: this period/gating logic MUST stay in sync with
+        // buildScheduleStepLines (used by per-step tests). runIf gates the period
+        // to ZERO rows when false; frequencyFormula makes the frequency dynamic.
+        const _runIf = (sc.runIf || '').trim();
+        const _freqFormula = (sc.frequencyFormula || '').trim();
+        const freqToken = _freqFormula ? _freqFormula : `"${sc.frequency || 'M'}"`;
         // Period definition
         if (sc.periodType === 'number') {
-          const countExpr = sc.periodCountSource === 'field' && sc.periodCountField ? sc.periodCountField
+          let countExpr = sc.periodCountSource === 'field' && sc.periodCountField ? sc.periodCountField
             : sc.periodCountSource === 'formula' && sc.periodCountFormula ? sc.periodCountFormula
             : (sc.periodCount || 12);
-          lines.push(`p = period(${countExpr}, "${sc.frequency || 'M'}")`);
+          if (_runIf) countExpr = `if(${_runIf}, ${countExpr}, 0)`;
+          lines.push(`p = period(${countExpr}, ${freqToken})`);
         } else {
           const startExpr = sc.startDateSource === 'field' && sc.startDateField ? sc.startDateField
             : sc.startDateSource === 'formula' && sc.startDateFormula ? sc.startDateFormula
             : `"${sc.startDate || '2026-01-01'}"`;
-          const endExpr = sc.endDateSource === 'field' && sc.endDateField ? sc.endDateField
+          let endExpr = sc.endDateSource === 'field' && sc.endDateField ? sc.endDateField
             : sc.endDateSource === 'formula' && sc.endDateFormula ? sc.endDateFormula
             : `"${sc.endDate || '2026-12-31'}"`;
-          let periodCall = `p = period(${startExpr}, ${endExpr}, "${sc.frequency || 'M'}"`;
+          if (_runIf) endExpr = `if(${_runIf}, ${endExpr}, "")`;
+          let periodCall = `p = period(${startExpr}, ${endExpr}, ${freqToken}`;
           if (sc.convention) periodCall += `, "${sc.convention}"`;
           periodCall += ')';
           lines.push(periodCall);

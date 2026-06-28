@@ -498,7 +498,7 @@ def _build_loop_nudge(tool_name: str, signature: str, err_text: str = "") -> str
     elif signature == "bracket_indexing":
         base += (
             "\nNote: `arr[i]` bracket indexing is not supported. Use "
-            "lookup(arr, idx) or element_at(arr, idx)."
+            "array_get(arr, idx) (or array_first/array_last for the ends)."
         )
     elif signature == "schedule_contextvars":
         base += (
@@ -1063,7 +1063,7 @@ def _system_prompt() -> str:
         "         WRONG:  lookup(LoanCreditRiskData.credit_impaired_flag, loan)\n"
         "         RIGHT:  LoanCreditRiskData.credit_impaired_flag\n"
         "       • Reference (small lookup) tables → collect_all('REF_field')\n"
-        "         then lookup(arr, key) or element_at(arr, idx).\n"
+        "         then lookup(arr, key) or array_get(arr, idx).\n"
         "       • Per-instrument time-series (multiple postingdates of the\n"
         "         same activity event) → collect_by_instrument('EVT_field').\n"
         "       • Indexed lookup inside an apply_each iteration uses\n"
@@ -1237,7 +1237,7 @@ def _system_prompt() -> str:
         "     ONLY done via stepType='iteration' with a sourceArray.\n"
         "  3. There is NO `outputs.events.push(...)`, NO `createEventRow(...)`,\n"
         "     NO `arr[i]` bracket indexing in expressions. Instead:\n"
-        "       • Array element access: lookup(arr, idx) or element_at(arr, idx)\n"
+        "       • Array element access: array_get(arr, idx) (array_first/array_last for ends)\n"
         "       • Synthetic events cannot be emitted from expressions. Either\n"
         "         pre-load them via create_event_definitions + generate_sample_event_data,\n"
         "         OR compute the values inline and emit transactions directly.\n"

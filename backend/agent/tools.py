@@ -2027,6 +2027,18 @@ def _check_formula_expression(expr: str, *, where: str) -> None:
             f"concatenation use the `concat(a, b, ...)` DSL function. "
             f"Got: {expr[:160]!r}"
         )
+    # Leading-zero integer literals (e.g. 08, 007) are a Python 3 SyntaxError
+    # ("leading zeros in decimal integer literals are not permitted"). Catch
+    # them here with a clear message instead of letting the cryptic tokenizer
+    # error surface at run time. Floats (08.5), 0x/0o/0b prefixes, and digits
+    # inside strings/identifiers are intentionally NOT matched.
+    _lz = re.search(r'(?<![\w.])0[0-9]+(?![0-9.eEjJ])', masked)
+    if _lz:
+        raise ToolError(
+            f"In {where}: the number `{_lz.group(0)}` has a leading zero, which "
+            f"is not allowed — write it without the leading zero (e.g. `8` not "
+            f"`08`, `7` not `007`). Got: {expr[:120]!r}"
+        )
     # Sanity: balanced parentheses (the actual culprit behind the cryptic
     # tokenizer error in the screenshot the user reported). We do this in a
     # token-aware way that ignores parens inside string literals.
@@ -7729,14 +7741,14 @@ Three ways to access related data within a rule:
      NOT:
         formula: "lookup(LoanCreditRiskData.credit_impaired_flag, instrumentid)"
 
-  2. REFERENCE TABLE (small lookup) → collect_all + lookup/element_at:
+  2. REFERENCE TABLE (small lookup) → collect_all + lookup:
         principals = collect_all('LoanRef_principal')
         rate       = lookup(principals, instrumentid)
 
   3. PER-INSTRUMENT TIME-SERIES (multiple postingdates of the same event)
      → collect_by_instrument:
         history = collect_by_instrument('UPB_balance')
-        prior   = element_at(history, subtract(length(history), 1))
+        prior   = array_last(history)
 
 `outputs.transactions[]` are emitted ONCE PER ROW automatically. You do
 NOT need an iteration step to fan them out per instrument.
@@ -7835,7 +7847,7 @@ ABSOLUTE RULES
 2. There is NO `for` / `while` loop. Iteration is done via
    stepType='iteration' with sourceArray.
 3. There is NO `arr[i]` bracket indexing.
-   - Use lookup(arr, idx) or element_at(arr, idx).
+   - Use array_get(arr, idx) (or array_first/array_last for the ends).
 4. There is NO `outputs.events.push(...)` and NO `createEventRow(...)`.
    - Synthetic events must be pre-loaded with create_event_definitions
      + generate_sample_event_data BEFORE the rule runs.
