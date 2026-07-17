@@ -30,6 +30,7 @@ import random
 import re
 import uuid
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Callable, Awaitable
 
 logger = logging.getLogger(__name__)
@@ -2546,24 +2547,87 @@ async def tool_dry_run_template(args: dict) -> dict:
             f"or a balance multiplied by an unbounded factor). "
             f"Inspect the formulas/iterations and the source event-data ranges."
         )
-    # Check for transaction imbalance per instrument (debit total should equal credit total
-    # so the downstream journal-posting system receives balanced input)
+    # Balance check: debit total must equal credit total per instrument so the
+    # downstream journal-posting system receives balanced input. The emitted
+    # TransactionOutput carries only the type name — each type's debit/credit
+    # side is declared in the saved rules' outputs.transactions[]. Build a
+    # type→side map from those declarations (attached rules first, falling
+    # back to all saved rules since the type namespace is shared). Types with
+    # no or conflicting declarations cannot be signed — they are surfaced
+    # explicitly instead of being silently excluded from the check.
+    type_side: dict[str, str] = {}
+    ambiguous_side_types: set[str] = set()
+    try:
+        if db is not None:
+            side_rule_ids = list(template.get("rule_ids") or [])
+            side_query = {"id": {"$in": side_rule_ids}} if side_rule_ids else {}
+            side_rules = await db.saved_rules.find(
+                side_query, {"_id": 0, "outputs": 1}
+            ).to_list(500)
+            if side_rule_ids and not side_rules:
+                side_rules = await db.saved_rules.find(
+                    {}, {"_id": 0, "outputs": 1}
+                ).to_list(500)
+            for r in side_rules:
+                for decl in ((r.get("outputs") or {}).get("transactions") or []):
+                    ty = str(decl.get("type") or "").strip()
+                    side = str(decl.get("side") or "").strip().lower()
+                    if not ty or side not in ("debit", "credit"):
+                        continue
+                    if ty in type_side and type_side[ty] != side:
+                        ambiguous_side_types.add(ty)
+                    type_side[ty] = side
+    except Exception as exc:
+        logger.warning("dry_run balance check: could not load rule sides: %s", exc)
+    debit_total = 0.0
+    credit_total = 0.0
     by_instr_signed: dict[str, float] = {}
+    unknown_side_types: set[str] = set()
     for t in txn_dicts:
         amt = float(t.get("amount") or 0)
-        ty_lower = str(t.get("transactiontype", "")).lower()
-        # very rough sign convention: receivable/expense/asset = +, income/payable/allowance = -
-        sign = 1 if any(k in ty_lower for k in ("receivable", "expense", "asset", "drawdown")) else (
-               -1 if any(k in ty_lower for k in ("income", "payable", "allowance", "writeoff")) else 0)
-        if sign:
-            by_instr_signed[t.get("instrumentid", "?")] = (
-                by_instr_signed.get(t.get("instrumentid", "?"), 0.0) + sign * amt
-            )
+        ty = str(t.get("transactiontype") or "?")
+        side = None if ty in ambiguous_side_types else type_side.get(ty)
+        iid = t.get("instrumentid", "?")
+        if side == "debit":
+            debit_total += amt
+            by_instr_signed[iid] = by_instr_signed.get(iid, 0.0) + amt
+        elif side == "credit":
+            credit_total += amt
+            by_instr_signed[iid] = by_instr_signed.get(iid, 0.0) - amt
+        else:
+            unknown_side_types.add(ty)
     unbalanced = {k: round(v, 2) for k, v in by_instr_signed.items() if abs(v) > 0.01}
+    balance_check = {
+        "debit_total": round(debit_total, 2),
+        "credit_total": round(credit_total, 2),
+        "balanced": (not unbalanced) and abs(debit_total - credit_total) <= 0.01,
+        "unknown_side_types": sorted(unknown_side_types),
+        "unbalanced_instruments": dict(sorted(
+            unbalanced.items(), key=lambda kv: -abs(kv[1])
+        )[:10]),
+    }
     if unbalanced and len(txn_dicts) > 1:
+        worst = balance_check["unbalanced_instruments"]
         sanity_warnings.append(
-            f"debit/credit transaction totals are unequal "
-            f"for {len(unbalanced)} instrument(s) — the downstream journal-posting system expects balanced input"
+            f"debit/credit transaction totals are unequal for "
+            f"{len(unbalanced)} instrument(s) (worst offsets: {worst}) — the "
+            f"downstream journal-posting system expects balanced input. "
+            f"Check that every economic event emits BOTH sides for the same "
+            f"amount variable."
+        )
+    if unknown_side_types and len(txn_dicts) > 1:
+        sanity_warnings.append(
+            f"{len(unknown_side_types)} emitted transaction type(s) have no "
+            f"debit/credit side declared in any rule's outputs.transactions[] "
+            f"({sorted(unknown_side_types)[:5]}) — their amounts could NOT be "
+            f"included in the balance verification. Declare a side for each "
+            f"via the rule's outputs.transactions[] entries."
+        )
+    if ambiguous_side_types:
+        sanity_warnings.append(
+            f"transaction type(s) {sorted(ambiguous_side_types)[:5]} are "
+            f"declared with CONFLICTING debit/credit sides across rules — "
+            f"fix the declarations so each type has exactly one side."
         )
 
     # Zero-transactions despite declared transactions: catches the silent
@@ -2632,6 +2696,7 @@ async def tool_dry_run_template(args: dict) -> dict:
         "total_amount": round(total_amount, 2),
         "by_transaction_type": {k: {"count": v["count"], "total": round(v["total"], 2)}
                                   for k, v in by_type.items()},
+        "balance_check": balance_check,
         "sample_transactions": txn_dicts[:sample_limit],
         "print_outputs": (result.get("print_outputs") or [])[:10],
         "sanity_warnings": sanity_warnings,
@@ -7271,6 +7336,42 @@ _HALLUCINATED_GATE_RE = re.compile(
 )
 
 
+# Domain words that unambiguously imply a tabular time-series → a schedule
+# step is expected somewhere in the build.
+_SCHEDULE_DOMAIN_KEYWORDS = (
+    "depreciation", "depreciate", "amortisation", "amortization",
+    "amortise", "amortize", "accretion", "runoff", "run-off",
+    "payment plan",
+)
+# Bare "schedule" only counts as a schedule request when it is the object of
+# a build verb ("create a schedule for..."). Incidental mentions ("the fee
+# schedule event is already loaded") must NOT trigger the finish gate.
+_SCHEDULE_REQUEST_RE = re.compile(
+    r"\b(?:creat\w*|build\w*|add\w*|generat\w*|mak\w*|produc\w*|set\s+up)\b"
+    r"[^.?!\n]{0,60}?\bschedules?\b",
+    re.IGNORECASE,
+)
+# A negated schedule mention switches the requirement off entirely
+# ("don't create a schedule", "compute depreciation without a schedule").
+_SCHEDULE_NEGATION_RE = re.compile(
+    r"\b(?:no|not|don'?t|do\s+not|never|without|skip\w*|avoid\w*|"
+    r"instead\s+of|rather\s+than)\b[^.?!\n]{0,40}?\bschedules?\b",
+    re.IGNORECASE,
+)
+
+
+def _user_asked_for_schedule(user_request: str, summary: str) -> bool:
+    """True when the request (or the agent's own summary) implies a schedule
+    step must exist in the build. Negations win over triggers."""
+    if _SCHEDULE_NEGATION_RE.search(user_request):
+        return False
+    if any(k in user_request for k in _SCHEDULE_DOMAIN_KEYWORDS):
+        return True
+    if _SCHEDULE_REQUEST_RE.search(user_request):
+        return True
+    return any(k in summary.lower() for k in _SCHEDULE_DOMAIN_KEYWORDS)
+
+
 async def tool_finish(args: dict) -> dict:
     summary = (args.get("summary") or "").strip() or "Done."
     # `user_request` is injected by runtime.py from the original task prompt
@@ -7291,6 +7392,14 @@ async def tool_finish(args: dict) -> dict:
     if single_rid and single_rid not in rule_ids:
         rule_ids.append(single_rid)
 
+    # Schedule gate is SET-LEVEL: when the user asked for a schedule, at
+    # least ONE touched rule must contain a stepType='schedule' step.
+    # Per-rule enforcement would deadlock legitimate multi-rule builds
+    # (e.g. a depreciation rule WITH a schedule plus a disposal rule
+    # WITHOUT one could never finish).
+    asked_for_schedule = _user_asked_for_schedule(user_request, summary)
+    any_schedule_step = False
+    checked_rule_names: list[str] = []
     for rule_id in rule_ids:
         try:
             rule = await _load_rule(rule_id)
@@ -7298,49 +7407,9 @@ async def tool_finish(args: dict) -> dict:
             rule = None
         if rule is not None:
             steps = rule.get("steps") or []
-            # Hard gate: when the user explicitly asked for a schedule
-            # (depreciation / amortisation / runoff / payment plan / EIR
-            # term-structure / "create a schedule for ..."), refuse to
-            # finish unless at least one stepType='schedule' step exists.
-            # Prevents the agent from substituting a calc-step approximation.
-            _SCHEDULE_KEYWORDS = (
-                "schedule", "depreciation", "depreciate",
-                "amortisation", "amortization", "amortise", "amortize",
-                "accretion", "runoff", "run-off", "payment plan",
-                "amortization schedule", "amortisation schedule",
-            )
-            asked_for_schedule = any(k in user_request for k in _SCHEDULE_KEYWORDS)
-            asked_for_schedule = asked_for_schedule or any(
-                k in summary.lower() for k in (
-                    "depreciation", "depreciate", "amortisation",
-                    "amortization", "runoff", "payment plan",
-                )
-            )
-            has_schedule_step = any(
-                (s.get("stepType") or "") == "schedule" for s in steps
-            )
-            if asked_for_schedule and not has_schedule_step:
-                raise ToolError(
-                    f"Rule '{rule.get('name')}' has ZERO stepType='schedule' "
-                    f"steps, but the user's request and/or your summary "
-                    f"explicitly mention a schedule "
-                    f"(depreciation/amortisation/runoff/payment plan). A "
-                    f"calc-step approximation is NOT a substitute and a "
-                    f"standalone create_saved_schedule call is NOT a "
-                    f"substitute either. FIX:\n"
-                    f"  1. call add_step_to_rule with stepType='schedule' and "
-                    f"a populated scheduleConfig (periodType, frequency, "
-                    f"startDate*, endDate*/periodCount*, columns).\n"
-                    f"  2. Schedule columns CAN reference outer calc vars, "
-                    f"EVENTNAME.field, prior columns, and built-ins like "
-                    f"period_index / period_number / lag / dcf.\n"
-                    f"  3. call test_schedule_step until ok=true.\n"
-                    f"  4. THEN add_transaction_to_rule referencing the "
-                    f"schedule's outputVar (e.g. type='filter' with matchCol=\"<period_end_col>\" "
-                    f"matchValue=\"<postingdate>\", or type='last' for closing balance).\n"
-                    f"DO NOT call finish again until a schedule step exists "
-                    f"and passes its preview."
-                )
+            checked_rule_names.append(str(rule.get("name") or rule_id))
+            if any((s.get("stepType") or "") == "schedule" for s in steps):
+                any_schedule_step = True
             txns = ((rule.get("outputs") or {}).get("transactions") or [])
             if not txns:
                 raise ToolError(
@@ -7418,6 +7487,29 @@ async def tool_finish(args: dict) -> dict:
                     f"ok=true BEFORE calling finish. A schedule that does "
                     f"not preview cannot run end-to-end."
                 )
+    if asked_for_schedule and checked_rule_names and not any_schedule_step:
+        raise ToolError(
+            f"The user's request and/or your summary explicitly asks for a "
+            f"schedule (depreciation/amortisation/runoff/payment plan), but "
+            f"NONE of the rules you touched ({checked_rule_names}) contains "
+            f"a stepType='schedule' step. A calc-step approximation is NOT "
+            f"a substitute and a standalone create_saved_schedule call is "
+            f"NOT a substitute either. FIX:\n"
+            f"  1. call add_step_to_rule with stepType='schedule' and a "
+            f"populated scheduleConfig (periodType, frequency, startDate*, "
+            f"endDate*/periodCount*, columns) on the rule that computes the "
+            f"time-series.\n"
+            f"  2. Schedule columns CAN reference outer calc vars, "
+            f"EVENTNAME.field, prior columns, and built-ins like "
+            f"period_index / period_number / lag / dcf.\n"
+            f"  3. call test_schedule_step until ok=true.\n"
+            f"  4. THEN add_transaction_to_rule referencing the schedule's "
+            f"outputVar (e.g. type='filter' with matchCol=\"<period_end_col>\" "
+            f"matchValue=\"<postingdate>\", or type='last' for closing "
+            f"balance).\n"
+            f"DO NOT call finish again until a schedule step exists and "
+            f"passes its preview."
+        )
     low = summary.lower()
     # Generic catch for hallucinated "gate" / "path" surrender language.
     # The runtime has exactly ONE plan-gate (submit_plan) and never describes
@@ -8277,10 +8369,28 @@ def _build_syntax_guide_sections(text: str) -> dict[str, str]:
 _DSL_SYNTAX_GUIDE_SECTIONS: dict[str, str] | None = None
 
 
+def _authoring_guide_md() -> str:
+    """Load knowledge/dsl_authoring_guide.md — the canonical DSL reference.
+
+    Served as its own syntax-guide section so the file the README calls
+    'the canonical reference' is actually reachable by the agent, instead
+    of drifting silently behind the inline copies in runtime.py/tools.py.
+    """
+    try:
+        path = Path(__file__).parent / "knowledge" / "dsl_authoring_guide.md"
+        return path.read_text(encoding="utf-8")
+    except Exception as exc:
+        logger.warning("Could not load dsl_authoring_guide.md: %s", exc)
+        return ""
+
+
 def _syntax_guide_sections() -> dict[str, str]:
     global _DSL_SYNTAX_GUIDE_SECTIONS
     if _DSL_SYNTAX_GUIDE_SECTIONS is None:
         _DSL_SYNTAX_GUIDE_SECTIONS = _build_syntax_guide_sections(_DSL_SYNTAX_GUIDE)
+        guide_md = _authoring_guide_md()
+        if guide_md:
+            _DSL_SYNTAX_GUIDE_SECTIONS["authoring_guide"] = guide_md
     return _DSL_SYNTAX_GUIDE_SECTIONS
 
 

@@ -158,6 +158,25 @@ python tests/test_agent_new_tools.py     # self-correctness tools + registry par
 python tests/test_agent_state_store.py   # DB-backed plan/session persistence
 ```
 
+## Golden-scenario evals (real LLM)
+
+`tests/eval_agent_scenarios.py` runs the real model against 8 canonical
+accounting briefs (IAS 16 depreciation, IFRS 9 ECL, ASC 606, ASC 842, EIR,
+IAS 21 FX, IAS 37 provisions, CECL) and asserts the built workspace is
+correct: rules + templates exist, schedules exist where the brief demands
+one, transaction declarations are balanced, and `dry_run_template`'s
+`balance_check` (debit total vs credit total aggregated by each type's
+DECLARED side — not name heuristics) comes back balanced and non-zero.
+Opt-in: needs a live Mongo and a provider API key; creates and drops a
+throwaway database per run. Run it after ANY change to the system prompt,
+tool schemas, or validators:
+
+```
+python tests/eval_agent_scenarios.py --list
+python tests/eval_agent_scenarios.py --scenario ias16_depreciation
+AGENT_EVAL_PROVIDER=anthropic python tests/eval_agent_scenarios.py
+```
+
 `test_agent_runtime.py` replays a scripted session and verifies tool dispatch,
 error feedback, and final completion. `test_agent_new_tools.py` covers the
 self-correctness tools (`lint_expression`, `explain_error`,
