@@ -1906,7 +1906,9 @@ def schedule_last(sched: List[Dict[str, Any]], column: str) -> float:
     if _in_schedule_eval():
         raise ValueError("schedule_last cannot be called from inside schedule column expressions; compute after schedule generation")
     if not sched:
-        return []
+        # Empty schedule (e.g. a runIf-gated schedule that did not fire) → scalar
+        # 0, consistent with schedule_sum and the float return contract.
+        return 0
 
     def _last_single(rows):
         if not rows:
@@ -1936,7 +1938,9 @@ def schedule_first(sched: List[Dict[str, Any]], column: str) -> float:
     if _in_schedule_eval():
         raise ValueError("schedule_first cannot be called from inside schedule column expressions; compute after schedule generation")
     if not sched:
-        return []
+        # Empty schedule (e.g. a runIf-gated schedule that did not fire) → scalar
+        # 0, consistent with schedule_sum and the float return contract.
+        return 0
 
     def _first_single(rows):
         if not rows:
@@ -2657,7 +2661,8 @@ def min_val(*args):
     if len(args) == 1:
         col = args[0]
         if isinstance(col, list):
-            return min(col) if col else 0
+            cleaned = [c for c in col if c is not None]
+            return min(cleaned) if cleaned else 0
         return col if col is not None else 0
 
     # multiple arguments
@@ -2692,7 +2697,8 @@ def max_val(*args):
     if len(args) == 1:
         col = args[0]
         if isinstance(col, list):
-            return max(col) if col else 0
+            cleaned = [c for c in col if c is not None]
+            return max(cleaned) if cleaned else 0
         return col if col is not None else 0
 
     lists = [a for a in args if isinstance(a, list)]
@@ -2721,21 +2727,23 @@ def count(col: List[Any]) -> int:
 def weighted_avg(v: List[float], w: List[float]) -> float:
     if not v or not w or len(v) != len(w):
         return 0
-    total_weight = sum(w)
-    return sum(vi * wi for vi, wi in zip(v, w)) / total_weight if total_weight > 0 else 0
+    vv = [to_number(x) for x in v]
+    ww = [to_number(x) for x in w]
+    total_weight = sum(ww)
+    return sum(vi * wi for vi, wi in zip(vv, ww)) / total_weight if total_weight > 0 else 0
 
 def cumulative_sum(col: List[float]) -> List[float]:
     result = []
     total = 0
     for val in col:
-        total += val
+        total += to_number(val)
         result.append(total)
     return result
 
 def median(col: List[float]) -> float:
     if not col:
         return 0
-    sorted_col = sorted(col)
+    sorted_col = sorted(to_number(x) for x in col)
     n = len(sorted_col)
     if n % 2 == 0:
         return (sorted_col[n//2-1] + sorted_col[n//2]) / 2
@@ -2745,8 +2753,9 @@ def median(col: List[float]) -> float:
 def std_dev(col: List[float]) -> float:
     if not col:
         return 0
-    mean = sum(col) / len(col)
-    return math.sqrt(sum((x - mean) ** 2 for x in col) / len(col))
+    vals = [to_number(x) for x in col]
+    mean = sum(vals) / len(vals)
+    return math.sqrt(sum((x - mean) ** 2 for x in vals) / len(vals))
 
 
 def range_val(col: List[float]) -> float:
@@ -3494,20 +3503,20 @@ DSL_FUNCTION_METADATA = [
     {"name": "normalize_arraydate", "params": "array", "description": "Convert a list of dates written in various formats into the standard YYYY-MM-DD format.", "category": "Date"},
 
     # Financial (24)
-    {"name": "pv", "params": "rate, n, pmt, fv=0, type=0", "description": "Calculate the present value of a series of future payments, given an interest rate and number of periods. Use type=1 if payments are made at the start of each period.", "category": "Financial"},
-    {"name": "fv", "params": "rate, n, pmt, pv=0, type=0", "description": "Calculate the future value of an investment based on regular payments and a fixed interest rate. Use type=1 if payments are made at the start of each period.", "category": "Financial"},
-    {"name": "pmt", "params": "rate, n, pv, fv=0, type=0", "description": "Calculate the fixed periodic payment required to fully repay a loan or reach a savings target over a given number of periods.", "category": "Financial"},
-    {"name": "rate", "params": "n, pmt, pv, fv=0, type=0, guess=0.1", "description": "Calculate the interest rate per period needed to repay a loan given the number of payments, payment amount, and loan amount.", "category": "Financial"},
-    {"name": "nper", "params": "rate, pmt, pv, fv=0, type=0", "description": "Calculate how many payment periods are required to fully repay a loan or reach a savings goal.", "category": "Financial"},
-    {"name": "npv", "params": "rate, cashflows", "description": "Calculate the net present value of a series of cash flows discounted at a given annual rate. The rate is entered as a decimal.", "category": "Financial"},
-    {"name": "irr", "params": "cashflows", "description": "Calculate the internal rate of return for a series of cash flows — the discount rate at which the net present value equals zero.", "category": "Financial"},
-    {"name": "xnpv", "params": "rate, cashflows, dates", "description": "Calculate the net present value of cash flows that occur on specific calendar dates, using a 365-day year convention.", "category": "Financial"},
-    {"name": "xirr", "params": "cashflows, dates", "description": "Calculate the internal rate of return for cash flows that occur on specific calendar dates.", "category": "Financial"},
-    {"name": "discount_factor", "params": "rate, dcf", "description": "Calculate the factor used to discount a future cash flow back to its present value, given a rate and the time period as a year fraction.", "category": "Financial"},
-    {"name": "accumulation_factor", "params": "rate, dcf", "description": "Calculate the growth factor applied to a present value to arrive at its future value, given a rate and time period as a year fraction.", "category": "Financial"},
-    {"name": "effective_rate", "params": "nominal, freq", "description": "Convert a nominal interest rate to its effective annual rate, accounting for the number of compounding periods per year.", "category": "Financial"},
-    {"name": "nominal_rate", "params": "effective, freq", "description": "Convert an effective annual interest rate back to its nominal rate for a given number of compounding periods per year.", "category": "Financial"},
-    {"name": "yield_to_maturity", "params": "price, face, coupon, years", "description": "Calculate the approximate yield to maturity of a bond based on its market price, face value, annual coupon rate, and remaining years to maturity.", "category": "Financial"},
+    {"name": "pv", "params": "rate, n, pmt, fv=0, type=0", "description": "The value today of a series of equal future payments at a fixed rate. Set type=1 if each payment is made at the start of the period.", "category": "Financial"},
+    {"name": "fv", "params": "rate, n, pmt, pv=0, type=0", "description": "The future value of regular payments that earn a fixed rate. Set type=1 if each payment is made at the start of the period.", "category": "Financial"},
+    {"name": "pmt", "params": "rate, n, pv, fv=0, type=0", "description": "The fixed payment needed to pay off a loan or reach a savings goal over a set number of periods.", "category": "Financial"},
+    {"name": "rate", "params": "n, pmt, pv, fv=0, type=0, guess=0.1", "description": "The interest rate per period for a loan, based on the number of payments, the payment amount, and the loan amount.", "category": "Financial"},
+    {"name": "nper", "params": "rate, pmt, pv, fv=0, type=0", "description": "How many payment periods are needed to pay off a loan or reach a savings goal.", "category": "Financial"},
+    {"name": "npv", "params": "rate, cashflows", "description": "The net present value of a series of cash flows, discounted at a yearly rate (entered as a decimal).", "category": "Financial"},
+    {"name": "irr", "params": "cashflows", "description": "The internal rate of return — the rate at which a series of cash flows has a net present value of zero.", "category": "Financial"},
+    {"name": "xnpv", "params": "rate, cashflows, dates", "description": "Net present value of cash flows that fall on specific dates, using a 365-day year.", "category": "Financial"},
+    {"name": "xirr", "params": "cashflows, dates", "description": "Internal rate of return for cash flows that fall on specific dates.", "category": "Financial"},
+    {"name": "discount_factor", "params": "rate, dcf", "description": "The factor that converts a future amount into its value today, given a rate and a year fraction.", "category": "Financial"},
+    {"name": "accumulation_factor", "params": "rate, dcf", "description": "The factor that grows a present amount into its future value, given a rate and a year fraction.", "category": "Financial"},
+    {"name": "effective_rate", "params": "nominal, freq", "description": "Convert a nominal interest rate into the effective annual rate, based on how often it compounds per year.", "category": "Financial"},
+    {"name": "nominal_rate", "params": "effective, freq", "description": "Convert an effective annual rate back into a nominal rate, based on how often it compounds per year.", "category": "Financial"},
+    {"name": "yield_to_maturity", "params": "price, face, coupon, years", "description": "The approximate yield to maturity of a bond from its price, face value, coupon rate, and years left.", "category": "Financial"},
 
     # Depreciation (5)
 
@@ -3571,13 +3580,33 @@ DSL_FUNCTION_METADATA = [
     {"name": "business_days", "params": "d1, d2", "description": "Calculate the number of working days between two dates, excluding weekends.", "category": "Date"},
 
     # Schedule (7)
-    {"name": "schedule", "params": "period, columns", "description": "Generate a time-based schedule table with calculated columns, suitable for amortisation, accrual, revenue, or depreciation schedules.", "category": "Schedule"},
-    {"name": "period", "params": "start, end?, freq?, conv?", "description": "Define a time period. Two forms: (1) period(start_date, end_date, freq, conv?) with explicit YYYY-MM-DD dates; (2) period(N) or period(N, freq) — count form: emit N period dates starting from the current posting date, advancing by freq (default M). freq: M=monthly, Q=quarterly, A=annual, W=weekly, D=daily.", "category": "Schedule"},
+    {"name": "schedule", "params": "period, columns", "description": "Build a time-based table with calculated columns — used for amortisation, accrual, revenue, or depreciation schedules.", "category": "Schedule"},
+    {"name": "period", "params": "start, end?, freq?, conv?", "description": "Set the time periods for a schedule: pass a start and end date with a frequency (M, Q, A, W, or D), or just a number of periods.", "category": "Schedule"},
     {"name": "schedule_sum", "params": "schedule, column", "description": "Add up all values in a specified column of a generated schedule.", "category": "Schedule"},
     {"name": "schedule_last", "params": "schedule, column", "description": "Retrieve the value from the last row of a specified column in a schedule.", "category": "Schedule"},
     {"name": "schedule_first", "params": "schedule, column", "description": "Retrieve the value from the first row of a specified column in a schedule.", "category": "Schedule"},
     {"name": "schedule_column", "params": "schedule, column", "description": "Return all values from a specified column of a schedule as a list.", "category": "Schedule"},
     {"name": "schedule_filter", "params": "schedule, match_column, match_value, return_column", "description": "Find the first row in a schedule where a column matches a given value and return the corresponding value from another column.", "category": "Schedule"},
+
+    # Schedule column-only built-ins (15) — these are ONLY available INSIDE a
+    # schedule step's column formulas (and create_saved_schedule columns). They
+    # are not callable in calc/condition/iteration steps. `scope` flags them so
+    # the function browser can show them in a dedicated, clearly-labelled group.
+    {"name": "lag", "params": "column_name, offset, default", "description": "Get a value from an earlier row of the schedule (offset rows back), or a default on the first rows. Used for running balances.", "category": "Schedule (column-only)", "scope": "schedule_column"},
+    {"name": "period_date", "params": "", "description": "The current row's date (YYYY-MM-DD).", "category": "Schedule (column-only)", "scope": "schedule_column"},
+    {"name": "period_index", "params": "", "description": "The current row's position, starting at 0.", "category": "Schedule (column-only)", "scope": "schedule_column"},
+    {"name": "period_number", "params": "", "description": "The current row's period number, starting at 1.", "category": "Schedule (column-only)", "scope": "schedule_column"},
+    {"name": "period_start", "params": "", "description": "The next period's start date (used for day-count fractions).", "category": "Schedule (column-only)", "scope": "schedule_column"},
+    {"name": "total_periods", "params": "", "description": "The total number of rows in the schedule.", "category": "Schedule (column-only)", "scope": "schedule_column"},
+    {"name": "dcf", "params": "", "description": "The day-count fraction for the current period.", "category": "Schedule (column-only)", "scope": "schedule_column"},
+    {"name": "days_in_current_period", "params": "", "description": "The number of days in the current period.", "category": "Schedule (column-only)", "scope": "schedule_column"},
+    {"name": "daily_basis", "params": "", "description": "The per-day basis amount for the current period.", "category": "Schedule (column-only)", "scope": "schedule_column"},
+    {"name": "start_date", "params": "", "description": "The schedule's overall start date.", "category": "Schedule (column-only)", "scope": "schedule_column"},
+    {"name": "end_date", "params": "", "description": "The schedule's overall end date.", "category": "Schedule (column-only)", "scope": "schedule_column"},
+    {"name": "s_no", "params": "", "description": "The serial number of the current row.", "category": "Schedule (column-only)", "scope": "schedule_column"},
+    {"name": "index", "params": "", "description": "Another name for the current row index.", "category": "Schedule (column-only)", "scope": "schedule_column"},
+    {"name": "item_name", "params": "", "description": "The name of the current item (for per-item schedules).", "category": "Schedule (column-only)", "scope": "schedule_column"},
+    {"name": "subinstrument_id", "params": "", "description": "The sub-instrument ID for the current schedule (for per-item schedules).", "category": "Schedule (column-only)", "scope": "schedule_column"},
 
     # Aggregation (13)
     {"name": "sum", "params": "col", "description": "Add up all values in a list, ignoring any empty entries.", "category": "Aggregation"},
@@ -3611,8 +3640,8 @@ DSL_FUNCTION_METADATA = [
     {"name": "collect_effectivedates_for_subinstrument", "params": "subinstrument_id?", "description": "Return a list of all effective dates associated with a specified sub-instrument.", "category": "Array"},
 
     # Iteration (5)
-    {"name": "apply_each", "params": "array, expression", "description": "Apply a formula to every item in a list using 'each' as the current item, and return the results. For paired lists, pass two arrays and use 'first' and 'second' in the formula.", "category": "Iteration"},
-    {"name": "for_each", "params": "dates_arr, amounts_arr, date_var, amt_var, expr", "description": "Loop through two paired lists of dates and amounts, running a specified action for each pair — commonly used to create multiple transactions.", "category": "Iteration"},
+    {"name": "apply_each", "params": "array, expression", "description": "Run a formula on every item in a list and return the results. For paired lists, pass two arrays and use 'first' and 'second'.", "category": "Iteration"},
+    {"name": "for_each", "params": "dates_arr, amounts_arr, date_var, amt_var, expr", "description": "Loop over two paired lists (dates and amounts), running an action for each pair. Often used to create transactions.", "category": "Iteration"},
     {"name": "for_each_with_index", "params": "array, var_name, expression, context?", "description": "Loop through a list, making each item and its position number available inside the loop body.", "category": "Iteration"},
     {"name": "array_filter", "params": "array, var_name, condition, context?", "description": "Return a new list containing only the items from the original list that meet a specified condition.", "category": "Iteration"},
 
@@ -3631,3 +3660,108 @@ DSL_FUNCTION_METADATA = [
 ]
 
 print(f"Loaded {len(DSL_FUNCTIONS)} functions across {len(set(f['category'] for f in DSL_FUNCTION_METADATA))} categories")
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Per-function worked examples. The agent uses these via list_dsl_functions
+# to ground formula authoring in concrete syntax instead of guessing.
+# Examples are SINGLE-LINE expressions matching the rule-builder constraints.
+# ──────────────────────────────────────────────────────────────────────────
+DSL_FUNCTION_EXAMPLES = {
+    # Arithmetic
+    "add":        "add(LoanEvent.principal, LoanEvent.fees)",
+    "subtract":   "subtract(opening_balance, payment)",
+    "multiply":   "multiply(LoanEvent.principal, LoanEvent.rate)",
+    "divide":     "divide(annual_rate, 12)",
+    "power":      "power(add(1, monthly_rate), nper)",
+    "abs":        "abs(subtract(actual, expected))",
+    "round":      "round(interest, 2)",
+    "floor":      "floor(divide(days, 30))",
+    "ceil":       "ceil(divide(amount, 1000))",
+    "percentage": "percentage(paid_amount, total_due)",
+    # Comparison / logical
+    "eq":  "eq(stage, 1)",
+    "neq": "neq(status, \"closed\")",
+    "gt":  "gt(days_overdue, 90)",
+    "gte": "gte(LoanEvent.balance, 1000)",
+    "lt":  "lt(LoanEvent.rate, 0.05)",
+    "lte": "lte(ltv, 0.8)",
+    "between": "between(days_overdue, 30, 89)",
+    "is_null": "is_null(LoanEvent.maturity_date)",
+    "and": "and(gt(days_overdue, 30), lt(days_overdue, 90))",
+    "or":  "or(eq(stage, 2), eq(stage, 3))",
+    "not": "not(is_null(rating))",
+    "if":  "if(gt(days_overdue, 90), 3, if(gt(days_overdue, 30), 2, 1))",
+    "coalesce": "coalesce(LoanEvent.override_rate, LoanEvent.rate, 0.0)",
+    "switch":   "switch(rating, {\"A\":0.005,\"B\":0.02,\"C\":0.08}, 0.15)",
+    # Date
+    "days_between":   "days_between(LoanEvent.origination_date, postingdate)",
+    "months_between": "months_between(LoanEvent.origination_date, postingdate)",
+    "add_months":     "add_months(postingdate, 1)",
+    "start_of_month": "start_of_month(postingdate)",
+    "end_of_month":   "end_of_month(postingdate)",
+    "normalize_date": "normalize_date(LoanEvent.maturity_date)",
+    "day_count_fraction": "day_count_fraction(prior_date, postingdate, \"ACT/365\")",
+    # Financial
+    "pv":   "pv(divide(rate, 12), term, payment)",
+    "fv":   "fv(divide(rate, 12), term, payment, principal)",
+    "pmt":  "pmt(divide(LoanEvent.rate, 12), LoanEvent.term_months, LoanEvent.principal)",
+    "npv":  "npv(0.05, cashflows)",
+    "irr":  "irr(cashflows)",
+    "discount_factor": "discount_factor(rate, dcf)",
+    "effective_rate":  "effective_rate(0.06, 12)",
+    # Schedule
+    "period":   "period(LoanEvent.term_months, \"M\")",
+    "schedule": (
+        "schedule(p, {\"interest\":\"multiply(balance, monthly_rate)\","
+        "\"principal\":\"subtract(payment, interest)\","
+        "\"balance\":\"subtract(balance, principal)\"},"
+        " {\"balance\":LoanEvent.principal,\"monthly_rate\":divide(LoanEvent.rate,12),"
+        "\"payment\":pmt(divide(LoanEvent.rate,12),LoanEvent.term_months,LoanEvent.principal)})"
+    ),
+    "schedule_sum":    "schedule_sum(amort, \"interest\")",
+    "schedule_last":   "schedule_last(amort, \"balance\")",
+    "schedule_first":  "schedule_first(amort, \"balance\")",
+    "schedule_column": "schedule_column(amort, \"balance\")",
+    "schedule_filter": "schedule_filter(amort, \"period_date\", postingdate, \"balance\")",
+    # Aggregation
+    "sum":           "sum(all_principals)",
+    "sum_field":     "sum_field(amort, \"interest\")",
+    "avg":           "avg(rate_history)",
+    "min":           "min(balance_history)",
+    "max":           "max(balance_history)",
+    "count":         "count(payment_history)",
+    "weighted_avg":  "weighted_avg(prices, weights)",
+    "cumulative_sum":"cumulative_sum(monthly_amounts)",
+    # Lookup / array
+    "lookup":      "lookup(reference_balances, instrumentid)",
+    "array_get":   "array_get(history, i, 0)",
+    "array_first": "array_first(balance_history, 0)",
+    "array_last":  "array_last(balance_history, 0)",
+    "array_length":"array_length(balance_history)",
+    "array_slice": "array_slice(balance_history, 0, 12)",
+    # Collection
+    "collect_by_instrument":         "collect_by_instrument(\"EOD_BALANCES.upb\")",
+    "collect_all":                   "collect_all(\"PDCurve.pd\")",
+    "collect_by_subinstrument":      "collect_by_subinstrument(\"REV.amount\")",
+    # Iteration
+    "apply_each":          "apply_each(prices, \"divide(each, total_price)\")",
+    "for_each":            "for_each(dates, amounts, \"d\", \"a\", \"createTransaction(d, d, \\\"REV\\\", a)\")",
+    "for_each_with_index": "for_each_with_index(items, \"x\", \"multiply(x, weight)\")",
+    "array_filter":        "array_filter(items, \"x\", \"gt(x, 0)\")",
+    # String
+    "concat":   "concat(\"Loan_\", instrumentid)",
+    "lower":    "lower(rating)",
+    "contains": "contains(LoanEvent.notes, \"impaired\")",
+    "eq_ignore_case": "eq_ignore_case(status, \"ACTIVE\")",
+    # Transaction (informational — prefer outputs.transactions[])
+    "createTransaction": (
+        "createTransaction(postingdate, effectivedate, \"ECLAllowance\", ecl_amount)"
+    ),
+}
+
+# Merge examples into the metadata so list_dsl_functions returns them.
+for _m in DSL_FUNCTION_METADATA:
+    _ex = DSL_FUNCTION_EXAMPLES.get(_m.get("name"))
+    if _ex:
+        _m["example"] = _ex

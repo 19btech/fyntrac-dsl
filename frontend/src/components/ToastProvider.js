@@ -33,23 +33,32 @@ export const ToastProvider = ({ children }) => {
     warning: (message) => showToast(message, 'warning'),
   };
 
-  const handleClose = (id) => {
+  // Start the close (exit) transition; the toast is removed only after it
+  // finishes animating out (see TransitionProps.onExited below).
+  const handleClose = (id, reason) => {
+    if (reason === 'clickaway') return;  // don't dismiss on outside click
+    setToasts(prev => prev.map(t => (t.id === id ? { ...t, open: false } : t)));
+  };
+
+  const handleExited = (id) => {
     setToasts(prev => prev.filter(t => t.id !== id));
   };
 
   return (
     <ToastContext.Provider value={toast}>
       {children}
-      {toasts.map(({ id, message, severity, open }) => {
+      {toasts.map(({ id, message, severity, open }, index) => {
         const styles = TOAST_STYLES[severity] || TOAST_STYLES.info;
         return (
           <Snackbar
             key={id}
             open={open}
             autoHideDuration={4500}
-            onClose={() => handleClose(id)}
+            onClose={(e, reason) => handleClose(id, reason)}
+            TransitionProps={{ onExited: () => handleExited(id) }}
             anchorOrigin={{ vertical: 'top', horizontal: 'right' }}
-            sx={{ top: '72px !important' }}
+            // Stack multiple toasts vertically so they never overlap.
+            sx={{ top: `${72 + index * 64}px !important` }}
           >
             <Alert
               onClose={() => handleClose(id)}
@@ -74,20 +83,4 @@ export const ToastProvider = ({ children }) => {
       })}
     </ToastContext.Provider>
   );
-};
-
-// Export a replacement for sonner's toast for compatibility
-export const toast = {
-  success: (message) => {
-    // Will be overridden by context
-  },
-  error: (message) => {
-    console.error('Toast (fallback):', message);
-  },
-  info: (message) => {
-    console.info('Toast (fallback):', message);
-  },
-  warning: (message) => {
-    console.warn('Toast (fallback):', message);
-  },
 };

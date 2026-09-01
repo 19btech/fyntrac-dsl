@@ -31,8 +31,8 @@ function TabPanel({ children, value, index, ...other }) {
       style={{ height: '100%', display: value === index ? 'flex' : 'none', flexDirection: 'column', overflow: 'auto' }}
       {...other}
     >
-      <div className="tab-panel-enter h-full flex flex-col">
-        <div className="tab-panel-content h-full flex flex-col">
+      <div className="tab-panel-enter" style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
+        <div className="tab-panel-content" style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
           {children}
         </div>
       </div>
@@ -677,7 +677,7 @@ const Dashboard = () => {
   };
 
   return (
-    <div className="flex h-screen bg-[#F8F9FA] overflow-auto" style={{ minWidth: '900px' }} data-testid="dashboard-container">
+    <div style={{ display: 'flex', height: '100vh', backgroundColor: '#F8F9FA', overflow: 'auto', minWidth: '900px' }} data-testid="dashboard-container">
       {/* Left Sidebar */}
         <div className="sidebar-enter" style={{ position: 'relative', zIndex: 1200 }}>
         <LeftSidebar 
@@ -696,10 +696,10 @@ const Dashboard = () => {
       </div>
 
       {/* Main Content */}
-      <div className="flex-1 flex flex-col min-w-0">
+      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0 }}>
         {/* Top Bar - Fyntrac style */}
-        <div className="bg-white/80 backdrop-blur-xl border-b border-[#E9ECEF]/50 px-6 flex items-center animate-fade-in-up" style={{ height: 80 }}>
-          <div className="flex items-center justify-between w-full">
+        <div className="animate-fade-in-up" style={{ height: 80, backgroundColor: 'rgba(255,255,255,0.8)', backdropFilter: 'blur(20px)', borderBottom: '1px solid rgba(233,236,239,0.5)', paddingLeft: 24, paddingRight: 24, display: 'flex', alignItems: 'center' }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
               {/* Hamburger — mobile only (xs) */}
               <IconButton
@@ -755,14 +755,14 @@ const Dashboard = () => {
                 </Typography>
               </div>
             </div>
-            <div className="flex gap-2">
+            <div style={{ display: 'flex', gap: 8 }}>
               <Button 
                 variant="outlined" 
                 size="small" 
                 onClick={() => setShowFunctionBrowser(true)}
                 data-testid="browse-functions-button"
                 title={`${dslFunctions.length} formulas loaded`}
-                startIcon={<SearchIcon className="w-4 h-4" />}
+                startIcon={<SearchIcon size={16} />}
                 sx={{
                   bgcolor: '#D4EDDA',
                   borderColor: '#C3E6CB',
@@ -787,8 +787,8 @@ const Dashboard = () => {
                 size="small" 
                 onClick={(e) => setSettingsAnchorEl(e.currentTarget)}
                 data-testid="settings-button"
-                startIcon={<Settings className="w-4 h-4" />}
-                endIcon={<ChevronDown className="w-3 h-3" />}
+                startIcon={<Settings size={16} />}
+                endIcon={<ChevronDown size={12} />}
                 sx={{
                   borderColor: '#CED4DA',
                   color: '#495057',
@@ -847,7 +847,7 @@ const Dashboard = () => {
                   data-testid="menu-clear-data"
                   sx={{ fontSize: '0.875rem', py: 1.5 }}
                 >
-                  <Trash2 className="w-4 h-4 text-[#6C757D] mr-2" />
+                  <Trash2 size={16} style={{ color: '#6C757D', marginRight: 8 }} />
                   Clear All Data
                 </MenuItem>
                 <Divider />
@@ -859,7 +859,7 @@ const Dashboard = () => {
                   data-testid="menu-load-sample-data"
                   sx={{ fontSize: '0.875rem', py: 1.5 }}
                 >
-                  <Database className="w-4 h-4 text-[#6C757D] mr-2" />
+                  <Database size={16} style={{ color: '#6C757D', marginRight: 8 }} />
                   Load Sample Data
                 </MenuItem>
                 <Divider />
@@ -871,7 +871,7 @@ const Dashboard = () => {
                   data-testid="menu-ai-setup"
                   sx={{ fontSize: '0.875rem', py: 1.5 }}
                 >
-                  <Sparkles className="w-4 h-4 text-[#6C757D] mr-2" />
+                  <Sparkles size={16} style={{ color: '#6C757D', marginRight: 8 }} />
                   AI Agent Setup
                 </MenuItem>
                 
@@ -881,20 +881,20 @@ const Dashboard = () => {
         </div>
 
         {/* Main Content Area */}
-        <div className="flex-1 flex overflow-hidden min-w-0">
+        <div style={{ flex: 1, display: 'flex', overflow: 'hidden', minWidth: 0 }}>
           {/* Center - Editor and Console */}
           <Box sx={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0, overflow: 'hidden' }}>
             <Box sx={{ borderBottom: 1, borderColor: 'divider', bgcolor: 'white', px: 3 }}>
               <Tabs value={tabValue} onChange={(e, newValue) => { setTabValue(newValue); if (newValue === 1) { setEditorMode('savedRules'); } }}>
                 <Tab 
-                  icon={<Upload className="w-4 h-4" />} 
+                  icon={<Upload size={16} />}
                   iconPosition="start" 
                   label="Upload Data" 
                   data-testid="upload-tab"
                   sx={{ textTransform: 'none', fontSize: '0.875rem' }}
                 />
                 <Tab 
-                  icon={<Code className="w-4 h-4" />} 
+                  icon={<Code size={16} />} 
                   iconPosition="start" 
                   label="Logic Builder" 
                   data-testid="editor-tab"
@@ -972,7 +972,7 @@ const Dashboard = () => {
                     </Button>
                   </Box>
                   <Box sx={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0, overflow: 'hidden' }}>
-                    <div className="flex-1 bg-[#0A0A0A] min-w-0 min-h-0 overflow-hidden" data-testid="dsl-editor">
+                    <div style={{ flex: 1, backgroundColor: '#0A0A0A', minWidth: 0, minHeight: 0, overflow: 'hidden' }} data-testid="dsl-editor">
                     <Editor
                       key={codeRefreshKey}
                       height="100%"
@@ -1106,16 +1106,16 @@ const Dashboard = () => {
                       }}
                     />
                   </div>
-                  <ConsoleOutput 
-                    output={consoleOutput} 
-                    onClear={() => setConsoleOutput([])} 
-                    dslCode={dslCode}
-                    addConsoleLog={addConsoleLog}
-                    onCodeChange={setDslCode}
-                    events={events}
-                    handleSaveTemplate={handleSaveTemplate}
-                    onExecutionResult={setLastExecutionResult}
-                  />
+                    <ConsoleOutput 
+                      output={consoleOutput} 
+                      onClear={() => setConsoleOutput([])} 
+                      dslCode={dslCode}
+                      addConsoleLog={addConsoleLog}
+                      onCodeChange={setDslCode}
+                      events={events}
+                      handleSaveTemplate={handleSaveTemplate}
+                      onExecutionResult={setLastExecutionResult}
+                    />
                   </Box>
                 </>
               )}
@@ -1230,7 +1230,7 @@ const Dashboard = () => {
           </Box>
 
           {/* Right Sidebar - Chat Assistant */}
-          <div className="flex-shrink-0 chat-panel-enter" style={{ position: 'relative', zIndex: 1200 }}>
+          <div className="chat-panel-enter" style={{ flexShrink: 0, position: 'relative', zIndex: 1200 }}>
             <ChatAssistant 
               ref={chatAssistantRef}
               dslFunctions={dslFunctions} 

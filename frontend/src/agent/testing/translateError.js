@@ -110,6 +110,15 @@ const ACCOUNTING_ERROR_PATTERNS = [
 ];
 
 const ERROR_PATTERNS = [
+  // ── Leading-zero number (specific syntax error — must come BEFORE the
+  //    generic SyntaxError rule below, which would otherwise swallow it) ──
+  {
+    pattern: /leading zeros in decimal integer|leading zero/i,
+    category: 'syntax_error',
+    whatWentWrong: 'A number in your formula has a leading zero (for example 08 or 007).',
+    whyItHappened: 'Numbers cannot start with a 0 followed by more digits — that form is reserved and is not a valid number.',
+    howToFix: 'Remove the leading zero: write 8 instead of 08, or 7 instead of 007. If you meant a text/code value (like an account code), wrap it in quotes: "007".',
+  },
   // ── Syntax ──────────────────────────────────────────────────
   {
     pattern: /SyntaxError|invalid syntax|unexpected (EOF|token|indent)/i,

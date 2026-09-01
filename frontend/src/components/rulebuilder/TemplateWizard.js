@@ -143,12 +143,12 @@ function parseDSLToRules(code, templateTitle) {
     const vars = paramStmts.map(s => classifyToVariable(s));
     const txnRows = canMergeJournalIntoParams
       ? journalStmts.map(txn => ({
-        type: txn.txnType || '',
-        amount: txn.amount || '',
-        postingDate: txn.postingDate || '',
-        effectiveDate: txn.effectiveDate || '',
-        subInstrumentId: txn.subInstrumentId || '',
-      }))
+          type: txn.txnType || '',
+          amount: txn.amount || '',
+          postingDate: txn.postingDate || '',
+          effectiveDate: txn.effectiveDate || '',
+          subInstrumentId: txn.subInstrumentId || '',
+        }))
       : [];
     const genCode = canMergeJournalIntoParams
       ? [...paramStmts.map(s => s.raw), ...journalStmts.map(s => s.raw)].join('\n')
@@ -167,10 +167,10 @@ function parseDSLToRules(code, templateTitle) {
       steps: calcSteps,
       outputs: canMergeJournalIntoParams
         ? {
-          printResult: true,
-          createTransaction: txnRows.length > 0,
-          transactions: txnRows.length > 0 ? txnRows : [{ type: '', amount: '', postingDate: '', effectiveDate: '', subInstrumentId: '' }],
-        }
+            printResult: true,
+            createTransaction: txnRows.length > 0,
+            transactions: txnRows.length > 0 ? txnRows : [{ type: '', amount: '', postingDate: '', effectiveDate: '', subInstrumentId: '' }],
+          }
         : { ...defaultOutputs },
       generatedCode: genCode,
       customCode: '',
@@ -707,7 +707,7 @@ const TemplateWizard = ({ template, events, onGenerate, onClose }) => {
         setLocalEvents(data.events);
         setSampleLoaded(true);
         // Notify Dashboard to reload transaction definitions seeded by this template
-        try { window.dispatchEvent(new CustomEvent('dsl-transaction-defs-changed')); } catch (e) { }
+        try { window.dispatchEvent(new CustomEvent('dsl-transaction-defs-changed')); } catch(e) {}
       }
     } catch (err) {
       console.error('Failed to load sample data:', err);
@@ -1521,7 +1521,7 @@ const TemplateLibrary = ({ events, onLoadTemplate, onClose, inline }) => {
       if (compileErr) {
         toast.error(`Deployed "${template.name}" v${v ?? '?'} with compile errors: ${compileErr}`);
       } else {
-        toast.success(`Deployed "${template.name}"${v ? ` (v${v})` : ''} to fyntrac.`);
+        toast.success(`Deployed "${template.name}"${v ? ` (v${v})` : ''} to runtime.`);
       }
     } catch (e) {
       toast.error(`Deploy failed: ${e?.message || e}`);
@@ -1703,7 +1703,7 @@ const TemplateLibrary = ({ events, onLoadTemplate, onClose, inline }) => {
                               {template.description || 'No description'}
                             </Typography>
                           </Box>
-                          <Tooltip title="Deploy to fyntrac">
+                          <Tooltip title="Deploy to runtime (dsl_templates + dsl_template_artifacts)">
                             <IconButton size="small"
                               onClick={(e) => { e.stopPropagation(); handleDeployUserTemplate(template); }}
                               disabled={deployingId === template.id}

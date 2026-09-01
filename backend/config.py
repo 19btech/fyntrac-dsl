@@ -23,6 +23,13 @@ class Settings:
     zitadel_issuer_uri: str = os.environ.get('ZITADEL_ISSUER_URI', '')
     zitadel_project_id: str = os.environ.get('ZITADEL_PROJECT_ID', '')
     dataloader_base_uri: str = os.environ.get('DATALOADER_BASE_URI', 'http://localhost:8585/api/dataloader')
+    # Maker-checker: when true, agent-authored rule writes are marked
+    # `pending` and a template cannot be deployed until every rule it contains
+    # has been approved by a human via the approval endpoints. Default off to
+    # preserve existing behaviour; turn ON for regulated/production use.
+    require_agent_approval: bool = os.environ.get(
+        'REQUIRE_AGENT_APPROVAL', 'false'
+    ).strip().lower() in ('1', 'true', 'yes', 'on')
 
 
 settings = Settings()

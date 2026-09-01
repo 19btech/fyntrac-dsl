@@ -56,6 +56,8 @@ automatically). Use `step_id` to address a step in `update_step` /
   "scheduleConfig": {
      "periodType": "date" | "number",
      "frequency": "D"|"W"|"M"|"Q"|"Y",
+     "frequencyFormula": "if(is_monthly,\"M\",\"Q\")",  // OPTIONAL: dynamic frequency; overrides `frequency` at runtime
+     "runIf": "is_lease",                               // OPTIONAL: conditional execution — see below
      "convention": ""|"30/360"|"Actual/360"|"Actual/365"|"Actual/Actual"|"30E/360",
      // when periodType=date:
      "startDateSource":"value"|"field"|"formula", "startDate"|"startDateField"|"startDateFormula": "...",
@@ -71,6 +73,46 @@ automatically). Use `step_id` to address a step in `update_step` /
   ]
 }
 ```
+
+#### Conditional schedules — `runIf` (if/then/else over schedules)
+
+To run **schedule 1 when a condition holds, otherwise schedule 2**, give each
+schedule a `scheduleConfig.runIf` boolean expression. When `runIf` is false the
+schedule materialises **zero rows**, so its outputVars become `0` / `[]` and it
+emits nothing — it "does not fire". Pair two schedules with **inverse** `runIf`,
+then select the result downstream:
+
+```jsonc
+// Schedule 1 — only fires when is_lease is true
+{ "name": "LeaseSchedule", "stepType": "schedule",
+  "scheduleConfig": { "runIf": "is_lease", "frequency": "M", "periodType": "date",
+                      "startDateSource": "formula", "startDateFormula": "postingdate",
+                      "endDateSource": "formula", "endDateFormula": "lease_end",
+                      "columns": [{"name": "charge", "formula": "opening * lease_rate"}] },
+  "outputVars": [{"name": "lease_total", "type": "sum", "column": "charge"}] }
+
+// Schedule 2 — only fires when is_lease is false
+{ "name": "DeprSchedule", "stepType": "schedule",
+  "scheduleConfig": { "runIf": "not(is_lease)", "frequency": "M", "periodType": "date",
+                      "startDateSource": "formula", "startDateFormula": "postingdate",
+                      "endDateSource": "formula", "endDateFormula": "useful_life_end",
+                      "columns": [{"name": "charge", "formula": "opening * deprec_rate"}] },
+  "outputVars": [{"name": "depr_total", "type": "sum", "column": "charge"}] }
+
+// pick whichever fired (the other outputVar is 0)
+{ "name": "period_charge", "stepType": "condition",
+  "conditions": [{"condition": "is_lease", "thenFormula": "lease_total"}],
+  "elseFormula": "depr_total" }
+```
+
+`runIf` references variables defined by EARLIER steps (e.g. a calc step
+`is_lease`); it is validated like any formula. NOTE: both schedules still
+execute — the false one just produces no rows — so the result/transactions/audit
+are identical to true branching. When only the *math* differs (same period
+structure), prefer a single schedule with `if(...)` inside the column formulas.
+
+`frequencyFormula` lets the period frequency itself be conditional, e.g.
+`"if(report_monthly, \"M\", \"Q\")"`; it overrides the static `frequency`.
 
 #### ⚠️ MANDATORY: Start date and end date MUST always be populated
 

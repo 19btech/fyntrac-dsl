@@ -31,23 +31,14 @@ const LeftSidebar = ({ events, selectedEvent, onEventSelect, onDownloadEvents, o
           flexDirection: 'column',
           alignItems: 'center',
           height: '100vh',
+          py: 1,
           transition: 'width 200ms ease',
           position: 'relative',
         }}
         data-testid="left-sidebar-collapsed"
       >
-        {/* Collapsed logo header matching visual height of expanded version */}
-        <Box sx={{ px: 1, height: 80, borderBottom: '1px solid #E9ECEF', display: 'flex', justifyContent: 'center', alignItems: 'center', width: '100%', mb: 1.5 }}>
-          <img
-            src={process.env.PUBLIC_URL + '/logo.png'}
-            alt="Fyntrac"
-            style={{ maxHeight: 32, maxWidth: 32, objectFit: 'contain' }}
-            data-testid="sidebar-logo-collapsed"
-          />
-        </Box>
-
         <Tooltip title={`${events?.length || 0} events`} placement="right">
-          <Box sx={{ color: '#6C757D' }}>
+          <Box sx={{ mt: 1, color: '#6C757D' }}>
             <FileText size={18} />
           </Box>
         </Tooltip>

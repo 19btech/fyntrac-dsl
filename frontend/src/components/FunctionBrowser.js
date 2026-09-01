@@ -1,13 +1,13 @@
 import React, { useState, useMemo } from "react";
-import { Dialog, DialogContent, DialogTitle, Card, CardContent, Button, TextField, IconButton, InputAdornment, Chip, Box, Typography, Tooltip, Slide } from '@mui/material';
+import { Dialog, DialogContent, DialogTitle, Card, CardContent, Button, TextField, IconButton, InputAdornment, Chip, Box, Typography, Tooltip, Slide, Alert } from '@mui/material';
 import { Search, BookOpen, Copy, X, Sparkles } from "lucide-react";
 import { useToast } from "./ToastProvider";
 import { getExplanation } from "../agent/testing/explanationStore";
 import ModalHeader from "./ModalHeader";
 
-const FunctionBrowser = ({ dslFunctions, onClose, onAskAI }) => {
+const FunctionBrowser = ({ dslFunctions, onClose, onAskAI, initialCategory }) => {
   const [searchQuery, setSearchQuery] = useState("");
-  const [selectedCategory, setSelectedCategory] = useState("All");
+  const [selectedCategory, setSelectedCategory] = useState(initialCategory || "All");
   const toast = useToast();
 
   const categories = useMemo(() => {
@@ -105,6 +105,12 @@ const FunctionBrowser = ({ dslFunctions, onClose, onAskAI }) => {
           </Typography>
         </Box>
 
+        {selectedCategory === 'Schedule (column-only)' && (
+          <Alert severity="warning" sx={{ mb: 2 }}>
+            These are built-in schedule values. Use them only inside a schedule step's column formula — not in calc, condition, or iteration steps.
+          </Alert>
+        )}
+
         <Box sx={{ flex: 1, overflowY: 'auto' }}>
           <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', md: 'repeat(2, 1fr)' }, gap: 2 }}>
             {filteredFunctions.map((func, idx) => (
@@ -136,9 +142,9 @@ const FunctionBrowser = ({ dslFunctions, onClose, onAskAI }) => {
                           icon={<Sparkles size={10} />}
                           label="User-Created"
                           size="small"
-                          sx={{ 
+                          sx={{
                             ml: 0.5,
-                            bgcolor: '#F3E8FF', 
+                            bgcolor: '#F3E8FF',
                             color: '#7C3AED',
                             fontSize: '0.6875rem',
                             height: 18
@@ -161,7 +167,7 @@ const FunctionBrowser = ({ dslFunctions, onClose, onAskAI }) => {
                   <Typography variant="body2" color="text.secondary" sx={{ mb: 2, lineHeight: 1.5 }}>
                     {func.description}
                   </Typography>
-                  
+
                   <Box sx={{ display: 'flex', gap: 1 }}>
                     {onAskAI && (
                       <Button

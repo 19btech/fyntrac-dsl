@@ -70,18 +70,85 @@ _RUN_LOCK = asyncio.Lock()
 # Without this, every agent run starts from a blank slate and re-discovers
 # the workspace from scratch (re-listing events, re-reading rules, retrying
 # duplicate creates). Keyed by the chat session_id supplied by the frontend.
+#
+# Persisted to db.agent_sessions when a DB is available (durable across
+# restarts / workers); the in-process dict below is the fallback used only when
+# running in in-memory mode (db is None).
 # ──────────────────────────────────────────────────────────────────────────
 _SESSION_HISTORY: dict[str, list[dict]] = {}
 # Cap kept history per session. Oldest pairs are dropped when exceeded.
 _SESSION_MAX_MESSAGES = 60
 
+# Delta workspace refresh cadence (see run_agent). Re-inject a fresh snapshot
+# every this-many steps when the workspace was mutated since the last refresh.
+_REFRESH_EVERY = 12
+# Tools whose success changes the broad workspace shape (events / rules /
+# txn types / schedules / templates) — i.e. things the first-turn snapshot
+# listed. After any of these the snapshot is potentially stale.
+_WORKSPACE_MUTATING_TOOLS = {
+    "create_event_definitions", "add_transaction_types",
+    "generate_sample_event_data",
+    "create_saved_rule", "update_saved_rule", "delete_saved_rule",
+    "create_saved_schedule", "delete_saved_schedule",
+    "create_or_replace_template", "delete_template",
+    "attach_rules_to_template", "apply_canonical_pattern",
+    "clear_all_data",
+}
 
-def reset_session_history(session_id: str) -> bool:
+
+async def reset_session_history(session_id: str, *, db=None) -> bool:
     """Drop persisted conversation history for the given chat session.
-    Returns True if anything was cleared."""
+    Returns True if anything was cleared. Clears both the DB record (when a DB
+    is provided) and the in-process fallback cache."""
     if not session_id:
         return False
-    return _SESSION_HISTORY.pop(session_id, None) is not None
+    cleared = False
+    if db is not None:
+        try:
+            res = await db.agent_sessions.delete_one({"session_id": session_id})
+            cleared = bool(getattr(res, "deleted_count", 0))
+        except Exception as exc:
+            logger.warning("reset_session_history DB delete failed: %s", exc)
+    if _SESSION_HISTORY.pop(session_id, None) is not None:
+        cleared = True
+    return cleared
+
+
+async def _load_session_history(db, session_id: str) -> list[dict]:
+    """Load prior conversation history for a session. DB is the source of truth
+    when present; falls back to the in-process cache only in in-memory mode."""
+    if not session_id:
+        return []
+    if db is not None:
+        try:
+            doc = await db.agent_sessions.find_one(
+                {"session_id": session_id}, {"_id": 0, "messages": 1}
+            )
+            return list((doc or {}).get("messages") or [])
+        except Exception as exc:
+            logger.warning("load_session_history failed: %s", exc)
+            return []
+    return list(_SESSION_HISTORY.get(session_id) or [])
+
+
+async def _save_session_history(db, session_id: str, msgs: list[dict]) -> None:
+    """Persist (trimmed) conversation history for a session. Writes to the DB
+    when present, otherwise to the in-process fallback cache."""
+    if not session_id:
+        return
+    trimmed = _trim_history(msgs)
+    if db is not None:
+        try:
+            await db.agent_sessions.update_one(
+                {"session_id": session_id},
+                {"$set": {"session_id": session_id, "messages": trimmed,
+                          "updated_at": _now_iso()}},
+                upsert=True,
+            )
+            return
+        except Exception as exc:
+            logger.warning("save_session_history failed: %s", exc)
+    _SESSION_HISTORY[session_id] = trimmed
 
 
 def _trim_history(msgs: list[dict]) -> list[dict]:
@@ -397,14 +464,22 @@ def _build_loop_nudge(tool_name: str, signature: str, err_text: str = "") -> str
         f"⚠️ LOOP DETECTED: tool `{tool_name}` has failed multiple times in a "
         f"row with the same error category (`{signature}`). STOP retrying the "
         f"same approach. Your next action MUST be one of:\n"
-        f"  1. Call `get_dsl_syntax_guide` to read the binding DSL constraints "
-        f"and see worked examples of each step type.\n"
-        f"  2. Call `get_saved_rule` on an existing rule that uses the same "
+        f"  1. Call `explain_error(error_text=..., tool_name='{tool_name}')` to "
+        f"get the root-cause diagnosis and exact fix recipe for this error.\n"
+        f"  2. If the error is in an expression, call `lint_expression` on the "
+        f"corrected expression to confirm it passes BEFORE re-saving.\n"
+        f"  3. Call `preview_generated_code` on the rule to see the Python it "
+        f"compiles to and spot the undefined/misordered variable.\n"
+        f"  4. Call `get_dsl_syntax_guide` to read the binding DSL constraints "
+        f"and worked examples of each step type.\n"
+        f"  5. Call `get_saved_rule` on an existing rule that uses the same "
         f"step type and copy its expression shape exactly.\n"
-        f"  3. Call `finish` with a question for the user explaining what you "
+        f"  6. If a recent edit broke the rule, call `revert_rule` to restore "
+        f"the last good version, then re-apply the change correctly.\n"
+        f"  7. Call `finish` with a question for the user explaining what you "
         f"are stuck on.\n"
-        f"Do NOT make a third variation of the failing call before doing one "
-        f"of those three things."
+        f"Do NOT make another variation of the failing call before doing one "
+        f"of those things."
     )
     if signature in ("unterminated_string_literal", "invalid_syntax", "iteration_multiline"):
         base += (
@@ -423,7 +498,7 @@ def _build_loop_nudge(tool_name: str, signature: str, err_text: str = "") -> str
     elif signature == "bracket_indexing":
         base += (
             "\nNote: `arr[i]` bracket indexing is not supported. Use "
-            "lookup(arr, idx) or element_at(arr, idx)."
+            "array_get(arr, idx) (or array_first/array_last for the ends)."
         )
     elif signature == "schedule_contextvars":
         base += (
@@ -919,6 +994,18 @@ def _system_prompt() -> str:
         "                 USE schedule FOR: depreciation / amortisation / amortization /\n"
         "                 accretion / runoff / payment plans / EIR / PIT-PD term-structure /\n"
         "                 any 'over the life of' calc that produces ONE row per period.\n"
+        "                 *** CONDITIONAL SCHEDULES — scheduleConfig.runIf ***\n"
+        "                 To do 'if X build schedule 1 else schedule 2', set\n"
+        "                 scheduleConfig.runIf to a boolean DSL expression on each\n"
+        "                 schedule. When runIf is false the schedule produces ZERO\n"
+        "                 rows (its outputVars become 0/[]), so it does not fire.\n"
+        "                 Pair two schedules with inverse runIf (e.g. 'is_lease' and\n"
+        "                 'not(is_lease)'), then a condition step picks the result:\n"
+        "                 period_charge = if(is_lease, lease_total, depr_total).\n"
+        "                 runIf references EARLIER calc-step vars. For a CONDITIONAL\n"
+        "                 FREQUENCY use scheduleConfig.frequencyFormula (e.g.\n"
+        "                 if(report_monthly, \"M\", \"Q\")). When only the math differs\n"
+        "                 (same periods), prefer one schedule with if(...) in columns.\n"
         "                 Schedule columns CAN reference outer calc-step variables,\n"
         "                 EVENTNAME.field, prior columns in the same array, and built-ins\n"
         "                 (period_index, period_date, period_number, total_periods, lag,\n"
@@ -976,7 +1063,7 @@ def _system_prompt() -> str:
         "         WRONG:  lookup(LoanCreditRiskData.credit_impaired_flag, loan)\n"
         "         RIGHT:  LoanCreditRiskData.credit_impaired_flag\n"
         "       • Reference (small lookup) tables → collect_all('REF_field')\n"
-        "         then lookup(arr, key) or element_at(arr, idx).\n"
+        "         then lookup(arr, key) or array_get(arr, idx).\n"
         "       • Per-instrument time-series (multiple postingdates of the\n"
         "         same activity event) → collect_by_instrument('EVT_field').\n"
         "       • Indexed lookup inside an apply_each iteration uses\n"
@@ -1150,7 +1237,7 @@ def _system_prompt() -> str:
         "     ONLY done via stepType='iteration' with a sourceArray.\n"
         "  3. There is NO `outputs.events.push(...)`, NO `createEventRow(...)`,\n"
         "     NO `arr[i]` bracket indexing in expressions. Instead:\n"
-        "       • Array element access: lookup(arr, idx) or element_at(arr, idx)\n"
+        "       • Array element access: array_get(arr, idx) (array_first/array_last for ends)\n"
         "       • Synthetic events cannot be emitted from expressions. Either\n"
         "         pre-load them via create_event_definitions + generate_sample_event_data,\n"
         "         OR compute the values inline and emit transactions directly.\n"
@@ -1382,6 +1469,33 @@ def _system_prompt() -> str:
         "    1 (multi-line) or constraint 3 (using unsupported syntax like\n"
         "    bracket indexing or .push). Re-read those rules before retrying.\n"
         "════════════════════════════════════════════════════════════════════\n"
+        "SELF-CHECK TOOLS — USE THESE TO AVOID MISTAKES (cheap, no side effects):\n"
+        "  • `lint_expression(expression=..., kind='formula'|'condition'|\n"
+        "    'iteration')` — statically validate ONE expression BEFORE putting it\n"
+        "    in a step. It runs the exact checks the save path enforces, so what\n"
+        "    passes here passes at write time. Use it whenever you are unsure\n"
+        "    about a formula's syntax — do NOT save-and-pray.\n"
+        "  • `preview_generated_code(rule_id=...)` — see the Python your rule\n"
+        "    compiles to, plus any undefined-variable findings, BEFORE dry-run.\n"
+        "    The fastest way to find a 'name is not defined' bug is to read the\n"
+        "    generated code and check each variable is assigned before use.\n"
+        "  • `explain_error(error_text=..., tool_name=...)` — turn a confusing\n"
+        "    error into a root-cause + fix recipe. Call it the FIRST time an\n"
+        "    error confuses you, not after looping.\n"
+        "  • `suggest_field_hints(event_name=...)` — get accounting-sensible\n"
+        "    field_hints (rates as decimals, money under $10M, dated fields)\n"
+        "    to pass into generate_sample_event_data so sample data is realistic\n"
+        "    and rules don't evaluate to zero.\n"
+        "  • `revert_rule(rule_id=...)` — undo your last edit to a rule by\n"
+        "    restoring its previous saved version. Use this to back out a bad\n"
+        "    change cleanly instead of trying to hand-reconstruct prior steps.\n"
+        "  RECOMMENDED SELF-CHECK FLOW for authoring a rule:\n"
+        "    1. lint_expression on each non-trivial formula as you compose it.\n"
+        "    2. create_saved_rule / add_step_to_rule.\n"
+        "    3. preview_generated_code to confirm variables resolve.\n"
+        "    4. debug_step on each step; test_schedule_step on each schedule.\n"
+        "    5. verify_rule_complete → dry_run_template → finish.\n"
+        "════════════════════════════════════════════════════════════════════\n"
     )
 
 
@@ -1456,6 +1570,13 @@ async def run_agent(
     # during this run so `finish` can gate on ALL of them, not just one the
     # agent happens to pass an id for. Maps rule_id -> last-known name.
     touched_rules: dict[str, str] = {}
+    # Delta workspace refresh: on long runs the first-turn snapshot goes stale
+    # (the agent has since created events / rules / txn types). Every
+    # _REFRESH_EVERY steps, if the workspace changed since the last refresh,
+    # re-inject a compact snapshot as a USER message (not system — keeps the
+    # cached system prefix stable) so the agent plans against current state.
+    mutated_since_refresh = False
+    last_refresh_step = 0
 
     yield {
         "type": "run_started", "ts": _now_iso(), "run_id": run_id,
@@ -1469,7 +1590,7 @@ async def run_agent(
     # scratch every time.
     prior_history: list[dict] = []
     if session_id:
-        prior_history = list(_SESSION_HISTORY.get(session_id) or [])
+        prior_history = await _load_session_history(db, session_id)
 
     # Preflight: snapshot the workspace on the FIRST turn of a session so the
     # model plans against real state and doesn't waste steps re-listing
@@ -1545,7 +1666,7 @@ async def run_agent(
                 resp = provider_task.result()
             except NotImplementedError:
                 yield {"type": "error",
-                        "message": f"Provider does not support tool calling. Use OpenAI, DeepSeek, or Anthropic."}
+                        "message": f"Provider does not support tool calling. Use OpenAI or Anthropic."}
                 final_status = "failed"
                 break
             except asyncio.CancelledError:
@@ -1643,11 +1764,16 @@ async def run_agent(
 
                 t0 = time.time()
                 try:
-                    # Plumb the run_id into tool-side context so dispatch_tool's
-                    # plan-gate can find the active plan in _RUN_PLANS.
+                    # Plumb the run_id AND session_id into tool-side context so
+                    # dispatch_tool's plan-gate keys the persisted plan by the
+                    # stable session id (found again on continuation turns).
                     try:
-                        from .tools import set_current_run_id as _set_rid
+                        from .tools import (
+                            set_current_run_id as _set_rid,
+                            set_current_session_id as _set_sid,
+                        )
                         _set_rid(run_id)
+                        _set_sid(session_id or "")
                     except Exception:
                         pass
                     result = await dispatch_tool(name, args)
@@ -1664,6 +1790,10 @@ async def run_agent(
                                      "result_preview": obs[:1000]})
                     # Success — reset loop tracking for this tool
                     recent_errors = [e for e in recent_errors if e[0] != name]
+                    # Mark the workspace dirty so the next refresh checkpoint
+                    # re-grounds the agent against current state.
+                    if name in _WORKSPACE_MUTATING_TOOLS:
+                        mutated_since_refresh = True
                     # ── Soft-loop detection ───────────────────────────────
                     # Track this call name for alternating-cycle detection.
                     recent_tool_calls.append(name)
@@ -1850,6 +1980,34 @@ async def run_agent(
                                    f"steering agent toward syntax guide / "
                                    f"existing rule lookup."}
 
+            # Delta workspace refresh: on long runs, periodically re-ground the
+            # agent against current state if it has mutated the workspace since
+            # the last refresh. Injected as a USER message so the cached system
+            # prefix stays intact. Skipped when finishing.
+            if (not should_finish
+                    and mutated_since_refresh
+                    and (step - last_refresh_step) >= _REFRESH_EVERY):
+                try:
+                    refreshed = await _build_workspace_context(
+                        db=db, in_memory_data=in_memory_data
+                    )
+                    messages.append({
+                        "role": "user",
+                        "content": (
+                            "WORKSPACE REFRESH — the workspace has changed since "
+                            "you started. Use this CURRENT state (do not rely on "
+                            "the original snapshot for names/ids/priorities):\n\n"
+                            + refreshed
+                        ),
+                    })
+                    mutated_since_refresh = False
+                    last_refresh_step = step
+                    yield {"type": "warning", "ts": _now_iso(),
+                            "message": "Re-grounded agent with a refreshed "
+                                       "workspace snapshot."}
+                except Exception as exc:
+                    logger.warning("Workspace refresh failed: %s", exc)
+
             if should_finish:
                 break
         else:
@@ -1874,8 +2032,8 @@ async def run_agent(
     if session_id:
         try:
             new_msgs = messages[new_msg_start_idx:]
-            updated = list(_SESSION_HISTORY.get(session_id) or []) + new_msgs
-            _SESSION_HISTORY[session_id] = _trim_history(updated)
+            updated = list(prior_history) + new_msgs
+            await _save_session_history(db, session_id, updated)
         except Exception as exc:
             logger.warning("Could not persist session history: %s", exc)
 

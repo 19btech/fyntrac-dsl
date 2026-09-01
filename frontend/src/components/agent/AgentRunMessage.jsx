@@ -286,7 +286,17 @@ const AgentRunMessage = ({ task, model, autoApproveDestructive = false, onComple
                 }
                 if (ev.type === "error") {
                   setStatus("error");
-                  setErrorMsg(ev.error_message || ev.message || "Agent error");
+                  const emsg = ev.error_message || ev.message || "Agent error";
+                  setErrorMsg(emsg);
+                  // Terminal error events are NOT followed by a `final` event,
+                  // so notify the parent here — otherwise the chat's loading
+                  // state (and disabled input) never clears.
+                  try {
+                    onCompleteRef.current?.(
+                      { type: "final", status: "error", summary: emsg, steps: 0 },
+                      [...eventsRef.current, ev]
+                    );
+                  } catch (_) {}
                 }
                 setEvents(prev => [...prev, ev]);
               } catch (e) {
@@ -297,8 +307,18 @@ const AgentRunMessage = ({ task, model, autoApproveDestructive = false, onComple
         }
       } catch (err) {
         if (err.name !== "AbortError") {
+          const emsg = err.message || String(err);
           setStatus("error");
-          setErrorMsg(err.message || String(err));
+          setErrorMsg(emsg);
+          // The stream died before any final/error SSE event — notify the
+          // parent so the chat's loading/disabled-input state clears instead
+          // of hanging until a page refresh.
+          try {
+            onCompleteRef.current?.(
+              { type: "final", status: "error", summary: emsg, steps: 0 },
+              eventsRef.current
+            );
+          } catch (_) {}
         }
       }
     })();

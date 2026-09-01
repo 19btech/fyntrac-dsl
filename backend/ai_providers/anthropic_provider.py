@@ -32,6 +32,21 @@ def _classify_error(exc: Exception) -> tuple[str, str]:
     return ERROR_NETWORK, str(exc)
 
 
+def _max_output_tokens(model: str) -> int:
+    """Output-token ceiling for the agent's tool-calling turns.
+
+    The agent emits large tool-call payloads (e.g. a full create_saved_rule
+    with many steps). The old flat 4096 cap truncated those into malformed
+    JSON, stalling the run. Modern Claude models (3.5+, 3.7, 4.x) support at
+    least 8192 output tokens with no special headers; only the legacy 3.0
+    Opus/Haiku models cap at 4096, so detect those and stay safe.
+    """
+    m = (model or "").lower()
+    if "claude-3-opus" in m or "claude-3-haiku" in m:
+        return 4096
+    return 8192
+
+
 class AnthropicProvider(AIProvider):
 
     async def validate_key(self, api_key: str) -> bool:
@@ -102,7 +117,7 @@ class AnthropicProvider(AIProvider):
             response = await asyncio.to_thread(
                 client.messages.create,
                 model=model_id,
-                max_tokens=4096,
+                max_tokens=_max_output_tokens(model_id),
                 system=system_prompt,
                 messages=messages,
             )
@@ -147,7 +162,7 @@ class AnthropicProvider(AIProvider):
                 try:
                     with client.messages.stream(
                         model=model_id,
-                        max_tokens=4096,
+                        max_tokens=_max_output_tokens(model_id),
                         system=system_prompt,
                         messages=messages,
                     ) as stream:
@@ -233,6 +248,27 @@ class AnthropicProvider(AIProvider):
                         "content": m.get("content") or "",
                     })
 
+            # Coalesce consecutive same-role messages. Anthropic requires roles
+            # to alternate; our runtime legitimately emits a tool_result (user
+            # role) immediately followed by a steering/refresh user message, and
+            # a user message can hold both tool_result and text blocks. Merging
+            # them keeps the request valid. Also normalises string content into
+            # a single text block and drops empty messages.
+            coalesced: list[dict] = []
+            for m in anth_messages:
+                content = m.get("content")
+                if isinstance(content, str):
+                    content = [{"type": "text", "text": content}] if content.strip() else []
+                elif not isinstance(content, list):
+                    content = []
+                if not content:
+                    continue
+                if coalesced and coalesced[-1]["role"] == m["role"]:
+                    coalesced[-1]["content"].extend(content)
+                else:
+                    coalesced.append({"role": m["role"], "content": list(content)})
+            anth_messages = coalesced
+
             anth_tools = [
                 {
                     "name": t["name"],
@@ -241,6 +277,23 @@ class AnthropicProvider(AIProvider):
                 }
                 for t in tools
             ]
+
+            # Prompt caching: the agent's system prompt (~850 lines) and tool
+            # schemas are large and identical across every turn of a run. Mark
+            # them with cache_control so Anthropic serves them from cache (5-min
+            # TTL), cutting input-token cost and latency on the 2nd+ turn. Cache
+            # ordering is tools → system → messages, so a breakpoint on the last
+            # tool plus the system block caches the entire static prefix.
+            if anth_tools:
+                anth_tools[-1] = {
+                    **anth_tools[-1],
+                    "cache_control": {"type": "ephemeral"},
+                }
+            system_param = [{
+                "type": "text",
+                "text": system_text or "You are a helpful assistant.",
+                "cache_control": {"type": "ephemeral"},
+            }]
 
             # I19: tool_choice mapping. Internal "required" → Anthropic
             # {"type":"any"}; "none"/None → default (auto).
@@ -252,9 +305,9 @@ class AnthropicProvider(AIProvider):
 
             create_kwargs = dict(
                 model=model,
-                max_tokens=4096,
+                max_tokens=_max_output_tokens(model),
                 temperature=temperature,
-                system=system_text or "You are a helpful assistant.",
+                system=system_param,
                 messages=anth_messages,
                 tools=anth_tools,
             )

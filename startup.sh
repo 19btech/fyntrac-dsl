@@ -135,7 +135,7 @@ sleep 1
 
 # Start backend in background (run from workspace root so package imports work)
 cd "$ROOT_DIR"
-python -m backend.server > /tmp/dsl_studio_backend.log 2>&1 &
+python -m backend.server > /tmp/backend.log 2>&1 &
 BACKEND_PID=$!
 
 # Wait for backend to start
@@ -144,7 +144,7 @@ sleep 3
 if ps -p $BACKEND_PID > /dev/null; then
     echo -e "${GREEN}✓ Backend running (PID: $BACKEND_PID)${NC}"
 else
-    echo -e "${YELLOW}⚠ Backend failed to start. Check logs: tail -f /tmp/dsl_studio_backend.log${NC}"
+    echo -e "${YELLOW}⚠ Backend failed to start. Check logs: tail -f /tmp/backend.log${NC}"
     exit 1
 fi
 
@@ -159,7 +159,7 @@ lsof -ti :3000 | xargs kill -9 2>/dev/null || true
 sleep 1
 
 # Start frontend in background
-WDS_SOCKET_PORT=3000 npm start > /tmp/dsl_studio_frontend.log 2>&1 &
+WDS_SOCKET_PORT=3000 npm start > /tmp/frontend.log 2>&1 &
 FRONTEND_PID=$!
 
 # Wait for frontend to compile
@@ -168,7 +168,7 @@ sleep 15
 if ps -p $FRONTEND_PID > /dev/null; then
     echo -e "${GREEN}✓ Frontend running (PID: $FRONTEND_PID)${NC}"
 else
-    echo -e "${YELLOW}⚠ Frontend failed to start. Check logs: tail -f /tmp/dsl_studio_frontend.log${NC}"
+    echo -e "${YELLOW}⚠ Frontend failed to start. Check logs: tail -f /tmp/frontend.log${NC}"
     exit 1
 fi
 
@@ -191,8 +191,8 @@ echo -e "${BLUE}Backend:${NC}        http://localhost:8000"
 echo -e "${BLUE}MongoDB:${NC}        localhost:27017"
 echo ""
 echo -e "${BLUE}View logs:${NC}"
-echo "  Backend:  tail -f /tmp/dsl_studio_backend.log"
-echo "  Frontend: tail -f /tmp/dsl_studio_frontend.log"
+echo "  Backend:  tail -f /tmp/backend.log"
+echo "  Frontend: tail -f /tmp/frontend.log"
 echo ""
 echo -e "${BLUE}Load sample data:${NC}"
 echo "  curl -X POST http://localhost:3000/api/load-sample-data"
