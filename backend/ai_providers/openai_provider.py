@@ -27,6 +27,31 @@ _EXCLUDE_PATTERN = re.compile(
 _DATED_SNAPSHOT = re.compile(r'-\d{4}-\d{2}-\d{2}$|-\d{4}$|-preview-\d{4}|-\d{8}$')
 
 
+# ── Capability floor ────────────────────────────────────────────────────────
+# Only surface agent-capable models so the picker isn't cluttered with
+# deprecated/older ones. VERSION-BASED (not an allowlist): anything at or above
+# the floor passes automatically, so future OpenAI releases self-add.
+#
+# Keep:  GPT-4.1+ (incl. GPT-5 family), reasoning series o3+ (o3, o4-mini, ...).
+# Drop:  GPT-4o, GPT-4/4-turbo, GPT-3.5, o1, and the chatgpt-* consumer aliases.
+_GPT_FLOOR = 4.1   # gpt-4o parses as 4.0 (no dot) → below the floor → dropped
+_O_SERIES_FLOOR = 3
+
+
+def _openai_agent_capable(model_id: str) -> bool:
+    mid = (model_id or "").lower()
+    # gpt-N.M / gpt-N (gpt-4o has no dot → minor 0 → 4.0, below floor)
+    m = re.match(r'^gpt-(\d+)(?:\.(\d+))?', mid)
+    if m:
+        return float(f"{m.group(1)}.{m.group(2) or 0}") >= _GPT_FLOOR
+    # reasoning series o1 / o3 / o4 ...
+    m = re.match(r'^o(\d+)', mid)
+    if m:
+        return int(m.group(1)) >= _O_SERIES_FLOOR
+    # chatgpt-* consumer aliases and anything else: not for agent driving
+    return False
+
+
 def _classify_error(exc: Exception) -> tuple[str, str]:
     msg = str(exc).lower()
     if "invalid api key" in msg or "401" in msg or "incorrect api key" in msg:
@@ -77,6 +102,9 @@ class OpenAIProvider(AIProvider):
             if not _CHAT_MODEL_PATTERN.match(m.id):
                 continue
             if _EXCLUDE_PATTERN.search(m.id):
+                continue
+            # Capability floor — hide deprecated/older models (see above).
+            if not _openai_agent_capable(m.id):
                 continue
             candidates.append(m.id)
 
@@ -289,6 +317,19 @@ def _normalise_messages_for_openai(messages: list[dict]) -> list[dict]:
     return out
 
 
+# OpenAI's reasoning families (o1/o3/…, gpt-5.x) accept ONLY the default
+# temperature — sending any other value 400s with "unsupported_value".
+_FIXED_TEMPERATURE_MODEL = re.compile(r"^(o\d|gpt-5)", re.IGNORECASE)
+
+
+def _is_unsupported_temperature_error(exc: Exception) -> bool:
+    msg = str(exc).lower()
+    return "temperature" in msg and (
+        "unsupported_value" in msg or "does not support" in msg
+        or "unsupported parameter" in msg
+    )
+
+
 async def _openai_compatible_chat_with_tools(
     *,
     api_key: str,
@@ -309,14 +350,32 @@ async def _openai_compatible_chat_with_tools(
         oa_messages = _normalise_messages_for_openai(messages)
         oa_tools = _to_openai_tool_specs(tools)
 
-        response = await asyncio.to_thread(
-            client.chat.completions.create,
-            model=model,
-            messages=oa_messages,
-            tools=oa_tools,
-            tool_choice=(tool_choice or "auto"),
-            temperature=temperature,
-        )
+        create_kwargs = {
+            "model": model,
+            "messages": oa_messages,
+            "tools": oa_tools,
+            "tool_choice": (tool_choice or "auto"),
+        }
+        # Known fixed-temperature families: omit the param up front. For
+        # anything else, send it but fall back once without it if the model
+        # rejects it — future model families keep working with no code change.
+        if not _FIXED_TEMPERATURE_MODEL.match(model or ""):
+            create_kwargs["temperature"] = temperature
+        try:
+            response = await asyncio.to_thread(
+                client.chat.completions.create, **create_kwargs
+            )
+        except Exception as exc:
+            if "temperature" in create_kwargs and _is_unsupported_temperature_error(exc):
+                logger.info(
+                    "Model %s rejected temperature=%s — retrying with default",
+                    model, create_kwargs.pop("temperature"),
+                )
+                response = await asyncio.to_thread(
+                    client.chat.completions.create, **create_kwargs
+                )
+            else:
+                raise
         choice = response.choices[0]
         msg = choice.message
         tool_calls_out = []

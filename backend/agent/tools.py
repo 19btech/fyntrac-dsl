@@ -30,6 +30,7 @@ import random
 import re
 import uuid
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Callable, Awaitable
 
 logger = logging.getLogger(__name__)
@@ -1223,39 +1224,11 @@ def _audit_sample_rows(rows: list[dict], event_def: dict) -> list[str]:
     return warnings
 
 
-# Common debit/credit transaction-type pairs. When the agent registers one
-# side, we can suggest the other to keep the transaction pair complete.
-# NOTE: these are TRANSACTIONS emitted for downstream journal posting —
-# this app does NOT create journal entries directly.
-_TXN_PAIR_HINTS: list[tuple[str, str]] = [
-    ("ECLAllowance", "ECLExpense"),
-    ("InterestReceivable", "InterestIncome"),
-    ("FeeReceivable", "FeeIncome"),
-    ("LoanPrincipal", "CashSettlement"),
-    ("Drawdown", "CashDisbursement"),
-    ("Repayment", "CashReceipt"),
-    ("Writeoff", "ECLAllowance"),
-    ("AmortisedCost", "InterestIncome"),
-]
-
-
 def _suggest_txn_pairs(registered: list[str], existing: list[str]) -> list[str]:
-    have = {n.lower() for n in registered + existing}
-    suggestions: list[str] = []
-    for a, b in _TXN_PAIR_HINTS:
-        la, lb = a.lower(), b.lower()
-        if la in have and lb not in have:
-            suggestions.append(f"'{a}' is registered but '{b}' is not — a complete transaction pair usually needs both (downstream system uses these to post journals)")
-        if lb in have and la not in have:
-            suggestions.append(f"'{b}' is registered but '{a}' is not — a complete transaction pair usually needs both (downstream system uses these to post journals)")
-    # de-dup while preserving order
-    seen = set()
-    out = []
-    for s in suggestions:
-        if s not in seen:
-            seen.add(s)
-            out.append(s)
-    return out
+    """Transactions are plain amounts, not double-entry journal lines — there
+    is no 'matching side' to suggest. Kept as a no-op so callers that expect a
+    list still work."""
+    return []
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -1744,6 +1717,130 @@ async def tool_generate_sample_event_data(args: dict) -> dict:
             for fname, vals in ref_constraints.items()
         } if ref_constraints else {},
         "data_quality_warnings": _audit_sample_rows(new_rows, event_def),
+    }
+
+
+# Canonical system columns + the aliases we normalise their KEYS to (values
+# are always kept verbatim). Only the system columns are normalised — every
+# business field is stored exactly as supplied.
+_SYSTEM_COL_CANON = {
+    "postingdate": "postingdate", "posting_date": "postingdate",
+    "effectivedate": "effectivedate", "effective_date": "effectivedate",
+    "instrumentid": "instrumentid", "instrument_id": "instrumentid",
+    "subinstrumentid": "subinstrumentid", "sub_instrument_id": "subinstrumentid",
+}
+_SYSTEM_COLS = {"postingdate", "effectivedate", "instrumentid", "subinstrumentid"}
+
+
+async def tool_insert_event_rows(args: dict) -> dict:
+    """Insert LITERAL event rows verbatim — no heuristics, no domain inference,
+    no field_hints. The exact counterpart to generate_sample_event_data: use it
+    whenever you need controlled values the synthetic generator cannot pin
+    (specific instrument ids, posting dates, amounts, or enum/string values).
+
+    Only the system columns (postingdate / effectivedate / instrumentid /
+    subinstrumentid) are key-normalised; every other field is stored exactly as
+    given. Unknown or missing declared fields are reported as warnings but never
+    block the insert. Appends by default; pass replace=true to overwrite.
+    """
+    EventData = _h("EventData")
+    db = _ServerBridge.db
+
+    event_name = (args.get("event_name") or "").strip()
+    if not event_name:
+        raise ToolError("event_name is required")
+    rows_in = args.get("rows")
+    if not isinstance(rows_in, list) or not rows_in:
+        raise ToolError("rows must be a non-empty list of objects (one per data row)")
+    if not all(isinstance(r, dict) for r in rows_in):
+        raise ToolError("every entry in rows must be an object mapping field -> value")
+
+    event_def = await _find_event_def(event_name)
+    if not event_def:
+        raise ToolError(
+            f"Event definition '{event_name}' not found. Use create_event_definitions first."
+        )
+    canonical_name = event_def["event_name"]
+    is_reference = event_def.get("eventType") == "reference"
+    declared = {(f.get("name") or "") for f in event_def.get("fields", []) if f.get("name")}
+    declared_lc = {d.lower() for d in declared}
+
+    warnings: list[str] = []
+    norm_rows: list[dict] = []
+    for idx, raw in enumerate(rows_in):
+        row: dict[str, Any] = {}
+        for k, v in raw.items():
+            key = str(k)
+            canon = _SYSTEM_COL_CANON.get(key.lower())
+            row[canon or key] = v
+        # Activity events need posting/effective dates + an instrument id for
+        # event detection and instrument grouping. Default effectivedate to
+        # postingdate when omitted; warn (don't fabricate) on missing keys.
+        if not is_reference:
+            if "postingdate" in row and "effectivedate" not in row:
+                row["effectivedate"] = row["postingdate"]
+            for req in ("postingdate", "instrumentid"):
+                if req not in row:
+                    warnings.append(
+                        f"row {idx}: missing '{req}' — event detection / instrument "
+                        f"grouping relies on it")
+        for k in row:
+            if k.lower() in _SYSTEM_COLS:
+                continue
+            if k.lower() not in declared_lc:
+                warnings.append(
+                    f"row {idx}: field '{k}' is not declared on event '{canonical_name}' "
+                    f"(inserted anyway)")
+        norm_rows.append(row)
+
+    populated_lc = {k.lower() for r in norm_rows for k in r}
+    for d in sorted(declared):
+        if d.lower() not in populated_lc:
+            warnings.append(f"declared field '{d}' is not present in any inserted row")
+
+    replace = bool(args.get("replace", False))
+
+    existing_doc = None
+    try:
+        if db is not None:
+            existing_doc = await db.event_data.find_one(
+                {"event_name": canonical_name}, {"_id": 0}
+            )
+    except Exception:
+        pass
+    if existing_doc is None:
+        for _d in (_ServerBridge.in_memory_data or {}).get("event_data") or []:
+            if str(_d.get("event_name", "")).lower() == canonical_name.lower():
+                existing_doc = _d
+                break
+
+    existing_rows = list((existing_doc or {}).get("data_rows") or [])
+    final_rows = list(norm_rows) if replace else existing_rows + list(norm_rows)
+
+    payload = EventData(event_name=canonical_name, data_rows=final_rows)
+    doc = payload.model_dump()
+    doc["created_at"] = doc["created_at"].isoformat()
+    wrote_db = False
+    try:
+        if db is not None:
+            await db.event_data.delete_many({"event_name": canonical_name})
+            await db.event_data.insert_one(dict(doc))
+            wrote_db = True
+    except Exception as exc:
+        logger.warning("DB write event_data (insert_event_rows) failed: %s", exc)
+    if not wrote_db:
+        mem = _ServerBridge.in_memory_data.setdefault("event_data", [])
+        mem[:] = [d for d in mem
+                  if str(d.get("event_name", "")).lower() != canonical_name.lower()]
+        mem.append(dict(doc))
+
+    return {
+        "event_name": canonical_name,
+        "rows_inserted": len(norm_rows),
+        "rows_total": len(final_rows),
+        "mode": "replace" if replace else "append",
+        "sample_row": norm_rows[0] if norm_rows else None,
+        "warnings": warnings,
     }
 
 
@@ -2546,25 +2643,24 @@ async def tool_dry_run_template(args: dict) -> dict:
             f"or a balance multiplied by an unbounded factor). "
             f"Inspect the formulas/iterations and the source event-data ranges."
         )
-    # Check for transaction imbalance per instrument (debit total should equal credit total
-    # so the downstream journal-posting system receives balanced input)
-    by_instr_signed: dict[str, float] = {}
+    # Transactions here are plain amounts — NOT double-entry journal lines.
+    # There is no debit/credit side and no balancing requirement: each rule
+    # emits one signed amount per transaction type (positive or negative as
+    # the calculation dictates). We surface a simple per-instrument total so
+    # the agent can sanity-check magnitudes, nothing more.
+    per_instrument_totals: dict[str, float] = {}
     for t in txn_dicts:
         amt = float(t.get("amount") or 0)
-        ty_lower = str(t.get("transactiontype", "")).lower()
-        # very rough sign convention: receivable/expense/asset = +, income/payable/allowance = -
-        sign = 1 if any(k in ty_lower for k in ("receivable", "expense", "asset", "drawdown")) else (
-               -1 if any(k in ty_lower for k in ("income", "payable", "allowance", "writeoff")) else 0)
-        if sign:
-            by_instr_signed[t.get("instrumentid", "?")] = (
-                by_instr_signed.get(t.get("instrumentid", "?"), 0.0) + sign * amt
-            )
-    unbalanced = {k: round(v, 2) for k, v in by_instr_signed.items() if abs(v) > 0.01}
-    if unbalanced and len(txn_dicts) > 1:
-        sanity_warnings.append(
-            f"debit/credit transaction totals are unequal "
-            f"for {len(unbalanced)} instrument(s) — the downstream journal-posting system expects balanced input"
-        )
+        iid = str(t.get("instrumentid", "?"))
+        per_instrument_totals[iid] = per_instrument_totals.get(iid, 0.0) + amt
+    transaction_summary = {
+        "net_amount": round(sum(per_instrument_totals.values()), 2),
+        "instruments_with_transactions": len(per_instrument_totals),
+        "per_instrument_net": dict(sorted(
+            ((k, round(v, 2)) for k, v in per_instrument_totals.items()),
+            key=lambda kv: -abs(kv[1])
+        )[:10]),
+    }
 
     # Zero-transactions despite declared transactions: catches the silent
     # "rule looks correct but nothing posts" failure mode (e.g. amount field
@@ -2632,6 +2728,7 @@ async def tool_dry_run_template(args: dict) -> dict:
         "total_amount": round(total_amount, 2),
         "by_transaction_type": {k: {"count": v["count"], "total": round(v["total"], 2)}
                                   for k, v in by_type.items()},
+        "transaction_summary": transaction_summary,
         "sample_transactions": txn_dicts[:sample_limit],
         "print_outputs": (result.get("print_outputs") or [])[:10],
         "sanity_warnings": sanity_warnings,
@@ -2667,6 +2764,11 @@ async def tool_clear_all_data(args: dict) -> dict:
         raise ToolError("This is a destructive action — call again with confirm=true after user approval")
     db = _ServerBridge.db
     cleared: list[str] = []
+    # Record the blast radius. This wipes every rule and event in the
+    # workspace, and previously said nothing at all on success -- so after
+    # the fact there was no way to tell whether work had been destroyed by
+    # this call or lost some other way.
+    deleted_counts: dict[str, int] = {}
     if db is not None:
         for col in (
             "event_definitions", "event_data", "transaction_reports",
@@ -2674,10 +2776,19 @@ async def tool_clear_all_data(args: dict) -> dict:
             "transaction_definitions",
         ):
             try:
+                try:
+                    n_before = await db[col].count_documents({})
+                except Exception:
+                    n_before = -1
                 await db[col].delete_many({})
                 cleared.append(col)
+                deleted_counts[col] = n_before
             except Exception as exc:
                 logger.warning("clear %s failed: %s", col, exc)
+    logger.warning(
+        "clear_all_data: workspace wiped — %s", 
+        ", ".join(f"{k}={v}" for k, v in deleted_counts.items()) or "nothing",
+    )
     mem = _ServerBridge.in_memory_data
     if mem is not None:
         for k in ("event_definitions", "event_data", "transaction_reports",
@@ -2685,7 +2796,8 @@ async def tool_clear_all_data(args: dict) -> dict:
             mem[k] = []
         mem.pop("saved_rules", None)
         mem.pop("saved_schedules", None)
-    return {"cleared": cleared, "preserved": ["templates"]}
+    return {"cleared": cleared, "deleted_counts": deleted_counts,
+            "preserved": ["templates"]}
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -2743,28 +2855,54 @@ def _build_iteration_lines(iters: list[dict], available: list[str]) -> list[str]
             expr_ids.add(it["sourceArray"])
         if it.get("secondArray") and bare_id_re.match(it["secondArray"]):
             expr_ids.add(it["secondArray"])
-        ctx = [v for v in avail if v in expr_ids]
-        ctx_str = (", {" + ", ".join(f'"{v}": {v}' for v in ctx) + "}") if ctx else ""
         rv = it.get("resultVar") or ""
         src = it.get("sourceArray") or ""
-        sec = it.get("secondArray") or "[]"
+        sec_raw = (it.get("secondArray") or "").strip()
         expr = it.get("expression") or ""
+        itype = it.get("type")
+        vn = it.get("varName") or "each"
+        sv = it.get("secondVar") or "second"
+        # Names the loop binds for itself. Handing one of these to the
+        # context dict used to shadow the per-element value — a rule with a
+        # step named `index` froze the loop position, and one named `each`
+        # bound the whole source array. The engine now refuses to be
+        # shadowed; don't emit the collision in the first place.
+        loop_names = {"index", "count", "each", "first", "second", vn, sv}
+        ctx = [v for v in avail if v in expr_ids and v not in loop_names]
+        ctx_str = (", {" + ", ".join(f'"{v}": {v}' for v in ctx) + "}") if ctx else ""
         # Embed the expression as a fully-escaped string literal (json.dumps
         # yields a double-quoted, escaped literal that is also valid Python) so
         # quotes/apostrophes inside it can't break the generated code — e.g.
         # concat("it's", x) survives instead of producing mismatched quotes.
         expr_lit = json.dumps(expr)
-        if it.get("type") == "apply_each":
+        if itype == "apply_each":
             lines.append(f'{rv} = apply_each({src}, {expr_lit}{ctx_str})')
-        elif it.get("type") == "apply_each_paired":
-            lines.append(f'{rv} = apply_each({src}, {sec}, {expr_lit}{ctx_str})')
+        elif itype == "apply_each_paired":
+            lines.append(f'{rv} = apply_each({src}, {sec_raw or "[]"}, {expr_lit}{ctx_str})')
+        elif not sec_raw:
+            # for_each with only ONE array is a single-array loop. Emitting
+            # for_each(src, [], ...) made min(len(src), 0) == 0, so the step
+            # silently produced []. for_each_with_index is the right
+            # primitive and also exposes index/count.
+            lines.append(f'{rv} = for_each_with_index({src}, "{vn}", {expr_lit}{ctx_str})')
         else:
-            vn = it.get("varName") or "each"
-            sv = it.get("secondVar") or "second"
-            lines.append(f'{rv} = for_each({src}, {sec}, "{vn}", "{sv}", {expr_lit})')
+            lines.append(f'{rv} = for_each({src}, {sec_raw}, "{vn}", "{sv}", {expr_lit}{ctx_str})')
         if rv:
             iter_results.append(rv)
     return lines
+
+
+def _rule_printing_enabled(rule: dict) -> bool:
+    """
+    Whether generated code may emit print() at all.
+
+    outputs.printResult was stored, and advertised in the tool schema, but no
+    code generator ever read it -- turning it off did nothing. Absent means
+    True so today's behaviour is preserved; only an explicit False silences a
+    rule.
+    """
+    outputs = rule.get("outputs") or {}
+    return outputs.get("printResult") is not False
 
 
 def _generate_rule_code(rule: dict) -> str:
@@ -2776,6 +2914,7 @@ def _generate_rule_code(rule: dict) -> str:
     """
     name = (rule.get("name") or "CUSTOM CALCULATION").upper()
     lines: list[str] = []
+    _printing = _rule_printing_enabled(rule)
     lines.append("## ═══════════════════════════════════════════════════════════════")
     lines.append(f"## {name}")
     lines.append("## ═══════════════════════════════════════════════════════════════")
@@ -2802,7 +2941,7 @@ def _generate_rule_code(rule: dict) -> str:
                 else:
                     lines.append(line)
                     defined.append(s["name"])
-            if s.get("printResult") and s.get("name") and not s.get("disabled"):
+            if _printing and s.get("printResult") and s.get("name") and not s.get("disabled"):
                 lines.append(f'print("{s["name"]} =", {s["name"]})')
         elif st == "condition":
             if not s.get("disabled"):
@@ -2814,7 +2953,7 @@ def _generate_rule_code(rule: dict) -> str:
             else:
                 lines.append(cond_line)
                 defined.append(s["name"])
-            if s.get("printResult") and s.get("name") and not s.get("disabled"):
+            if _printing and s.get("printResult") and s.get("name") and not s.get("disabled"):
                 lines.append(f'print("{s["name"]} =", {s["name"]})')
             lines.append("")
         elif st == "iteration":
@@ -2829,7 +2968,7 @@ def _generate_rule_code(rule: dict) -> str:
                 for it in s.get("iterations") or []:
                     if it.get("resultVar"):
                         defined.append(it["resultVar"])
-            if s.get("printResult") and not s.get("disabled"):
+            if _printing and s.get("printResult") and not s.get("disabled"):
                 last = (s.get("iterations") or [])
                 if last:
                     rv = last[-1].get("resultVar")
@@ -2888,12 +3027,29 @@ def _generate_rule_code(rule: dict) -> str:
                 comma = "," if i < len(valid_cols) - 1 else ""
                 sched_lines.append(f'    "{col["name"]}": "{col["formula"]}"{comma}')
             ctx_vars = [v for v in (sc.get("contextVars") or []) if v != s["name"]]
-            if ctx_vars:
-                ctx_pairs = ", ".join(f'"{v}": {v}' for v in ctx_vars)
-                sched_lines.append(f"}}, {{{ctx_pairs}}})")
+            ctx_pairs = [f'"{v}": {v}' for v in ctx_vars]
+            # splitBy / itemNames declare the ITEM dimension: they turn one
+            # schedule per instrument into one schedule per sub-instrument,
+            # and give item_name a real business key.
+            _split = (sc.get("splitBy") or "").strip()
+            _names_var = (sc.get("itemNames") or "").strip()
+            if _split:
+                ctx_pairs.append(f'"subinstrument_ids": {_split}')
+            if _names_var:
+                ctx_pairs.append(f'"item_names": {_names_var}')
+            if ctx_pairs:
+                sched_lines.append(f"}}, {{{', '.join(ctx_pairs)}}})")
             else:
                 sched_lines.append("})")
-            sched_lines.append(f'print({s["name"]})')
+            # Dumping the whole schedule grid is a PREVIEW aid, not rule
+            # output. It was emitted unconditionally, so a rule in the hot
+            # path serialised every period of every instrument to the log --
+            # about 7KB per instrument, i.e. hundreds of MB on a real
+            # portfolio -- with no way to switch it off. Absent printResult
+            # still prints, so previews keep working; an explicit False at
+            # either the rule or the step level silences it.
+            if _printing and s.get("printResult") is not False:
+                sched_lines.append(f'print({s["name"]})')
             for o in s.get("outputVars") or []:
                 otype = o.get("type")
                 oname = o.get("name")
@@ -3051,6 +3207,13 @@ _VALID_OUTPUT_VAR_TYPES = {"first", "last", "sum", "column", "filter"}
 
 _IDENT_FOR_CTX_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 
+# NOTE: identifier scans below run on _strip_string_literals(formula), never
+# on the raw text. A formula like eq(item_method, "RATABLE") used to make the
+# schedule validator treat RATABLE as an outer-scope variable and auto-derive
+# it into scheduleConfig.contextVars, which then emitted {"RATABLE": RATABLE}
+# into the generated code and failed with a NameError reported against the
+# FIRST column -- a thoroughly misleading error for a legal formula.
+
 
 def _validate_schedule_step_shape(name: str, sc: dict, outputVars: list,
                                   context_var_names: list | None = None) -> tuple[dict, list]:
@@ -3135,6 +3298,26 @@ def _validate_schedule_step_shape(name: str, sc: dict, outputVars: list,
     # rewritten before validation so the agent doesn't burn a turn on each.
     errs: list[str] = []
 
+    # splitBy / itemNames: declare the ITEM dimension so the schedule fans out
+    # one schedule per sub-instrument instead of one per instrument. Both name
+    # a variable defined by an earlier step (typically collect_by_instrument
+    # results), so they must be bare identifiers.
+    for _key, _what in (("splitBy", "per-item sub-instrument ids"),
+                        ("itemNames", "per-item names")):
+        _val = (sc.get(_key) or "").strip()
+        if not _val:
+            sc.pop(_key, None)
+            continue
+        if not re.fullmatch(r"[A-Za-z_]\w*", _val):
+            errs.append(
+                f"scheduleConfig.{_key}='{_val}' must be the NAME of an "
+                f"earlier step holding {_what} (a bare variable name, not an "
+                f"expression or a quoted literal)."
+            )
+            continue
+        sc[_key] = _val
+
+
     _SOURCE_ALIASES = {
         "event_field": "field", "eventfield": "field",
         "event": "field", "col": "field", "column": "field",
@@ -3179,6 +3362,17 @@ def _validate_schedule_step_shape(name: str, sc: dict, outputVars: list,
                 ):
                     src = "field"
                     sc[f"{prefix}Field"] = vs
+                    sc[prefix] = None
+                elif re.fullmatch(r"[A-Za-z_]\w*", vs):
+                    # A BARE IDENTIFIER is a reference to an earlier step's
+                    # variable, never a literal -- a date literal looks like
+                    # 2026-01-31 and a period count is a number, so neither
+                    # can ever match this pattern. Left as 'value' it was
+                    # emitted as a quoted string, so the generated code read
+                    # period("start_dates", "end_dates", "M") and the
+                    # schedule produced no rows at all.
+                    src = "formula"
+                    sc[f"{prefix}Formula"] = vs
                     sc[prefix] = None
         sc[f"{prefix}Source"] = src
         if src == "value":
@@ -3338,7 +3532,8 @@ def _validate_schedule_step_shape(name: str, sc: dict, outputVars: list,
         # the column itself (only via lag), the step's own variable, OR a
         # column DEFINED ABOVE this one. Forward references (column N
         # referring to column N+k) silently produced None at runtime.
-        ids_in_formula = set(_IDENT_FOR_CTX_RE.findall(formula))
+        ids_in_formula = set(_IDENT_FOR_CTX_RE.findall(
+            _strip_string_literals(formula)))
         # Strip lag('xxx',…) string-literal column names — they are dynamic
         # references handled by the schedule engine and may target THIS
         # column (recursive lag is allowed). Add them to a separate set.
@@ -3463,7 +3658,8 @@ def _validate_schedule_step_shape(name: str, sc: dict, outputVars: list,
     dsl_fn_names = _known_dsl_function_names()
     derived_ctx: set[str] = set()
     for c in cols:
-        ids = _IDENT_FOR_CTX_RE.findall(c.get("formula") or "")
+        ids = _IDENT_FOR_CTX_RE.findall(
+            _strip_string_literals(c.get("formula") or ""))
         for raw in ids:
             ident = raw[:-5] if raw.endswith("_full") else raw
             if not ident:
@@ -3657,11 +3853,11 @@ def _validate_step_shape(step: dict) -> dict:
             f"from `outputs.transactions[]`. \n"
             f"FIX: do NOT create this step. Instead call `add_transaction_to_rule` "
             f"(or pass `outputs.transactions=[...]` to create_saved_rule / "
-            f"update_saved_rule) with entries shaped like:\n"
-            f"  {{ \"type\": \"YourTxnType\", \"amount\": \"<calc_step_var>\", \"side\": \"debit\" }}\n"
-            f"  {{ \"type\": \"YourTxnType\", \"amount\": \"<calc_step_var>\", \"side\": \"credit\" }}\n"
+            f"update_saved_rule) with an entry shaped like:\n"
+            f"  {{ \"type\": \"YourTxnType\", \"amount\": \"<calc_step_var>\" }}\n"
             f"where <calc_step_var> is the NAME of a prior calc step that holds "
-            f"the computed amount. Register transaction types via "
+            f"the computed amount. A transaction is just an amount — no "
+            f"debit/credit side. Register transaction types via "
             f"`add_transaction_types` first."
         )
     # HARD-BLOCK: never create a calc step named 'instrumentid'.
@@ -3749,8 +3945,15 @@ def _validate_step_shape(step: dict) -> dict:
             "formula": _coerce_lower_booleans(step.get("formula") or ""),
             "value": _coerce_lower_booleans(step.get("value") or ""),
             "eventField": raw_ef,
-            "collectType": step.get("collectType") or "collect_by_instrument",
         })
+        # collectType only applies to source='collect'. Default it there; for
+        # event_field / formula / value steps DON'T stamp it — an unconditional
+        # 'collect_by_instrument' on a plain event_field step is misleading when
+        # reading back the saved rule. Carry through only an explicit value.
+        if src == "collect":
+            out["collectType"] = step.get("collectType") or "collect_by_instrument"
+        elif step.get("collectType"):
+            out["collectType"] = step.get("collectType")
         # Guardrails on formula content
         if src == "formula" and out["formula"]:
             _enforce_dsl_guardrails(out["formula"])
@@ -3850,11 +4053,30 @@ def _validate_step_shape(step: dict) -> dict:
         sc, outputVars = _validate_schedule_step_shape(name, sc, outputVars)
         out["scheduleConfig"] = sc
         out["outputVars"] = outputVars
-    if step.get("inlineComment"):
-        out["inlineComment"] = True
+    # Flags are carried through EXACTLY as given, False included.
+    #
+    # Copying a field only when it is truthy silently discards the "off"
+    # state, and every consumer reads an absent key as the default -- so the
+    # write does not merely fail, it inverts. `disabled` was worse than
+    # dropped-when-false: it was never carried at all, so ANY agent edit to a
+    # disabled step re-activated it and the generated code started running it
+    # again.
+    if step.get("inlineComment") is not None:
+        out["inlineComment"] = bool(step.get("inlineComment"))
+    # commentText is independent of the flag: turning the comment off must
+    # not destroy the text.
+    if step.get("commentText") is not None:
         out["commentText"] = step.get("commentText") or ""
-    if step.get("printResult"):
-        out["printResult"] = True
+    elif out.get("inlineComment"):
+        out["commentText"] = ""
+    if step.get("disabled") is not None:
+        out["disabled"] = bool(step.get("disabled"))
+    # Carry printResult through EXACTLY as given, including False. Storing it
+    # only when truthy dropped the key entirely, and an absent key reads as
+    # "print" downstream -- so every patch_step that set printResult: false
+    # silently turned printing back on.
+    if step.get("printResult") is not None:
+        out["printResult"] = bool(step.get("printResult"))
     return out
 
 
@@ -4031,7 +4253,7 @@ def _normalise_transaction_outputs(steps: list[dict], outputs: dict,
     """Ensure every entry in `outputs.transactions[]` has the camelCase
     postingDate / effectiveDate / subInstrumentId fields the code generator
     requires. Without this, weak models calling create_saved_rule /
-    update_saved_rule with `outputs={transactions:[{type, amount, side}]}`
+    update_saved_rule with `outputs={transactions:[{type, amount}]}`
     silently produce rules that emit ZERO transactions because
     `_generate_rule_code` skips entries missing those fields.
 
@@ -4098,7 +4320,14 @@ def _normalise_transaction_outputs(steps: list[dict], outputs: dict,
 
     fixed: list[dict] = []
     _DEFAULT_SUBIDS = {"", "1", "1.0", "0", "0.0", None}
-    for t in txns:
+    # The ONLY keys the code generator reads off a transaction. Anything
+    # else used to be carried along and then ignored, so a setting like
+    # `skipIfZero: true` was accepted without complaint and never did
+    # anything -- indistinguishable, from the caller's side, from a setting
+    # that worked.
+    _TXN_KEYS = {"type", "amount", "postingDate", "effectiveDate",
+                 "subInstrumentId", "disabled"}
+    for i, t in enumerate(txns):
         if not isinstance(t, dict):
             fixed.append(t)
             continue
@@ -4106,6 +4335,20 @@ def _normalise_transaction_outputs(steps: list[dict], outputs: dict,
         nt: dict = {}
         for k, v in t.items():
             nt[_ALIASES.get(k, k)] = v
+
+        # `side` is a deliberate legacy no-op (transactions are plain amounts
+        # with no debit/credit) that update_transaction already drops silently.
+        # Keep that contract rather than breaking old callers with it.
+        nt.pop("side", None)
+        unknown = sorted(k for k in nt if k not in _TXN_KEYS)
+        if unknown:
+            raise ToolError(
+                f"outputs.transactions[{i}] has unknown propert"
+                f"{'y' if len(unknown) == 1 else 'ies'}: {unknown}. "
+                f"Allowed keys: {sorted(_TXN_KEYS)}. Nothing reads any other "
+                f"key, so accepting it would silently discard whatever you "
+                f"intended it to do."
+            )
 
         # If the rule has mandatory alias steps, always wire transactions to them.
         # This guarantees the generated code references a defined variable.
@@ -4905,6 +5148,43 @@ async def _attach_validation(rule: dict, payload: dict) -> dict:
     return payload
 
 
+def _raise_if_scalar_on_multi_subid(steps: list, multi_evts: list,
+                                    action: str) -> None:
+    """
+    Block source='event_field' on an event with many subInstrumentIds.
+
+    MUST be called BEFORE the rule is written to the database. It used to
+    run after _save_rule_doc, so a create that reported
+    'rule creation blocked' had already persisted the rule -- and the
+    agent's retry then failed with "a rule named X already exists",
+    leaving it stuck between a tool that refused to create and a database
+    that said it had.
+    """
+    if not multi_evts:
+        return
+    warns = _scalar_event_field_warnings(steps, set(multi_evts))
+    if not warns:
+        return
+    bad = ", ".join(
+        f"'{w['step_name']}' ({w['event']}.{w['field']})" for w in warns)
+    raise ToolError(
+        f"SCALAR SOURCE ON NON-SCALAR EVENT — rule {action} blocked.\n"
+        f"{len(warns)} step(s) use source='event_field' on event(s) "
+        f"{multi_evts} which have multiple subInstrumentIds per instrument: "
+        f"{bad}.\n"
+        f"Using event_field on a multi-subId event silently discards all but "
+        f"one subId's row. This is always wrong for per-instrument data.\n"
+        f"Fix EVERY affected step before continuing:\n"
+        f"  WRONG: {{name:'product_id', source:'event_field', "
+        f"eventField:'REV.FIELD'}}\n"
+        f"  RIGHT: {{name:'product_id', source:'collect', "
+        f"collectType:'collect_by_instrument', eventField:'REV.FIELD'}}\n"
+        f"Nothing has been saved — fix the steps and call the tool again "
+        f"with the SAME name.\n"
+        f"See MANDATORY FIELD-PLANNING GATE (Rule 0a) in the system prompt."
+    )
+
+
 async def tool_create_saved_rule(args: dict) -> dict:
     name = (args.get("name") or "").strip()
     if not name:
@@ -5011,6 +5291,8 @@ async def tool_create_saved_rule(args: dict) -> dict:
             raise ToolError(f"Priority {priority} is already used by schedule '{clash_s['name']}'")
     outputs = args.get("outputs") or {"printResult": True, "createTransaction": False, "transactions": []}
     subid_default, multi_evts = await _resolve_subid_default(steps)
+    # Validate BEFORE anything is written to the database.
+    _raise_if_scalar_on_multi_subid(steps, multi_evts, 'creation')
     _normalise_transaction_outputs(steps, outputs, multi_subid_default=subid_default)
     _validate_transaction_outputs(steps, outputs)
     rule = {
@@ -5065,22 +5347,7 @@ async def tool_create_saved_rule(args: dict) -> dict:
             f"a calc step `sub_ids = collect_by_instrument(\"{multi_evts[0]}.subinstrumentid\")` "
             f"and reference `sub_ids` from your transactions."
         )
-        _scalar_warns = _scalar_event_field_warnings(steps, set(multi_evts))
-        if _scalar_warns:
-            _bad = ", ".join(f"'{w['step_name']}' ({w['event']}.{w['field']})" for w in _scalar_warns)
-            raise ToolError(
-                f"SCALAR SOURCE ON NON-SCALAR EVENT — rule creation blocked.\n"
-                f"{len(_scalar_warns)} step(s) use source='event_field' on event(s) "
-                f"{multi_evts} which have multiple subInstrumentIds per instrument: "
-                f"{_bad}.\n"
-                f"Using event_field on a multi-subId event silently discards all but "
-                f"one subId's row. This is always wrong for per-instrument data.\n"
-                f"Fix EVERY affected step before creating this rule:\n"
-                f"  WRONG: {{name:'product_id', source:'event_field', eventField:'REV.FIELD'}}\n"
-                f"  RIGHT: {{name:'product_id', source:'collect', "
-                f"collectType:'collect_by_instrument', eventField:'REV.FIELD'}}\n"
-                f"See MANDATORY FIELD-PLANNING GATE (Rule 0a) in the system prompt."
-            )
+        # (the scalar-source check already ran, before the rule was saved)
     sched_results = await _auto_test_schedule_steps(rule)
     if sched_results:
         payload["schedule_tests"] = sched_results
@@ -5112,6 +5379,11 @@ async def tool_update_saved_rule(args: dict) -> dict:
         raise ToolError("rule_id is required")
     rule = await _load_rule(rule_id)
     patch = args.get("patch") or {}
+    # Re-testing every schedule step means re-executing the whole rule. Worth
+    # it when the steps changed; pure waste when they did not -- a patch that
+    # only flips outputs.printResult was paying for a full schedule preview
+    # per step, which is what made this tool time out on large rules.
+    _steps_touched = "steps" in patch
     for k in ("name", "priority", "outputs", "inlineComment", "commentText"):
         if k in patch:
             rule[k] = patch[k]
@@ -5119,6 +5391,9 @@ async def tool_update_saved_rule(args: dict) -> dict:
         rule["steps"] = [_validate_step_shape(s) for s in (patch["steps"] or [])]
         _validate_schedule_accessor_calls(rule["steps"])
     subid_default, multi_evts = await _resolve_subid_default(rule.get("steps") or [])
+    # Validate BEFORE persisting, so a blocked update leaves the stored rule
+    # exactly as it was.
+    _raise_if_scalar_on_multi_subid(rule.get("steps") or [], multi_evts, 'update')
     _normalise_transaction_outputs(
         rule.get("steps") or [], rule.get("outputs") or {},
         multi_subid_default=subid_default,
@@ -5135,20 +5410,18 @@ async def tool_update_saved_rule(args: dict) -> dict:
             f"a calc step `sub_ids = collect_by_instrument(\"{multi_evts[0]}.subinstrumentid\")` "
             f"and reference `sub_ids` from transactions."
         )
-        _scalw = _scalar_event_field_warnings(rule.get("steps") or [], set(multi_evts))
-        if _scalw:
-            _bad = ", ".join(f"'{w['step_name']}' ({w['event']}.{w['field']})" for w in _scalw)
-            raise ToolError(
-                f"SCALAR SOURCE ON NON-SCALAR EVENT — rule update blocked.\n"
-                f"{len(_scalw)} step(s) use source='event_field' on event(s) "
-                f"{multi_evts} which have multiple subInstrumentIds per instrument: "
-                f"{_bad}.\n"
-                f"event_field silently discards all but one subId's row. "
-                f"This is always wrong for per-instrument data.\n"
-                f"Fix every affected step to use source='collect', "
-                f"collectType='collect_by_instrument' before updating the rule."
-            )
-    sched_results = await _auto_test_schedule_steps(rule)
+        # (the scalar-source check already ran, before the rule was saved)
+    if _steps_touched:
+        sched_results = await _auto_test_schedule_steps(rule)
+    else:
+        # No step changed, so every schedule step is byte-for-byte what it
+        # was when it last passed. Re-running the previews would only repeat
+        # that verdict at the cost of re-executing the rule.
+        sched_results = []
+        payload["schedule_tests_skipped"] = (
+            "Schedule previews were not re-run: this patch did not touch "
+            "any step. Patch `steps` to trigger a re-test."
+        )
     if sched_results:
         payload["schedule_tests"] = sched_results
         if any(not r.get("ok") for r in sched_results):
@@ -5434,9 +5707,9 @@ async def tool_add_step_to_rule(args: dict) -> dict:
     rule["steps"] = steps
     _validate_schedule_accessor_calls(steps)
     _validate_transaction_outputs(steps, rule.get("outputs") or {})
-    rule = await _save_rule_doc(rule, is_new=False)
-    payload = {"rule_id": rule["id"], "step_name": step["name"], "step_count": len(steps)}
-    # Block if new step reads a scalar event_field from a multi-subId event.
+    # Block BEFORE saving. This used to run after _save_rule_doc, so a
+    # step reported as 'addition blocked' was already in the rule and the
+    # retry then failed with "step already exists".
     _add_multi_evts = await _detect_multi_subid_events(steps)
     if _add_multi_evts:
         _add_scalw = _scalar_event_field_warnings([step], set(_add_multi_evts))
@@ -5451,6 +5724,8 @@ async def tool_add_step_to_rule(args: dict) -> dict:
                 f"Fix: {{name:'{w['step_name']}', source:'collect', "
                 f"collectType:'collect_by_instrument', eventField:'{w['event']}.{w['field']}'}}"
             )
+    rule = await _save_rule_doc(rule, is_new=False)
+    payload = {"rule_id": rule["id"], "step_name": step["name"], "step_count": len(steps)}
     # Surface auto-generated outputVars hint
     if step.get("stepType") == "schedule" and (
         step.get("scheduleConfig") or {}
@@ -5526,15 +5801,8 @@ async def tool_update_step(args: dict) -> dict:
     rule["steps"][idx] = merged
     _validate_schedule_accessor_calls(rule["steps"])
     _validate_transaction_outputs(rule["steps"], rule.get("outputs") or {})
-    rule = await _save_rule_doc(rule, is_new=False)
-    payload = {
-        "rule_id": rule["id"],
-        "step_index": idx,
-        "step_id": merged.get("id"),
-        "step_name": merged["name"],
-        "merge_mode": "deep",
-    }
-    # Block if the (updated) step reads a scalar event_field from a multi-subId event.
+    # Block BEFORE saving, so an update reported as blocked leaves the
+    # stored step exactly as it was.
     _upd_multi_evts = await _detect_multi_subid_events(rule.get("steps") or [])
     if _upd_multi_evts:
         _upd_scalw = _scalar_event_field_warnings([merged], set(_upd_multi_evts))
@@ -5549,6 +5817,14 @@ async def tool_update_step(args: dict) -> dict:
                 f"Fix: {{name:'{w['step_name']}', source:'collect', "
                 f"collectType:'collect_by_instrument', eventField:'{w['event']}.{w['field']}'}}"
             )
+    rule = await _save_rule_doc(rule, is_new=False)
+    payload = {
+        "rule_id": rule["id"],
+        "step_index": idx,
+        "step_id": merged.get("id"),
+        "step_name": merged["name"],
+        "merge_mode": "deep",
+    }
     # Read-back: re-fetch and confirm the patched fields actually persisted.
     if merged.get("id"):
         verify = await _verify_step_persisted(rule["id"], merged["id"], patch)
@@ -5962,8 +6238,11 @@ async def tool_submit_plan(args: dict) -> dict:
 async def tool_add_transaction_to_rule(args: dict) -> dict:
     """Append one entry to the rule's `outputs.transactions[]` array. This is
     the ONLY supported way to make a rule emit a transaction — steps cannot
-    emit transactions on their own. Always call this in PAIRS (one debit + one
-    credit) so the entry is balanced.
+    emit transactions on their own.
+
+    A transaction is just a signed amount posted for an instrument — this
+    platform is NOT a general ledger, so there is no debit/credit side and no
+    balancing requirement. One economic result = one transaction.
 
     Args:
       rule_id  – id of the saved rule
@@ -5971,19 +6250,15 @@ async def tool_add_transaction_to_rule(args: dict) -> dict:
                  `add_transaction_types`)
       amount   – name of a prior calc-step variable (or a numeric literal)
                  holding the amount
-      side     – "debit" or "credit"
     """
     rule = await _load_rule((args.get("rule_id") or "").strip())
     txn_type = (args.get("type") or "").strip()
     amount = (args.get("amount") or "").strip()
-    side = (args.get("side") or "").strip().lower()
     if not txn_type:
         raise ToolError("`type` is required (the transaction type name)")
     if not amount:
         raise ToolError("`amount` is required — pass the NAME of a prior "
                         "calc-step variable, or a numeric literal")
-    if side not in ("debit", "credit"):
-        raise ToolError("`side` must be 'debit' or 'credit'")
     # Ensure the transaction type is registered. Use the SAME collection +
     # field that `add_transaction_types` writes: db.transaction_definitions,
     # field `transactiontype`. (Earlier this looked at db.transaction_types /
@@ -6093,12 +6368,21 @@ async def tool_add_transaction_to_rule(args: dict) -> dict:
     txn_doc = {
         "type": txn_type,
         "amount": amount,
-        "side": side,
         "postingDate": posting_date,
         "effectiveDate": effective_date,
         "subInstrumentId": sub_inst,
     }
-    txns.append(txn_doc)
+    # Idempotency guard: if an equivalent transaction (same type + amount +
+    # subInstrumentId) is already present, do NOT append a second copy. This
+    # makes a retry a safe no-op instead of creating the duplicate the user hit.
+    already_present = any(
+        str(t.get("type") or "").strip().lower() == txn_type.lower()
+        and str(t.get("amount") or "").strip() == amount
+        and str(t.get("subInstrumentId") or "").strip() == str(sub_inst).strip()
+        for t in txns
+    )
+    if not already_present:
+        txns.append(txn_doc)
     outputs["transactions"] = txns
     outputs["createTransaction"] = True
     rule["outputs"] = outputs
@@ -6106,26 +6390,25 @@ async def tool_add_transaction_to_rule(args: dict) -> dict:
     # to a known step variable or numeric literal.
     _validate_transaction_outputs(rule.get("steps") or [], outputs)
     rule = await _save_rule_doc(rule, is_new=False)
-    sides = [(t.get("side") or "").lower() for t in txns]
-    balanced = any(s == "debit" for s in sides) and any(s == "credit" for s in sides)
     # Round-trip verification: re-load the rule from storage and confirm the
     # transaction landed exactly as expected. Catches silent persistence
     # failures and gives the agent positive proof of success.
     try:
         reloaded = await _load_rule(rule["id"])
         persisted = ((reloaded.get("outputs") or {}).get("transactions") or [])
+        # Match on the fields the save/load pipeline preserves verbatim (type +
+        # amount). Do NOT require exact postingDate/effectiveDate equality — the
+        # pipeline may normalise those strings (e.g. EVT.postingdate casing),
+        # which previously produced a FALSE "round-trip failed" that drove the
+        # agent to retry and thereby create a duplicate transaction.
         if not any(
-            (t.get("type") == txn_type and (t.get("side") or "").lower() == side
-             and str(t.get("amount") or "").strip() == amount
-             and str(t.get("postingDate") or "").strip() == posting_date
-             and str(t.get("effectiveDate") or "").strip() == effective_date)
+            str(t.get("type") or "").strip().lower() == txn_type.lower()
+            and str(t.get("amount") or "").strip() == amount
             for t in persisted
         ):
             raise ToolError(
-                f"Round-trip check failed: transaction "
-                f"({side} {txn_type} amount={amount} postingDate={posting_date} "
-                f"effectiveDate={effective_date}) was not found in the "
-                f"reloaded rule. The save did not persist correctly."
+                f"Round-trip check failed: transaction ('{txn_type}' amount={amount}) "
+                f"was not found in the reloaded rule. The save did not persist correctly."
             )
     except ToolError:
         raise
@@ -6134,23 +6417,23 @@ async def tool_add_transaction_to_rule(args: dict) -> dict:
     payload = {
         "rule_id": rule["id"],
         "transaction_count": len(txns),
-        "balanced": balanced,
+        "already_present": already_present,
         "auto_registered_type": txn_type if auto_registered else None,
         "next_step_hint": (
-            f"Added {side} '{txn_type}' for amount={amount}"
+            (f"Transaction '{txn_type}' (amount={amount}) was already present — "
+             f"no duplicate added."
+             if already_present else
+             f"Added transaction '{txn_type}' for amount={amount}")
             + (" (auto-registered the transaction type)." if auto_registered else ".")
-            + " "
-            + ("Pair is balanced." if balanced else
-               f"NOT balanced — add the matching {'credit' if side == 'debit' else 'debit'} entry next.")
         ),
     }
     return await _attach_validation(rule, payload)
 
 
 def _resolve_txn_index(txns: list, args: dict) -> int:
-    """Locate one transaction inside outputs.transactions[] by index, by type
-    (+ optional side), or by an exact-match dict on `match`. Raises ToolError
-    with a helpful listing if 0 or >1 candidates are found."""
+    """Locate one transaction inside outputs.transactions[] by index, by type,
+    or by an exact-match dict on `match`. Raises ToolError with a helpful
+    listing if 0 or >1 candidates are found."""
     if not txns:
         raise ToolError("Rule has no transactions to operate on.")
     if "transaction_index" in args and args["transaction_index"] is not None:
@@ -6159,42 +6442,40 @@ def _resolve_txn_index(txns: list, args: dict) -> int:
             raise ToolError(
                 f"transaction_index {idx} out of range (0..{len(txns)-1}). "
                 f"Current entries: " + ", ".join(
-                    f"[{i}] {t.get('side')} {t.get('type')}" for i, t in enumerate(txns)
+                    f"[{i}] {t.get('type')} amount={t.get('amount')}"
+                    for i, t in enumerate(txns)
                 )
             )
         return idx
     txn_type = (args.get("type") or "").strip()
-    side = (args.get("side") or "").strip().lower()
     if not txn_type and not args.get("match"):
         raise ToolError(
-            "Identify the transaction by `transaction_index`, by `type` "
-            "(+ optional `side`), or by an exact-match `match` dict."
+            "Identify the transaction by `transaction_index`, by `type`, "
+            "or by an exact-match `match` dict."
         )
     candidates: list[int] = []
     match = args.get("match") or {}
     for i, t in enumerate(txns):
         if txn_type and t.get("type") != txn_type:
             continue
-        if side and (t.get("side") or "").lower() != side:
-            continue
         if match and not all(t.get(k) == v for k, v in match.items()):
             continue
         candidates.append(i)
     if not candidates:
         raise ToolError(
-            f"No transaction matched (type={txn_type or '*'}, side={side or '*'}). "
+            f"No transaction matched (type={txn_type or '*'}). "
             f"Current entries: " + ", ".join(
-                f"[{i}] {t.get('side')} {t.get('type')} amount={t.get('amount')}"
+                f"[{i}] {t.get('type')} amount={t.get('amount')}"
                 for i, t in enumerate(txns)
             )
         )
     if len(candidates) > 1:
         raise ToolError(
-            f"{len(candidates)} transactions matched (type={txn_type or '*'}, "
-            f"side={side or '*'}). Disambiguate by passing `transaction_index` "
-            f"or a more specific `match` dict. Matches: " + ", ".join(
-                f"[{i}] {txns[i].get('side')} {txns[i].get('type')} "
-                f"amount={txns[i].get('amount')}" for i in candidates
+            f"{len(candidates)} transactions matched (type={txn_type or '*'}). "
+            f"Disambiguate by passing `transaction_index` or a more specific "
+            f"`match` dict. Matches: " + ", ".join(
+                f"[{i}] {txns[i].get('type')} amount={txns[i].get('amount')}"
+                for i in candidates
             )
         )
     return candidates[0]
@@ -6202,8 +6483,8 @@ def _resolve_txn_index(txns: list, args: dict) -> int:
 
 async def tool_delete_transaction_from_rule(args: dict) -> dict:
     """Remove one entry from `outputs.transactions[]`. Identify by
-    `transaction_index`, by `type` (+ optional `side`), or by an exact-match
-    `match` dict (e.g. {"type": "X", "side": "debit", "amount": "y"}).
+    `transaction_index`, by `type`, or by an exact-match `match` dict
+    (e.g. {"type": "X", "amount": "y"}).
     Pass `delete_all=true` to clear the entire transactions array."""
     rule = await _load_rule((args.get("rule_id") or "").strip())
     outputs = dict(rule.get("outputs") or {})
@@ -6244,24 +6525,17 @@ async def tool_delete_transaction_from_rule(args: dict) -> dict:
             f"Round-trip check failed: expected {len(txns)} transaction(s) "
             f"after delete, found {len(persisted)}. Save did not persist."
         )
-    sides = [(t.get("side") or "").lower() for t in txns]
-    balanced = (not txns) or (
-        any(s == "debit" for s in sides) and any(s == "credit" for s in sides)
-    )
     payload = {
         "rule_id": rule["id"],
         "deleted_index": idx,
         "deleted": {
             "type": removed.get("type"),
-            "side": removed.get("side"),
             "amount": removed.get("amount"),
         },
         "transaction_count": len(txns),
-        "balanced": balanced,
         "next_step_hint": (
-            f"Removed [{idx}] {removed.get('side')} {removed.get('type')}. "
+            f"Removed [{idx}] {removed.get('type')}. "
             + (f"{len(txns)} transaction(s) remain." if txns else "Rule now emits no transactions.")
-            + ("" if balanced else " WARNING: remaining entries are NOT balanced (debit/credit pair broken).")
         ),
     }
     return await _attach_validation(rule, payload)
@@ -6269,8 +6543,8 @@ async def tool_delete_transaction_from_rule(args: dict) -> dict:
 
 async def tool_update_transaction_in_rule(args: dict) -> dict:
     """Patch one entry in `outputs.transactions[]`. Identify by
-    `transaction_index`, by `type` (+ optional `side`), or by `match` dict.
-    `patch` may set any of: type, amount, side, postingdate / postingDate,
+    `transaction_index`, by `type`, or by `match` dict.
+    `patch` may set any of: type, amount, postingdate / postingDate,
     effectivedate / effectiveDate, subinstrumentid / subInstrumentId."""
     rule = await _load_rule((args.get("rule_id") or "").strip())
     outputs = dict(rule.get("outputs") or {})
@@ -6280,7 +6554,7 @@ async def tool_update_transaction_in_rule(args: dict) -> dict:
     if not isinstance(patch, dict) or not patch:
         # Auto-wrap top-level fields like update_step does
         _TXN_FIELDS_LC = {
-            "type", "amount", "side",
+            "type", "amount",
             "postingdate", "posting_date", "postingDate",
             "effectivedate", "effective_date", "effectiveDate",
             "subinstrumentid", "sub_instrument_id", "subInstrumentId",
@@ -6301,20 +6575,16 @@ async def tool_update_transaction_in_rule(args: dict) -> dict:
     normalised: dict = {}
     for k, v in patch.items():
         normalised[_CAMEL.get(k, k)] = v
-    side_in = normalised.get("side")
-    if side_in is not None:
-        side_in = str(side_in).strip().lower()
-        if side_in not in ("debit", "credit"):
-            raise ToolError("`side` must be 'debit' or 'credit'")
-        normalised["side"] = side_in
+    # `side` is a legacy no-op now (transactions are plain amounts) — drop it
+    # silently so old callers don't break.
+    normalised.pop("side", None)
 
     merged = {**txns[idx], **normalised}
+    merged.pop("side", None)
     if not merged.get("type"):
         raise ToolError("`type` cannot be cleared.")
     if not merged.get("amount"):
         raise ToolError("`amount` cannot be cleared.")
-    if not merged.get("side") or merged["side"].lower() not in ("debit", "credit"):
-        raise ToolError("`side` must be 'debit' or 'credit'.")
     if not merged.get("postingDate") or not merged.get("effectiveDate"):
         raise ToolError("`postingDate` and `effectiveDate` are required.")
     txns[idx] = merged
@@ -6328,13 +6598,12 @@ async def tool_update_transaction_in_rule(args: dict) -> dict:
         "updated_index": idx,
         "transaction": {
             "type": merged.get("type"),
-            "side": merged.get("side"),
             "amount": merged.get("amount"),
             "postingDate": merged.get("postingDate"),
             "effectiveDate": merged.get("effectiveDate"),
             "subInstrumentId": merged.get("subInstrumentId"),
         },
-        "next_step_hint": f"Updated [{idx}] {merged.get('side')} {merged.get('type')}.",
+        "next_step_hint": f"Updated [{idx}] {merged.get('type')}.",
     }
     return await _attach_validation(rule, payload)
 
@@ -6365,9 +6634,28 @@ async def tool_debug_step(args: dict) -> dict:
     else:
         var = target.get("name")
     if var:
-        code += f'\nprint("__DEBUG_STEP__ {var} =", {var})'
+        # Guard the probe: if the target var isn't in scope for any reason,
+        # report that rather than crashing the whole execution with NameError.
+        # The probe MUST be emitted as single-line compound statements.
+        # Both DSL translators (dsl_to_python_multi_event /
+        # dsl_to_python_standalone) .strip() every DSL line and re-indent it
+        # to one fixed level, so a block-indented `try:` / `    print(...)`
+        # collapses to two lines at the SAME indent and every debug_step call
+        # died with "expected an indented block after 'try' statement".
+        code += (
+            f'\ntry: print("__DEBUG_STEP__ {var} =", {var})\n'
+            f'except Exception as _e: '
+            f'print("__DEBUG_STEP__ {var} = <unavailable:", _e, ">")'
+        )
 
-    referenced = list(extract_event_names_from_dsl(code) or [])
+    # Detect events from the FULL rule (not just the truncated code slice) so
+    # the translator always binds them — a truncated slice that no longer
+    # mentions the event would otherwise fall to standalone mode and leave the
+    # event object unbound ("name '<event>' is not defined").
+    referenced = list(dict.fromkeys(
+        list(extract_event_names_from_dsl(code) or [])
+        + await _events_referenced_by_rule(rule)
+    ))
     all_event_fields: dict[str, Any] = {}
     event_data: dict[str, list[dict]] = {}
     for nm in referenced:
@@ -6420,8 +6708,56 @@ async def tool_debug_step(args: dict) -> dict:
     }
 
 
+async def _events_referenced_by_rule(rule: dict) -> list[str]:
+    """All event names a rule references — the single source of truth used by
+    dry_run, debug_step, test_schedule_step and verify_rule_complete so they
+    can never disagree about whether a rule "references events".
+
+    Regex-scanning the generated code alone is fragile: step truncation
+    (debug/schedule testing rebuild only a slice of the rule) and transaction
+    date normalisation (which can strip an 'EVT.postingdate' prefix down to a
+    bare 'postingdate') both hide the only event-qualified token, producing the
+    false 'references no events' / 'NOT runnable' the user hit. So we union
+    three sources and keep only names that resolve to a real event definition:
+      1. events extracted from the full generated code,
+      2. the leading identifier of every step's eventField / formula / value,
+      3. event-qualified transaction postingDate / effectiveDate.
+    """
+    try:
+        extract = _h("extract_event_names_from_dsl")
+    except Exception:
+        extract = None
+    names: set[str] = set()
+    try:
+        full_code = _generate_rule_code(rule)
+        if extract:
+            names.update(extract(full_code) or [])
+    except Exception:
+        pass
+    for s in rule.get("steps") or []:
+        ef = str(s.get("eventField") or "").strip()
+        if "." in ef:
+            names.add(ef.split(".", 1)[0].strip())
+        if extract:
+            for key in ("formula", "value"):
+                blob = str(s.get(key) or "")
+                if blob:
+                    names.update(extract(blob) or [])
+    for t in ((rule.get("outputs") or {}).get("transactions") or []):
+        for dk in ("postingDate", "effectiveDate"):
+            v = str(t.get(dk) or "").strip()
+            if "." in v:
+                names.add(v.split(".", 1)[0].strip())
+    resolved: list[str] = []
+    for nm in sorted(n for n in names if n):
+        if await _find_event_def(nm):
+            resolved.append(nm)
+    return resolved
+
+
 async def _execute_dsl_for_rule(rule: dict, code: str, posting_date: str | None,
-                                effective_date: str | None) -> tuple[dict, int]:
+                                effective_date: str | None,
+                                extra_events: list[str] | None = None) -> tuple[dict, int]:
     """Resolve event data for a rule, translate DSL → Python, execute. Helper
     for schedule-step testing. Returns (execution_result, row_count)."""
     dsl_to_python_multi_event = _h("dsl_to_python_multi_event")
@@ -6429,7 +6765,13 @@ async def _execute_dsl_for_rule(rule: dict, code: str, posting_date: str | None,
     merge_event_data_by_instrument = _h("merge_event_data_by_instrument")
     filter_event_data_by_posting_date = _h("filter_event_data_by_posting_date")
     extract_event_names_from_dsl = _h("extract_event_names_from_dsl")
-    referenced = list(extract_event_names_from_dsl(code) or [])
+    # Union code-scanned events with any rule-level events the caller detected
+    # (see _events_referenced_by_rule) so a truncated code slice still binds
+    # every event the rule actually uses — otherwise the translator falls back
+    # to standalone mode and the event object comes out unbound at runtime.
+    referenced = list(dict.fromkeys(
+        list(extract_event_names_from_dsl(code) or []) + list(extra_events or [])
+    ))
     all_event_fields: dict[str, Any] = {}
     event_data: dict[str, list[dict]] = {}
     for nm in referenced:
@@ -6585,69 +6927,100 @@ async def tool_test_schedule_step(args: dict) -> dict:
         }
     # ── End early guard ────────────────────────────────────────────────────
 
-    # Incremental column tests: replace the schedule step with one that has
-    # only columns 1..k, then re-run. Fail fast on the first column that
-    # errors out.
-    column_results: list[dict] = []
-    for k in range(1, len(cols) + 1):
-        partial_step = {
-            **target,
-            "scheduleConfig": {**sc, "columns": cols[:k]},
-            "outputVars": [],   # Skip outputVars during column probe
-        }
-        partial_rule = {**rule, "steps": steps[:idx] + [partial_step], "outputs": {}}
-        code = _generate_rule_code(partial_rule)
-        try:
-            result, _ = await _execute_dsl_for_rule(
-                partial_rule, code, posting_date, effective_date
-            )
-            err = None
-            if not result.get("success", True):
-                err = result.get("error") or "execution returned success=false"
-        except ToolError as exc:
-            err = str(exc)
-        col = cols[k - 1]
-        column_results.append({
-            "column": col["name"],
-            "formula": col["formula"],
-            "ok": err is None,
-            "error": err,
-        })
-        if err is not None:
-            return {
-                "rule_id": rule["id"],
-                "step_name": target.get("name"),
-                "ok": False,
-                "failed_at": "column",
-                "failed_column": col["name"],
-                "error": err,
-                "column_results": column_results,
-                "fix_hint": (
-                    f"Column '{col['name']}' formula failed. Check that all "
-                    f"identifiers are EITHER (a) other columns defined ABOVE "
-                    f"this one, (b) schedule built-ins "
-                    f"({sorted(_SCHEDULE_COLUMN_BUILTINS)}), (c) DSL function "
-                    f"names, or (d) variables from prior calc steps that "
-                    f"appear in scheduleConfig.contextVars (auto-derived from "
-                    f"this step's column formulas)."
-                ),
-            }
+    # Rule-level event set — passed to every partial execution below so a
+    # truncated column-probe slice still binds all events the rule uses.
+    _rule_events = await _events_referenced_by_rule(rule)
 
-    # Full schedule + outputVars run.
+    # Run the COMPLETE schedule once.
+    #
+    # This used to probe one column at a time -- rebuilding the rule with
+    # columns[:k] and re-running it for every k -- which costs a FULL rule
+    # execution per column, plus one more for the final run. A 16-column
+    # schedule therefore executed the whole rule 17 times, and
+    # _auto_test_schedule_steps does this for EVERY schedule step on every
+    # create_saved_rule / update_saved_rule / finish. On a rule with a
+    # materialised per-line schedule that is what made those calls hang.
+    #
+    # The incremental probe only ever existed to LOCALISE a failure to one
+    # column, so it is now paid for only when there IS a failure to
+    # localise: one execution on the happy path, N on the error path.
     full_rule = {**rule, "steps": steps[:idx + 1], "outputs": {}}
     full_code = _generate_rule_code(full_rule)
-    result, row_count = await _execute_dsl_for_rule(
-        full_rule, full_code, posting_date, effective_date
-    )
-    if not result.get("success", True):
+    column_results: list[dict] = []
+    row_count = 0
+    try:
+        result, row_count = await _execute_dsl_for_rule(
+            full_rule, full_code, posting_date, effective_date,
+            extra_events=_rule_events,
+        )
+        full_err = None
+        if not result.get("success", True):
+            full_err = result.get("error") or "execution returned success=false"
+    except ToolError as exc:
+        result, full_err = {}, str(exc)
+
+    if full_err is not None:
+        # Localise: re-run with a growing prefix of columns until one breaks.
+        for k in range(1, len(cols) + 1):
+            partial_step = {
+                **target,
+                "scheduleConfig": {**sc, "columns": cols[:k]},
+                "outputVars": [],   # Skip outputVars during column probe
+            }
+            partial_rule = {**rule, "steps": steps[:idx] + [partial_step], "outputs": {}}
+            code = _generate_rule_code(partial_rule)
+            try:
+                probe, _ = await _execute_dsl_for_rule(
+                    partial_rule, code, posting_date, effective_date,
+                    extra_events=_rule_events,
+                )
+                err = None
+                if not probe.get("success", True):
+                    err = probe.get("error") or "execution returned success=false"
+            except ToolError as exc:
+                err = str(exc)
+            col = cols[k - 1]
+            column_results.append({
+                "column": col["name"],
+                "formula": col["formula"],
+                "ok": err is None,
+                "error": err,
+            })
+            if err is not None:
+                return {
+                    "rule_id": rule["id"],
+                    "step_name": target.get("name"),
+                    "ok": False,
+                    "failed_at": "column",
+                    "failed_column": col["name"],
+                    "error": err,
+                    "column_results": column_results,
+                    "fix_hint": (
+                        f"Column '{col['name']}' formula failed. Check that all "
+                        f"identifiers are EITHER (a) other columns defined ABOVE "
+                        f"this one, (b) schedule built-ins "
+                        f"({sorted(_SCHEDULE_COLUMN_BUILTINS)}), (c) DSL function "
+                        f"names, or (d) variables from prior calc steps that "
+                        f"appear in scheduleConfig.contextVars (auto-derived from "
+                        f"this step's column formulas)."
+                    ),
+                }
+        # Every column passed on its own, so the failure is in the full
+        # schedule (outputVars, or a column interaction).
         return {
             "rule_id": rule["id"],
             "step_name": target.get("name"),
             "ok": False,
             "failed_at": "full_schedule",
-            "error": result.get("error") or "execution failed",
+            "error": full_err,
             "column_results": column_results,
         }
+
+    # The full set ran clean, so every column is good.
+    column_results = [
+        {"column": c["name"], "formula": c["formula"], "ok": True, "error": None}
+        for c in cols
+    ]
 
     # Parse the schedule output from print_outputs (last print is the schedule).
     prints = result.get("print_outputs") or []
@@ -6957,23 +7330,15 @@ async def tool_verify_rule_complete(args: dict) -> dict:
                    else f"steps using createTransaction in formula (move to outputs.transactions): {inline_txn_steps}"),
     })
 
-    # 3. outputs.transactions populated and balanced (debit/credit pair)
+    # 3. outputs.transactions populated (each with a type + amount). These are
+    # plain amounts, NOT double-entry journal lines — no debit/credit pairing.
     has_txns = bool(txns)
     valid_txn_types = sum(1 for t in txns if (t.get("type") or "").strip() and (t.get("amount") or "").strip())
-    sides = [(t.get("side") or "").lower() for t in txns]
-    has_debit = any(s == "debit" for s in sides)
-    has_credit = any(s == "credit" for s in sides)
     items.append({
         "check": "outputs_transactions_populated",
         "ok": has_txns and valid_txn_types == len(txns),
         "detail": (f"{valid_txn_types}/{len(txns)} transactions valid"
                    if has_txns else "no transactions in outputs.transactions[]"),
-    })
-    items.append({
-        "check": "double_entry_pair",
-        "ok": (not has_txns) or (has_debit and has_credit),
-        "detail": ("balanced (has debit and credit)" if has_debit and has_credit
-                   else "MISSING SIDE — every txn-emitting rule needs both a debit and a credit"),
     })
 
     # 4. Every referenced transaction type is registered
@@ -6998,10 +7363,15 @@ async def tool_verify_rule_complete(args: dict) -> dict:
                    else f"unregistered: {missing_types} — call add_transaction_types"),
     })
 
-    # 5. Every referenced event has sample data loaded
+    # 5. Every referenced event has sample data loaded. Use the robust
+    # rule-level detector (not just a code scan) so the same events dry_run
+    # sees are the ones checked here — the readiness gate must not disagree
+    # with a passing dry run.
     extract = _h("extract_event_names_from_dsl")
     code = rule.get("generatedCode") or _generate_rule_code(rule)
-    referenced_events = list(extract(code) or [])
+    referenced_events = list(dict.fromkeys(
+        await _events_referenced_by_rule(rule) + list(extract(code) or [])
+    ))
     missing_data: list[str] = []
     if db is not None:
         for nm in referenced_events:
@@ -7271,6 +7641,42 @@ _HALLUCINATED_GATE_RE = re.compile(
 )
 
 
+# Domain words that unambiguously imply a tabular time-series → a schedule
+# step is expected somewhere in the build.
+_SCHEDULE_DOMAIN_KEYWORDS = (
+    "depreciation", "depreciate", "amortisation", "amortization",
+    "amortise", "amortize", "accretion", "runoff", "run-off",
+    "payment plan",
+)
+# Bare "schedule" only counts as a schedule request when it is the object of
+# a build verb ("create a schedule for..."). Incidental mentions ("the fee
+# schedule event is already loaded") must NOT trigger the finish gate.
+_SCHEDULE_REQUEST_RE = re.compile(
+    r"\b(?:creat\w*|build\w*|add\w*|generat\w*|mak\w*|produc\w*|set\s+up)\b"
+    r"[^.?!\n]{0,60}?\bschedules?\b",
+    re.IGNORECASE,
+)
+# A negated schedule mention switches the requirement off entirely
+# ("don't create a schedule", "compute depreciation without a schedule").
+_SCHEDULE_NEGATION_RE = re.compile(
+    r"\b(?:no|not|don'?t|do\s+not|never|without|skip\w*|avoid\w*|"
+    r"instead\s+of|rather\s+than)\b[^.?!\n]{0,40}?\bschedules?\b",
+    re.IGNORECASE,
+)
+
+
+def _user_asked_for_schedule(user_request: str, summary: str) -> bool:
+    """True when the request (or the agent's own summary) implies a schedule
+    step must exist in the build. Negations win over triggers."""
+    if _SCHEDULE_NEGATION_RE.search(user_request):
+        return False
+    if any(k in user_request for k in _SCHEDULE_DOMAIN_KEYWORDS):
+        return True
+    if _SCHEDULE_REQUEST_RE.search(user_request):
+        return True
+    return any(k in summary.lower() for k in _SCHEDULE_DOMAIN_KEYWORDS)
+
+
 async def tool_finish(args: dict) -> dict:
     summary = (args.get("summary") or "").strip() or "Done."
     # `user_request` is injected by runtime.py from the original task prompt
@@ -7291,6 +7697,14 @@ async def tool_finish(args: dict) -> dict:
     if single_rid and single_rid not in rule_ids:
         rule_ids.append(single_rid)
 
+    # Schedule gate is SET-LEVEL: when the user asked for a schedule, at
+    # least ONE touched rule must contain a stepType='schedule' step.
+    # Per-rule enforcement would deadlock legitimate multi-rule builds
+    # (e.g. a depreciation rule WITH a schedule plus a disposal rule
+    # WITHOUT one could never finish).
+    asked_for_schedule = _user_asked_for_schedule(user_request, summary)
+    any_schedule_step = False
+    checked_rule_names: list[str] = []
     for rule_id in rule_ids:
         try:
             rule = await _load_rule(rule_id)
@@ -7298,70 +7712,23 @@ async def tool_finish(args: dict) -> dict:
             rule = None
         if rule is not None:
             steps = rule.get("steps") or []
-            # Hard gate: when the user explicitly asked for a schedule
-            # (depreciation / amortisation / runoff / payment plan / EIR
-            # term-structure / "create a schedule for ..."), refuse to
-            # finish unless at least one stepType='schedule' step exists.
-            # Prevents the agent from substituting a calc-step approximation.
-            _SCHEDULE_KEYWORDS = (
-                "schedule", "depreciation", "depreciate",
-                "amortisation", "amortization", "amortise", "amortize",
-                "accretion", "runoff", "run-off", "payment plan",
-                "amortization schedule", "amortisation schedule",
-            )
-            asked_for_schedule = any(k in user_request for k in _SCHEDULE_KEYWORDS)
-            asked_for_schedule = asked_for_schedule or any(
-                k in summary.lower() for k in (
-                    "depreciation", "depreciate", "amortisation",
-                    "amortization", "runoff", "payment plan",
-                )
-            )
-            has_schedule_step = any(
-                (s.get("stepType") or "") == "schedule" for s in steps
-            )
-            if asked_for_schedule and not has_schedule_step:
-                raise ToolError(
-                    f"Rule '{rule.get('name')}' has ZERO stepType='schedule' "
-                    f"steps, but the user's request and/or your summary "
-                    f"explicitly mention a schedule "
-                    f"(depreciation/amortisation/runoff/payment plan). A "
-                    f"calc-step approximation is NOT a substitute and a "
-                    f"standalone create_saved_schedule call is NOT a "
-                    f"substitute either. FIX:\n"
-                    f"  1. call add_step_to_rule with stepType='schedule' and "
-                    f"a populated scheduleConfig (periodType, frequency, "
-                    f"startDate*, endDate*/periodCount*, columns).\n"
-                    f"  2. Schedule columns CAN reference outer calc vars, "
-                    f"EVENTNAME.field, prior columns, and built-ins like "
-                    f"period_index / period_number / lag / dcf.\n"
-                    f"  3. call test_schedule_step until ok=true.\n"
-                    f"  4. THEN add_transaction_to_rule referencing the "
-                    f"schedule's outputVar (e.g. type='filter' with matchCol=\"<period_end_col>\" "
-                    f"matchValue=\"<postingdate>\", or type='last' for closing balance).\n"
-                    f"DO NOT call finish again until a schedule step exists "
-                    f"and passes its preview."
-                )
+            checked_rule_names.append(str(rule.get("name") or rule_id))
+            if any((s.get("stepType") or "") == "schedule" for s in steps):
+                any_schedule_step = True
             txns = ((rule.get("outputs") or {}).get("transactions") or [])
             if not txns:
                 raise ToolError(
                     f"Rule '{rule.get('name')}' has ZERO entries in "
-                    f"`outputs.transactions[]`. The output of every accounting "
-                    f"rule IS its transactions. A rule with no transactions "
-                    f"produces no output and is never complete.\n"
-                    f"FIX: call `add_transaction_to_rule` (twice — one debit, "
-                    f"one credit) referencing the calc-step variable that "
-                    f"holds the computed amount. DO NOT create a calc step "
-                    f"named 'outputs_transactions' or 'transactions' — those "
-                    f"steps do nothing; only the rule's `outputs.transactions[]` "
+                    f"`outputs.transactions[]`. The output of every rule IS "
+                    f"its transactions. A rule with no transactions produces "
+                    f"no output and is never complete.\n"
+                    f"FIX: call `add_transaction_to_rule` referencing the "
+                    f"calc-step variable that holds the computed amount. Each "
+                    f"result is one transaction (a plain amount — no "
+                    f"debit/credit sides). DO NOT create a calc step named "
+                    f"'outputs_transactions' or 'transactions' — those steps "
+                    f"do nothing; only the rule's `outputs.transactions[]` "
                     f"array drives the Transactions panel."
-                )
-            sides = [(t.get("side") or "").lower() for t in txns]
-            if not (any(s == "debit" for s in sides) and any(s == "credit" for s in sides)):
-                raise ToolError(
-                    f"Rule '{rule.get('name')}' has transactions but the "
-                    f"double-entry pair is unbalanced (sides={sides}). Add "
-                    f"the missing side via `add_transaction_to_rule` before "
-                    f"calling `finish`."
                 )
             # Static-validation hard gate (rule #19): refuse to finish while
             # the rule has any undefined-variable references etc.
@@ -7418,6 +7785,29 @@ async def tool_finish(args: dict) -> dict:
                     f"ok=true BEFORE calling finish. A schedule that does "
                     f"not preview cannot run end-to-end."
                 )
+    if asked_for_schedule and checked_rule_names and not any_schedule_step:
+        raise ToolError(
+            f"The user's request and/or your summary explicitly asks for a "
+            f"schedule (depreciation/amortisation/runoff/payment plan), but "
+            f"NONE of the rules you touched ({checked_rule_names}) contains "
+            f"a stepType='schedule' step. A calc-step approximation is NOT "
+            f"a substitute and a standalone create_saved_schedule call is "
+            f"NOT a substitute either. FIX:\n"
+            f"  1. call add_step_to_rule with stepType='schedule' and a "
+            f"populated scheduleConfig (periodType, frequency, startDate*, "
+            f"endDate*/periodCount*, columns) on the rule that computes the "
+            f"time-series.\n"
+            f"  2. Schedule columns CAN reference outer calc vars, "
+            f"EVENTNAME.field, prior columns, and built-ins like "
+            f"period_index / period_number / lag / dcf.\n"
+            f"  3. call test_schedule_step until ok=true.\n"
+            f"  4. THEN add_transaction_to_rule referencing the schedule's "
+            f"outputVar (e.g. type='filter' with matchCol=\"<period_end_col>\" "
+            f"matchValue=\"<postingdate>\", or type='last' for closing "
+            f"balance).\n"
+            f"DO NOT call finish again until a schedule step exists and "
+            f"passes its preview."
+        )
     low = summary.lower()
     # Generic catch for hallucinated "gate" / "path" surrender language.
     # The runtime has exactly ONE plan-gate (submit_plan) and never describes
@@ -7445,7 +7835,7 @@ async def tool_finish(args: dict) -> dict:
                 f"to authorise more work. Two valid paths forward:\n"
                 f"  (a) DO that work yourself NOW (call the relevant tools), "
                 f"then call `finish` ONLY after `verify_rule_complete` returns "
-                f"overall_ready=true AND `dry_run_template` returns balanced "
+                f"overall_ready=true AND `dry_run_template` returns "
                 f"transactions with no sanity_warnings.\n"
                 f"  (b) If you genuinely need a business decision from the user "
                 f"(e.g. an ambiguous threshold), state the SPECIFIC choice in "
@@ -7701,13 +8091,14 @@ authoring failure.
      "create_transaction", "emit_transactions", "post_transactions".
      Steps cannot emit transactions — only the rule's
      `outputs.transactions[]` array does. Use add_transaction_to_rule
-     (twice — one debit + one credit) to populate it.
+     to populate it (one call per transaction — a transaction is just an
+     amount, there is no debit/credit side).
 
 ------------------------------------------------------------------
 ONE RULE OR MANY? — DECIDE BEFORE YOU BUILD
 ------------------------------------------------------------------
-Default: ONE rule per accounting event. A "rule" represents one
-debit/credit pair (or set of pairs) tied to a single business event.
+Default: ONE rule per business event. A "rule" represents the set of
+transactions (plain amounts) tied to a single business event.
 
 Split into multiple rules ONLY when ANY of these is true:
   • The rules emit different transaction-type pairs that the user wants
@@ -7771,9 +8162,10 @@ WORKED EXAMPLE — IFRS9 Stage Assignment + ECL (no iteration needed):
     {name:"ecl", stepType:"calc", source:"formula",
                   formula:"multiply(multiply(pd, lgd), ead)"}
   outputs.transactions:
-    [{type:"ECLAllowance", amount:"ecl", side:"credit"},
-     {type:"ECLExpense",   amount:"ecl", side:"debit"}]
+    [{type:"ECLAllowance", amount:"ecl"}]
   → The engine runs this once per (loan × postingdate). Done.
+  (A transaction is just an amount — no debit/credit side. Emit one entry
+   per distinct result you want posted.)
 
 ------------------------------------------------------------------
 CANONICAL PATTERNS — pick ONE before authoring
@@ -7793,7 +8185,7 @@ PATTERN A — SCHEDULE + ROW EXTRACTION FOR postingdate
     3. outputVar type='filter' with matchCol='month_end' (or your period-end
        column) and matchValue='postingdate' extracts THIS PERIOD'S row.
        ★ Prefer filter over sum — sum gives the lifetime total, not one period.
-    4. outputs.transactions[] emit debit/credit using the filtered values
+    4. outputs.transactions[] emit one transaction per filtered value
   Reference templates: loan_amortization, interest_accrual, fee_amortization,
                        lease_accounting, IFRSStage3.
 
@@ -7875,7 +8267,7 @@ ABSOLUTE RULES
        (a) a numeric literal: `"100.0"`, OR
        (b) the NAME of a variable defined by a prior step:
               steps: [{name:"ecl", stepType:"calc", formula:"…"}]
-              outputs.transactions: [{type:"X", amount:"ecl", side:"credit"}]
+              outputs.transactions: [{type:"X", amount:"ecl"}]
     Writing `amount: "amount"` (the literal word) fails at dry-run with
     `name 'amount' is not defined`. The string is NOT a label — it is
     the expression that gets evaluated.
@@ -8100,6 +8492,41 @@ do NOT put them in contextVars):
   daily_basis, item_name, subinstrument_id, s_no,
   index, start_date, end_date
 
+  String literals are fine in a column formula:
+    eq(item_method, "RATABLE")  and  eq(item_method, 'RATABLE')
+  both work. You do NOT need to hoist the comparison into a 1/0 flag
+  computed in an earlier calc step.
+
+  CONTEXT ARRAYS vs SCALARS inside a column formula:
+    • A context array keeps its OWN length. array_length(line_products)
+      on a 3-element array returns 3, never the period count. Used bare
+      in arithmetic it resolves to the CURRENT ROW's element (index past
+      the end reads as missing -> 0).
+    • `<name>_full` always gives you the whole array.
+    • A PER-ITEM schedule (one driven by ARRAY start/end dates) slices
+      every context array down to THIS item's element, so reference it
+      directly - `divide(AllocatedAmounts, total_periods)`. Reach for
+      `AllocatedAmounts_full` only when you truly need all items.
+    • `item_name` and `subinstrument_id` are only meaningful in a PER-ITEM
+      schedule -- see below. In a plain schedule item_name is empty and
+      subinstrument_id is the current row's own id.
+
+  ONE SCHEDULE PER SUB-INSTRUMENT (fan-out):
+    By default a schedule runs ONCE per instrument, because the event rows
+    of an instrument are merged into one row before the rule runs. To get one
+    schedule per line/sub-instrument, declare the item dimension:
+        "splitBy":   "sub_ids"       # var holding the per-line subinstrumentids
+        "itemNames": "ProductIds"   # var holding the per-line business keys
+    Both name an EARLIER step, normally a
+    collect_by_instrument(EVENT.subinstrumentid) / (EVENT.product_id) result.
+    With them set:
+      - one schedule is produced per line, all sharing the same date window;
+      - `subinstrument_id` and `item_name` resolve per line inside columns;
+      - every OTHER context array is sliced to THIS line's element, so write
+        `divide(AllocatedAmounts, total_periods)` -- no lookup() needed.
+    Without them a per-line array in context is read as a per-PERIOD series
+    (three line amounts spread across three months), which is silently wrong.
+
 REQUIRED VALIDATION FLOW for any schedule step you author:
   1. add_step_to_rule with stepType='schedule' and a populated
      scheduleConfig (validator runs immediately; fix any errors it returns).
@@ -8134,23 +8561,23 @@ DO NOT do any of these (all are WRONG and the validator will reject them):
 
 The ONE correct pattern:
   1. Register the transaction types ONCE up-front:
-        add_transaction_types([{name:'ECLAllowance'}, {name:'ECLExpense'}])
+        add_transaction_types([{name:'ECLAllowance'}])
   2. Add a calc step that COMPUTES the amount (this step's `name` becomes
      the variable referenced below):
         { name:'ecl_amount', stepType:'calc', source:'formula',
           formula:'multiply(multiply(pd, lgd), ead)' }
-  3. Add the transactions to the rule's `outputs.transactions[]` (preferred
-     interface: call `add_transaction_to_rule` twice, once per side):
-        add_transaction_to_rule(rule_id, type='ECLAllowance', amount='ecl_amount', side='credit')
-        add_transaction_to_rule(rule_id, type='ECLExpense',   amount='ecl_amount', side='debit')
+  3. Add the transaction to the rule's `outputs.transactions[]` (preferred
+     interface: call `add_transaction_to_rule`, once per result you want
+     posted):
+        add_transaction_to_rule(rule_id, type='ECLAllowance', amount='ecl_amount')
      Equivalent shape on create_saved_rule / update_saved_rule:
         outputs: { createTransaction:true, transactions:[
-           {type:'ECLAllowance', amount:'ecl_amount', side:'credit'},
-           {type:'ECLExpense',   amount:'ecl_amount', side:'debit'} ] }
+           {type:'ECLAllowance', amount:'ecl_amount'} ] }
 
 RULES:
 - `amount` is the NAME of a prior calc step (or a numeric literal).
-- ALWAYS pair debit + credit so the entry balances.
+- A transaction is just a signed amount — there is NO debit/credit side and
+  no balancing. Emit one entry per distinct result you want posted.
 - The engine emits these transactions ONCE PER ROW automatically — no
   iteration step needed for fan-out across instruments.
 
@@ -8172,7 +8599,7 @@ THE RULE — when an event has multi-subid data:
   1. NEVER hardcode `subInstrumentId: "1.0"`. Use the row builtin
      `subinstrumentid` so each row's transaction carries that row's subId:
         outputs.transactions: [
-          {type:"X", amount:"v", side:"debit",
+          {type:"X", amount:"v",
            postingDate:"EVT.postingdate", effectiveDate:"EVT.effectivedate",
            subInstrumentId:"subinstrumentid"}
         ]
@@ -8277,10 +8704,42 @@ def _build_syntax_guide_sections(text: str) -> dict[str, str]:
 _DSL_SYNTAX_GUIDE_SECTIONS: dict[str, str] | None = None
 
 
+def _authoring_guide_md() -> str:
+    """Load knowledge/dsl_authoring_guide.md — the canonical DSL reference.
+
+    Served as its own syntax-guide section so the file the README calls
+    'the canonical reference' is actually reachable by the agent, instead
+    of drifting silently behind the inline copies in runtime.py/tools.py.
+    """
+    try:
+        path = Path(__file__).parent / "knowledge" / "dsl_authoring_guide.md"
+        return path.read_text(encoding="utf-8")
+    except Exception as exc:
+        logger.warning("Could not load dsl_authoring_guide.md: %s", exc)
+        return ""
+
+
+def _excel_translation_guide_md() -> str:
+    """Load knowledge/excel_translation_guide.md — the workbook-import
+    workflow + Excel→DSL function mapping."""
+    try:
+        path = Path(__file__).parent / "knowledge" / "excel_translation_guide.md"
+        return path.read_text(encoding="utf-8")
+    except Exception as exc:
+        logger.warning("Could not load excel_translation_guide.md: %s", exc)
+        return ""
+
+
 def _syntax_guide_sections() -> dict[str, str]:
     global _DSL_SYNTAX_GUIDE_SECTIONS
     if _DSL_SYNTAX_GUIDE_SECTIONS is None:
         _DSL_SYNTAX_GUIDE_SECTIONS = _build_syntax_guide_sections(_DSL_SYNTAX_GUIDE)
+        guide_md = _authoring_guide_md()
+        if guide_md:
+            _DSL_SYNTAX_GUIDE_SECTIONS["authoring_guide"] = guide_md
+        excel_md = _excel_translation_guide_md()
+        if excel_md:
+            _DSL_SYNTAX_GUIDE_SECTIONS["excel_translation_guide"] = excel_md
     return _DSL_SYNTAX_GUIDE_SECTIONS
 
 
@@ -8491,7 +8950,13 @@ async def tool_dry_run_rule(args: dict) -> dict:
     extract_event_names = _h("extract_event_names_from_dsl")
     dsl_to_python = _h("dsl_to_python")
     DSLTemplate = _h("DSLTemplate")
-    evt_names = list(extract_event_names(code) or [])
+    # Robust rule-level detection — see _events_referenced_by_rule. Falling back
+    # to a raw code scan alone previously reported "references no events" when
+    # the only event-qualified token was a transaction date whose prefix got
+    # normalised away.
+    evt_names = await _events_referenced_by_rule(rule)
+    if not evt_names:
+        evt_names = list(extract_event_names(code) or [])
     if not evt_names:
         raise ToolError(
             f"Rule '{rule['name']}' references no events — nothing to run."
@@ -8547,11 +9012,17 @@ async def tool_lint_expression(args: dict) -> dict:
     if not isinstance(expr, str) or not expr.strip():
         raise ToolError("`expression` (a non-empty DSL expression string) is required")
     kind = (args.get("kind") or "formula").strip().lower()
-    if kind not in ("formula", "value", "condition", "iteration"):
+    if kind not in ("formula", "value", "condition", "iteration", "schedule_column"):
         kind = "formula"
     coerced = _coerce_lower_booleans(expr)
     errors: list[dict] = []
     where = f"lint:{kind}"
+    # In a schedule-column context the engine injects the period built-ins
+    # (period_date, lag, dcf, …) into scope — allow them so lint matches the
+    # actual schedule-column runtime instead of flagging them as undefined.
+    _extra = {"each", "second"}
+    if kind == "schedule_column":
+        _extra = _extra | _SCHEDULE_COLUMN_BUILTINS
     try:
         _enforce_dsl_guardrails(coerced)
     except ToolError as te:
@@ -8564,7 +9035,7 @@ async def tool_lint_expression(args: dict) -> dict:
     except ToolError as te:
         errors.append({"code": "expr_structure", "message": str(te)})
     try:
-        _check_function_calls(coerced, where=where, extra_names={"each", "second"})
+        _check_function_calls(coerced, where=where, extra_names=_extra)
     except ToolError as te:
         errors.append({"code": "unknown_function", "message": str(te)})
     return {
@@ -8574,8 +9045,13 @@ async def tool_lint_expression(args: dict) -> dict:
         "kind": kind,
         "errors": errors,
         "hint": (
-            "Passes static lint (syntax/shape/function names only). This does "
-            "NOT confirm referenced variables exist — use debug_step for that."
+            (("Passes static lint against the schedule-column runtime "
+              "(period built-ins allowed; and()/or()/not()/lte()/gte() are "
+              "supported inside schedule columns). "
+              if kind == "schedule_column" else
+              "Passes static lint (syntax/shape/function names only). ")
+             + "This does NOT confirm referenced variables exist — use "
+               "debug_step (or test_schedule_step for schedule columns) for that.")
             if not errors else
             "Fix the listed errors before committing this expression to a step. "
             "If `coerced` is non-null, the write path will auto-rewrite to it."
@@ -8784,6 +9260,486 @@ async def tool_revert_rule(args: dict) -> dict:
 
 
 # ──────────────────────────────────────────────────────────────────────────
+# Excel workbook import tools (upload → inspect → translate → reconcile)
+# All heavy lifting lives in workbook.py (pure, file-based, no bridge). These
+# wrappers translate WorkbookError → ToolError and add the DSL-side glue
+# (event creation on import, dry-run on reconcile).
+# ──────────────────────────────────────────────────────────────────────────
+
+from . import workbook as _workbook
+
+
+def _wb_call(fn, *a, **kw):
+    try:
+        return fn(*a, **kw)
+    except _workbook.WorkbookError as exc:
+        raise ToolError(str(exc)) from exc
+    except Exception as exc:
+        raise ToolError(f"Workbook analysis failed: {exc}") from exc
+
+
+async def tool_list_workbooks(_args: dict) -> dict:
+    wbs = _wb_call(_workbook.list_workbooks)
+    return {
+        "workbooks": wbs,
+        "count": len(wbs),
+        "hint": (
+            "Call get_workbook_overview on a workbook_id to see sheets, "
+            "headers and suggested input/calc/output roles."
+            if wbs else
+            "No workbooks uploaded. Ask the user to upload an .xlsx via the "
+            "Upload Workbook button (POST /api/agent/workbooks/upload)."
+        ),
+    }
+
+
+async def tool_get_workbook_overview(args: dict) -> dict:
+    wid = (args.get("workbook_id") or "").strip()
+    if not wid:
+        raise ToolError("workbook_id is required (see list_workbooks)")
+    ov = _wb_call(_workbook.workbook_overview, wid,
+                  int(args.get("header_row") or 1))
+    if not ov.get("roles_confirmed"):
+        ov["next_action"] = (
+            "Sheet roles are NOT confirmed yet. Present the sheets + "
+            "suggested_role to the user, ask which are inputs / calc / "
+            "outputs, then record the answer via set_workbook_sheet_roles "
+            "BEFORE analysing formulas."
+        )
+    return ov
+
+
+async def tool_set_workbook_sheet_roles(args: dict) -> dict:
+    wid = (args.get("workbook_id") or "").strip()
+    roles = args.get("roles")
+    if not wid:
+        raise ToolError("workbook_id is required")
+    meta = _wb_call(_workbook.set_sheet_roles, wid, roles)
+    return {
+        "workbook_id": meta["workbook_id"],
+        "roles": meta.get("roles"),
+        "hint": (
+            "Roles recorded. Next: get_sheet_formulas on each calc sheet, "
+            "trace_workbook_dependencies for the data flow, then "
+            "import_workbook_inputs for each input sheet."
+        ),
+    }
+
+
+async def tool_get_sheet_data(args: dict) -> dict:
+    wid = (args.get("workbook_id") or "").strip()
+    sheet = (args.get("sheet") or "").strip()
+    if not wid or not sheet:
+        raise ToolError("workbook_id and sheet are required")
+    return _wb_call(
+        _workbook.sheet_rows, wid, sheet,
+        int(args.get("header_row") or 1),
+        int(args.get("limit") or 20),
+        int(args.get("offset") or 0),
+    )
+
+
+async def tool_get_sheet_formulas(args: dict) -> dict:
+    wid = (args.get("workbook_id") or "").strip()
+    sheet = (args.get("sheet") or "").strip()
+    if not wid or not sheet:
+        raise ToolError("workbook_id and sheet are required")
+    return _wb_call(_workbook.sheet_formula_patterns, wid, sheet,
+                    int(args.get("header_row") or 1))
+
+
+async def tool_trace_workbook_dependencies(args: dict) -> dict:
+    wid = (args.get("workbook_id") or "").strip()
+    if not wid:
+        raise ToolError("workbook_id is required")
+    return _wb_call(_workbook.dependency_graph, wid,
+                    int(args.get("header_row") or 1))
+
+
+async def tool_import_workbook_inputs(args: dict) -> dict:
+    """Turn one input sheet into an event definition + loaded event data.
+    Reuses tool_create_event_definitions so all its validation applies."""
+    EventData = _h("EventData")
+    db = _ServerBridge.db
+
+    wid = (args.get("workbook_id") or "").strip()
+    sheet = (args.get("sheet") or "").strip()
+    event_name = (args.get("event_name") or "").strip()
+    if not wid or not sheet or not event_name:
+        raise ToolError("workbook_id, sheet and event_name are required")
+    header_row = int(args.get("header_row") or 1)
+    event_type = (args.get("event_type") or "activity").lower()
+    column_map = args.get("column_map") or {}
+    if not isinstance(column_map, dict):
+        raise ToolError("column_map must be an object {sheet_field: event_field}")
+    max_rows = int(args.get("max_rows") or 5000)
+
+    # ── Role gate ─────────────────────────────────────────────────────────
+    # Blind-importing every sheet is the #1 weak-model failure mode (calc
+    # sheets, empty templates, trigger lists all get hammered in a loop).
+    # Importing requires the interview to have happened: roles confirmed via
+    # set_workbook_sheet_roles, and THIS sheet declared input or reference.
+    meta = _wb_call(_workbook.get_meta, wid)
+    if not (meta.get("roles") or {}):
+        raise ToolError(
+            f"Sheet roles for workbook '{meta.get('filename')}' are NOT "
+            f"confirmed yet — do not import blindly. Required sequence: "
+            f"(1) get_workbook_overview to see each sheet's headers, row "
+            f"counts and suggested_role; (2) ASK THE USER which sheets are "
+            f"inputs / calc / outputs (call `finish` with the question if "
+            f"needed); (3) set_workbook_sheet_roles to record the answer; "
+            f"(4) import ONLY the sheets confirmed as input/reference."
+        )
+    role = _wb_call(_workbook.declared_role, wid, sheet)
+    if role is None:
+        raise ToolError(
+            f"Sheet '{sheet}' has no confirmed role. Confirmed roles: "
+            f"{meta.get('roles')}. Add it via set_workbook_sheet_roles "
+            f"(ask the user if its role is unclear), or import one of the "
+            f"sheets already marked 'input'."
+        )
+    if role not in ("input", "reference"):
+        raise ToolError(
+            f"Sheet '{sheet}' is declared as '{role}' — only 'input' or "
+            f"'reference' sheets can be imported as event data. A calc "
+            f"sheet must be TRANSLATED into rule steps (get_sheet_formulas), "
+            f"and an output sheet is only used by reconcile_workbook_outputs. "
+            f"If the user says this sheet really holds input data, update "
+            f"its role via set_workbook_sheet_roles first."
+        )
+
+    data = _wb_call(_workbook.sheet_rows, wid, sheet, header_row, max_rows, 0)
+    rows = data["rows"]
+    if not rows:
+        diag = _wb_call(_workbook.sheet_diagnostics, wid, sheet, header_row)
+        if diag["header_count"] and not diag["data_cells_below_header"] \
+                and not diag["cached_formula_cells_below_header"]:
+            if diag["uncached_formula_cells_below_header"]:
+                raise ToolError(
+                    f"Sheet '{sheet}' contains only formulas with NO cached "
+                    f"values below row {header_row} — the file was never "
+                    f"recalculated/saved by Excel, so its numbers are "
+                    f"unreadable. Do NOT retry this import. Ask the user to "
+                    f"open and save the workbook in Excel and re-upload, or "
+                    f"to point you at a values-only sheet."
+                )
+            raise ToolError(
+                f"Sheet '{sheet}' is an EMPTY TEMPLATE: it has "
+                f"{diag['header_count']} header(s) "
+                f"({diag['headers'][:8]}) but ZERO data rows. Do NOT retry "
+                f"this import and do NOT try other empty sheets — check "
+                f"get_workbook_overview for sheets that actually contain "
+                f"rows, and ask the user to supply data for this template "
+                f"if it is meant to be an input."
+            )
+        raise ToolError(
+            f"Sheet '{sheet}' has no importable data rows below row "
+            f"{header_row}. Diagnostics: {diag['header_count']} header(s), "
+            f"{diag['data_cells_below_header']} value cell(s), "
+            f"{diag['cached_formula_cells_below_header']} cached formula "
+            f"cell(s) below the header row. If the real header lives on a "
+            f"different row (title banners above the table), retry ONCE "
+            f"with the correct header_row; otherwise pick a different sheet."
+        )
+
+    # Apply renames (both sides sanitised the same way the sheet reader does).
+    cmap = {_workbook.sanitize_field_name(k): _workbook.sanitize_field_name(v)
+            for k, v in column_map.items()}
+    if cmap:
+        rows = [{cmap.get(k, k): v for k, v in r.items()} for r in rows]
+
+    field_names = sorted({k for r in rows for k in r.keys()})
+
+    if event_type == "activity":
+        if "instrumentid" not in field_names:
+            raise ToolError(
+                f"Activity events need an 'instrumentid' column. Sheet fields: "
+                f"{field_names}. Pass column_map to rename the key column, "
+                f"e.g. {{\"loan_id\": \"instrumentid\"}}."
+            )
+        # Workbooks rarely carry posting/effective dates — allow constants.
+        for dfield, dval in (("postingdate", args.get("default_posting_date")),
+                             ("effectivedate", args.get("default_effective_date"))):
+            if dfield not in field_names:
+                if not dval:
+                    raise ToolError(
+                        f"Sheet has no '{dfield}' column. Pass "
+                        f"default_{dfield.replace('date', '_date')} "
+                        f"(YYYY-MM-DD) to stamp all rows, or map a column "
+                        f"via column_map."
+                    )
+                if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", str(dval)):
+                    raise ToolError(f"default {dfield} must be YYYY-MM-DD, got '{dval}'")
+                for r in rows:
+                    r[dfield] = str(dval)
+        if "subinstrumentid" not in field_names:
+            for r in rows:
+                r["subinstrumentid"] = "1"
+        field_names = sorted({k for r in rows for k in r.keys()})
+
+    types = _workbook.infer_field_types(rows)
+    for forced_str in ("instrumentid", "subinstrumentid"):
+        if forced_str in types:
+            types[forced_str] = "string"
+            for r in rows:
+                if r.get(forced_str) is not None:
+                    v = r[forced_str]
+                    # 101.0 (Excel numeric) -> "101"
+                    if isinstance(v, float) and v.is_integer():
+                        v = int(v)
+                    r[forced_str] = str(v)
+    for forced_date in ("postingdate", "effectivedate"):
+        if forced_date in types:
+            types[forced_date] = "date"
+
+    overrides = args.get("field_types") or {}
+    if isinstance(overrides, dict):
+        for k, v in overrides.items():
+            types[_workbook.sanitize_field_name(k)] = str(v).lower()
+
+    created_event = None
+    existing = await _find_event_def(event_name)
+    if existing:
+        existing_fields = {f.get("name") for f in existing.get("fields") or []}
+        unknown = [f for f in field_names if f not in existing_fields]
+        if unknown:
+            raise ToolError(
+                f"Event '{event_name}' already exists but is missing fields "
+                f"{unknown}. Use a new event_name, or column_map the sheet "
+                f"columns onto the existing fields {sorted(existing_fields)}."
+            )
+    else:
+        created_event = await tool_create_event_definitions({"events": [{
+            "event_name": event_name,
+            "eventType": event_type,
+            "eventTable": "custom" if event_type == "reference" else "standard",
+            "fields": [{"name": f, "datatype": types.get(f, "string")}
+                       for f in field_names],
+        }]})
+
+    rows.sort(key=lambda r: (str(r.get("instrumentid") or ""),
+                             str(r.get("postingdate") or ""),
+                             str(r.get("effectivedate") or ""),
+                             str(r.get("subinstrumentid") or "")))
+
+    payload = EventData(event_name=event_name, data_rows=rows)
+    doc = payload.model_dump()
+    doc["created_at"] = doc["created_at"].isoformat()
+    wrote_db = False
+    try:
+        if db is not None:
+            await db.event_data.delete_many({"event_name": event_name})
+            await db.event_data.insert_one(doc)
+            wrote_db = True
+    except Exception as exc:
+        logger.warning("DB write event_data (workbook import) failed: %s", exc)
+    if not wrote_db:
+        mem = _ServerBridge.in_memory_data.setdefault("event_data", [])
+        mem[:] = [d for d in mem if d.get("event_name") != event_name]
+        mem.append(doc)
+
+    return {
+        "event_name": event_name,
+        "source_sheet": data["sheet"],
+        "rows_imported": len(rows),
+        "fields": {f: types.get(f, "string") for f in field_names},
+        "event_created": bool(created_event),
+        "sample_row": rows[0] if rows else None,
+        "hint": (
+            "Input data loaded as real event data (NOT sample data — do not "
+            "call generate_sample_event_data for this event). Build the rule "
+            "next, then reconcile_workbook_outputs to verify it reproduces "
+            "the workbook's numbers."
+        ),
+    }
+
+
+async def tool_reconcile_workbook_outputs(args: dict) -> dict:
+    """Phase 4: run the built rule on the imported inputs and compare every
+    emitted amount against the workbook's own output numbers."""
+    wid = (args.get("workbook_id") or "").strip()
+    sheet = (args.get("sheet") or "").strip()
+    key_column = (args.get("key_column") or "instrumentid").strip()
+    col_map = args.get("column_to_transaction_type") or {}
+    rule_id = (args.get("rule_id") or "").strip()
+    template_name = (args.get("template_name") or "").strip()
+    if not wid or not sheet:
+        raise ToolError("workbook_id and sheet are required")
+    if not isinstance(col_map, dict) or not col_map:
+        raise ToolError(
+            "column_to_transaction_type is required: maps output-sheet "
+            "columns to emitted transaction types, e.g. "
+            "{\"interest_accrual\": \"InterestAccrual\"}"
+        )
+    if not rule_id and not template_name:
+        raise ToolError("Pass rule_id (or template_name) to run against")
+    tol = float(args.get("tolerance") if args.get("tolerance") is not None else 0.01)
+
+    exp = _wb_call(
+        _workbook.expected_output_values, wid, sheet, key_column,
+        list(col_map.keys()), int(args.get("header_row") or 1),
+    )
+    if exp["uncached_formula_cells"]:
+        return {
+            "status": "no_cached_values",
+            "detail": (
+                f"{exp['uncached_formula_cells']} expected cell(s) in "
+                f"'{sheet}' are formulas with NO cached value (file never "
+                f"recalculated by Excel). Reconciliation needs literal "
+                f"numbers — ask the user to open+save the workbook in Excel, "
+                f"or designate a values-only output sheet."
+            ),
+        }
+
+    if rule_id:
+        run = await tool_dry_run_rule({
+            "rule_id": rule_id,
+            "sample_limit": 100000,
+            "posting_date": args.get("posting_date"),
+            "effective_date": args.get("effective_date"),
+        })
+        run_result = run["result"]
+    else:
+        run_result = await tool_dry_run_template({
+            "name": template_name,
+            "sample_limit": 100000,
+            "posting_date": args.get("posting_date"),
+            "effective_date": args.get("effective_date"),
+        })
+    txns = run_result.get("sample_transactions") or []
+
+    # Sum emitted amounts by (instrument, transaction type).
+    actual: dict[tuple[str, str], float] = {}
+    for t in txns:
+        k = (str(t.get("instrumentid") or "").strip(),
+             str(t.get("transactiontype") or "").strip())
+        actual[k] = actual.get(k, 0.0) + float(t.get("amount") or 0.0)
+
+    sane_col_map = {_workbook.sanitize_field_name(k): v for k, v in col_map.items()}
+    matched = 0
+    mismatches: list[dict] = []
+    missing_actual: list[dict] = []
+    non_numeric = 0
+    max_abs_diff = 0.0
+    for key, vals in exp["expected"].items():
+        # Excel numeric ids come back as "101.0" — compare on normalised form.
+        norm_key = key[:-2] if key.endswith(".0") else key
+        for field, txn_type in sane_col_map.items():
+            e = vals.get(field)
+            if e is None or not isinstance(e, (int, float)):
+                non_numeric += 1
+                continue
+            a = actual.get((norm_key, txn_type), actual.get((key, txn_type)))
+            if a is None:
+                missing_actual.append({
+                    "instrumentid": norm_key, "transactiontype": txn_type,
+                    "expected": round(float(e), 6),
+                })
+                continue
+            diff = abs(float(e) - a)
+            max_abs_diff = max(max_abs_diff, diff)
+            if diff <= tol:
+                matched += 1
+            else:
+                mismatches.append({
+                    "instrumentid": norm_key, "transactiontype": txn_type,
+                    "expected": round(float(e), 6), "actual": round(a, 6),
+                    "diff": round(float(e) - a, 6),
+                })
+
+    compared = matched + len(mismatches) + len(missing_actual)
+    ok = compared > 0 and matched == compared
+    result = {
+        "status": "reconciled" if ok else "mismatch",
+        "compared": compared,
+        "matched": matched,
+        "match_rate": round(matched / compared, 4) if compared else 0.0,
+        "tolerance": tol,
+        "max_abs_diff": round(max_abs_diff, 6),
+        "mismatches": mismatches[:40],
+        "missing_actual": missing_actual[:40],
+        "skipped_non_numeric_cells": non_numeric,
+        "transactions_emitted": len(txns),
+    }
+    if ok:
+        result["hint"] = (
+            f"All {compared} value(s) reconcile against sheet '{sheet}' "
+            f"within tolerance {tol}. The rule reproduces the workbook. "
+            f"Report the reconciliation summary to the user."
+        )
+    elif not txns:
+        result["hint"] = (
+            "The rule emitted ZERO transactions — fix that first "
+            "(debug_step on the amount variable), then reconcile again."
+        )
+    else:
+        result["hint"] = (
+            "Fix mismatches PATTERN BY PATTERN: a constant offset usually "
+            "means a missing term; a scale factor (e.g. 12x) means a "
+            "frequency/rate conversion error; missing_actual rows mean a "
+            "condition gate filters those instruments out. Compare the "
+            "workbook formula (get_sheet_formulas) with your step formula, "
+            "fix, dry-run, reconcile again. Do NOT call finish while "
+            "status='mismatch' unless the user accepts the differences."
+        )
+    return result
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Requirement-document tools (PDF / Word the user uploaded)
+# ──────────────────────────────────────────────────────────────────────────
+# The user attaches a business-requirements doc; the server extracts its text.
+# These tools let the agent list and read that text so it can analyse the
+# requirement, confirm understanding with the user, and author the rules.
+# All heavy lifting lives in requirements_doc.py (pure, file-based, no bridge).
+
+from . import requirements_doc as _reqdoc
+
+
+def _rd_call(fn, *a, **kw):
+    try:
+        return fn(*a, **kw)
+    except _reqdoc.DocumentError as exc:
+        raise ToolError(str(exc)) from exc
+    except Exception as exc:
+        raise ToolError(f"Document reading failed: {exc}") from exc
+
+
+async def tool_list_requirement_documents(_args: dict) -> dict:
+    docs = _rd_call(_reqdoc.list_documents)
+    return {
+        "documents": docs,
+        "count": len(docs),
+        "hint": (
+            "Call read_requirement_document(document_id=...) to read the "
+            "text. Then summarise what you understand and confirm the "
+            "details with the user BEFORE building anything."
+            if docs else
+            "No requirement documents uploaded. Ask the user to attach a PDF "
+            "or Word (.docx) requirements document via the paperclip menu."
+        ),
+    }
+
+
+async def tool_read_requirement_document(args: dict) -> dict:
+    did = (args.get("document_id") or "").strip()
+    if not did:
+        raise ToolError(
+            "document_id is required (see list_requirement_documents)"
+        )
+    offset = args.get("offset") or 0
+    limit = args.get("limit") or 40_000
+    res = _rd_call(_reqdoc.get_document_text, did, offset=offset, limit=limit)
+    if res.get("has_more"):
+        res["hint"] = (
+            f"This document has more text. Call read_requirement_document "
+            f"again with offset={res.get('next_offset')} to read the rest "
+            f"before you finish analysing it."
+        )
+    return res
+
+
+# ──────────────────────────────────────────────────────────────────────────
 # Tool registry
 # ──────────────────────────────────────────────────────────────────────────
 
@@ -8802,6 +9758,7 @@ TOOLS: dict[str, Callable[[dict], Awaitable[dict]]] = {
     "create_event_definitions": tool_create_event_definitions,
     "add_transaction_types": tool_add_transaction_types,
     "generate_sample_event_data": tool_generate_sample_event_data,
+    "insert_event_rows": tool_insert_event_rows,
     "get_event_data": tool_get_event_data,
     "validate_dsl": tool_validate_dsl,
     "create_or_replace_template": tool_create_or_replace_template,
@@ -8845,6 +9802,18 @@ TOOLS: dict[str, Callable[[dict], Awaitable[dict]]] = {
     "revert_rule": tool_revert_rule,
     "finish": tool_finish,
     "validate_rule": tool_validate_rule,
+    # Excel workbook import (upload → inspect → translate → reconcile)
+    "list_workbooks": tool_list_workbooks,
+    "get_workbook_overview": tool_get_workbook_overview,
+    "set_workbook_sheet_roles": tool_set_workbook_sheet_roles,
+    "get_sheet_data": tool_get_sheet_data,
+    "get_sheet_formulas": tool_get_sheet_formulas,
+    "trace_workbook_dependencies": tool_trace_workbook_dependencies,
+    "import_workbook_inputs": tool_import_workbook_inputs,
+    "reconcile_workbook_outputs": tool_reconcile_workbook_outputs,
+    # Requirement documents (PDF / Word → read → analyse → build)
+    "list_requirement_documents": tool_list_requirement_documents,
+    "read_requirement_document": tool_read_requirement_document,
 }
 
 
@@ -8998,6 +9967,43 @@ TOOL_SCHEMAS: list[dict] = [
         },
     },
     {
+        "name": "insert_event_rows",
+        "description": (
+            "Insert LITERAL, exact event rows verbatim — the precise counterpart to "
+            "generate_sample_event_data. Use this whenever you need a CONTROLLED scenario "
+            "with specific values the synthetic generator cannot pin: exact instrument ids, "
+            "exact posting dates, exact numeric amounts, or exact enum/string values "
+            "(e.g. proration_method='straight_line', po_type='fixed'). Unlike "
+            "generate_sample_event_data, it does NO domain inference, NO field-name "
+            "heuristics, and NO field_hints — every value you pass is stored exactly as given.\n"
+            "USAGE:\n"
+            "1. The event must already exist (create_event_definitions first).\n"
+            "2. Each entry in `rows` is one data row: {field: value}. For activity events "
+            "include 'postingdate' and 'instrumentid' in every row (event detection and "
+            "instrument grouping depend on them); 'effectivedate' defaults to 'postingdate' "
+            "when omitted. Reference events need neither.\n"
+            "3. Only the system columns (postingdate/effectivedate/instrumentid/"
+            "subinstrumentid) are key-normalised; business fields keep the exact name/value "
+            "you provide.\n"
+            "4. Unknown or unpopulated declared fields are reported in `warnings` but never "
+            "block the insert.\n"
+            "5. Appends by default; pass replace=true to overwrite all existing rows for the event."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "event_name": {"type": "string"},
+                "rows": {
+                    "type": "array",
+                    "items": {"type": "object"},
+                    "description": "One object per data row, mapping field name -> literal value.",
+                },
+                "replace": {"type": "boolean", "default": False, "description": "If True, replace all existing rows for this event. Default False appends."},
+            },
+            "required": ["event_name", "rows"],
+        },
+    },
+    {
         "name": "get_event_data",
         "description": "Return up to `limit` rows of stored event data for a given event.",
         "parameters": {
@@ -9076,7 +10082,7 @@ TOOL_SCHEMAS: list[dict] = [
             "Signal that the task is complete. Provide a short user-facing summary. "
             "If you built or modified one or more rules, ALSO pass `rule_id` (single) "
             "OR `rule_ids` (list) so the runtime can verify each rule has at least "
-            "one balanced debit/credit pair in `outputs.transactions[]` before "
+            "one transaction in `outputs.transactions[]` before "
             "accepting completion. The runtime auto-injects every rule it has seen "
             "you touch this turn, so the gate runs even if you forget to pass an id."
         ),
@@ -9122,7 +10128,7 @@ _STEP_SCHEMA = {
         "conditions": {"type": "array", "items": {"type": "object"}},
         "elseFormula": {"type": "string"},
         "iterations": {"type": "array", "items": {"type": "object"}},
-        "scheduleConfig": {"type": "object", "description": "For stepType:'schedule'. {periodType:'number'|'date_range', frequency:'D'|'M'|'Y', periodCount?:int, startDate?, endDate?, columns:[{name, formula}], convention?, runIf?:'<bool DSL expr>' (schedule produces ZERO rows when false — pair two schedules with inverse runIf for if/else), frequencyFormula?:'<DSL expr -> freq code>' (dynamic frequency, overrides frequency). contextVars is auto-derived — do not set it.}"},
+        "scheduleConfig": {"type": "object", "description": "For stepType:'schedule'. {periodType:'number'|'date_range', frequency:'D'|'M'|'Y', periodCount?:int, startDate?, endDate?, columns:[{name, formula}], convention?, runIf?:'<bool DSL expr>' (schedule produces ZERO rows when false — pair two schedules with inverse runIf for if/else), frequencyFormula?:'<DSL expr -> freq code>' (dynamic frequency, overrides frequency), splitBy?:'<var holding per-line subinstrumentids>' + itemNames?:'<var holding per-line names>' (fan the schedule out into ONE SCHEDULE PER SUB-INSTRUMENT instead of one per instrument; binds subinstrument_id and item_name inside the columns). contextVars is auto-derived — do not set it.}"},
         "outputVars": {
             "type": "array",
             "items": {"type": "object"},
@@ -9476,7 +10482,9 @@ TOOL_SCHEMAS.extend([
             "Append ONE transaction entry to a rule's `outputs.transactions[]` array. "
             "This is the ONLY supported way to make a rule emit a transaction — "
             "DO NOT create a calc step named 'outputs_transactions' or 'transactions'. "
-            "Always call this tool TWICE in a row to add a balanced debit + credit pair. "
+            "A transaction is just a signed amount for an instrument — this platform "
+            "is NOT a general ledger, so there is NO debit/credit side and no pairing: "
+            "one economic result = one call. "
             "`amount` must be the NAME of a prior calc-step variable that holds the "
             "computed amount (or a numeric literal). The transaction `type` must already "
             "be registered via `add_transaction_types`. "
@@ -9490,12 +10498,11 @@ TOOL_SCHEMAS.extend([
                 "rule_id": {"type": "string"},
                 "type": {"type": "string", "description": "Registered transaction type name"},
                 "amount": {"type": "string", "description": "Name of a prior calc-step variable, or a numeric literal"},
-                "side": {"type": "string", "enum": ["debit", "credit"]},
                 "postingdate": {"type": "string", "description": "e.g. 'EOD.postingdate' — inferred if omitted"},
                 "effectivedate": {"type": "string", "description": "e.g. 'EOD.effectivedate' — inferred if omitted"},
                 "subinstrumentid": {"type": "string", "description": "Defaults to '1.0' if omitted"},
             },
-            "required": ["rule_id", "type", "amount", "side"],
+            "required": ["rule_id", "type", "amount"],
         },
     },
     {
@@ -9503,9 +10510,8 @@ TOOL_SCHEMAS.extend([
         "description": (
             "Remove ONE entry from a rule's `outputs.transactions[]` array, "
             "OR clear the whole array via `delete_all=true`. "
-            "Identify a single entry via `transaction_index`, OR `type` "
-            "(+ optional `side`), OR a `match` dict (e.g. "
-            "{type:'X', side:'debit', amount:'y'}). "
+            "Identify a single entry via `transaction_index`, OR `type`, "
+            "OR a `match` dict (e.g. {type:'X', amount:'y'}). "
             "If multiple entries match (e.g. you only pass `type` and there "
             "are duplicates), the tool errors and lists candidates so you "
             "can disambiguate. Use this for: 'remove duplicate transactions', "
@@ -9519,8 +10525,7 @@ TOOL_SCHEMAS.extend([
                 "rule_id": {"type": "string"},
                 "transaction_index": {"type": "integer", "description": "0-based index inside outputs.transactions[]"},
                 "type": {"type": "string"},
-                "side": {"type": "string", "enum": ["debit", "credit"]},
-                "match": {"type": "object", "description": "Exact-match filter on transaction fields, e.g. {type, side, amount, postingDate}"},
+                "match": {"type": "object", "description": "Exact-match filter on transaction fields, e.g. {type, amount, postingDate}"},
                 "delete_all": {"type": "boolean", "description": "If true, clear the entire transactions array."},
             },
             "required": ["rule_id"],
@@ -9530,10 +10535,10 @@ TOOL_SCHEMAS.extend([
         "name": "update_transaction_in_rule",
         "description": (
             "Patch ONE entry in a rule's `outputs.transactions[]` array. "
-            "Identify it via `transaction_index`, OR `type` (+ optional "
-            "`side`), OR a `match` dict. Pass the new values inside `patch` "
-            "(or at the top level) — supported fields: type, amount, side, "
-            "postingdate, effectivedate, subinstrumentid."
+            "Identify it via `transaction_index`, OR `type`, OR a `match` "
+            "dict. Pass the new values inside `patch` (or at the top level) "
+            "— supported fields: type, amount, postingdate, effectivedate, "
+            "subinstrumentid."
         ),
         "parameters": {
             "type": "object",
@@ -9541,7 +10546,6 @@ TOOL_SCHEMAS.extend([
                 "rule_id": {"type": "string"},
                 "transaction_index": {"type": "integer"},
                 "type": {"type": "string", "description": "Locator: existing type name"},
-                "side": {"type": "string", "enum": ["debit", "credit"], "description": "Locator: existing side"},
                 "match": {"type": "object"},
                 "patch": {
                     "type": "object",
@@ -9549,7 +10553,6 @@ TOOL_SCHEMAS.extend([
                     "properties": {
                         "type": {"type": "string"},
                         "amount": {"type": "string"},
-                        "side": {"type": "string", "enum": ["debit", "credit"]},
                         "postingdate": {"type": "string"},
                         "effectivedate": {"type": "string"},
                         "subinstrumentid": {"type": "string"},
@@ -9671,12 +10674,13 @@ TOOL_SCHEMAS.extend([
         "name": "verify_rule_complete",
         "description": (
             "Run a comprehensive readiness check on a saved rule: every step "
-            "is debug-runnable, outputs.transactions is populated with both "
-            "debit and credit sides, all transaction types are registered, "
-            "all referenced events have sample data, and createTransaction "
-            "is NOT used inside calc formulas. Returns a checklist. You MUST "
-            "call this and confirm `overall_ready: true` BEFORE calling "
-            "`finish` for any rule-authoring task."
+            "is debug-runnable, outputs.transactions is populated (each entry "
+            "a type + amount — plain amounts, no debit/credit sides), all "
+            "transaction types are registered, all referenced events have "
+            "sample data, and createTransaction is NOT used inside calc "
+            "formulas. Returns a checklist. You MUST call this and confirm "
+            "`overall_ready: true` BEFORE calling `finish` for any "
+            "rule-authoring task."
         ),
         "parameters": {
             "type": "object",
@@ -9736,8 +10740,8 @@ TOOL_SCHEMAS.extend([
             "type": "object",
             "properties": {
                 "expression": {"type": "string", "description": "The DSL expression to lint."},
-                "kind": {"type": "string", "enum": ["formula", "value", "condition", "iteration"],
-                          "description": "Which expression slot this is for. Iteration is strictest (single-line)."},
+                "kind": {"type": "string", "enum": ["formula", "value", "condition", "iteration", "schedule_column"],
+                          "description": "Which expression slot this is for. Iteration is strictest (single-line). Use 'schedule_column' for a schedule step column formula — it allows the period built-ins (period_date, lag, dcf, …) and matches the schedule-column runtime."},
             },
             "required": ["expression"],
         },
@@ -9809,6 +10813,216 @@ TOOL_SCHEMAS.extend([
                 "rule_id": {"type": "string", "description": "Id (or name) of the rule to revert."},
             },
             "required": ["rule_id"],
+        },
+    },
+])
+
+# Excel workbook import tools (upload → inspect → translate → reconcile).
+TOOL_SCHEMAS.extend([
+    {
+        "name": "list_workbooks",
+        "description": (
+            "List Excel workbooks the user has uploaded for model import "
+            "(id, filename, sheets, confirmed roles). Call this FIRST when "
+            "the user mentions an uploaded spreadsheet/workbook/Excel model."
+        ),
+        "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
+    },
+    {
+        "name": "get_workbook_overview",
+        "description": (
+            "Per-sheet map of an uploaded workbook: dimensions, column "
+            "headers, formula density, cross-sheet references, cached-value "
+            "availability, named ranges, and a suggested input/calc/output "
+            "role per sheet. Use it to interview the user about sheet roles "
+            "before analysing formulas."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "workbook_id": {"type": "string"},
+                "header_row": {"type": "integer", "description": "Row holding column headers (default 1)."},
+            },
+            "required": ["workbook_id"],
+        },
+    },
+    {
+        "name": "set_workbook_sheet_roles",
+        "description": (
+            "Record the user-confirmed role of each sheet: input (raw data), "
+            "calc (formulas to translate), output (expected results to "
+            "reconcile against), reference (lookup tables), or ignore. "
+            "Ask the user before recording — do not guess silently."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "workbook_id": {"type": "string"},
+                "roles": {
+                    "type": "object",
+                    "description": "{sheet_name: 'input'|'calc'|'output'|'reference'|'ignore'}",
+                },
+            },
+            "required": ["workbook_id", "roles"],
+        },
+    },
+    {
+        "name": "get_sheet_data",
+        "description": (
+            "Read rows of one sheet as {header: value} objects (computed "
+            "values for formula cells when the file carries them). Use for "
+            "input sheets and for eyeballing expected outputs."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "workbook_id": {"type": "string"},
+                "sheet": {"type": "string"},
+                "header_row": {"type": "integer"},
+                "limit": {"type": "integer", "description": "Max rows (default 20)."},
+                "offset": {"type": "integer"},
+            },
+            "required": ["workbook_id", "sheet"],
+        },
+    },
+    {
+        "name": "get_sheet_formulas",
+        "description": (
+            "THE core analysis tool for a calc sheet: every formula, "
+            "deduplicated by relative-reference pattern (10k dragged-down "
+            "copies -> ONE entry with count=10k). Each pattern includes a "
+            "`friendly` rendering with column-header names substituted for "
+            "cell refs — translate THAT into a DSL step formula. "
+            "row_recursive=true patterns (self-reference to the previous "
+            "row) must become SCHEDULE steps with lag()."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "workbook_id": {"type": "string"},
+                "sheet": {"type": "string"},
+                "header_row": {"type": "integer"},
+            },
+            "required": ["workbook_id", "sheet"],
+        },
+    },
+    {
+        "name": "trace_workbook_dependencies",
+        "description": (
+            "Column-level data-flow graph of the whole workbook: which "
+            "sheet!column feeds which. Raw-input nodes (no incoming edges) "
+            "become event fields; computed nodes become step variables in "
+            "dependency order. Also returns the sheet-to-sheet flow."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "workbook_id": {"type": "string"},
+                "header_row": {"type": "integer"},
+            },
+            "required": ["workbook_id"],
+        },
+    },
+    {
+        "name": "import_workbook_inputs",
+        "description": (
+            "Turn one INPUT sheet into an event definition + loaded event "
+            "data (replaces any existing data for that event). REFUSES to "
+            "run until sheet roles are confirmed via set_workbook_sheet_roles, "
+            "and only sheets declared 'input' or 'reference' can be imported "
+            "— never call this on every sheet in a loop. Column headers "
+            "become field names (sanitised), types are inferred from the "
+            "data. Activity events need an instrumentid column (use "
+            "column_map to rename, e.g. {\"loan_id\": \"instrumentid\"}) "
+            "and posting/effective dates (default_posting_date / "
+            "default_effective_date stamp a constant when the sheet has no "
+            "such column). NEVER generate_sample_event_data for imported events."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "workbook_id": {"type": "string"},
+                "sheet": {"type": "string"},
+                "event_name": {"type": "string"},
+                "header_row": {"type": "integer"},
+                "event_type": {"type": "string", "enum": ["activity", "reference"]},
+                "column_map": {
+                    "type": "object",
+                    "description": "Optional renames {sheet_column: event_field}.",
+                },
+                "field_types": {
+                    "type": "object",
+                    "description": "Optional datatype overrides {field: string|date|boolean|decimal|integer}.",
+                },
+                "default_posting_date": {"type": "string", "description": "YYYY-MM-DD stamped on every row when the sheet has no postingdate column."},
+                "default_effective_date": {"type": "string", "description": "YYYY-MM-DD stamped on every row when the sheet has no effectivedate column."},
+                "max_rows": {"type": "integer"},
+            },
+            "required": ["workbook_id", "sheet", "event_name"],
+        },
+    },
+    {
+        "name": "reconcile_workbook_outputs",
+        "description": (
+            "VERIFICATION LOOP (mandatory after building a rule from a "
+            "workbook): dry-runs the rule on the imported input data and "
+            "compares every emitted amount against the workbook's own "
+            "output-sheet numbers, keyed by instrument. Returns match rate "
+            "and per-cell diffs. Iterate on the rule until "
+            "status='reconciled' — do not declare the import done while "
+            "mismatches remain (unless the user accepts them)."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "workbook_id": {"type": "string"},
+                "sheet": {"type": "string", "description": "The OUTPUT sheet holding expected numbers."},
+                "key_column": {"type": "string", "description": "Column identifying the instrument (default instrumentid)."},
+                "column_to_transaction_type": {
+                    "type": "object",
+                    "description": "{output_sheet_column: emitted_transaction_type} — which txn type each expected column corresponds to.",
+                },
+                "rule_id": {"type": "string", "description": "Rule to dry-run (or pass template_name)."},
+                "template_name": {"type": "string"},
+                "tolerance": {"type": "number", "description": "Absolute tolerance per value (default 0.01)."},
+                "posting_date": {"type": "string"},
+                "effective_date": {"type": "string"},
+                "header_row": {"type": "integer"},
+            },
+            "required": ["workbook_id", "sheet", "column_to_transaction_type"],
+        },
+    },
+])
+
+# Requirement-document tools (PDF / Word the user attached).
+TOOL_SCHEMAS.extend([
+    {
+        "name": "list_requirement_documents",
+        "description": (
+            "List business-requirements documents (PDF or Word) the user has "
+            "uploaded. Call this FIRST when the user mentions an attached "
+            "requirements document, spec, or business requirement doc. "
+            "Returns id, filename, kind, and size for each."
+        ),
+        "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
+    },
+    {
+        "name": "read_requirement_document",
+        "description": (
+            "Read the extracted text of an uploaded requirements document. "
+            "Returns a text chunk plus paging info; if has_more is true, call "
+            "again with the returned next_offset until you've read it all. "
+            "After reading, SUMMARISE what you understand and CONFIRM the "
+            "specifics with the user before building anything."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "document_id": {"type": "string"},
+                "offset": {"type": "integer", "description": "Character offset to start from (default 0)."},
+                "limit": {"type": "integer", "description": "Max characters to return (default 40000)."},
+            },
+            "required": ["document_id"],
         },
     },
 ])

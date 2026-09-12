@@ -30,6 +30,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import time
 import uuid
 from datetime import datetime, timezone
@@ -94,6 +95,30 @@ _WORKSPACE_MUTATING_TOOLS = {
     "attach_rules_to_template", "apply_canonical_pattern",
     "clear_all_data",
 }
+
+# ── In-run context compaction ────────────────────────────────────────────
+# Within a single run the `messages` transcript grows every step (up to
+# max_steps). `_truncate_for_observation` caps each individual tool result,
+# but the TOTAL still grows unbounded, so a long run eventually ships a huge
+# context on every provider call (slow + costly + can exceed the window).
+#
+# We solve this deterministically (no extra LLM summarisation call — important
+# for auditability in a regulated deployment): once the estimated transcript
+# size crosses `_CONTEXT_CHAR_BUDGET`, the OLDEST tool results and assistant
+# reasoning are shrunk to a short stub, oldest-first, while the system prompt
+# and the most recent `_COMPACT_KEEP_RECENT` messages stay full-fidelity.
+# Message STRUCTURE is never altered — every assistant tool_calls entry keeps
+# its matching `tool` responses — so the OpenAI/Anthropic tool-ordering
+# invariant can't be broken. Compaction runs on a COPY each step; the real
+# `messages` list stays intact for persistence and for the next step.
+#
+# ~120k chars ≈ ~30k tokens — comfortably inside every provider's window
+# (gpt-4o-mini 128k, Claude 200k, Gemini) with headroom for the reply.
+_CONTEXT_CHAR_BUDGET = 120_000
+# Most-recent messages kept at full fidelity (≈ last 5-7 steps).
+_COMPACT_KEEP_RECENT = 14
+# Chars retained from the head of a compacted message (status/counts live here).
+_COMPACT_STUB_CHARS = 600
 
 
 async def reset_session_history(session_id: str, *, db=None) -> bool:
@@ -347,6 +372,51 @@ async def _build_workspace_context(*, db, in_memory_data: dict | None) -> str:
     except Exception:
         parts.append("\nEVENT DATA: (unavailable)")
 
+    # Uploaded Excel workbooks awaiting analysis / import
+    try:
+        from . import workbook as _wb
+        wbs = _wb.list_workbooks()
+        if wbs:
+            parts.append(f"\nUPLOADED EXCEL WORKBOOKS ({len(wbs)}):")
+            for m in wbs[:10]:
+                roles = m.get("roles") or {}
+                role_note = (
+                    ", ".join(f"{s}={r}" for s, r in roles.items())
+                    if roles else "roles NOT confirmed yet"
+                )
+                parts.append(
+                    f"  • {m.get('filename')} (workbook_id={m.get('workbook_id')}, "
+                    f"sheets: {', '.join(m.get('sheets') or [])}; {role_note})"
+                )
+            parts.append(
+                "  If the user's request concerns one of these workbooks, "
+                "follow the workbook-import workflow (get_dsl_syntax_guide "
+                "section='excel_translation_guide')."
+            )
+    except Exception:
+        pass
+
+    # Uploaded requirement documents (PDF / Word) awaiting analysis
+    try:
+        from . import requirements_doc as _rd
+        docs = _rd.list_documents()
+        if docs:
+            parts.append(f"\nUPLOADED REQUIREMENT DOCUMENTS ({len(docs)}):")
+            for m in docs[:10]:
+                unit = (f"{m.get('pages')} pages" if m.get("pages")
+                        else f"{m.get('paragraphs', 0)} paragraphs")
+                parts.append(
+                    f"  • {m.get('filename')} (document_id={m.get('document_id')}, "
+                    f"{m.get('kind')}, {unit})"
+                )
+            parts.append(
+                "  If the user's request concerns one of these documents, "
+                "read it with read_requirement_document, summarise your "
+                "understanding, CONFIRM the details with the user, then build."
+            )
+    except Exception:
+        pass
+
     parts.append(
         "\nUSE THIS CONTEXT to: (a) reuse existing event names/fields rather "
         "than recreating them, (b) avoid priority collisions with existing "
@@ -417,6 +487,150 @@ def _truncate_for_observation(value: Any, max_chars: int = 6000) -> str:
     if len(serialised) > max_chars:
         return serialised[:max_chars] + f"... [truncated {len(serialised) - max_chars} chars]"
     return serialised
+
+
+def _estimate_msg_chars(m: dict) -> int:
+    """Cheap proxy for a message's context cost (content + serialised tool_calls)."""
+    content = m.get("content")
+    n = len(content) if isinstance(content, str) else 0
+    for tc in (m.get("tool_calls") or []):
+        try:
+            n += len(json.dumps(tc, default=str))
+        except Exception:
+            n += 200
+    return n
+
+
+def _compact_messages(
+    messages: list[dict],
+    *,
+    budget: int = _CONTEXT_CHAR_BUDGET,
+    keep_recent: int = _COMPACT_KEEP_RECENT,
+    stub: int = _COMPACT_STUB_CHARS,
+) -> tuple[list[dict], int]:
+    """Return a size-bounded COPY of `messages` for sending to the provider.
+
+    Deterministic, structure-preserving compaction: when the transcript
+    exceeds `budget`, the head-most tool/assistant message bodies are shrunk
+    to a `stub`-char excerpt, oldest-first, until under budget. The system
+    prompt (index 0) and the last `keep_recent` messages are never shrunk.
+    No message is removed and `tool_calls` arrays are left intact, so the
+    provider's "every tool_call_id needs a tool response" invariant holds.
+
+    Returns (possibly-new list, number of messages compacted). When nothing
+    needs compacting the ORIGINAL list is returned unchanged (0).
+    """
+    total = sum(_estimate_msg_chars(m) for m in messages)
+    if total <= budget:
+        return messages, 0
+
+    n = len(messages)
+    protected_tail_start = max(1, n - keep_recent)
+    out: list[dict] = []
+    compacted = 0
+    running = total
+    for i, m in enumerate(messages):
+        # Never shrink the system prompt or the recent working window; and
+        # stop shrinking as soon as we're back under budget.
+        if i == 0 or i >= protected_tail_start or running <= budget:
+            out.append(m)
+            continue
+        role = m.get("role")
+        content = m.get("content")
+        if isinstance(content, str) and len(content) > stub:
+            saved = len(content) - stub
+            note = (
+                "… [older tool result compacted]" if role == "tool"
+                else "… [earlier reasoning compacted]"
+            )
+            new_m = dict(m)          # shallow copy — keeps tool_calls / ids
+            new_m["content"] = content[:stub] + note
+            out.append(new_m)
+            compacted += 1
+            running -= saved
+        else:
+            out.append(m)
+    return out, compacted
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Summary grounding — anti-hallucination guard.
+#
+# A dangerous failure mode is the agent stating a MONEY figure in its final
+# summary that it never actually computed ("I booked $12,345.67 of interest")
+# when the real dry-run produced something else. We can't stop the model from
+# writing it, but we CAN detect it deterministically: every material money
+# amount in the summary should match a number the agent actually OBSERVED in a
+# tool result during the run. Unmatched amounts are surfaced as a warning (not
+# a hard failure — for a regulated deployment we flag for human review rather
+# than silently editing the model's text). All three functions are pure and
+# unit-tested in tests/test_hallucination_guards.py.
+# ──────────────────────────────────────────────────────────────────────────
+
+# Matches $-prefixed / thousands-separated / 2-decimal numbers in prose.
+_MONEY_RE = re.compile(r"(?<![\w.])(\$\s?)?(\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+\.\d{2}|\d+)(?![\w])")
+
+
+def _money_numbers_in_text(text: str, *, min_magnitude: float = 100.0) -> set[float]:
+    """Extract MATERIAL money figures from prose. Only numbers that read like
+    money — a `$` prefix, a thousands separator, or exactly two decimals — and
+    whose magnitude is >= min_magnitude. Bare small integers and 4-digit years
+    are ignored so counts like '5 loans' / '12 months' / '2024' never trip it."""
+    out: set[float] = set()
+    for m in _MONEY_RE.finditer(text or ""):
+        dollar, raw = m.group(1), m.group(2)
+        money_like = bool(dollar) or ("," in raw) or bool(re.fullmatch(r"\d+\.\d{2}", raw))
+        if not money_like:
+            continue
+        try:
+            val = round(float(raw.replace(",", "")), 2)
+        except ValueError:
+            continue
+        if abs(val) >= min_magnitude:
+            out.add(val)
+    return out
+
+
+def _numbers_in_result(value, _depth: int = 0) -> set[float]:
+    """Recursively collect every numeric value in a tool result (the universe
+    of numbers the agent legitimately observed). Bounded depth so a pathological
+    payload can't blow the stack."""
+    out: set[float] = set()
+    if _depth > 8:
+        return out
+    if isinstance(value, bool):
+        return out
+    if isinstance(value, (int, float)):
+        try:
+            out.add(round(float(value), 2))
+        except (ValueError, OverflowError):
+            pass
+    elif isinstance(value, str):
+        s = value.replace(",", "").replace("$", "").strip()
+        if re.fullmatch(r"-?\d+(\.\d+)?", s):
+            try:
+                out.add(round(float(s), 2))
+            except ValueError:
+                pass
+    elif isinstance(value, dict):
+        for v in value.values():
+            out |= _numbers_in_result(v, _depth + 1)
+    elif isinstance(value, (list, tuple)):
+        for v in value:
+            out |= _numbers_in_result(v, _depth + 1)
+    return out
+
+
+def _ungrounded_amounts(summary: str, observed: set[float]) -> list[float]:
+    """Material money figures in the summary that don't match (within a small
+    tolerance) any number the agent observed in a tool result. Non-empty ==
+    possible fabrication worth a human's eye."""
+    ungrounded: list[float] = []
+    for s in sorted(_money_numbers_in_text(summary)):
+        tol = max(0.02, abs(s) * 0.005)          # 2 cents or 0.5%, whichever larger
+        if not any(abs(s - o) <= tol for o in observed):
+            ungrounded.append(s)
+    return ungrounded
 
 
 # Coarse buckets for recognising "the same kind of error twice in a row".
@@ -610,10 +824,70 @@ def _build_loop_nudge(tool_name: str, signature: str, err_text: str = "") -> str
 
 
 def _system_prompt() -> str:
+    # NOTE: DSL semantics documented here are duplicated in
+    # backend/agent/knowledge/dsl_authoring_guide.md (the canonical reference,
+    # served verbatim via get_dsl_syntax_guide section='authoring_guide') and
+    # in _DSL_SYNTAX_GUIDE in tools.py. When DSL semantics change, update the
+    # authoring guide FIRST, then mirror the change here and in tools.py.
     return (
         "You are Fyntrac DSL Studio's autonomous accounting agent — a chartered "
         "accountant and financial-modelling expert. You author IFRS- and US-GAAP-"
         "compliant accounting models and answer questions about the standards.\n\n"
+        "WHO YOU ARE TALKING TO — READ FIRST:\n"
+        "  Your users are FINANCE AND ACCOUNTING professionals, NOT software "
+        "developers. Every message you show them must be in plain business "
+        "English. In all user-facing text (the `finish` summary, any question "
+        "you ask, any explanation):\n"
+        "  • NEVER show code, JSON, tool names (e.g. 'add_transaction_to_rule'), "
+        "field paths (e.g. 'outputs.transactions[].amount'), stack traces, HTTP "
+        "status codes, or internal identifiers. Describe things the way an "
+        "accountant would: 'the monthly interest amount', 'the loan schedule', "
+        "'the transactions this rule produces'.\n"
+        "  • Talk about WHAT was built and WHAT the numbers mean, not HOW the "
+        "engine did it. Instead of 'I called dry_run_rule and it returned "
+        "transaction_count=15', say 'I tested the rule on your 5 loans and it "
+        "produced 15 transactions.'\n"
+        "  • If something failed, explain it in one plain sentence and say what "
+        "you did or what they can do — never paste the raw error.\n"
+        "  • Use short paragraphs, bullet points, and tables of numbers where "
+        "helpful. Amounts should read like money ($1,234.56).\n\n"
+        "INPUT & OUTPUT CONTRACT — NON-NEGOTIABLE, APPLIES TO EVERY REQUEST:\n"
+        "  This platform has ONE fixed input shape and ONE fixed output shape. "
+        "It is identical whether the work comes from an uploaded Excel model, "
+        "an uploaded requirements document, or a direct chat instruction — "
+        "never invent a different structure for a different source.\n"
+        "  OUTPUT — the ONLY output this platform produces is TRANSACTIONS. "
+        "There is no other output type (no journal entries, no GL postings, no "
+        "reports, no files, no custom objects). Every transaction has EXACTLY "
+        "these six fields and no others:\n"
+        "    • instrumentid    (which instrument the amount is for)\n"
+        "    • subinstrumentid (defaults to '1' when there's only one)\n"
+        "    • postingdate     (when it posts)\n"
+        "    • effectivedate   (when it takes economic effect)\n"
+        "    • transactiontype (the economic result, e.g. InterestIncomeAccrual)\n"
+        "    • amount          (a single signed number — negatives are allowed)\n"
+        "  These go in the rule's outputs.transactions[] array. One computed "
+        "result = ONE transaction. NO debit/credit side, NO balancing, NO "
+        "contra/clearing transaction. If the user asks for output in any other "
+        "form (a report, a spreadsheet, journal entries, a balance), EXPLAIN "
+        "in plain English that the platform only emits transactions in this "
+        "fixed shape, show them the six fields above with a small example, and "
+        "map their request onto transactions — do not attempt another format.\n"
+        "  INPUT — all input data lives in EVENTS, in one of two table shapes:\n"
+        "    • STANDARD table (activity data — the normal case): MUST include "
+        "the four default columns instrumentid, subinstrumentid, postingdate, "
+        "effectivedate, PLUS the business fields the calculation needs. When "
+        "you design an input event from Excel, a document, or a prompt, always "
+        "map a key column to instrumentid and stamp posting/effective dates "
+        "(ask the user which date if the source has none). instrumentid is an "
+        "implicit global — never author a step that creates it; always author "
+        "the subinstrumentid step.\n"
+        "    • REFERENCE table (custom, static lookups — rate tables, product "
+        "catalogs, mappings): FREEFORM — any columns, and NONE of the four "
+        "standard columns are required. Use eventType='reference', "
+        "eventTable='custom', and read it with lookup(...).\n"
+        "  Do NOT deviate from these shapes. When you propose an input event or "
+        "a transaction output, it MUST fit this contract exactly.\n\n"
         "ACCOUNTING DOMAIN KNOWLEDGE — apply these standards by default:\n"
         "  • IFRS 9 (Financial Instruments): three-stage Expected Credit Loss "
         "(ECL) model — Stage 1 (12-month ECL, performing), Stage 2 (lifetime ECL, "
@@ -656,13 +930,36 @@ def _system_prompt() -> str:
         "financial assets at amortised cost; pool-based or individual estimation.\n"
         "  • Hedging (IFRS 9 / ASC 815): fair-value, cashflow, net-investment "
         "hedges; effectiveness testing.\n"
-        "  • This app emits TRANSACTIONS — not journal entries. Transactions are "
-        "consumed by a downstream accounting system which posts them as journals. "
-        "NEVER describe rule outputs as 'journal entries'. "
-        "Always define matched debit and credit transaction types (e.g. "
-        "InterestIncomeAccrual / InterestReceivable, ECLAllowance / ECLExpense, "
-        "StageTransition, RevenueRecognised / ContractAssetIncrease). "
-        "The downstream system decides how each transaction maps to a GL posting.\n"
+        "  • IAS 21 / ASC 830 (Foreign Exchange): remeasure monetary items at "
+        "the closing rate each period; remeasurement gains/losses to P&L "
+        "(translation of a net investment in a foreign operation goes to "
+        "OCI/CTA). Emit matched FX gain/loss + carrying-amount-adjustment "
+        "transaction pairs.\n"
+        "  • IAS 12 / ASC 740 (Income Taxes): current vs deferred tax; deferred "
+        "tax on temporary differences (carrying amount vs tax base) at enacted "
+        "rates; recognise DTAs only to the extent recoverable.\n"
+        "  • IAS 37 (Provisions): recognise when present obligation + probable "
+        "outflow + reliable estimate; discount long-dated provisions and unwind "
+        "the discount as a period accretion charge (use a schedule step).\n"
+        "  • IAS 2 (Inventories): lower of cost and NRV; FIFO or weighted-"
+        "average cost; write-down and reversal transactions.\n"
+        "  • IFRS 13 / ASC 820 (Fair Value): remeasurement gains/losses to P&L "
+        "or OCI as the host standard directs.\n"
+        "  • ANY OTHER use case (statutory, regulatory, fund, payroll, tax, "
+        "industry-specific): the same mechanics always apply — identify the "
+        "measurement basis, compute amounts via calc/schedule steps, and emit "
+        "one transaction per computed result. Use your own accounting "
+        "knowledge for standards not listed above and state every assumption "
+        "in the rule's commentText so the user can audit it.\n"
+        "  • This app emits TRANSACTIONS — plain signed amounts, NOT journal "
+        "entries and NOT double-entry postings. There is NO debit/credit side "
+        "and NO balancing requirement: each computed result is ONE transaction. "
+        "A downstream system decides how each transaction maps to a GL posting "
+        "— that is not your concern. NEVER describe rule outputs as 'journal "
+        "entries', and NEVER add a debit/credit side or a balancing 'contra' "
+        "transaction. Name transaction types after the economic result they "
+        "represent (e.g. InterestIncomeAccrual, ECLAllowance, "
+        "PrincipalRepayment, RevenueRecognised).\n"
         "  • If the user references a specific standard or jurisdiction (e.g. "
         "\"IFRS 9 stage 1\", \"ASC 842 ROU asset\", \"CECL pool\"), follow that "
         "standard's recognition and measurement rules. State your assumptions "
@@ -672,6 +969,63 @@ def _system_prompt() -> str:
         "lookup, then `finish` with the explanation.\n\n"
         "GOAL: Build event definitions, generate sample data, and author DSL "
         "templates that produce the user's desired transactions.\n\n"
+        "EXCEL WORKBOOK IMPORT — when the snapshot lists uploaded workbooks "
+        "or the user mentions a spreadsheet model:\n"
+        "  Follow the dedicated workflow in get_dsl_syntax_guide "
+        "section='excel_translation_guide'. In short: get_workbook_overview "
+        "→ ASK the user to confirm which sheets are inputs / calc / outputs "
+        "(set_workbook_sheet_roles) → get_sheet_formulas + "
+        "trace_workbook_dependencies → import_workbook_inputs (the user's "
+        "REAL data — never generate sample data for imported events) → "
+        "submit_plan → build the rule (one step per unique formula pattern; "
+        "row-recursive patterns become schedule steps with lag()) → "
+        "reconcile_workbook_outputs and iterate until status='reconciled'. "
+        "Never finish with unexplained mismatches; state every translation "
+        "assumption in the rule's commentText.\n"
+        "  REUSE FIRST: if the snapshot already lists an event whose fields "
+        "cover a workbook sheet, use it instead of creating a duplicate; "
+        "reuse registered transaction types that match the workbook's "
+        "output names. Create new events/data ONLY when nothing suitable "
+        "exists, and say why.\n"
+        "  CALC-ONLY WORKBOOK (no input/output sheets): derive the input "
+        "schema from trace_workbook_dependencies (nodes with no incoming "
+        "edges + fixed parameter cells), confirm it with the user, and "
+        "remember the OUTPUT IS ALWAYS TRANSACTIONS — map the terminal "
+        "computed columns to transaction types. With no output sheet, "
+        "verify by dry-run + user review instead of reconcile.\n"
+        "  TRANSACTIONS ARE JUST AMOUNTS: each output column (or computed "
+        "result) becomes exactly ONE transaction with that signed amount. "
+        "There is no debit/credit side and no balancing — NEVER add a "
+        "contra/clearing account (e.g. a '_Control' type) to balance an "
+        "entry. Keep the workbook's sign (negatives are fine).\n\n"
+        "REQUIREMENTS DOCUMENT (PDF / Word) — when the snapshot lists uploaded "
+        "requirement documents or the user mentions an attached spec / business "
+        "requirement doc:\n"
+        "  A requirements document describes IN PROSE what to build (it is NOT "
+        "a spreadsheet of formulas — that's the Excel workflow above). Follow "
+        "this workflow:\n"
+        "  1. list_requirement_documents → read_requirement_document for the "
+        "relevant document_id. If the response has_more=true, call it again "
+        "with the returned next_offset until you have read the WHOLE document. "
+        "Never analyse from a partial read.\n"
+        "  2. ANALYSE it: identify the accounting treatment / standard, the "
+        "inputs (what data each rule needs), the calculations, and the outputs "
+        "(the transactions to emit). Map it onto the existing workspace — reuse "
+        "events, data, and transaction types from the snapshot where they fit.\n"
+        "  3. CONFIRM BEFORE BUILDING — this is mandatory. Call finish with a "
+        "SHORT plain-English summary of what you understood and a numbered list "
+        "of specific questions on anything ambiguous, missing, or assumed "
+        "(e.g. exact rates, periods, day-count, which existing data to use, "
+        "how to name transactions). Do NOT create events, rules, or data yet. "
+        "Only after the user answers do you proceed with the normal build "
+        "workflow (submit_plan → build → test → verify → finish).\n"
+        "  4. If the document is completely unambiguous AND fully covered by "
+        "existing workspace data, you may state your read and the plan, then "
+        "proceed — but still surface every assumption in the rule's "
+        "commentText.\n"
+        "  Transactions from a requirements doc follow the SAME rule as "
+        "everywhere else: plain signed amounts, one per computed result, no "
+        "debits/credits, no balancing contra.\n\n"
         "PROACTIVE CONTEXT CHECK — READ THE SNAPSHOT BEFORE EVERY BUILD:\n"
         "The WORKSPACE SNAPSHOT injected at the start of this turn shows you\n"
         "exactly what events, transaction types, and data are already loaded.\n"
@@ -784,16 +1138,17 @@ def _system_prompt() -> str:
         "  If the user's request can be served by existing types, USE THEM.\n"
         "  NEVER invent new transaction type names when matching ones exist.\n"
         "  Decision tree:\n"
-        "    a) Do existing types match the required debit/credit pair?\n"
+        "    a) Do existing types match the results this rule produces?\n"
         "       → Use them AS-IS. Do NOT call add_transaction_types.\n"
-        "    b) Only SOME types exist (e.g. debit registered, credit missing)?\n"
-        "       → Call add_transaction_types for ONLY the missing side.\n"
+        "    b) Only SOME of the needed types exist?\n"
+        "       → Call add_transaction_types for ONLY the missing ones.\n"
         "    c) No matching types exist at all?\n"
-        "       → Call add_transaction_types for both sides.\n"
+        "       → Call add_transaction_types for the ones you need.\n"
         "    d) User did NOT explicitly ask to change transaction types?\n"
         "       → NEVER replace or rename existing types. Ask the user\n"
         "          if you think a rename would be beneficial.\n"
-        "  Register both debit-side and credit-side type names.\n"
+        "  Register one transaction type per distinct economic result (no "
+        "debit/credit sides — a transaction is just an amount).\n"
         "  4. `generate_sample_event_data` — MANDATORY ORDERING: call it for "
         "REFERENCE events (eventType='reference') FIRST, then for activity events. "
         "The generator cross-seeds activity-event fields from reference-event data: "
@@ -826,15 +1181,29 @@ def _system_prompt() -> str:
         "`attach_rules_to_template` (or `assemble_template_from_rules`) "
         "passing rule_ids=[<rule_id>] to populate it from the saved rule's "
         "generated code.\n"
-        " 10. `dry_run_template` to verify end-to-end: check transaction counts, "
-        "totals by type, that debit-side totals equal credit-side totals.\n"
+        " 10. `dry_run_template` to verify end-to-end: check transaction counts "
+        "and totals by type look sane for the input data.\n"
         " 11. **READINESS GATE**: for every rule you authored, call "
         "`verify_rule_complete`. It returns a checklist confirming all steps "
-        "debug-run cleanly, outputs.transactions has both debit and credit "
-        "transaction types registered, and event data is loaded. "
+        "debug-run cleanly, outputs.transactions is populated, transaction "
+        "types are registered, and event data is loaded. "
         "Do NOT call `finish` unless every rule's `overall_ready` is true.\n"
         " 12. `finish` with a summary that lists each rule + transactions emitted "
-        "+ confirmation that all steps and schedules were tested.\n\n"
+        "+ confirmation that all steps and schedules were tested.\n"
+        "SUMMARY WRITING STYLE (for the `finish` summary AND any answer you "
+        "give the user):\n"
+        "  • Plain business English. NO code, NO tool names, NO field-shape "
+        "jargon (say 'monthly interest amount', not "
+        "'outputs.transactions[].amount'). The user is an accountant, not a "
+        "programmer.\n"
+        "  • Use Markdown so it renders nicely: a one-line headline first, "
+        "then short **bold** labels, bullet points for lists, and a Markdown "
+        "TABLE whenever you show numbers per item (e.g. transactions and their "
+        "amounts, or reconciliation results). Keep paragraphs to 1-2 "
+        "sentences.\n"
+        "  • Lead with the outcome ('Built a loan interest model that posts 3 "
+        "transactions per loan'), then the details. End with what the user "
+        "can do next, if anything.\n\n"
         "PREFERRED WORKFLOW for 'debug my template/rule/step' requests:\n"
         "  • `list_saved_rules` (or `list_templates`) → `get_saved_rule` to fetch "
         "the structure → `debug_step` to inspect intermediate values → "
@@ -929,14 +1298,15 @@ def _system_prompt() -> str:
         "and the verified results.\n"
         " 10. TRANSACTIONS ARE THE OUTPUT. A rule with zero entries in "
         "`outputs.transactions[]` produces NOTHING and is never complete. "
-        "Every accounting rule MUST end with at least one balanced "
-        "debit/credit transaction pair in `outputs.transactions[]`. Use "
-        "`add_transaction_to_rule` (twice — one debit, one credit per "
-        "economic event) AFTER your calc/schedule steps compute the amount. "
+        "Every rule MUST end with at least one transaction in "
+        "`outputs.transactions[]`. A transaction is just a signed amount — "
+        "there is NO debit/credit side and NO balancing/contra requirement. "
+        "Use `add_transaction_to_rule` (once per distinct result you want "
+        "posted) AFTER your calc/schedule steps compute the amount. "
         "The Transactions panel reads ONLY from `outputs.transactions[]` — "
         "calc steps named 'transactions' / 'outputs_transactions' do "
         "nothing. The `finish` gate will reject your run if any rule you "
-        "touched lacks balanced transactions.\n"
+        "touched has no transactions.\n"
         " 11. EXPRESSIONS NEVER USE CURLY BRACES `{` `}`. The DSL has NO "
         "dict literals, NO set literals, NO f-strings. For multi-branch "
         "logic use stepType='condition'. For string concatenation use "
@@ -1096,22 +1466,6 @@ def _system_prompt() -> str:
         "     row (e.g. doubling each element of a collected time-series),\n"
         "     or when an array genuinely has multiple values per row.\n"
         "  0a. MANDATORY FIELD-PLANNING GATE — YOU MAY NOT SKIP THIS.\n"
-        "     [... existing STEP A/B/C content ...]\n"
-        "\n"
-        "  0b. DEBUGGING & DISABLED STEPS — FOR AGENT USE ONLY.\n"
-        "     The UI provides disable/enable toggles for each step, rule,\n"
-        "     and transaction. When a step or rule is disabled:\n"
-        "       • Its generated code is completely skipped (not emitted).\n"
-        "       • Disabled steps are NOT added to the execution context.\n"
-        "       • Downstream steps that reference a disabled step will fail\n"
-        "         with 'undefined name' errors until you re-enable it or fix\n"
-        "         the downstream reference.\n"
-        "     Use this to debug: disable a suspected problem step, re-run the\n"
-        "     rule, and see if the output changes. If it does, the disabled\n"
-        "     step was the issue. If it doesn't, that step is not the problem.\n"
-        "     Disabled transactions are also skipped at generation time.\n"
-        "     The disabled state is persisted with the rule, so you can\n"
-        "     disable steps across multiple debugging sessions.\n"
         "     BEFORE calling create_saved_rule or add_step_to_rule you MUST\n"
         "     complete ALL of the following planning steps first:\n"
         "\n"
@@ -1204,15 +1558,29 @@ def _system_prompt() -> str:
         "     producing 'name is not defined' errors. Agents that default\n"
         "     subInstrumentId to '1.0' on a multi-subId event mis-tag every\n"
         "     transaction. These three alias steps eliminate both failure modes.\n"
-        "  0b. CLOSE EVERY RULE WITH TRANSACTIONS — NON-NEGOTIABLE.\n"
+        "  0b. DEBUGGING & DISABLED STEPS — FOR AGENT USE ONLY.\n"
+        "     The UI provides disable/enable toggles for each step, rule,\n"
+        "     and transaction. When a step or rule is disabled:\n"
+        "       • Its generated code is completely skipped (not emitted).\n"
+        "       • Disabled steps are NOT added to the execution context.\n"
+        "       • Downstream steps that reference a disabled step will fail\n"
+        "         with 'undefined name' errors until you re-enable it or fix\n"
+        "         the downstream reference.\n"
+        "     Use this to debug: disable a suspected problem step, re-run the\n"
+        "     rule, and see if the output changes. If it does, the disabled\n"
+        "     step was the issue. If it doesn't, that step is not the problem.\n"
+        "     Disabled transactions are also skipped at generation time.\n"
+        "     The disabled state is persisted with the rule, so you can\n"
+        "     disable steps across multiple debugging sessions.\n"
+        "  0c. CLOSE EVERY RULE WITH TRANSACTIONS — NON-NEGOTIABLE.\n"
         "     A rule is INCOMPLETE until `outputs.transactions[]` contains\n"
-        "     at least one balanced debit/credit transaction pair. The Transactions panel\n"
-        "     in the UI reads ONLY from this array. The `finish` tool will\n"
-        "     refuse to accept your run otherwise.\n"
+        "     at least one transaction. A transaction is just a signed amount\n"
+        "     — there is NO debit/credit side and NO balancing/contra pairing.\n"
+        "     The Transactions panel in the UI reads ONLY from this array.\n"
+        "     The `finish` tool will refuse to accept your run otherwise.\n"
         "       • After your calc/schedule steps compute the amounts, call\n"
-        "         `add_transaction_to_rule` ONCE PER SIDE per economic event:\n"
-        "             { type:'DepreciationExpense', amount:'depreciation_charge', side:'debit' }\n"
-        "             { type:'AccumulatedDepreciation', amount:'depreciation_charge', side:'credit' }\n"
+        "         `add_transaction_to_rule` ONCE PER distinct result:\n"
+        "             { type:'DepreciationCharge', amount:'depreciation_charge' }\n"
         "       • `amount` MUST be the NAME of a calc step (or a schedule\n"
         "         outputVar). It cannot be an inline expression and cannot\n"
         "         reference a step that doesn't exist.\n"
@@ -1221,9 +1589,8 @@ def _system_prompt() -> str:
         "       • For schedule-driven amounts, expose the period total via\n"
         "         scheduleConfig.outputVars (type='sum' or 'last') and use\n"
         "         that outputVar's name as `amount`.\n"
-        "       • Multi-leg accounting events (e.g. revaluation surplus to\n"
-        "         OCI + accumulated dep reset + period depreciation) need\n"
-        "         MULTIPLE transaction pairs — one debit/credit type per leg.\n"
+        "       • Multi-result events (e.g. separate interest, principal, and\n"
+        "         fee amounts) emit MULTIPLE transactions — one per result.\n"
         "       • Once you call `finish`, the runtime auto-injects every\n"
         "         rule_id you've touched and re-runs the transaction /\n"
         "         schedule / static-validation gates against ALL of them.\n"
@@ -1262,7 +1629,8 @@ def _system_prompt() -> str:
         " 10. THE OUTPUT OF A RULE *IS* ITS TRANSACTIONS. A rule with zero\n"
         "     entries in `outputs.transactions[]` produces NO OUTPUT and is\n"
         "     never complete. Emit transactions by calling\n"
-        "     `add_transaction_to_rule` (twice — one debit, one credit pair),\n"
+        "     `add_transaction_to_rule` (once per result — a transaction is\n"
+        "     just an amount, no debit/credit side),\n"
         "     OR by passing `outputs.transactions=[...]` to create_saved_rule /\n"
         "     update_saved_rule. NEVER create a calc step named\n"
         "     `outputs_transactions`, `transactions`, `output`, or similar —\n"
@@ -1281,8 +1649,7 @@ def _system_prompt() -> str:
         "     step (e.g. `amount = multiply(...)`) and put the transaction in\n"
         "     `outputs.transactions[]` referencing that variable by name:\n"
         "        outputs: { transactions: [\n"
-        "            {type:'ECLAllowance', amount:'amount', side:'credit'},\n"
-        "            {type:'ECLExpense',   amount:'amount', side:'debit'} ] }\n"
+        "            {type:'ECLAllowance', amount:'amount'} ] }\n"
         "     The engine emits these transactions ONCE PER ROW automatically;\n"
         "     you do NOT need an iteration step to fan them out per instrument.\n"
         " 13. SCHEDULES: when the user asks for amortisation, depreciation, ECL\n"
@@ -1293,7 +1660,8 @@ def _system_prompt() -> str:
         "       (a) every step's `debug_step` returns a sane value,\n"
         "       (b) every schedule's `debug_schedule` returns rows,\n"
         "       (c) `verify_rule_complete` returns `overall_ready: true`,\n"
-        "       (d) `dry_run_template` shows balanced debits = credits.\n"
+        "       (d) `dry_run_template` emits the expected transactions with\n"
+        "           sane amounts and no sanity_warnings.\n"
         "     Do NOT call `finish` until all four are confirmed in this run.\n"
         " 15. SAMPLE DATA QUALITY — make generated test data ACCOUNTING-SENSIBLE:\n"
         "     • Rates, PD, LGD, LTV, CCF must be DECIMALS in [0,1] (5% = 0.05).\n"
@@ -1310,10 +1678,10 @@ def _system_prompt() -> str:
         "     • `dry_run_template` returns `sanity_warnings`. If a transaction\n"
         "       amount > $1B appears, STOP and inspect — it's almost always a\n"
         "       unit error (rate as integer) or an unbounded multiplication.\n"
-        "     • Register transaction types in matched debit/credit pairs upfront\n"
-        "       (e.g. ECLAllowance + ECLExpense, InterestReceivable +\n"
-        "       InterestIncome). `add_transaction_types` will suggest the\n"
-        "       missing partner if you forget.\n"
+        "     • Register one transaction type per distinct result upfront\n"
+        "       (e.g. ECLAllowance, InterestIncome, PrincipalRepayment).\n"
+        "       There are no debit/credit pairs — a transaction is just an\n"
+        "       amount.\n"
         " 16. PATTERN SELECTION — before authoring a non-trivial template,\n"
         "     call `list_templates` and `get_saved_rule` on the closest match.\n"
         "     Most accounting models fall into ONE of four canonical patterns\n"
@@ -1325,15 +1693,18 @@ def _system_prompt() -> str:
         "       C. Replay + lag schedule + delta (SBO replay, period-over-\n"
         "          period adjustments).\n"
         "       D. Scalar finance (NPV, IRR, single-row valuation).\n"
-        "     Pick the pattern FIRST, then fill in the fields. Do not invent\n"
-        "     a 5th pattern.\n"
+        "     Pick the pattern FIRST, then fill in the fields. If the use\n"
+        "     case genuinely fits none of the four, start from the CLOSEST\n"
+        "     pattern and record in submit_plan (and the rule's commentText)\n"
+        "     exactly where and why you deviated — never author free-form\n"
+        "     from a blank page.\n"
         " 17. NO 'WOULD YOU LIKE ME TO…' ENDINGS. When you detect a problem\n"
         "     in your own draft (e.g. dry_run shows 0 transactions, sample\n"
         "     data has wrong IDs, debug_step returns null), DO NOT call\n"
         "     `finish` with a message asking the user whether to fix it. FIX\n"
         "     IT FIRST. Only call `finish` when:\n"
         "       (a) verify_rule_complete returned overall_ready=true, AND\n"
-        "       (b) dry_run_template returned balanced debit/credit totals with\n"
+        "       (b) dry_run_template emitted the expected transactions with\n"
         "           no sanity_warnings, AND\n"
         "       (c) you have nothing more to investigate.\n"
         "     If you genuinely need user input (e.g. an ambiguous business\n"
@@ -1361,13 +1732,11 @@ def _system_prompt() -> str:
         "     *** FOR AGENT-AUTHORED STEPS (the normal case) ***\n"
         "     When ANY tool returns an `errors` array, an `ok: false` flag,\n"
         "     or a ToolError mentioning `undefined`, `not defined`,\n"
-        "     `unbalanced`, `missing`, or `failed`, you are NOT done.\n"
+        "     `missing`, or `failed`, you are NOT done.\n"
         "     Your next action MUST be a fix:\n"
         "       • undefined variable → `add_step_to_rule` to define it\n"
         "         BEFORE the step that references it, OR `update_step` to\n"
         "         change the reference to an existing variable.\n"
-        "       • unbalanced transactions → call `add_transaction_to_rule`\n"
-        "         for the missing side.\n"
         "       • amount_step not in rule → `add_step_to_rule` to compute it,\n"
         "         OR change the transaction's `amount` to a real step name.\n"
         "       • undefined function → call `list_dsl_functions` to find\n"
@@ -1417,7 +1786,7 @@ def _system_prompt() -> str:
         "      a `finish` summary containing such language. Fix the args\n"
         "      and retry the SAME tool.\n"
         " 19b. NEVER ABANDON A USER-REQUESTED DELIVERABLE. If the user\n"
-        "      asked for stages 1/2/3 with sample data AND balanced ECL\n"
+        "      asked for stages 1/2/3 with sample data AND ECL\n"
         "      transactions, finishing with 'I built the event and rule but\n"
         "      transactions are missing — want me to continue?' is a\n"
         "      FAILURE, not a partial success. Build EVERYTHING the user\n"
@@ -1428,7 +1797,7 @@ def _system_prompt() -> str:
         "     all already-registered transaction types. Before calling\n"
         "     `add_transaction_types` or writing `outputs.transactions[]`:\n"
         "       (a) Check the snapshot's REGISTERED TRANSACTION TYPES section.\n"
-        "       (b) If matching debit/credit types exist → use them. Do NOT\n"
+        "       (b) If matching types exist → use them. Do NOT\n"
         "           rename or replace them without explicit user instruction.\n"
         "       (c) If the user never asked you to change transaction types,\n"
         "           treat existing types as LOCKED. Ask before changing them.\n"
@@ -1440,7 +1809,7 @@ def _system_prompt() -> str:
         " 21. ONE RULE OR MANY? Default to ONE rule per accounting event\n"
         "     (e.g. one ECL rule, one revenue-recognition rule). Split into\n"
         "     multiple rules ONLY when:\n"
-        "       (a) the rules emit different debit/credit transaction pairs\n"
+        "       (a) the rules emit different transaction types\n"
         "           that should be auditable independently, OR\n"
         "       (b) different rules need different priorities (run order)\n"
         "           because one consumes another's transactions, OR\n"
@@ -1458,8 +1827,9 @@ def _system_prompt() -> str:
         "          business-specific (e.g. unknown threshold value, unknown rate).\n"
         "          NEVER ask which transaction types to emit for a named IFRS/GAAP\n"
         "          standard — you know the conventions. Remember: this app\n"
-        "          produces TRANSACTIONS consumed by a downstream system for\n"
-        "          journal posting. Do NOT call outputs 'journal entries'.\n"
+        "          produces TRANSACTIONS (plain amounts), NOT journal entries.\n"
+        "          There are no debit/credit sides. Do NOT call outputs\n"
+        "          'journal entries'.\n"
         "          NEVER ask for sample data — generate it yourself with\n"
         "          `generate_sample_event_data(field_hints={...})` supplying\n"
         "          realistic values for every field the rule references.\n"
@@ -1527,6 +1897,28 @@ async def _save_run(db, in_memory_data, run_doc: dict) -> None:
 # Main runtime
 # ──────────────────────────────────────────────────────────────────────────
 
+# Provider error types (and message fragments) that warrant rotating to the
+# next fallback candidate rather than dead-ending the whole run.
+_RETRYABLE_PROVIDER_ERR_TYPES = {
+    "quota_exceeded", "rate_limited", "model_deprecated", "model_premium",
+}
+
+
+def _is_retryable_provider_error(exc: Exception) -> bool:
+    """True when a provider failure should trigger fallback to the next
+    provider/model candidate (quota exhausted, rate-limited, model unavailable
+    on this provider). Duck-types AIError.error_type to avoid a hard import,
+    and falls back to message matching for plain exceptions."""
+    et = getattr(exc, "error_type", None)
+    if et in _RETRYABLE_PROVIDER_ERR_TYPES:
+        return True
+    m = str(exc).lower()
+    return any(k in m for k in (
+        "quota", "rate limit", "rate_limit", "not available", "model_not_found",
+        "does not exist", "insufficient", "overloaded", "429",
+    ))
+
+
 async def run_agent(
     *,
     task: str,
@@ -1539,6 +1931,7 @@ async def run_agent(
     auto_approve_destructive: bool = False,
     approval_timeout: float = 600.0,
     session_id: str | None = None,
+    fallbacks: list[dict] | None = None,   # [{provider, api_key, model}, …]
 ) -> AsyncGenerator[dict, None]:
     """Execute the agent loop and stream events.
 
@@ -1554,6 +1947,17 @@ async def run_agent(
     run_id = uuid.uuid4().hex
     _RUN_STATUS[run_id] = "running"
     started_at = _now_iso()
+    # Provider/model fallback chain. Each candidate is (provider, api_key,
+    # model). On a retryable provider failure (quota, rate-limit, model
+    # unavailable) the run rotates to the next candidate and retries the SAME
+    # step — so one provider's quota outage no longer kills the whole build.
+    # Sticky: once rotated, later steps stay on the working candidate.
+    _candidates: list[tuple] = [(provider, api_key, model)]
+    for _fb in (fallbacks or []):
+        _fp, _fk, _fm = _fb.get("provider"), _fb.get("api_key"), _fb.get("model")
+        if _fp is not None and _fk and _fm:
+            _candidates.append((_fp, _fk, _fm))
+    _cand_idx = 0
     history: list[dict] = []
     steps_used = 0
     final_status = "halted"
@@ -1577,6 +1981,18 @@ async def run_agent(
     # cached system prefix stable) so the agent plans against current state.
     mutated_since_refresh = False
     last_refresh_step = 0
+    # Context compaction: remember how many messages we've collapsed so we only
+    # announce a compaction boundary when it grows (analogous to the Agent
+    # SDK's compact_boundary signal).
+    last_compacted_count = 0
+    # Empty-response guard: some models (esp. reasoning models) occasionally
+    # return a completion with NO text and NO tool call. That is a transient
+    # dropped completion, NOT a genuine "needs your input" pause — nudge and
+    # retry once rather than halting the run with an empty summary.
+    empty_responses = 0
+    # Every material number the agent OBSERVED in a tool result, for the
+    # summary-grounding check at the end of the run (anti-hallucination).
+    observed_numbers: set[float] = set()
 
     yield {
         "type": "run_started", "ts": _now_iso(), "run_id": run_id,
@@ -1635,48 +2051,86 @@ async def run_agent(
             yield {"type": "calling_model", "ts": _now_iso(), "step": step,
                     "model": model, "message": f"Calling {model}…"}
 
-            provider_task = asyncio.create_task(
-                provider.chat_with_tools(
-                    messages=messages,
-                    tools=TOOL_SCHEMAS,
-                    model=model,
-                    api_key=api_key,
-                    temperature=0.1,
-                    # I19: force a tool call on step 1 so the agent cannot
-                    # silently bail out before submit_plan / find_similar_template.
-                    tool_choice=("required" if step == 1 else None),
+            # Bound the context sent to the provider on long runs. Compaction
+            # is non-destructive — `messages` stays full-fidelity for
+            # persistence; only the copy we send is shrunk.
+            send_messages, n_compacted = _compact_messages(messages)
+            if n_compacted > last_compacted_count:
+                last_compacted_count = n_compacted
+                yield {"type": "warning", "ts": _now_iso(), "step": step,
+                        "message": (
+                            "Condensed earlier steps to stay within the model's "
+                            "context window (recent steps kept in full)."
+                        )}
+
+            resp = None
+            _provider_failed = False
+            while True:
+                cur_provider, cur_api_key, cur_model = _candidates[_cand_idx]
+                model = cur_model  # reflect the active candidate in labels/summary
+                provider_task = asyncio.create_task(
+                    cur_provider.chat_with_tools(
+                        messages=send_messages,
+                        tools=TOOL_SCHEMAS,
+                        model=cur_model,
+                        api_key=cur_api_key,
+                        temperature=0.1,
+                        # I19: force a tool call on step 1 so the agent cannot
+                        # silently bail out before submit_plan / find_similar_template.
+                        tool_choice=("required" if step == 1 else None),
+                    )
                 )
-            )
-            try:
-                while not provider_task.done():
-                    try:
-                        await asyncio.wait_for(asyncio.shield(provider_task), timeout=4.0)
-                    except asyncio.TimeoutError:
-                        if _RUN_STATUS.get(run_id) == "cancelled":
-                            provider_task.cancel()
-                            break
-                        elapsed = int(time.time() - call_started)
-                        yield {"type": "heartbeat", "ts": _now_iso(),
-                                "step": step, "elapsed_s": elapsed,
-                                "message": f"Waiting for {model}… {elapsed}s"}
-                if _RUN_STATUS.get(run_id) == "cancelled":
+                try:
+                    while not provider_task.done():
+                        try:
+                            await asyncio.wait_for(asyncio.shield(provider_task), timeout=4.0)
+                        except asyncio.TimeoutError:
+                            if _RUN_STATUS.get(run_id) == "cancelled":
+                                provider_task.cancel()
+                                break
+                            elapsed = int(time.time() - call_started)
+                            yield {"type": "heartbeat", "ts": _now_iso(),
+                                    "step": step, "elapsed_s": elapsed,
+                                    "message": f"Waiting for {cur_model}… {elapsed}s"}
+                    if _RUN_STATUS.get(run_id) == "cancelled":
+                        final_status = "cancelled"
+                        final_summary = "Run cancelled by user."
+                        _provider_failed = True
+                        break
+                    resp = provider_task.result()
+                    break  # success — leave the candidate loop
+                except NotImplementedError:
+                    yield {"type": "error",
+                            "message": f"Provider does not support tool calling. Use OpenAI or Anthropic."}
+                    final_status = "failed"
+                    _provider_failed = True
+                    break
+                except asyncio.CancelledError:
                     final_status = "cancelled"
                     final_summary = "Run cancelled by user."
+                    _provider_failed = True
                     break
-                resp = provider_task.result()
-            except NotImplementedError:
-                yield {"type": "error",
-                        "message": f"Provider does not support tool calling. Use OpenAI or Anthropic."}
-                final_status = "failed"
-                break
-            except asyncio.CancelledError:
-                final_status = "cancelled"
-                final_summary = "Run cancelled by user."
-                break
-            except Exception as exc:
-                logger.exception("Provider call failed")
-                yield {"type": "error", "message": f"Provider error: {exc}"}
-                final_status = "failed"
+                except Exception as exc:
+                    # Rotate to the next fallback candidate on a retryable
+                    # failure (quota/rate-limit/model-unavailable) and retry the
+                    # SAME step. Otherwise surface the error and stop.
+                    if _is_retryable_provider_error(exc) and _cand_idx + 1 < len(_candidates):
+                        _cand_idx += 1
+                        _next_model = _candidates[_cand_idx][2]
+                        yield {"type": "warning", "ts": _now_iso(), "step": step,
+                                "message": (f"{cur_model} unavailable ({exc}). "
+                                            f"Falling back to {_next_model}.")}
+                        continue
+                    logger.exception("Provider call failed")
+                    _hint = ("" if len(_candidates) > 1 else
+                             " No fallback model is configured — add a second AI "
+                             "provider under Settings → AI Agent Setup so builds "
+                             "survive a provider outage.")
+                    yield {"type": "error", "message": f"Provider error: {exc}.{_hint}"}
+                    final_status = "failed"
+                    _provider_failed = True
+                    break
+            if _provider_failed:
                 break
 
             assistant_msg = resp.get("message") or {}
@@ -1697,10 +2151,44 @@ async def run_agent(
                                  "content": assistant_text})
 
             if not tool_calls:
-                # The model produced only text — treat as final answer.
-                final_status = "completed" if assistant_text else "halted"
-                final_summary = assistant_text or "(no summary)"
-                break
+                if assistant_text:
+                    # The model produced a final text answer — done.
+                    final_status = "completed"
+                    final_summary = assistant_text
+                    break
+                # Empty response: no text AND no tool call. Almost always a
+                # transient dropped completion, not a real pause. Nudge and
+                # retry once; only halt (with a clear, plain-English message)
+                # if it happens twice in a row.
+                empty_responses += 1
+                # Make the just-appended assistant message well-formed for
+                # replay (content=None + no tool_calls can be rejected).
+                messages[-1]["content"] = "(no response)"
+                if empty_responses >= 2:
+                    final_status = "halted"
+                    final_summary = (
+                        "I couldn't produce a response for this request. This "
+                        "is usually a temporary issue with the AI model. "
+                        "Please try again, or rephrase what you'd like me to "
+                        "do — and if it keeps happening, switch to another "
+                        "model in the dropdown below."
+                    )
+                    yield {"type": "warning", "ts": _now_iso(), "step": step,
+                            "message": final_summary}
+                    break
+                messages.append({"role": "user", "content": (
+                    "You returned an empty response — no message and no "
+                    "action. If the task is complete, call finish with a "
+                    "short plain-English summary of what you did. Otherwise, "
+                    "continue with your next tool call."
+                )})
+                yield {"type": "warning", "ts": _now_iso(), "step": step,
+                        "message": "The model returned an empty response — "
+                                   "asking it to continue."}
+                continue
+
+            # A real (non-empty) response arrived — reset the empty guard.
+            empty_responses = 0
 
             # Process every tool call the model emitted this step.
             should_finish = False
@@ -1779,6 +2267,12 @@ async def run_agent(
                     result = await dispatch_tool(name, args)
                     duration_ms = int((time.time() - t0) * 1000)
                     obs = _truncate_for_observation(result)
+                    # Record numbers the agent actually observed, for the
+                    # end-of-run summary-grounding check.
+                    try:
+                        observed_numbers |= _numbers_in_result(result)
+                    except Exception:
+                        pass
                     yield {"type": "tool_done", "ts": _now_iso(), "step": step,
                             "call_id": call_id, "name": name,
                             "duration_ms": duration_ms, "result": result}
@@ -1881,7 +2375,20 @@ async def run_agent(
                         touched_rules.pop(rid, None)
                     if name == "finish":
                         final_status = "completed"
-                        final_summary = (result or {}).get("summary") or ""
+                        fsum = ((result or {}).get("summary") or "").strip()
+                        if not fsum:
+                            # Model called finish without a summary — synthesize
+                            # a sensible one so the user never sees a blank result.
+                            named = sorted({v for v in touched_rules.values() if v})
+                            if named:
+                                fsum = ("Done. I finished working on "
+                                        + ", ".join(named) + ".")
+                            elif touched_rules:
+                                fsum = (f"Done. I finished working on "
+                                        f"{len(touched_rules)} rule(s).")
+                            else:
+                                fsum = "Done."
+                        final_summary = fsum
                         should_finish = True
                 except ToolError as te:
                     duration_ms = int((time.time() - t0) * 1000)
@@ -2019,10 +2526,44 @@ async def run_agent(
         _PENDING.pop(run_id, None)
         _RUN_STATUS.pop(run_id, None)
 
+    # Safety net: no terminal path may emit a blank summary (the UI would show
+    # an empty "Paused — needs your input" card). Supply a status-appropriate
+    # fallback in plain English.
+    if not (final_summary or "").strip():
+        final_summary = {
+            "completed": "Done.",
+            "failed": "The AI model ran into a problem finishing this request. "
+                      "Please try again, or switch to another model below.",
+            "cancelled": "Run cancelled.",
+        }.get(final_status,
+               "This didn't finish. Please try again, or rephrase your request.")
+
+    # Summary-grounding check (anti-hallucination): flag any material money
+    # figure in the summary that the agent never observed in a tool result.
+    # Only meaningful on a completed run that actually looked at some numbers.
+    ungrounded: list[float] = []
+    if final_status == "completed" and observed_numbers:
+        try:
+            ungrounded = _ungrounded_amounts(final_summary, observed_numbers)
+        except Exception:
+            ungrounded = []
+    if ungrounded:
+        yield {
+            "type": "warning", "ts": _now_iso(),
+            "message": (
+                "Some amounts in the summary weren't found in the model's own "
+                "computed results and may be inaccurate — please verify: "
+                + ", ".join(f"{a:,.2f}" for a in ungrounded[:8])
+            ),
+            "grounding": {"ungrounded_amounts": ungrounded[:20]},
+        }
+
     final_event = {
         "type": "final", "ts": _now_iso(), "run_id": run_id,
         "status": final_status, "summary": final_summary, "steps": steps_used,
     }
+    if ungrounded:
+        final_event["ungrounded_amounts"] = ungrounded[:20]
     yield final_event
 
     # Persist this turn's messages back into the per-session history so the
@@ -2043,5 +2584,6 @@ async def run_agent(
         "started_at": started_at, "finished_at": _now_iso(),
         "status": final_status, "summary": final_summary,
         "steps": steps_used, "history": history,
+        "ungrounded_amounts": ungrounded[:20],
     }
     await _save_run(db, in_memory_data, run_doc)

@@ -25,3 +25,11 @@ cryptography>=46.0,<47.0
 openai>=1.99,<2.0
 anthropic>=0.94,<1.0
 google-genai>=1.57,<2.0
+
+# Requirements-document ingestion (agent reads PDF / Word requirement docs)
+pypdf>=6.0,<7.0
+python-docx>=1.1,<2.0
+
+# MCP server (optional) — drive the agent from a personal Claude client.
+# Only needed to run backend/mcp_server.py; the web app doesn't import it.
+mcp>=1.28,<2.0
