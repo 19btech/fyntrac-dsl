@@ -366,7 +366,14 @@ const ScheduleStepModal = ({ open, step, onClose, onSaveStep, events, dslFunctio
     if (cfg.contextVars) cfg.contextVars.forEach(v => externalRefs.add(v));
     for (const col of columns) {
       if (!col.formula) continue;
-      const identifiers = col.formula.match(/[a-zA-Z_][a-zA-Z0-9_]*/g) || [];
+      // Blank out quoted string literals FIRST. Without this, a legal
+      // formula like eq(item_method, "RATABLE") pulled RATABLE into
+      // contextVars as if it were an outer-scope variable, and the
+      // generated schedule call then failed with a NameError.
+      const formulaNoStrings = col.formula
+        .replace(/"[^"]*"/g, '""')
+        .replace(/'[^']*'/g, "''");
+      const identifiers = formulaNoStrings.match(/[a-zA-Z_][a-zA-Z0-9_]*/g) || [];
       for (const rawId of identifiers) {
         // The schedule engine auto-exposes every context array as `<name>_full`
         // inside column expressions. Resolve to the base name so we pass the
@@ -530,7 +537,7 @@ const ScheduleStepModal = ({ open, step, onClose, onSaveStep, events, dslFunctio
     setRunIfTest({ testing: true });
     try {
       const allPriorCode = [priorRulesCode, currentRulePreStepCode].filter(Boolean).join('\n\n');
-      const hasEventRefs = /\b[A-Z][A-Z0-9_]*\.[a-zA-Z_]\w*/.test([allPriorCode, expr].join('\n'));
+      const hasEventRefs = /\b[A-Za-z_]\w*\.[a-zA-Z_]\w*/.test([allPriorCode, expr].join('\n'));
       const printLine = hasEventRefs
         ? `print("__TEST_ROW__|" + str(instrumentid) + "|" + str(subinstrumentid) + "| runIf =", (${expr}))`
         : `print("runIf =", (${expr}))`;
@@ -660,7 +667,7 @@ const ScheduleStepModal = ({ open, step, onClose, onSaveStep, events, dslFunctio
       // per-instrument table identical to the inline step tests.
       // Standalone DSL (no event refs) falls back to a plain print to avoid
       // referencing instrumentid/subinstrumentid which won't be defined.
-      const _hasEventRefs = (code) => /\b[A-Z][A-Z0-9_]*\.[a-zA-Z_]\w*/.test(code || '');
+      const _hasEventRefs = (code) => /\b[A-Za-z_]\w*\.[a-zA-Z_]\w*/.test(code || '');
       // Drop the trailing `print(sched)` that buildScheduleCode appends — we
       // only want the marker print for the output variable. Otherwise the raw
       // schedule dump (item_index, item_name, ...) leaks into the result row.

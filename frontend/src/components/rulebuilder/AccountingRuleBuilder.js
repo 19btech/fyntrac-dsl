@@ -136,7 +136,10 @@ const STEP_TYPE_META = {
 // instrument identifier so the UI can render a table. Sub-instrument is
 // included so the UI can sort by (instrument, subinstrument) even though
 // it isn't displayed.
-const _hasEventRefs = (code) => /\b[A-Z][A-Z0-9_]*\.[a-zA-Z_]\w*/.test(code || '');
+// A dot in DSL always means an event-field access (EVENT.field). Match ANY
+// identifier casing — event names may be lowercase / snake_case (e.g.
+// `line_items`), not only uppercase.
+const _hasEventRefs = (code) => /\b[A-Za-z_]\w*\.[a-zA-Z_]\w*/.test(code || '');
 const _testPrintLine = (varName, codeSoFar) =>
   _hasEventRefs(codeSoFar)
     ? `print("__TEST_ROW__|" + str(instrumentid) + "|" + str(subinstrumentid) + "| ${varName} =", ${varName})`
@@ -1683,7 +1686,14 @@ const AccountingRuleBuilder = ({ events, dslFunctions, transactionDefinitions, o
         } else {
           lines.push('})');  
         }
-        lines.push(`print(${s.name})`);
+        // Dumping the whole schedule grid is a PREVIEW aid, not rule output.
+        // Emitted unconditionally it serialises every period of every
+        // instrument to the log on every run. Absent printResult still prints
+        // (previews keep working); an explicit false at either the rule or the
+        // step level silences it. Mirrors _generate_rule_code in tools.py.
+        if (outputs.printResult !== false && s.printResult !== false) {
+          lines.push(`print(${s.name})`);
+        }
         definedVars.push(s.name);
         // Output variables
         const ov = s.outputVars || [];

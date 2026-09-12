@@ -314,18 +314,19 @@
 .agent-run {
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
   font-size: 12.5px;
-  border: 1px solid #e0e0e0;
-  border-radius: 6px;
-  background: #fafafa;
+  border: 1px solid #e6e6ef;
+  border-radius: 10px;
+  background: #ffffff;
   overflow: hidden;
+  box-shadow: 0 1px 3px rgba(24, 24, 48, 0.06), 0 4px 12px rgba(24, 24, 48, 0.04);
 }
 .agent-run-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 6px 10px;
-  border-bottom: 1px solid #e8e8e8;
-  background: #f3f3f3;
+  padding: 7px 11px;
+  border-bottom: 1px solid #ececf4;
+  background: linear-gradient(180deg, #f7f7fc 0%, #f2f2fa 100%);
 }
 .agent-run-header-left { display: flex; align-items: center; gap: 6px; }
 .agent-run-title { font-weight: 600; color: #424242; font-size: 12px; }
@@ -337,6 +338,13 @@
   font-size: 11px; color: #555;
 }
 .agent-run-stop:hover { background: #fff5f5; border-color: #f5a5a5; color: #c0392b; }
+.agent-run-copy {
+  display: inline-flex; align-items: center; gap: 4px;
+  background: transparent; border: 1px solid #d0d0d0;
+  border-radius: 4px; padding: 2px 8px; cursor: pointer;
+  font-size: 11px; color: #555; margin-right: 6px;
+}
+.agent-run-copy:hover { background: #f0f4ff; border-color: #a5b4fc; color: #4f46e5; }
 .agent-run-undo {
   display: inline-flex; align-items: center; gap: 4px;
   background: transparent; border: 1px solid #c5b4e3;
@@ -362,29 +370,54 @@
   padding: 6px 10px; background: #fff4f4; color: #c0392b;
   border-bottom: 1px solid #f5d5d5; font-size: 12px;
 }
-.agent-run-timeline { padding: 6px 8px; display: flex; flex-direction: column; gap: 2px; }
+.agent-run-timeline {
+  position: relative;
+  padding: 8px 10px 8px 10px;
+  display: flex; flex-direction: column; gap: 2px;
+}
+/* Connected timeline rail behind the step sequence. Status icons sit over it
+   like nodes; colored blocks (final/warning/error) paint above and hide it. */
+.agent-run-timeline::before {
+  content: "";
+  position: absolute;
+  left: 19px; top: 16px; bottom: 16px;
+  width: 2px;
+  background: linear-gradient(180deg, #e4e4f2, #eeeef6);
+  border-radius: 2px;
+  pointer-events: none;
+}
 .agent-run-row {
+  position: relative;
+  z-index: 1;
   display: flex; align-items: flex-start; gap: 6px;
-  padding: 3px 4px; border-radius: 4px;
+  padding: 3px 4px; border-radius: 6px;
   font-size: 12px; color: #2b2b2b;
+  animation: agentFadeIn 0.18s ease-out both;
 }
 .agent-run-row.meta { color: #666; font-size: 11px; }
 .agent-run-row.text { color: #1e1e1e; line-height: 1.45; }
 .agent-run-row.text .muted { color: #888; flex-shrink: 0; margin-top: 3px; }
 .agent-run-row.warn { color: #b07c00; background: #fff8e1; }
 .agent-run-row.error { color: #c0392b; background: #fff4f4; }
-.agent-run-row.final { color: #146c2e; background: #ebf6ee; padding: 5px 8px; border-radius: 4px; }
+.agent-run-row.final { color: #146c2e; background: #ebf6ee; padding: 8px 10px; border-radius: 6px; flex-direction: column; align-items: stretch; }
 .agent-run-row.final.failed,
 .agent-run-row.final.cancelled,
 .agent-run-row.final.halted { color: #b07c00; background: #fff8e1; }
+.agent-run-row.final.error { color: #c0392b; background: #fff4f4; }
+.agent-run-final-summary { color: #1e2530; font-size: 12.5px; }
+.agent-run-final-summary p:first-child { margin-top: 0; }
+.agent-run-final-summary p:last-child { margin-bottom: 0; }
+.agent-run-row.final .muted { color: inherit; opacity: 0.7; }
 
 .agent-run-row.tool { flex-direction: column; padding: 0; }
 .agent-run-tool-head {
   display: flex; align-items: center; gap: 6px; width: 100%;
-  background: transparent; border: 0; padding: 4px 6px; cursor: pointer;
-  font: inherit; color: inherit; text-align: left; border-radius: 4px;
+  background: transparent; border: 0; padding: 5px 6px; cursor: pointer;
+  font: inherit; color: inherit; text-align: left; border-radius: 6px;
+  transition: background 0.12s;
 }
-.agent-run-tool-head:hover { background: #eee; }
+.agent-run-tool-head:hover { background: rgba(99, 102, 241, 0.08); }
+.agent-run-tool-head:focus-visible { outline: 2px solid #6366f1; outline-offset: -2px; }
 .agent-run-row.tool .tool-label { flex: 1; color: #1e1e1e; }
 .agent-run-row.tool .tool-duration { color: #888; font-size: 11px; font-variant-numeric: tabular-nums; }
 .agent-run-row.tool.state-error .tool-label { color: #c0392b; }

@@ -138,17 +138,13 @@ PATTERN_A = {
                          "thenFormula": "LoanAmount"}],
          "elseFormula": "0"},
     ],
+    # One transaction per economic result — plain signed amounts, NO debit/
+    # credit side and NO balancing pairs.
     "outputs_transactions_template": [
-        {"type": "INTEREST_ACCRUAL",      "amount": "Interest_Accrual",      "side": "debit",
+        {"type": "INTEREST_ACCRUAL",      "amount": "Interest_Accrual",
          "postingdate": "EVENT.postingdate", "effectivedate": "EVENT.effectivedate",
          "subinstrumentid": "subinstrumentid"},
-        {"type": "INTEREST_ACCRUAL",      "amount": "Interest_Accrual",      "side": "credit",
-         "postingdate": "EVENT.postingdate", "effectivedate": "EVENT.effectivedate",
-         "subinstrumentid": "subinstrumentid"},
-        {"type": "ORIGINATION_PRINCIPAL", "amount": "Origination_Principal", "side": "debit",
-         "postingdate": "EVENT.postingdate", "effectivedate": "EVENT.effectivedate",
-         "subinstrumentid": "subinstrumentid"},
-        {"type": "ORIGINATION_PRINCIPAL", "amount": "Origination_Principal", "side": "credit",
+        {"type": "ORIGINATION_PRINCIPAL", "amount": "Origination_Principal",
          "postingdate": "EVENT.postingdate", "effectivedate": "EVENT.effectivedate",
          "subinstrumentid": "subinstrumentid"},
     ],
@@ -193,6 +189,9 @@ PATTERN_B = {
          "collectType": "collect_all", "eventField": "CATALOG_EVENT.PRODUCT_FIELD"},
         {"name": "SSPs",       "stepType": "calc", "source": "collect",
          "collectType": "collect_all", "eventField": "CATALOG_EVENT.SSP_FIELD"},
+        {"name": "SubIds",     "stepType": "calc", "source": "collect",
+         "collectType": "collect_by_instrument",
+         "eventField": "CATALOG_EVENT.subinstrumentid"},
         {"name": "OrderAmount","stepType": "calc", "source": "event_field",
          "eventField": "SO_EVENT.AMOUNT_FIELD"},
         {"name": "TotalSSP",   "stepType": "calc", "source": "formula",
@@ -215,13 +214,33 @@ PATTERN_B = {
             "scheduleConfig": {
                 "periodType": "date",
                 "frequency": "M",
-                "startDateSource": "value", "startDate": "start_dates",
-                "endDateSource":   "value", "endDate":   "end_dates",
+                # A VARIABLE reference, so it must be a formula source.
+                # source="value" means a literal, and a bare name left as a
+                # literal is emitted quoted -- period("start_dates", ...) --
+                # which yields no dates and therefore no schedule at all.
+                "startDateSource": "formula", "startDateFormula": "start_dates",
+                "endDateSource":   "formula", "endDateFormula":   "end_dates",
+                # Fan out into ONE SCHEDULE PER PO LINE. Without these the
+                # schedule runs once for the whole order, item_name is empty,
+                # subinstrument_id is stuck at the row id, and the per-line
+                # AllocatedAmounts array is misread as a per-PERIOD series.
+                "splitBy": "SubIds", "itemNames": "ProductIds",
                 "columns": [
                     {"name": "period_date", "formula": "period_date"},
                     {"name": "month_end",   "formula": "end_of_month(period_date)"},
                     {"name": "period_revenue",
-                     "formula": "divide(lookup(AllocatedAmounts, ProductIds, item_name), total_periods)"},
+                     # A schedule driven by ARRAY start/end dates produces ONE
+                     # schedule per item, and every context array is already
+                     # sliced down to THIS item's element. So AllocatedAmounts
+                     # here IS this item's allocated amount - index it no
+                     # further. Do NOT write
+                     #   lookup(AllocatedAmounts, ProductIds, item_name)
+                     # `item_name` is a display label ("Item 1", "Item 2", ...),
+                     # never a product id, so that lookup matches nothing and
+                     # silently yields 0 for every period. Use `<name>_full`
+                     # when you genuinely need the WHOLE array in a per-item
+                     # schedule (e.g. array_length(ProductIds_full)).
+                     "formula": "divide(AllocatedAmounts, total_periods)"},
                     {"name": "LTD_revenue",
                      "formula": "iif(eq(period_index,0), period_revenue, lag('LTD_revenue',1,0)+period_revenue)"},
                 ],
@@ -233,16 +252,19 @@ PATTERN_B = {
             ],
         },
     ],
+    # One transaction per economic result — the recognised revenue amount.
+    # NO debit/credit side and NO balancing contra (e.g. no ContractAsset
+    # counter-entry): the downstream system handles any GL posting.
     "outputs_transactions_template": [
-        {"type": "RevenueRecognised", "amount": "PeriodRevenue", "side": "credit",
-         "postingdate": "SO_EVENT.postingdate", "effectivedate": "SO_EVENT.effectivedate",
-         "subinstrumentid": "subinstrumentid"},
-        {"type": "ContractAsset",     "amount": "PeriodRevenue", "side": "debit",
+        {"type": "RevenueRecognised", "amount": "PeriodRevenue",
          "postingdate": "SO_EVENT.postingdate", "effectivedate": "SO_EVENT.effectivedate",
          "subinstrumentid": "subinstrumentid"},
     ],
     "anti_patterns": [
         "Do NOT iterate over `all_instruments` — there is no such variable.",
+        "Do NOT use `lookup(..., item_name)` inside a per-item schedule. "
+        "`item_name` is a display label, not a business key, and the context "
+        "arrays are already sliced per item — just reference them directly.",
         "`AllocatedAmounts` and `SSPs` and `ProductIds` MUST stay index-aligned — "
         "all three come from the same CATALOG reference table.",
         "Use schedule_filter (matchCol=month_end, matchValue=postingdate) to pick "
@@ -302,11 +324,9 @@ PATTERN_C = {
         {"name": "Adjustment", "stepType": "calc", "source": "formula",
          "formula": "FinalBalance - EVENT.BALANCE_FIELD"},
     ],
+    # One transaction for the adjustment amount — no debit/credit pair.
     "outputs_transactions_template": [
-        {"type": "ReplayAdjustment", "amount": "Adjustment", "side": "debit",
-         "postingdate": "EVENT.postingdate", "effectivedate": "EVENT.effectivedate",
-         "subinstrumentid": "subinstrumentid"},
-        {"type": "ReplayAdjustment", "amount": "Adjustment", "side": "credit",
+        {"type": "ReplayAdjustment", "amount": "Adjustment",
          "postingdate": "EVENT.postingdate", "effectivedate": "EVENT.effectivedate",
          "subinstrumentid": "subinstrumentid"},
     ],
@@ -353,14 +373,12 @@ PATTERN_D = {
          "conditions": [{"condition": "lt(NPV, 0)", "thenFormula": "abs(NPV)"}],
          "elseFormula": "0"},
     ],
+    # One transaction per economic result (gain OR loss) — plain signed
+    # amounts, no debit/credit side and no balancing pair.
     "outputs_transactions_template": [
-        {"type": "ValuationGain", "amount": "Gain", "side": "credit",
+        {"type": "ValuationGain", "amount": "Gain",
          "postingdate": "EVENT.postingdate", "effectivedate": "EVENT.effectivedate"},
-        {"type": "ValuationGain", "amount": "Gain", "side": "debit",
-         "postingdate": "EVENT.postingdate", "effectivedate": "EVENT.effectivedate"},
-        {"type": "ValuationLoss", "amount": "Loss", "side": "debit",
-         "postingdate": "EVENT.postingdate", "effectivedate": "EVENT.effectivedate"},
-        {"type": "ValuationLoss", "amount": "Loss", "side": "credit",
+        {"type": "ValuationLoss", "amount": "Loss",
          "postingdate": "EVENT.postingdate", "effectivedate": "EVENT.effectivedate"},
     ],
     "anti_patterns": [

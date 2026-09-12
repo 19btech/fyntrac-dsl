@@ -211,14 +211,38 @@ flagged as `alias_step_antipattern` and must be deleted.
 
 If you are unsure: check the loaded event data. If any instrument row has more than one distinct `subinstrumentid`, use non-scalar. Otherwise default to scalar.
 
-## 2. Transactions live in `outputs.transactions[]`
+## 2. Transactions live in `outputs.transactions[]` — the ONLY output shape
 
-Every entry needs: `type`, `amount`, `side` (debit|credit). Optionally
-`postingdate`, `effectivedate`, `subinstrumentid` (auto-inferred when omitted).
-Always emit balanced PAIRS (one debit + one credit transaction type per economic event).
-This app produces TRANSACTIONS only — journal entries are created by the downstream
-accounting system that consumes these transactions. Do not describe outputs as
+This platform emits TRANSACTIONS and nothing else — no journal entries, no GL
+postings, no reports, no files. A transaction is a single signed amount posted
+for an instrument. It is NOT double-entry: there is NO debit/credit `side`, NO
+balancing requirement, and NO contra/clearing transaction.
+
+Each entry has EXACTLY these fields:
+
+| Field | Meaning |
+|-------|---------|
+| `type` | the transaction type name (register it first via `add_transaction_types`) |
+| `amount` | name of a prior calc-step variable (or a numeric literal) holding a single signed number |
+| `postingdate` | optional — auto-inferred from the event when omitted |
+| `effectivedate` | optional — auto-inferred when omitted |
+| `subinstrumentid` | optional — auto-inferred when omitted (defaults to `'1'`) |
+
+`instrumentid` is always the implicit global — it is not a transaction field
+you set. One computed result = ONE transaction. Do NOT emit debit/credit pairs.
+The downstream accounting system decides how each transaction maps to a GL
+posting — that is not your concern, and you must never describe outputs as
 'journal entries'.
+
+If a user asks for output in any other form (a report, spreadsheet, journal
+entries, a running balance), explain that the platform only produces
+transactions in this fixed shape, then map their request onto transactions.
+
+**Inputs** follow a matching fixed contract: activity data goes in a STANDARD
+event table that must carry `instrumentid`, `subinstrumentid`, `postingdate`,
+`effectivedate` plus its business fields; static lookups go in a REFERENCE /
+custom table which is freeform (no required columns). Never invent a different
+input structure.
 
 NEVER:
 - Put `createTransaction(...)` inside a calc formula — rejected by validator.

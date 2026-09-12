@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from "react";
 import axios from "axios";
 import { useToast } from "../components/ToastProvider";
-import { Upload, Code, BookOpen, Sparkles, Trash2, Search as SearchIcon, Settings, ChevronDown, Database, Calculator, Eye, Save, Menu as MenuIcon } from "lucide-react";
+import { Upload, Code, BookOpen, Sparkles, Trash2, Search as SearchIcon, Settings, ChevronDown, Database, Calculator, Eye, Save, Receipt, Menu as MenuIcon } from "lucide-react";
 import { Button, Tabs, Tab, Box, Menu, MenuItem, Divider, Alert, Typography, ToggleButtonGroup, ToggleButton, Tooltip, CircularProgress, IconButton, useMediaQuery, useTheme, Avatar } from '@mui/material';
 import Editor from "@monaco-editor/react";
 import FileUploadPanel from "../components/FileUploadPanel";
@@ -16,6 +16,7 @@ import LivePreview from "../components/rulebuilder/LivePreview";
 import AccountingRuleBuilder from "../components/rulebuilder/AccountingRuleBuilder";
 import TemplateLibrary from "../components/rulebuilder/TemplateWizard";
 import ACCOUNTING_TEMPLATES from "../components/rulebuilder/AccountingTemplates";
+import TransactionReport from "../components/TransactionReport";
 import SavedRules from "../components/rulebuilder/SavedRules";
 import { API } from "../config";
 import { runAllTests } from "../agent/testing";
@@ -93,33 +94,32 @@ const Dashboard = () => {
     loadTemplates();
     loadCombinedCode();
     loadTransactionDefinitions();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  // Reload transaction definitions when a template wizard seeds them and parse user profile
-  useEffect(() => {
-    const handler = () => loadTransactionDefinitions();
-    window.addEventListener('dsl-transaction-defs-changed', handler);
 
     // Parse user profile from URL parameters and persist in sessionStorage
     try {
       const params = new URLSearchParams(window.location.search);
       const urlFirstName = params.get('firstName');
       const urlTenant = params.get('tenant');
-      
+
       if (urlFirstName) sessionStorage.setItem('dsl_firstName', urlFirstName);
       if (urlTenant) sessionStorage.setItem('dsl_tenant', urlTenant);
-      
+
       const firstName = urlFirstName || sessionStorage.getItem('dsl_firstName') || '';
       const tenant = urlTenant || sessionStorage.getItem('dsl_tenant') || '';
-      
+
       if (firstName || tenant) {
         setUserProfile({ firstName, tenant });
       }
     } catch (e) {
       console.error("Error parsing user profile:", e);
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
+  // Reload transaction definitions when a template wizard seeds them
+  useEffect(() => {
+    const handler = () => loadTransactionDefinitions();
+    window.addEventListener('dsl-transaction-defs-changed', handler);
     return () => window.removeEventListener('dsl-transaction-defs-changed', handler);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -806,25 +806,6 @@ const Dashboard = () => {
               >
                 Settings
               </Button>
-              {(userProfile.firstName || userProfile.tenant) && (
-                <Box sx={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 1,
-                  bgcolor: 'rgba(145, 158, 171, 0.12)',
-                  py: 0.5,
-                  px: 1.5,
-                  borderRadius: 2,
-                  ml: 1
-                }}>
-                  <Avatar sx={{ bgcolor: '#2563EB', width: 24, height: 24, fontSize: 12, fontWeight: 700 }}>
-                    {(userProfile.firstName || userProfile.tenant || '?')[0].toUpperCase()}
-                  </Avatar>
-                  <Typography variant="body2" sx={{ color: '#1E293B', fontWeight: 500 }}>
-                    {userProfile.firstName || userProfile.tenant}{userProfile.firstName && userProfile.tenant && userProfile.tenant !== 'master' ? ` / ${userProfile.tenant}` : ''}
-                  </Typography>
-                </Box>
-              )}
               <Menu
                 anchorEl={settingsAnchorEl}
                 open={Boolean(settingsAnchorEl)}
@@ -874,8 +855,27 @@ const Dashboard = () => {
                   <Sparkles size={16} style={{ color: '#6C757D', marginRight: 8 }} />
                   AI Agent Setup
                 </MenuItem>
-                
+
               </Menu>
+              {(userProfile.firstName || userProfile.tenant) && (
+                <Box sx={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 1,
+                  bgcolor: 'rgba(145, 158, 171, 0.12)',
+                  py: 0.5,
+                  px: 1.5,
+                  borderRadius: 2,
+                  ml: 1
+                }}>
+                  <Avatar sx={{ bgcolor: '#2563EB', width: 24, height: 24, fontSize: 12, fontWeight: 700 }}>
+                    {(userProfile.firstName || userProfile.tenant || '?')[0].toUpperCase()}
+                  </Avatar>
+                  <Typography variant="body2" sx={{ color: '#1E293B', fontWeight: 500 }}>
+                    {userProfile.firstName || userProfile.tenant}{userProfile.firstName && userProfile.tenant && userProfile.tenant !== 'master' ? ` / ${userProfile.tenant}` : ''}
+                  </Typography>
+                </Box>
+              )}
             </div>
           </div>
         </div>
@@ -952,6 +952,9 @@ const Dashboard = () => {
                   </ToggleButton>
                   <ToggleButton value="templates">
                     <Tooltip title="Browse accounting templates (ASC 310, 360, 606, 842...)"><Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}><BookOpen size={14} /> Templates</Box></Tooltip>
+                  </ToggleButton>
+                  <ToggleButton value="transactionReport">
+                    <Tooltip title="All transactions across every period, by instrument and sub-instrument"><Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}><Receipt size={14} /> Transaction Report</Box></Tooltip>
                   </ToggleButton>
                 </ToggleButtonGroup>
               </Box>
@@ -1224,6 +1227,13 @@ const Dashboard = () => {
                     onClose={() => setEditorMode('savedRules')}
                     inline
                   />
+                </Box>
+              )}
+
+              {/* Transaction Report Mode */}
+              {editorMode === 'transactionReport' && (
+                <Box sx={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0, overflow: 'hidden' }}>
+                  <TransactionReport />
                 </Box>
               )}
             </TabPanel>

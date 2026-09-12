@@ -8,7 +8,8 @@ custom Python code.
 
 | File | Purpose |
 | --- | --- |
-| `tools.py` | 48 LLM-callable tools wrapping existing services |
+| `tools.py` | 56 LLM-callable tools wrapping existing services |
+| `workbook.py` | Excel workbook analysis (storage, formula dedup, dependency graph) for the model-import workflow |
 | `runtime.py` | Plan→Act→Observe loop with auto-debug, approval gates, SSE event stream |
 | `__init__.py` | Public surface (`run_agent`, `submit_approval`, `cancel_run`, …) |
 
@@ -35,6 +36,23 @@ Write: `create_event_definitions`, `add_transaction_types`,
 `add_transaction_to_rule`, `create_saved_schedule`,
 `create_or_replace_template`, `attach_rules_to_template`, `dry_run_template`,
 `debug_step`, `verify_rule_complete`, …
+
+Excel workbook import (upload → inspect → translate → reconcile; heavy
+lifting in `workbook.py`, uploads via `POST /api/agent/workbooks/upload`):
+- `list_workbooks`, `get_workbook_overview` — uploaded .xlsx files, per-sheet
+  headers/formula density/suggested input-calc-output roles.
+- `set_workbook_sheet_roles` — record the user-confirmed role of each sheet.
+- `get_sheet_data` — rows as `{header: value}` dicts (cached values).
+- `get_sheet_formulas` — formulas deduplicated by relative-R1C1 pattern with a
+  `friendly` header-name rendering; flags row-recursive patterns (→ schedule
+  steps) and cross-sheet refs.
+- `trace_workbook_dependencies` — column-level data-flow graph.
+- `import_workbook_inputs` — input sheet → event definition + event data.
+- `reconcile_workbook_outputs` — dry-run the built rule and diff every emitted
+  amount against the workbook's output sheet, keyed by instrument.
+The workflow + Excel→DSL function map lives in
+`knowledge/excel_translation_guide.md` (served as syntax-guide section
+`excel_translation_guide`).
 
 Destructive (require user approval): `delete_template`, `delete_saved_rule`,
 `delete_saved_schedule`, `clear_all_data`
@@ -156,6 +174,26 @@ highest tool-calling reliability; OpenAI as an alternative.
 python tests/test_agent_runtime.py      # 6-turn scripted LLM session
 python tests/test_agent_new_tools.py     # self-correctness tools + registry parity
 python tests/test_agent_state_store.py   # DB-backed plan/session persistence
+```
+
+## Golden-scenario evals (real LLM)
+
+`tests/eval_agent_scenarios.py` runs the real model against 8 canonical
+accounting briefs (IAS 16 depreciation, IFRS 9 ECL, ASC 606, ASC 842, EIR,
+IAS 21 FX, IAS 37 provisions, CECL) and asserts the built workspace is
+correct: rules + templates exist, schedules exist where the brief demands
+one, transaction types are declared, and `dry_run_template`'s
+`transaction_summary` (net amount + per-instrument net by transaction type —
+transactions are plain signed amounts, no debit/credit side) comes back
+non-zero.
+Opt-in: needs a live Mongo and a provider API key; creates and drops a
+throwaway database per run. Run it after ANY change to the system prompt,
+tool schemas, or validators:
+
+```
+python tests/eval_agent_scenarios.py --list
+python tests/eval_agent_scenarios.py --scenario ias16_depreciation
+AGENT_EVAL_PROVIDER=anthropic python tests/eval_agent_scenarios.py
 ```
 
 `test_agent_runtime.py` replays a scripted session and verifies tool dispatch,

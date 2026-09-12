@@ -2,9 +2,51 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   CheckCircle2, AlertTriangle, Loader2, Wrench, Sparkles,
   StopCircle, ChevronDown, ChevronRight, ShieldAlert, Brain, Undo2,
+  Copy, Check,
 } from "lucide-react";
 import { API } from "../../config";
+import MarkdownLite from "./MarkdownLite";
+import ResultCard, { RESULT_CARD_TOOLS } from "./ResultCard";
+import { friendlyError } from "../../agent/friendlyError";
 import "./AgentMessage.css";
+
+// Plain-English status shown in the run header and the final row. Keeps the
+// raw runtime states (running/done/completed/cancelled/error/halted/failed)
+// out of the user's face.
+const STATUS_LABELS = {
+  running: "Working…",
+  done: "Done",
+  completed: "Done",
+  cancelled: "Stopped",
+  stopped: "Stopped",
+  halted: "Paused — needs your input",
+  error: "Couldn't finish",
+  failed: "Couldn't finish",
+};
+const statusLabel = (s) => STATUS_LABELS[s] || "Done";
+
+// Long agent summaries collapse to a preview with a Show more toggle.
+function FinalSummary({ text }) {
+  const [open, setOpen] = useState(false);
+  const long = (text || "").length > 700;
+  const shown = long && !open ? text.slice(0, 700).replace(/\s+\S*$/, "") + "…" : text;
+  return (
+    <div className="agent-run-final-summary">
+      <MarkdownLite text={shown} />
+      {long && (
+        <button
+          onClick={() => setOpen(o => !o)}
+          style={{
+            marginTop: 4, border: 0, background: "transparent", cursor: "pointer",
+            color: "#4f46e5", fontSize: 11.5, fontWeight: 600, padding: 0,
+          }}
+        >
+          {open ? "Show less" : "Show more"}
+        </button>
+      )}
+    </div>
+  );
+}
 
 /**
  * Renders one autonomous agent run.
@@ -57,8 +99,10 @@ function shortenJSON(value, maxLen = 320) {
   return s.length > maxLen ? s.slice(0, maxLen) + "…" : s;
 }
 
-const AgentRunMessage = ({ task, model, autoApproveDestructive = false, onComplete, initialEvents, initialStatus, onAgentDataChange, sessionId, onStopHandleReady }) => {
-  const isReplay = Array.isArray(initialEvents) && initialEvents.length > 0;
+const AgentRunMessage = ({ task, model, autoApproveDestructive = false, onComplete, initialEvents, initialStatus, onAgentDataChange, sessionId, onStopHandleReady, replay = false }) => {
+  // Replay when the parent explicitly says so (message came from persistence)
+  // OR when a saved timeline is present. A replayed run NEVER re-executes.
+  const isReplay = replay || (Array.isArray(initialEvents) && initialEvents.length > 0);
   const [events, setEvents] = useState(isReplay ? initialEvents : []);
   const eventsRef = useRef(events);
   useEffect(() => { eventsRef.current = events; }, [events]);
@@ -67,6 +111,8 @@ const AgentRunMessage = ({ task, model, autoApproveDestructive = false, onComple
   const [errorMsg, setErrorMsg] = useState(null);
   const [pending, setPending] = useState({}); // call_id -> {name, args, decided}
   const [expanded, setExpanded] = useState({}); // call_id -> bool
+  const [showRaw, setShowRaw] = useState(false); // reveal raw technical error
+  const [copied, setCopied] = useState(false);
 
   // Track rule IDs mutated by this run so we can offer an Undo button.
   const [mutatedRuleIds, setMutatedRuleIds] = useState([]);
@@ -381,6 +427,39 @@ const AgentRunMessage = ({ task, model, autoApproveDestructive = false, onComple
 
   const toggle = (id) => setExpanded(e => ({ ...e, [id]: !e[id] }));
 
+  // Build a clean, plain-text transcript of this run for the Copy button:
+  // the request, what was done, the result summary, and any (friendly) error.
+  const buildTranscript = () => {
+    const lines = [];
+    if (task) lines.push(`Request: ${task}`, "");
+    const done = [];
+    let summary = "";
+    let errText = "";
+    for (const row of timeline) {
+      if (row.kind === "tool" && row.state === "done") {
+        done.push(`• ${TOOL_LABELS[row.name] || row.name}`);
+      } else if (row.kind === "final") {
+        summary = row.summary || "";
+      } else if (row.kind === "error") {
+        errText = friendlyError(row.content).message;
+      }
+    }
+    if (done.length) lines.push("Steps completed:", ...done, "");
+    if (summary) lines.push("Result:", summary, "");
+    if (errText) lines.push("Note:", errText);
+    if (errorMsg && !errText) lines.push("Note:", friendlyError(errorMsg).message);
+    return lines.join("\n").trim() || (task || "");
+  };
+  const copyRun = () => {
+    try {
+      navigator.clipboard.writeText(buildTranscript());
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch (_) { /* ignore */ }
+  };
+
+  const friendly = errorMsg ? friendlyError(errorMsg) : null;
+
   return (
     <div className="agent-run">
       <div className="agent-run-header">
@@ -390,12 +469,19 @@ const AgentRunMessage = ({ task, model, autoApproveDestructive = false, onComple
             : status === "cancelled" ? <StopCircle size={14} />
             : <CheckCircle2 size={14} className="ok" />}
           <span className="agent-run-title">
-            Agent {status === "running" ? "working" : status}
+            {statusLabel(status)}
           </span>
         </div>
         {status === "running" && (
           <button className="agent-run-stop" onClick={handleStop} title="Stop run">
             <StopCircle size={12} /> Stop
+          </button>
+        )}
+        {status !== "running" && (
+          <button className="agent-run-copy" onClick={copyRun}
+            title="Copy this response">
+            {copied ? <Check size={12} /> : <Copy size={12} />}
+            {copied ? "Copied" : "Copy"}
           </button>
         )}
         {status !== "running" && mutatedRuleIds.length > 0 && (
@@ -420,9 +506,31 @@ const AgentRunMessage = ({ task, model, autoApproveDestructive = false, onComple
         </div>
       )}
 
-      {errorMsg && (
+      {friendly && (
         <div className="agent-run-error">
-          <AlertTriangle size={12} /> {errorMsg}
+          <div style={{ display: "flex", gap: 6, alignItems: "flex-start" }}>
+            <AlertTriangle size={12} style={{ flexShrink: 0, marginTop: 2 }} />
+            <span>{friendly.message}</span>
+          </div>
+          {friendly.technical && (
+            <div style={{ marginTop: 4 }}>
+              <button
+                onClick={() => setShowRaw(v => !v)}
+                style={{
+                  border: 0, background: "transparent", color: "#9a3412",
+                  cursor: "pointer", fontSize: 11, padding: 0, textDecoration: "underline",
+                }}
+              >
+                {showRaw ? "Hide technical details" : "Show technical details"}
+              </button>
+              {showRaw && (
+                <pre style={{
+                  marginTop: 4, whiteSpace: "pre-wrap", wordBreak: "break-word",
+                  fontSize: 10.5, opacity: 0.8, maxHeight: 160, overflow: "auto",
+                }}>{errorMsg}</pre>
+              )}
+            </div>
+          )}
         </div>
       )}
 
@@ -490,17 +598,28 @@ const AgentRunMessage = ({ task, model, autoApproveDestructive = false, onComple
             );
           }
           if (row.kind === "error") {
+            const fe = friendlyError(row.content);
             return (
               <div key={idx} className="agent-run-row error">
-                <AlertTriangle size={12} /> {row.content}
+                <AlertTriangle size={12} /> {fe.message}
               </div>
             );
           }
           if (row.kind === "final") {
+            const isErr = row.status === "error" || row.status === "failed";
             return (
               <div key={idx} className={`agent-run-row final ${row.status}`}>
-                <CheckCircle2 size={12} /> <strong>{row.status}</strong> ·{" "}
-                {row.summary} <em>({row.steps} steps)</em>
+                <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4 }}>
+                  {isErr ? <AlertTriangle size={13} className="err" />
+                    : <CheckCircle2 size={13} className="ok" />}
+                  <strong>{statusLabel(row.status)}</strong>
+                  {row.steps != null && (
+                    <span className="muted" style={{ fontSize: 11 }}>
+                      · {row.steps} step{row.steps === 1 ? "" : "s"}
+                    </span>
+                  )}
+                </div>
+                {row.summary && <FinalSummary text={row.summary} />}
               </div>
             );
           }
@@ -526,19 +645,18 @@ const AgentRunMessage = ({ task, model, autoApproveDestructive = false, onComple
                 {isOpen && (
                   <div className="agent-run-tool-body">
                     <div className="kv">
-                      <span className="k">tool</span>
-                      <code className="v">{row.name}</code>
-                    </div>
-                    <div className="kv">
                       <span className="k">args</span>
                       <code className="v">{shortenJSON(row.args)}</code>
                     </div>
-                    {row.result != null && (
+                    {row.result != null && RESULT_CARD_TOOLS.has(row.name) &&
+                      ResultCard({ name: row.name, result: row.result }) != null ? (
+                      <ResultCard name={row.name} result={row.result} />
+                    ) : row.result != null ? (
                       <div className="kv">
                         <span className="k">result</span>
                         <code className="v">{shortenJSON(row.result, 1200)}</code>
                       </div>
-                    )}
+                    ) : null}
                     {row.error && (
                       <div className="kv error">
                         <span className="k">error</span>
