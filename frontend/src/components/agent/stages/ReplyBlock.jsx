@@ -1,5 +1,6 @@
 import React, { useRef, useEffect } from 'react';
 import ActionBar from './ActionBar';
+import MarkdownLite from '../MarkdownLite';
 
 /**
  * Stage 5: Streaming reply — renders markdown and DSL code blocks inline.
@@ -109,6 +110,17 @@ export default function ReplyBlock({ tokens, streaming, onInsertCode, onOverwrit
                   compact
                 />
               )}
+            </div>
+          );
+        }
+        // While streaming, use the lightweight line renderer so partial
+        // content (half-written tables etc.) never looks broken. Once the
+        // reply is complete, re-render through MarkdownLite for full
+        // headings + GitHub-style tables.
+        if (!streaming) {
+          return (
+            <div key={idx} className="reply-text">
+              <MarkdownLite text={part.content} />
             </div>
           );
         }

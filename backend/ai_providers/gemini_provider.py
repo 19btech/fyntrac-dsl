@@ -1,6 +1,7 @@
 """Google Gemini provider implementation using the modern google-genai SDK."""
 
 import asyncio
+import base64 as _base64
 import json as _json
 import re
 import uuid
@@ -21,6 +22,23 @@ _EXCLUDE_PATTERNS = re.compile(
 )
 # Only show gemini-* models (not gemma, etc.)
 _INCLUDE_PREFIX = 'gemini-'
+
+
+# ── Capability floor ────────────────────────────────────────────────────────
+# Only surface agent-capable models so the picker isn't cluttered with
+# deprecated/older ones. VERSION-BASED (not an allowlist): anything at or above
+# the floor passes automatically, so future Gemini releases self-add.
+#
+# Keep:  Gemini 2.5 Pro/Flash and up (incl. 3.x when it ships).
+# Drop:  Gemini 2.0, 1.5, 1.0, and experimental (gemini-exp-*) builds.
+_GEMINI_FLOOR = 2.5
+
+
+def _gemini_agent_capable(model_id: str) -> bool:
+    m = re.search(r'gemini-(\d+)(?:\.(\d+))?', (model_id or "").lower())
+    if not m:
+        return False
+    return float(f"{m.group(1)}.{m.group(2) or 0}") >= _GEMINI_FLOOR
 
 
 def _classify_error(exc: Exception) -> tuple[str, str]:
@@ -136,8 +154,17 @@ def _build_gemini_contents(messages: list[dict], types):
                         args = {}
                 if not isinstance(args, dict):
                     args = {}
-                parts.append(types.Part(function_call=types.FunctionCall(
-                    id=tc.get("id"), name=tc.get("name"), args=args)))
+                fc_part = types.Part(function_call=types.FunctionCall(
+                    id=tc.get("id"), name=tc.get("name"), args=args))
+                # Echo back the thought_signature captured when this call was
+                # produced (thinking models require it on replay).
+                sig_b64 = tc.get("thought_signature")
+                if sig_b64:
+                    try:
+                        fc_part.thought_signature = _base64.b64decode(sig_b64)
+                    except Exception:
+                        pass
+                parts.append(fc_part)
             _append("model", parts)
         elif role == "tool":
             part = types.Part(function_response=types.FunctionResponse(
@@ -186,6 +213,9 @@ class GeminiProvider(AIProvider):
                 continue
             # Skip -latest aliases and dated point releases (e.g. -001)
             if model_id.endswith('-latest') or re.search(r'-\d{3}$', model_id):
+                continue
+            # Capability floor — hide deprecated/older models (see above).
+            if not _gemini_agent_capable(model_id):
                 continue
             if model_id in seen:
                 continue
@@ -363,13 +393,25 @@ class GeminiProvider(AIProvider):
                     text_chunks.append(part.text)
                 fc = getattr(part, "function_call", None)
                 if fc:
-                    tool_calls_out.append({
+                    tc = {
                         # Gemini may omit ids — synthesise one so the runtime
                         # can pair the eventual tool result back to this call.
                         "id": getattr(fc, "id", None) or uuid.uuid4().hex,
                         "name": fc.name,
                         "arguments": dict(fc.args) if fc.args else {},
-                    })
+                    }
+                    # Thinking models (gemini-2.5 / 3.x) attach a thought_signature
+                    # to each function-call part. It MUST be echoed back verbatim
+                    # when the call is replayed in history, or the next request
+                    # 400s with "Function call is missing a thought_signature".
+                    # Store it base64-encoded so it survives JSON persistence.
+                    sig = getattr(part, "thought_signature", None)
+                    if sig:
+                        try:
+                            tc["thought_signature"] = _base64.b64encode(bytes(sig)).decode("ascii")
+                        except Exception:
+                            pass
+                    tool_calls_out.append(tc)
 
             finish_reason = None
             if cand is not None:

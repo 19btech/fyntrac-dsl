@@ -16,7 +16,13 @@ const ModelSelector = ({ onModelChange, refreshKey, sx }) => {
     try {
       const response = await axios.get(`${API}/ai/provider/status`);
       setStatus(response.data);
-      const savedModel = response.data.selected_model || "";
+      // Backend is the source of truth (survives clearing browser data). Fall
+      // back to the last locally-remembered choice only if the backend has no
+      // selected model recorded yet.
+      let savedModel = response.data.selected_model || "";
+      if (!savedModel) {
+        try { savedModel = localStorage.getItem("preferredModel") || ""; } catch { /* ignore */ }
+      }
       setModel(savedModel);
       if (onModelChange) onModelChange(savedModel);
     } catch {
@@ -31,8 +37,14 @@ const ModelSelector = ({ onModelChange, refreshKey, sx }) => {
   }, [fetchStatus, refreshKey]);
 
   const handleChange = (e) => {
-    setModel(e.target.value);
-    if (onModelChange) onModelChange(e.target.value);
+    const chosen = e.target.value;
+    setModel(chosen);
+    if (onModelChange) onModelChange(chosen);
+    // Durable default: persist server-side (survives clearing browser data)
+    // AND mirror to localStorage as a fast fallback if the POST ever fails.
+    try { localStorage.setItem("preferredModel", chosen); } catch { /* ignore */ }
+    axios.post(`${API}/ai/provider/selected-model`, { selected_model: chosen })
+      .catch(() => { /* non-fatal: selection still applies for this session */ });
   };
 
   if (loading) {

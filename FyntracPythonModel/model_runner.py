@@ -262,6 +262,15 @@ class ModelRunner:
                 transactions = exec_globals['process_standalone'](
                     override_postingdate, override_effectivedate
                 )
+                # process_standalone returns (transactions, print_outputs)
+                # whereas process_event_data returns just the transactions.
+                # Treating the tuple as a list of transactions meant EVERY
+                # standalone model (one with no events) came back with zero
+                # transactions — both entries failed conversion below and were
+                # dropped silently. Mirrors the fix in
+                # backend/server.py::execute_python_template.
+                if isinstance(transactions, tuple):
+                    transactions = transactions[0] if transactions else []
             else:
                 return {
                     "transactions": [],
@@ -291,9 +300,29 @@ class ModelRunner:
                 except Exception:
                     pass
 
+            # Mirror the backend result contract: report how many transactions
+            # the zero-amount guard suppressed, so a production run whose row
+            # count is lower than its input can explain the gap. The
+            # suppression itself lives in dsl_functions (shared), so behaviour
+            # already matched — only the diagnostic was missing here.
+            # Read the counter off the dsl_functions module (the template only
+            # imports the names it calls, so it is not in exec_globals).
+            zero_skipped = 0
+            try:
+                try:
+                    from FyntracPythonModel.dsl_functions import (
+                        _get_skipped_zero_amount,
+                    )
+                except Exception:
+                    from dsl_functions import _get_skipped_zero_amount
+                zero_skipped = _get_skipped_zero_amount()
+            except Exception:
+                zero_skipped = 0
+
             return {
                 "transactions": normalized,
                 "print_outputs": print_outputs,
+                "zero_amount_skipped": zero_skipped,
                 "error": None,
                 "instrument_count": len(event_data),
             }

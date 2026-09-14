@@ -394,8 +394,9 @@ function classifyToVariable(stmt) {
   // Quoted string
   if (/^"[^"]*"$/.test(rhs)) return { ...base, source: 'value', value: rhs };
 
-  // Event field reference (EventName.field_name)
-  if (/^[A-Z][a-zA-Z0-9]*\.[a-zA-Z_]\w*$/.test(rhs)) return { ...base, source: 'event_field', eventField: rhs };
+  // Event field reference (EventName.field_name) — any identifier casing,
+  // including lowercase / snake_case event names like `line_items`.
+  if (/^[A-Za-z_]\w*\.[a-zA-Z_]\w*$/.test(rhs)) return { ...base, source: 'event_field', eventField: rhs };
 
   // Array literal — treat as value
   if (/^\[.*\]$/.test(rhs)) return { ...base, source: 'value', value: rhs };

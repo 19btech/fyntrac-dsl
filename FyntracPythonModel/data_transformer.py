@@ -14,11 +14,14 @@ This module:
 4. Iterates ALL instruments (no limit)
 """
 
+import logging
 import re
 import uuid
 from collections import defaultdict
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
+
+logger = logging.getLogger(__name__)
 
 try:
     from FyntracPythonModel.dsl_functions import normalize_date
@@ -323,22 +326,34 @@ def build_event_definitions_from_import(
 # Merging: combine multiple events by instrumentid
 # ---------------------------------------------------------------------------
 def get_latest_data_per_instrument(data_rows: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
-    """Get latest postingdate row per instrumentid."""
+    """Get latest postingdate per instrumentid (case-insensitive field matching).
+
+    Defensively skips any row that is not a dict (e.g. a stringified JSON object
+    that slipped through during import). Such rows are logged so the user can fix
+    the source data instead of seeing a cryptic ``'str' object has no attribute 'items'``.
+    """
     latest_data = {}
-    for row in data_rows:
+    for idx, row in enumerate(data_rows):
+        if not isinstance(row, dict):
+            logger.warning(
+                "Skipping non-dict row at index %d in event data (got %s). "
+                "Re-import the source file — each row must be a JSON object.",
+                idx, type(row).__name__,
+            )
+            continue
         instrument_id = get_field_case_insensitive(row, 'instrumentid', '')
         posting_date = get_field_case_insensitive(row, 'postingdate', '')
-
+        
         if not instrument_id:
             continue
-
+            
         if instrument_id not in latest_data:
             latest_data[instrument_id] = row
         else:
             existing_date = get_field_case_insensitive(latest_data[instrument_id], 'postingdate', '')
             if posting_date > existing_date:
                 latest_data[instrument_id] = row
-
+    
     return latest_data
 
 
@@ -346,43 +361,74 @@ def merge_event_data_by_instrument(event_data_dict: Dict[str, List[Dict]]) -> Li
     """
     Merge data from multiple events by instrumentid.
     Each event's fields are prefixed with EVENT_NAME_ to avoid conflicts.
-    Iterates ALL instruments — no limit.
+    Also provides event-specific postingdate, effectivedate, and subinstrumentid.
+    
+    Hierarchy: postingDate → instrumentId → subInstrumentId → effectiveDates
+    
+    If subInstrumentId is missing or null, it defaults to "1".
     """
     merged_data = {}
-
+    bad_row_events = []
+    
     for event_name, data_rows in event_data_dict.items():
-        latest_data = get_latest_data_per_instrument(data_rows)
-
+        # Pre-flight check: ensure every row is a dict. Surface a clear error pointing
+        # at the offending event/row so the user knows where to look.
+        if isinstance(data_rows, list):
+            for idx, row in enumerate(data_rows):
+                if not isinstance(row, dict):
+                    bad_row_events.append((event_name, idx, type(row).__name__))
+        latest_data = get_latest_data_per_instrument(data_rows if isinstance(data_rows, list) else [])
+        
         for instrument_id, row in latest_data.items():
             if instrument_id not in merged_data:
+                # Get subinstrumentid with default of "1" if missing
                 subinstrument_id = get_field_case_insensitive(row, 'subinstrumentid', '')
                 if not subinstrument_id or subinstrument_id == 'None' or str(subinstrument_id).strip() == '':
                     subinstrument_id = '1'
-
+                
                 merged_data[instrument_id] = {
                     'instrumentid': instrument_id,
                     'subinstrumentid': str(subinstrument_id),
                     'postingdate': get_field_case_insensitive(row, 'postingdate', ''),
-                    'effectivedate': get_field_case_insensitive(row, 'effectivedate', ''),
+                    'effectivedate': get_field_case_insensitive(row, 'effectivedate', '')
                 }
-
+            
+            # Get event-specific standard fields
             event_postingdate = get_field_case_insensitive(row, 'postingdate', '')
             event_effectivedate = get_field_case_insensitive(row, 'effectivedate', '')
             event_subinstrumentid = get_field_case_insensitive(row, 'subinstrumentid', '')
             if not event_subinstrumentid or event_subinstrumentid == 'None' or str(event_subinstrumentid).strip() == '':
                 event_subinstrumentid = '1'
-
+            
+            # Add event-prefixed standard fields (e.g., INT_ACC_postingdate, INT_ACC_subinstrumentid)
             merged_data[instrument_id][f"{event_name}_postingdate"] = event_postingdate
             merged_data[instrument_id][f"{event_name}_effectivedate"] = event_effectivedate
             merged_data[instrument_id][f"{event_name}_subinstrumentid"] = str(event_subinstrumentid)
-
+            
+            # Add other fields with event prefix (EVENT_FIELD) for clarity
+            # Also add without prefix for direct field access
+            if not isinstance(row, dict):
+                # Already logged above; skip safely.
+                continue
             for key, value in row.items():
                 key_lower = key.lower()
                 if key_lower not in ['instrumentid', 'postingdate', 'effectivedate', 'subinstrumentid']:
+                    # Store with event prefix: PMT_TRANSACTIONS_AMOUNT_REMIT
                     prefixed_key = f"{event_name}_{key}"
                     merged_data[instrument_id][prefixed_key] = value
+                    # Also store the original field name for backward compatibility
                     merged_data[instrument_id][key] = value
-
+    
+    if bad_row_events:
+        # Raise a single descriptive error pointing at the first bad row so the user
+        # knows which event needs to be re-imported.
+        evt, idx, kind = bad_row_events[0]
+        raise ValueError(
+            f"Event '{evt}' has malformed data: row #{idx} is a {kind}, not an object. "
+            f"Re-import the source file — each row must be a JSON object "
+            f"(total bad rows: {len(bad_row_events)})."
+        )
+    
     return list(merged_data.values())
 
 
