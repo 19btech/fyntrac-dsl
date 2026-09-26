@@ -61,7 +61,7 @@ const UI_CONCEPTS = [
   {
     key: 'ai agent setup',
     aliases: ['ai setup', 'ai provider', 'aiagentsetup'],
-    title: 'AI Agent Setup',
+    title: 'Copilot Setup',
     body: 'Configure the AI provider (OpenAI, Anthropic, Gemini), test the API key, choose a model, and save it. The configured provider powers both this chat assistant and the AI Rule Generator inside the Rule Builder.',
   },
   {

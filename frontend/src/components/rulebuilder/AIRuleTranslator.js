@@ -135,7 +135,7 @@ Return ONLY the DSL code, no explanations or markdown fences.`;
       
       // Check for provider-level errors
       if (data.error_type || data.error_message) {
-        throw new Error(data.error_message || 'AI provider error — check AI Agent Setup in Settings.');
+        throw new Error(data.error_message || 'AI provider error — check Copilot Setup in Settings.');
       }
 
       let code = data.response || data.message || '';

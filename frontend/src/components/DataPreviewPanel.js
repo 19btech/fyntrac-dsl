@@ -7,12 +7,6 @@ import {
   Tab,
   TextField,
   Chip,
-  Table,
-  TableHead,
-  TableRow,
-  TableCell,
-  TableBody,
-  TableContainer,
   Typography,
   InputAdornment,
   alpha,
@@ -26,6 +20,7 @@ import {
   AlertCircle,
   CheckCircle2,
 } from "lucide-react";
+import DataTable from "./DataTable";
 
 // Datatypes accepted by the backend's /events/upload endpoint.
 const KNOWN_DATATYPES = new Set([
@@ -40,36 +35,6 @@ const KNOWN_DATATYPES = new Set([
 const VALID_EVENT_TYPES = new Set(["activity", "reference"]);
 const VALID_EVENT_TABLES = new Set(["standard", "custom"]);
 
-const TABLE_SX = {
-  "& thead th": {
-    position: "sticky",
-    top: 0,
-    zIndex: 1,
-    bgcolor: "#FAFBFC",
-    color: "#495057",
-    fontWeight: 600,
-    fontSize: "0.75rem",
-    letterSpacing: "0.04em",
-    textTransform: "uppercase",
-    borderBottom: "1px solid #E9ECEF",
-    py: 1.25,
-    fontFamily: "inherit",
-  },
-  "& tbody td": {
-    fontSize: "0.8125rem",
-    color: "#212529",
-    borderBottom: "1px solid #F1F3F5",
-    py: 1.25,
-    fontFamily: "inherit",
-  },
-  "& tbody tr": {
-    transition: "background-color 120ms ease",
-  },
-  "& tbody tr:hover": {
-    bgcolor: (theme) => alpha(theme.palette.primary.main, 0.04),
-  },
-  "& tbody tr:last-of-type td": { borderBottom: 0 },
-};
 
 const EmptyState = ({ icon: Icon, title, hint, tone = "neutral" }) => {
   const palette =
@@ -316,6 +281,66 @@ const validateData = (events, transactions) => {
   return issues;
 };
 
+/* Column definitions for the three preview tables. Each is a short, fixed
+ * list, so they render at their natural height rather than inside a pager. */
+const EVENT_COLUMNS = [
+  { field: 'eventName', headerName: 'Event', flex: 1, minWidth: 140,
+    cellClassName: 'cell-strong' },
+  { field: 'fieldName', headerName: 'Field', flex: 1, minWidth: 140 },
+  {
+    field: 'dataType', headerName: 'Data Type', flex: 0.9, minWidth: 120,
+    renderCell: (params) => (
+      <Chip
+        size="small"
+        label={params.value}
+        sx={{
+          height: 20, fontSize: '0.7rem',
+          bgcolor: params.row.dataTypeKnown ? '#F1F3F5' : '#FFF8E1',
+          color: params.row.dataTypeKnown ? '#495057' : '#B26A00',
+          border: params.row.dataTypeKnown
+            ? '1px solid transparent' : '1px solid #FFE082',
+          borderRadius: 0.75, fontWeight: 500, fontFamily: 'inherit',
+        }}
+      />
+    ),
+  },
+  { field: 'eventType', headerName: 'Event Type', flex: 0.8, minWidth: 110 },
+  { field: 'eventTable', headerName: 'Table', flex: 0.8, minWidth: 110 },
+];
+
+const TXN_COLUMNS = [
+  {
+    field: 'transactiontype', headerName: 'Transaction Name', flex: 1, minWidth: 200,
+    cellClassName: 'cell-strong',
+    valueGetter: (value, row) => row.transactiontype || row.name,
+  },
+];
+
+const ISSUE_COLUMNS = [
+  {
+    field: 'severity', headerName: 'Severity', width: 120, sortable: true,
+    renderCell: (params) => {
+      const isErr = params.value === 'error';
+      return (
+        <Chip
+          size="small"
+          icon={isErr ? <AlertCircle size={12} /> : <AlertTriangle size={12} />}
+          label={isErr ? 'Error' : 'Warning'}
+          sx={{
+            height: 22, fontSize: '0.7rem', fontWeight: 600, borderRadius: 0.75,
+            bgcolor: isErr ? '#FDECEA' : '#FFF8E1',
+            color: isErr ? '#D32F2F' : '#B26A00', fontFamily: 'inherit',
+            '& .MuiChip-icon': { color: isErr ? '#D32F2F' : '#B26A00', ml: '6px' },
+          }}
+        />
+      );
+    },
+  },
+  { field: 'scope', headerName: 'Scope', width: 140 },
+  { field: 'target', headerName: 'Target', width: 240, cellClassName: 'cell-strong' },
+  { field: 'message', headerName: 'Message', flex: 1, minWidth: 240 },
+];
+
 const DataPreviewPanel = ({ events = [], transactions = [] }) => {
   const [tab, setTab] = useState(0);
   const [eventQuery, setEventQuery] = useState("");
@@ -517,62 +542,15 @@ const DataPreviewPanel = ({ events = [], transactions = [] }) => {
                 }
               />
             ) : (
-              <TableContainer sx={{ maxHeight: 360 }}>
-                <Table
-                  size="small"
-                  stickyHeader
-                  sx={TABLE_SX}
-                  data-testid="event-defs-table"
-                >
-                  <TableHead>
-                    <TableRow>
-                      <TableCell>Event</TableCell>
-                      <TableCell>Field</TableCell>
-                      <TableCell>Data Type</TableCell>
-                      <TableCell>Event Type</TableCell>
-                      <TableCell>Table</TableCell>
-                    </TableRow>
-                  </TableHead>
-                  <TableBody>
-                    {filteredEvents.map((r, i) => (
-                      <TableRow key={`${r.eventName}-${r.fieldName}-${i}`}>
-                        <TableCell
-                          sx={{ fontWeight: 600, color: "#14213d" }}
-                        >
-                          {r.eventName}
-                        </TableCell>
-                        <TableCell>{r.fieldName}</TableCell>
-                        <TableCell>
-                          <Chip
-                            size="small"
-                            label={r.dataType}
-                            sx={{
-                              height: 20,
-                              fontSize: "0.7rem",
-                              bgcolor: r.dataTypeKnown
-                                ? "#F1F3F5"
-                                : "#FFF8E1",
-                              color: r.dataTypeKnown ? "#495057" : "#B26A00",
-                              border: r.dataTypeKnown
-                                ? "1px solid transparent"
-                                : "1px solid #FFE082",
-                              borderRadius: 0.75,
-                              fontWeight: 500,
-                              fontFamily: "inherit",
-                            }}
-                          />
-                        </TableCell>
-                        <TableCell sx={{ color: "#6C757D" }}>
-                          {r.eventType}
-                        </TableCell>
-                        <TableCell sx={{ color: "#6C757D" }}>
-                          {r.eventTable}
-                        </TableCell>
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
-              </TableContainer>
+              <Box data-testid="event-defs-table">
+                <DataTable
+                  rows={filteredEvents}
+                  columns={EVENT_COLUMNS}
+                  autoHeight
+                  getRowId={(r) => `${r.eventName}-${r.fieldName}`}
+                  emptyLabel="No event definitions"
+                />
+              </Box>
             )}
           </Box>
         )}
@@ -596,33 +574,15 @@ const DataPreviewPanel = ({ events = [], transactions = [] }) => {
                 }
               />
             ) : (
-              <TableContainer sx={{ maxHeight: 360 }}>
-                <Table
-                  size="small"
-                  stickyHeader
-                  sx={TABLE_SX}
-                  data-testid="transactions-table"
-                >
-                  <TableHead>
-                    <TableRow>
-                      <TableCell sx={{ width: 56 }}>#</TableCell>
-                      <TableCell>Transaction Name</TableCell>
-                    </TableRow>
-                  </TableHead>
-                  <TableBody>
-                    {filteredTxns.map((r, i) => (
-                      <TableRow key={`${r.transactiontype}-${i}`}>
-                        <TableCell sx={{ color: "#ADB5BD", width: 56 }}>
-                          {i + 1}
-                        </TableCell>
-                        <TableCell sx={{ color: "#14213d", fontWeight: 500 }}>
-                          {r.transactiontype || r.name}
-                        </TableCell>
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
-              </TableContainer>
+              <Box data-testid="transactions-table">
+                <DataTable
+                  rows={filteredTxns}
+                  columns={TXN_COLUMNS}
+                  autoHeight
+                  getRowId={(r) => r.transactiontype || r.name}
+                  emptyLabel="No transaction names"
+                />
+              </Box>
             )}
           </Box>
         )}
@@ -652,69 +612,14 @@ const DataPreviewPanel = ({ events = [], transactions = [] }) => {
                 />
               )
             ) : (
-              <TableContainer sx={{ maxHeight: 360 }}>
-                <Table
-                  size="small"
-                  stickyHeader
-                  sx={TABLE_SX}
-                  data-testid="issues-table"
-                >
-                  <TableHead>
-                    <TableRow>
-                      <TableCell sx={{ width: 100 }}>Severity</TableCell>
-                      <TableCell sx={{ width: 120 }}>Scope</TableCell>
-                      <TableCell sx={{ width: 240 }}>Target</TableCell>
-                      <TableCell>Message</TableCell>
-                    </TableRow>
-                  </TableHead>
-                  <TableBody>
-                    {filteredIssues.map((it, i) => {
-                      const isErr = it.severity === "error";
-                      return (
-                        <TableRow key={`${it.scope}-${it.target}-${i}`}>
-                          <TableCell>
-                            <Chip
-                              size="small"
-                              icon={
-                                isErr ? (
-                                  <AlertCircle size={12} />
-                                ) : (
-                                  <AlertTriangle size={12} />
-                                )
-                              }
-                              label={isErr ? "Error" : "Warning"}
-                              sx={{
-                                height: 22,
-                                fontSize: "0.7rem",
-                                fontWeight: 600,
-                                borderRadius: 0.75,
-                                bgcolor: isErr ? "#FDECEA" : "#FFF8E1",
-                                color: isErr ? "#D32F2F" : "#B26A00",
-                                fontFamily: "inherit",
-                                "& .MuiChip-icon": {
-                                  color: isErr ? "#D32F2F" : "#B26A00",
-                                  ml: "6px",
-                                },
-                              }}
-                            />
-                          </TableCell>
-                          <TableCell sx={{ color: "#495057", fontWeight: 500 }}>
-                            {it.scope}
-                          </TableCell>
-                          <TableCell
-                            sx={{ color: "#14213d", fontWeight: 500 }}
-                          >
-                            {it.target}
-                          </TableCell>
-                          <TableCell sx={{ color: "#495057" }}>
-                            {it.message}
-                          </TableCell>
-                        </TableRow>
-                      );
-                    })}
-                  </TableBody>
-                </Table>
-              </TableContainer>
+              <Box data-testid="issues-table">
+                <DataTable
+                  rows={filteredIssues}
+                  columns={ISSUE_COLUMNS}
+                  autoHeight
+                  emptyLabel="No validation issues"
+                />
+              </Box>
             )}
           </Box>
         )}

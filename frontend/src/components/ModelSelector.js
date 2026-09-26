@@ -58,7 +58,7 @@ const ModelSelector = ({ onModelChange, refreshKey, sx }) => {
 
   if (!status?.configured) {
     return (
-      <Tooltip title="Configure an AI provider in Settings → AI Agent Setup">
+      <Tooltip title="Configure an AI provider in Settings → Copilot Setup">
         <Box sx={{ display: "flex", alignItems: "center", gap: 1, opacity: 0.5, ...sx }}>
           <Bot size={14} />
           <Typography variant="caption" color="text.secondary">No AI provider</Typography>
