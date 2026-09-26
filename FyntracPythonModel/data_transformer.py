@@ -14,6 +14,7 @@ This module:
 4. Iterates ALL instruments (no limit)
 """
 
+import json
 import logging
 import re
 import uuid
@@ -25,8 +26,21 @@ logger = logging.getLogger(__name__)
 
 try:
     from app.python_model.dsl_functions import normalize_date
-except ImportError:
-    from dsl_functions import normalize_date
+except ImportError:  # pragma: no cover - layout-dependent
+    try:
+        from dsl_functions import normalize_date
+    except ImportError:
+        # Last resort: this package's own directory is not on sys.path. Happens
+        # whenever the folder is imported as a package (FyntracPythonModel.x)
+        # rather than from inside it -- the bare-name fallback above then fails
+        # and the whole module becomes unimportable. Resolve against __file__ so
+        # the runtime is genuinely drop-in, in any host layout.
+        import os as _os
+        import sys as _sys
+        _here = _os.path.dirname(_os.path.abspath(__file__))
+        if _here not in _sys.path:
+            _sys.path.insert(0, _here)
+        from dsl_functions import normalize_date
 
 
 # ---------------------------------------------------------------------------
@@ -43,6 +57,142 @@ _IMPORT_FIXED_KEYS = {
     "postingDate", "effectiveDate", "instrumentId", "attributeId",
     "_id", "_metadata_version", "_imported_at",
 }
+
+# The only fields this pipeline actually reads. `status` and `_class` are
+# metadata that nothing here touches, so a record missing them is still
+# perfectly processable -- rejecting the whole file over them meant one
+# malformed record among a hundred thousand aborted an entire EOD run.
+_ESSENTIAL_EVENT_FIELDS = {"eventId", "eventDetail"}
+
+# Standard row columns, lowercased. These are built explicitly from the outer
+# record and must never be run through value-based type coercion: a numeric
+# instrument id inferred as `decimal` would be rewritten from "12345" to
+# 12345.0 and stop matching anything.
+_STANDARD_ROW_COLUMNS = frozenset(
+    {"instrumentid", "postingdate", "effectivedate", "subinstrumentid"}
+)
+
+# Values that mean "no value". Deliberately matches the playground's ingest
+# (backend/server.py: pd.isna, '' , 'none', 'null') and NOTHING more.
+#
+# Placeholders like "N/A" are NOT blanks. Treating them as blank would type a
+# money column as decimal and then rewrite "N/A" to 0.0 -- silently destroying
+# the distinction between "no value" and "zero". Instead a non-numeric value
+# demotes the whole column to `string` in _infer_field_datatype, so float()
+# never runs on it. That is the contract
+# tests/test_event_config_import.py::test_value_inference_is_row_order_independent
+# pins, and it mirrors the backend's _reconcile_field_types.
+_BLANKISH = {"", "none", "null", "nan"}
+
+# Per-field sample cap for datatype inference. A column's type is obvious from
+# a small sample, and scanning millions of values to decide it is pure cost.
+_INFER_SAMPLE_CAP = 200
+
+
+def _as_clean_str(value: Any) -> str:
+    """`str`-safe strip.
+
+    The outer/inner instrumentId lookups used to call .strip() on whatever the
+    JSON held. A numeric instrument id (12345, entirely normal for loan
+    numbers) is an int, and int has no .strip() -- the AttributeError escaped
+    _is_custom_event, then transform(), and killed the whole run.
+    """
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value.strip()
+    return str(value).strip()
+
+
+def _ci_get(row: Dict[str, Any], *names: str) -> Any:
+    """First non-empty value among `names`, matched case-insensitively.
+
+    Every other field read in this pipeline is case-insensitive
+    (get_field_case_insensitive). The import extraction was not: it probed two
+    exact spellings, so `instrumentid` or `INSTRUMENTID` read as absent. For
+    _is_custom_event that silently reclassified a normal activity event as
+    reference data, which skipped the posting-date filter AND dropped the
+    date/instrument columns -- a three-date time series collapsed to one
+    undated row.
+    """
+    if not isinstance(row, dict):
+        return None
+    for name in names:
+        if name in row and row[name] not in (None, ""):
+            return row[name]
+    lowered = {str(k).lower(): k for k in row}
+    for name in names:
+        key = lowered.get(name.lower())
+        if key is not None and row[key] not in (None, ""):
+            return row[key]
+    # Last tier: ignore separators, so Instrument_Id / "instrument id" /
+    # INSTRUMENT-ID all resolve. Only the four standard columns are looked up
+    # this way; freeform field names keep their exact spelling.
+    squashed = {re.sub(r"[^a-z0-9]", "", str(k).lower()): k for k in row}
+    for name in names:
+        key = squashed.get(re.sub(r"[^a-z0-9]", "", name.lower()))
+        if key is not None and row[key] not in (None, ""):
+            return row[key]
+    return None
+
+
+def _is_blankish(value: Any) -> bool:
+    """True for None/NaN/empty/placeholder values."""
+    if value is None:
+        return True
+    if isinstance(value, float) and value != value:  # NaN
+        return True
+    if isinstance(value, (list, dict)):
+        return len(value) == 0
+    return str(value).strip().lower() in _BLANKISH
+
+
+def _normalize_date_field_value(value: Any) -> Any:
+    """Normalize a date-typed field to yyyy-mm-dd, or to a LIST of them.
+
+    Mirrors backend/server.py::_normalize_ingest_date_value. A date field may
+    legitimately hold several dates as a JSON array string or a delimited
+    string; the playground splits those into a real list at ingest. This
+    runtime did not, so `array_length(PaymentDates)` counted CHARACTERS and any
+    schedule driven off such a field was quietly wrong.
+    """
+    if value is None:
+        return ""
+    if isinstance(value, list):
+        out = []
+        for v in value:
+            try:
+                nv = normalize_date(v)
+            except Exception:
+                nv = ""
+            if nv:
+                out.append(nv)
+        return out
+
+    if isinstance(value, dict):
+        return _parse_import_date(value)
+
+    s = value
+    if isinstance(value, str):
+        s = value.strip()
+        if not s:
+            return ""
+        try:
+            parsed = json.loads(s)
+        except Exception:
+            parsed = None
+        if isinstance(parsed, list):
+            return [d for d in (_parse_import_date(p) for p in parsed) if d]
+        if "," in s or ";" in s or "|" in s:
+            parts = [p.strip() for p in re.split(r"[,;|]", s) if p.strip()]
+            normalized = [d for d in (_parse_import_date(p) for p in parts) if d]
+            # Only treat it as a list when every piece really parsed as a date;
+            # otherwise it was ordinary text that happened to contain a comma.
+            if len(normalized) == len(parts) and len(parts) > 1:
+                return normalized
+            return _parse_import_date(s)
+
+    return _parse_import_date(s)
 
 
 # ---------------------------------------------------------------------------
@@ -72,44 +222,122 @@ def _is_custom_event(records: list, event_id: str) -> bool:
     An event is 'standard' only when at least one inner value row contains
     an instrumentId that matches the outer instrumentId of the same event
     record. Otherwise it's a custom/reference event.
+
+    Both lookups are case-insensitive and str-safe (see _ci_get/_as_clean_str).
+    Getting this wrong is expensive in both directions: a misread activity
+    event becomes 'reference', which skips the posting-date filter and strips
+    the date columns, while a misread reference table gets date-filtered down
+    to nothing.
     """
     for event in records:
-        if event.get("eventId") != event_id:
+        if not isinstance(event, dict) or event.get("eventId") != event_id:
             continue
-        outer = (event.get("instrumentId") or event.get("InstrumentId") or "").strip()
+        outer = _as_clean_str(_ci_get(event, "instrumentId"))
         if not outer:
             continue
-        for row_val in event.get("eventDetail", {}).get("values", {}).values():
+        values = (event.get("eventDetail") or {}).get("values") or {}
+        if not isinstance(values, dict):
+            continue
+        for row_val in values.values():
             if not isinstance(row_val, dict):
                 continue
-            inner = (row_val.get("instrumentId") or row_val.get("InstrumentId") or "").strip()
-            if inner and inner == outer:
+            inner = _as_clean_str(_ci_get(row_val, "instrumentId"))
+            # Compare case-insensitively: the outer record and the inner row
+            # come from different systems often enough that casing differs.
+            if inner and inner.lower() == outer.lower():
                 return False
     return True
 
 
+def _looks_numeric(text: str) -> bool:
+    """True for "1250.50", "-42", "1,234.56"; False for zero-padded ids.
+
+    A leading zero marks an identifier ("00123"), not a quantity. Typing such a
+    column as decimal drops the padding and the id stops matching.
+    """
+    stripped = text.strip().lstrip("-").replace(",", "")
+    if not stripped.replace(".", "", 1).isdigit():
+        return False
+    whole = stripped.split(".")[0]
+    if len(whole) > 1 and whole.startswith("0"):
+        return False
+    return True
+
+
+_DATE_TEXT_RE = re.compile(r"^\d{4}-\d{2}-\d{2}")
+
+
+def _looks_like_date_text(text: str) -> bool:
+    """True for a single ISO date, or for several of them in one string.
+
+    A date field may arrive as a JSON array string or a delimited string. If
+    inference does not recognise those as dates, _coerce_value never splits
+    them and the model gets one long string instead of a list of dates.
+    """
+    s = text.strip()
+    if not s:
+        return False
+    if _DATE_TEXT_RE.match(s):
+        return True
+    if s.startswith("["):
+        try:
+            parsed = json.loads(s)
+        except Exception:
+            return False
+        return (isinstance(parsed, list) and len(parsed) > 0
+                and all(isinstance(p, str) and _DATE_TEXT_RE.match(p.strip())
+                        for p in parsed))
+    if "," in s or ";" in s or "|" in s:
+        parts = [p.strip() for p in re.split(r"[,;|]", s) if p.strip()]
+        return len(parts) > 1 and all(_DATE_TEXT_RE.match(p) for p in parts)
+    return False
+
+
 def _infer_field_datatype(values: list) -> str:
     """Infer the best datatype for a field from a list of sample values.
-    Scans all non-null values; the first conclusive type wins (boolean > date > string > decimal).
-    Numeric strings (e.g. "1250.50", "42") are treated as decimal.
+
+    Scans ALL non-blank values and applies a precedence:
+        boolean > date > string > decimal
+
+    It previously returned on the FIRST non-null value, so the answer depended
+    on row order: ['N/A', 900.0] inferred `string` while [900.0, 'N/A'] inferred
+    `decimal`, and a single blank leading cell was enough to type a money column
+    as `string`. Blanks are now ignored for inference, and one non-numeric value
+    demotes the whole column to `string` -- matching how the playground's
+    _reconcile_field_types corrects a bad guess rather than coercing values to
+    0.0 and destroying them.
     """
+    saw_date = False
+    saw_string = False
+    saw_number = False
+
     for v in values:
-        if v is None:
+        if _is_blankish(v):
             continue
         if isinstance(v, bool):
             return "boolean"
-        if isinstance(v, dict) and "$date" in v:
-            return "date"
+        if isinstance(v, dict):
+            if "$date" in v:
+                saw_date = True
+            continue
         if isinstance(v, str):
-            if re.match(r"^\d{4}-\d{2}-\d{2}", v):
-                return "date"
-            # Check if the string is a numeric value (handles "1250.50", "-42", "1,234.56")
-            stripped = v.strip().lstrip('-').replace(',', '')
-            if stripped.replace('.', '', 1).isdigit():
-                return "decimal"
-            return "string"
+            if _looks_like_date_text(v):
+                saw_date = True
+            elif _looks_numeric(v):
+                saw_number = True
+            else:
+                saw_string = True
+            continue
         if isinstance(v, (int, float)):
-            return "decimal"
+            saw_number = True
+
+    if saw_date:
+        return "date"
+    if saw_string:
+        return "string"
+    if saw_number:
+        return "decimal"
+    # Nothing conclusive (all blank). Keep the historical default.
     return "decimal"
 
 
@@ -167,26 +395,134 @@ def _sort_activity_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 # ---------------------------------------------------------------------------
 # Validation
 # ---------------------------------------------------------------------------
+def _record_is_processable(item: Any) -> bool:
+    """True when this one record carries enough to be extracted."""
+    if not isinstance(item, dict):
+        return False
+    if _ESSENTIAL_EVENT_FIELDS - item.keys():
+        return False
+    detail = item.get("eventDetail")
+    return isinstance(detail, dict) and isinstance(detail.get("values"), dict)
+
+
 def validate_import_json(data: Any) -> Optional[str]:
     """
     Validate that the input JSON matches the expected import format.
     Returns an error message string if invalid, or None if valid.
+
+    Only STRUCTURAL problems fail the run -- the payload is not an array, it is
+    empty, or not one record in it is processable. Individual bad records are
+    skipped and reported by build_event_data_from_import instead.
+
+    This used to require all eight of REQUIRED_EVENT_FIELDS on every record,
+    including `status` and `_class`, which nothing in this pipeline reads. One
+    record missing a metadata field aborted the entire batch. The playground
+    enforces none of this (backend/server.py defines REQUIRED_EVENT_FIELDS and
+    never uses it), so a model verified there could hard-fail here on data the
+    playground accepted.
     """
     if not isinstance(data, list):
         return "Input must be a JSON array of event objects."
     if len(data) == 0:
         return "The JSON array is empty — no events to process."
-    for i, item in enumerate(data):
-        if not isinstance(item, dict):
-            return f"Item at index {i} is not a JSON object."
-        missing = REQUIRED_EVENT_FIELDS - item.keys()
-        if missing:
-            return f"Item at index {i} is missing required fields: {', '.join(sorted(missing))}."
-        if not isinstance(item.get("eventDetail"), dict):
-            return f"Item at index {i}: 'eventDetail' must be a JSON object."
-        if "values" not in item["eventDetail"]:
-            return f"Item at index {i}: 'eventDetail' must contain a 'values' field."
+
+    processable = sum(1 for item in data if _record_is_processable(item))
+    if processable == 0:
+        return (
+            "No processable event records found. Every record needs "
+            f"{', '.join(sorted(_ESSENTIAL_EVENT_FIELDS))} and an "
+            "'eventDetail' object containing a 'values' object."
+        )
+    if processable < len(data):
+        logger.warning(
+            "%d of %d event records are not processable (missing %s, or a "
+            "malformed eventDetail.values) and will be skipped.",
+            len(data) - processable, len(data),
+            ", ".join(sorted(_ESSENTIAL_EVENT_FIELDS)),
+        )
     return None
+
+
+def _coerce_value(value: Any, field_type: str) -> Any:
+    """Coerce one value to its column's type.
+
+    Deliberately gentler than the playground in one place: a `string` column's
+    values are left EXACTLY as they are rather than run through str(). The
+    playground stringifies them, but doing that here would turn numbers that
+    models currently do raw Python arithmetic on into strings and break rules
+    that work today. Blank handling and numeric/date coercion match.
+
+    A value that will not convert is kept, not zeroed. Replacing it with 0.0
+    (which the playground does) silently destroys the number and is exactly the
+    failure the backend's _reconcile_field_types was added to prevent.
+    """
+    if _is_blankish(value):
+        if field_type in ("decimal", "float"):
+            return 0.0
+        if field_type in ("integer", "int"):
+            return 0
+        return ""
+
+    if field_type == "date":
+        return _normalize_date_field_value(value)
+
+    if field_type in ("decimal", "float"):
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            return float(value)
+        try:
+            return float(str(value).strip().replace(",", ""))
+        except (TypeError, ValueError):
+            return value
+
+    if field_type in ("integer", "int"):
+        try:
+            return int(float(str(value).strip().replace(",", "")))
+        except (TypeError, ValueError):
+            return value
+
+    return value
+
+
+def _coerce_event_rows(rows: List[Dict[str, Any]], samples: Dict[str, list],
+                       event_id: str) -> Dict[str, str]:
+    """Infer each field's type from its sampled values and coerce every row.
+
+    Standard columns are skipped: they are built explicitly above and are
+    already normalised, and inferring a type for them would rewrite a numeric
+    instrument id as a float.
+    """
+    if not rows or not samples:
+        return {}
+
+    field_types = {
+        name: _infer_field_datatype(vals) for name, vals in samples.items()
+    }
+    unconverted: Dict[str, int] = {}
+
+    for row in rows:
+        for key in list(row.keys()):
+            if str(key).lower() in _STANDARD_ROW_COLUMNS:
+                continue
+            ftype = field_types.get(key)
+            if ftype is None:
+                continue
+            before = row[key]
+            after = _coerce_value(before, ftype)
+            row[key] = after
+            if (ftype in ("decimal", "float", "integer", "int")
+                    and not _is_blankish(before)
+                    and not isinstance(after, (int, float))):
+                unconverted[key] = unconverted.get(key, 0) + 1
+
+    for name, count in unconverted.items():
+        logger.warning(
+            "Event '%s' field '%s': %d value(s) typed as %s would not convert "
+            "to a number and were left unchanged. Check the source data.",
+            event_id, name, count, field_types.get(name),
+        )
+    return field_types
 
 
 # ---------------------------------------------------------------------------
@@ -205,25 +541,36 @@ def build_event_data_from_import(
 
     Returns a list of dicts: [{"event_name": "...", "data_rows": [...]}]
     """
-    event_ids = list({evt.get("eventId", "") for evt in records})
-    custom_events = {eid for eid in event_ids if _is_custom_event(records, eid)}
+    usable = [evt for evt in records if _record_is_processable(evt)]
+    skipped_records = len(records) - len(usable)
+    if skipped_records:
+        logger.warning(
+            "Skipped %d unprocessable event record(s) of %d during extraction.",
+            skipped_records, len(records),
+        )
+
+    event_ids = list({evt.get("eventId", "") for evt in usable})
+    custom_events = {eid for eid in event_ids if _is_custom_event(usable, eid)}
 
     event_rows: dict = defaultdict(list)
     seen_custom_value_ids: dict = defaultdict(set)
+    # field -> sample values, per event, capped. Gathered on the way through so
+    # types can be inferred without a second pass over the source JSON.
+    field_samples: dict = defaultdict(lambda: defaultdict(list))
 
-    for event in records:
+    for event in usable:
         event_id = event.get("eventId", "")
         is_custom = event_id in custom_events
 
-        outer_posting = _parse_import_date(event.get("postingDate") or event.get("PostingDate", ""))
-        outer_effective = _parse_import_date(event.get("effectiveDate") or event.get("EffectiveDate", ""))
-        outer_instrument = (event.get("instrumentId") or event.get("InstrumentId", "")).strip()
+        outer_posting = _parse_import_date(_ci_get(event, "postingDate"))
+        outer_effective = _parse_import_date(_ci_get(event, "effectiveDate"))
+        outer_instrument = _as_clean_str(_ci_get(event, "instrumentId"))
 
         # Filter standard events by allowed instrument list
         if not is_custom and allowed_instruments is not None and outer_instrument not in allowed_instruments:
             continue
 
-        raw_values = event.get("eventDetail", {}).get("values", {})
+        raw_values = (event.get("eventDetail") or {}).get("values") or {}
         for value_id, row_val in raw_values.items():
             if is_custom:
                 if value_id in seen_custom_value_ids[event_id]:
@@ -236,17 +583,11 @@ def build_event_data_from_import(
             if is_custom:
                 row: dict = {}
             else:
-                inner_posting = _parse_import_date(
-                    row_val.get("PostingDate") or row_val.get("postingDate")
-                ) or outer_posting
-                inner_effective = _parse_import_date(
-                    row_val.get("EffectiveDate") or row_val.get("effectiveDate")
-                ) or outer_effective
-                inner_instrument = (
-                    row_val.get("InstrumentId") or row_val.get("instrumentId") or outer_instrument
-                )
-                inner_subinstr = str(
-                    row_val.get("AttributeId") or row_val.get("attributeId") or ""
+                inner_posting = _parse_import_date(_ci_get(row_val, "PostingDate")) or outer_posting
+                inner_effective = _parse_import_date(_ci_get(row_val, "EffectiveDate")) or outer_effective
+                inner_instrument = _as_clean_str(_ci_get(row_val, "InstrumentId")) or outer_instrument
+                inner_subinstr = _as_clean_str(
+                    _ci_get(row_val, "AttributeId", "SubInstrumentId")
                 )
                 row = {
                     "PostingDate": inner_posting,
@@ -264,8 +605,20 @@ def build_event_data_from_import(
                     continue
                 else:
                     row[key] = value
+                    if str(key).lower() not in _STANDARD_ROW_COLUMNS:
+                        _samples = field_samples[event_id][key]
+                        if len(_samples) < _INFER_SAMPLE_CAP:
+                            _samples.append(value)
 
             event_rows[event_id].append(row)
+
+    # Reconcile each field's type against its values and coerce, so the model
+    # receives the same shapes it saw in the playground (which coerces at
+    # ingest -- see backend/server.py). Without this a blank numeric cell
+    # arrived as None and raw arithmetic in the generated template raised
+    # "unsupported operand type(s) for +: 'float' and 'NoneType'".
+    for _eid, _rows in event_rows.items():
+        _coerce_event_rows(_rows, field_samples.get(_eid, {}), _eid)
 
     # Activity-data only: enforce canonical sort
     # (instrumentid ASC, postingdate ASC, effectivedate ASC, subinstrumentid ASC)
@@ -290,18 +643,29 @@ def build_event_definitions_from_import(
     """
     event_fields: dict = defaultdict(lambda: defaultdict(list))
 
-    for event in records:
+    usable = [evt for evt in records if _record_is_processable(evt)]
+    # Classify once per event id. This used to call _is_custom_event(records,
+    # ...) inside the per-record loop, and that helper rescans every record --
+    # O(n^2) over the whole payload.
+    custom_events = {
+        eid for eid in {evt.get("eventId", "") for evt in usable}
+        if _is_custom_event(usable, eid)
+    }
+
+    for event in usable:
         event_id = event.get("eventId", "")
-        outer_instrument = (event.get("instrumentId") or event.get("InstrumentId") or "").strip()
-        is_custom = _is_custom_event(records, event_id)
+        outer_instrument = _as_clean_str(_ci_get(event, "instrumentId"))
+        is_custom = event_id in custom_events
         if not is_custom and allowed_instruments is not None and outer_instrument not in allowed_instruments:
             continue
-        for row_val in event.get("eventDetail", {}).get("values", {}).values():
+        for row_val in ((event.get("eventDetail") or {}).get("values") or {}).values():
             if not isinstance(row_val, dict):
                 continue
             for key, value in row_val.items():
                 if key not in _IMPORT_FIXED_KEYS:
-                    event_fields[event_id][key].append(value)
+                    _samples = event_fields[event_id][key]
+                    if len(_samples) < _INFER_SAMPLE_CAP:
+                        _samples.append(value)
 
     definitions = []
     ts = datetime.now(timezone.utc).isoformat()
@@ -310,7 +674,7 @@ def build_event_definitions_from_import(
             {"name": fn, "datatype": _infer_field_datatype(sv)}
             for fn, sv in fields.items()
         ]
-        is_custom = _is_custom_event(records, event_id)
+        is_custom = event_id in custom_events
         definitions.append({
             "id": str(uuid.uuid4()),
             "event_name": event_id,
@@ -504,13 +868,22 @@ def merge_event_data_by_instrument(event_data_dict: Dict[str, List[Dict]]) -> Li
         # and the good instruments still process, so raising would turn one
         # malformed row into a whole-batch (all-instrument) abort. Logged
         # instead, which keeps the diagnostic without the availability change.
-        evt, idx, kind = bad_row_events[0]
-        logger.error(
-            "Event '%s' has malformed data: row #%d is a %s, not an object. "
-            "Re-import the source file — each row must be a JSON object "
-            "(total bad rows: %d). These rows were skipped.",
-            evt, idx, kind, len(bad_row_events),
-        )
+        # Summarise EVERY affected event, not just the first. With one line for
+        # the first bad row only, a second event's malformed data was invisible
+        # and the run's row count could not be reconciled.
+        per_event: Dict[str, List[tuple]] = defaultdict(list)
+        for evt, idx, kind in bad_row_events:
+            per_event[evt].append((idx, kind))
+        for evt, items in per_event.items():
+            first_idx, first_kind = items[0]
+            logger.error(
+                "Event '%s' has malformed data: %d row(s) skipped, first is "
+                "row #%d (a %s, not an object). Re-import the source file — "
+                "each row must be a JSON object. Skipped rows: %s",
+                evt, len(items), first_idx, first_kind,
+                ", ".join(str(i) for i, _ in items[:20])
+                + (" ..." if len(items) > 20 else ""),
+            )
 
     return list(merged_data.values())
 

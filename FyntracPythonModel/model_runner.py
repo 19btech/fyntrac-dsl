@@ -93,8 +93,7 @@ def _make_collect_lenient(fn, name: str):
                 name, _ref, str(e).split('. Loaded events:')[0],
             )
             try:
-                from app.python_model.dsl_functions import _RowAwareArray
-                return _RowAwareArray([], row_value=0)
+                return _dsl_functions()._RowAwareArray([], row_value=0)
             except Exception:
                 return []
     _lenient.__wrapped_by_fyntrac__ = True
@@ -159,7 +158,20 @@ def _apply_collect_leniency(exec_globals: dict) -> None:
 try:
     from app.python_model.data_transformer import transform
 except ImportError:
-    from data_transformer import transform
+    try:
+        from data_transformer import transform
+    except ImportError:
+        # Last resort: this package's own directory is not on sys.path, which is
+        # the case whenever the folder is imported as a package
+        # (FyntracPythonModel.model_runner) rather than from inside it. Resolve
+        # against __file__ so the runtime is genuinely drop-in in any host
+        # layout. Mirrors the same fallback in data_transformer.py.
+        import os as _os
+        import sys as _sys
+        _here = _os.path.dirname(_os.path.abspath(__file__))
+        if _here not in _sys.path:
+            _sys.path.insert(0, _here)
+        from data_transformer import transform
 
 
 # ---------------------------------------------------------------------------
@@ -177,6 +189,42 @@ _ALLOWED_IMPORT_MODULES = frozenset({
 
 # Dunders the trusted scaffolding itself uses; everything else is blocked.
 _ALLOWED_DUNDER_NAMES = frozenset({'__file__', '__name__'})
+
+
+@functools.lru_cache(maxsize=1)
+def _dsl_functions():
+    """The dsl_functions MODULE OBJECT that generated templates import.
+
+    It must be the same object the template got, not merely an equivalent copy.
+    State in that module lives in module-level thread-local storage, so a second
+    import creates a second, empty store: the zero-amount counter read back 0
+    while the template had been incrementing the other instance, and a lenient
+    collect handed back a _RowAwareArray from a different class object.
+    """
+    import importlib
+    return importlib.import_module(_resolve_dsl_functions_module())
+
+
+@functools.lru_cache(maxsize=1)
+def _resolve_dsl_functions_module() -> str:
+    """The importable module path for this package's dsl_functions copy.
+
+    Checked once per process, in host-layout order. Every candidate is already
+    on _ALLOWED_IMPORT_MODULES, so resolving here cannot widen what a template
+    is permitted to import.
+    """
+    import importlib.util
+    for name in ("app.python_model.dsl_functions",
+                 "FyntracPythonModel.dsl_functions",
+                 "dsl_functions"):
+        try:
+            if importlib.util.find_spec(name) is not None:
+                return name
+        except (ImportError, ValueError, AttributeError):
+            continue
+    # Nothing resolved: keep the host-app path so the error names the layout
+    # the runtime expects rather than something incidental.
+    return "app.python_model.dsl_functions"
 
 
 class ModelSecurityError(Exception):
@@ -275,19 +323,21 @@ class ModelRunner:
         """
         Rewrite dsl_functions imports in the generated Python code so they
         resolve to the copy sitting in this package (app/python_model/).
+
+        The target is resolved to whichever candidate path actually imports,
+        rather than hardcoding `app.python_model`. In the host app that IS the
+        answer, so behaviour there is unchanged; anywhere else the old rewrite
+        produced "No module named 'app'" for every model. That made the
+        playground-vs-production parity check -- the one test that verifies a
+        deployed model behaves exactly as it did in the playground -- impossible
+        to run outside the host, which is precisely where it is needed.
         """
-        python_code = python_code.replace(
-            "from backend.dsl_functions import",
-            "from app.python_model.dsl_functions import"
-        )
-        python_code = python_code.replace(
-            "from dsl_functions import",
-            "from app.python_model.dsl_functions import"
-        )
-        python_code = python_code.replace(
-            "from FyntracPythonModel.dsl_functions import",
-            "from app.python_model.dsl_functions import"
-        )
+        target = _resolve_dsl_functions_module()
+        for candidate in ("from backend.dsl_functions import",
+                          "from FyntracPythonModel.dsl_functions import",
+                          "from dsl_functions import"):
+            python_code = python_code.replace(
+                candidate, "from %s import" % target)
         return python_code
 
     # ------------------------------------------------------------------
@@ -318,7 +368,8 @@ class ModelRunner:
         # even though the same expression evaluates fine inside a schedule
         # column. Bind it here so the template sees one consistent `sum`.
         try:
-            from app.python_model.dsl_functions import sum_vals as _sum_vals, to_number as _to_number
+            _dslf = _dsl_functions()
+            _sum_vals, _to_number = _dslf.sum_vals, _dslf.to_number
 
             def _dsl_sum(iterable, start=0):
                 """DSL sum: None/blank elements count as 0 (mirrors sum_vals)."""
@@ -591,13 +642,10 @@ class ModelRunner:
             # the gap instead of it looking like missing data.
             zero_skipped = 0
             try:
-                try:
-                    from app.python_model.dsl_functions import (
-                        _get_skipped_zero_amount,
-                    )
-                except Exception:
-                    from dsl_functions import _get_skipped_zero_amount
-                zero_skipped = _get_skipped_zero_amount()
+                # Read from the SAME module instance the template incremented --
+                # see _dsl_functions(). A second import has its own empty
+                # thread-local store and always reported 0.
+                zero_skipped = _dsl_functions()._get_skipped_zero_amount()
             except Exception:
                 zero_skipped = 0
 
