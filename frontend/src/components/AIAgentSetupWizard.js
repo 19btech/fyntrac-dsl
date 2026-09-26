@@ -440,7 +440,7 @@ const AIAgentSetupWizard = ({ open, onClose, onSaved }) => {
       PaperProps={{ sx: { borderRadius: 4, boxShadow: '0 32px 64px rgba(0,0,0,0.14)', overflow: 'hidden', border: '1px solid', borderColor: 'divider' } }}
     >
       <DialogTitle sx={{ p: 0 }}>
-        <ModalHeader badge="AI SETUP" title="AI Agent Setup" onClose={onClose} />
+        <ModalHeader badge="AI SETUP" title="Copilot Setup" onClose={onClose} />
       </DialogTitle>
 
       <DialogContent>

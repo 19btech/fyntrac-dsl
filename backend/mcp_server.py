@@ -31,6 +31,7 @@ Run (stdio, for Claude Desktop):
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import sys
@@ -47,6 +48,7 @@ _real_stdout = sys.stdout
 sys.stdout = sys.stderr
 try:
     import backend.server as app            # configures the agent bridge on import
+    from backend import regression as reg   # configured by importing the app
     from backend.agent.tools import (
         dispatch_tool, ToolError, TOOL_SCHEMAS, DESTRUCTIVE_TOOLS,
         set_current_run_id, set_current_session_id,
@@ -55,6 +57,7 @@ try:
 finally:
     sys.stdout = _real_stdout
 
+from fastapi import HTTPException            # noqa: E402
 import mcp.types as types                    # noqa: E402
 from mcp.server.lowlevel import Server       # noqa: E402
 from mcp.server.stdio import stdio_server    # noqa: E402
@@ -150,6 +153,339 @@ _GET_AGENT_TASK_STATUS_TOOL = {
     },
 }
 
+# ──────────────────────────────────────────────────────────────────────────
+# Regression suite — EXECUTE and READ only.
+#
+# Running a case replays its frozen dataset and compares every transaction
+# against the saved baseline. That records a run and its differences, which is
+# what "execute" means here; it never alters what a case expects. The tools
+# that do move a baseline — capture, accept, recapture, activate a version —
+# and every delete are deliberately absent from this connector, so the model
+# can diagnose a regression but not paper over one.
+# ──────────────────────────────────────────────────────────────────────────
+
+_REGRESSION_TOOLS = [
+    {
+        "name": "list_regression_cases",
+        "description": (
+            "List every regression case: its pinned dataset, active baseline "
+            "version, how many transactions that baseline expects, and the "
+            "status of its most recent run (passed / failed / error / "
+            "cancelled). Start here to see what can be run."
+        ),
+        "parameters": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "get_regression_case",
+        "description": (
+            "Details for one regression case: the frozen dataset it replays "
+            "(events, row counts, posting dates, instruments), its baseline "
+            "version history, the amount tolerance it compares with, and any "
+            "warning that its rules are non-deterministic."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {"case_id": {"type": "string"}},
+            "required": ["case_id"],
+        },
+    },
+    {
+        "name": "run_regression",
+        "description": (
+            "Replay regression cases against their frozen datasets and compare "
+            "every transaction to the saved baseline. ASYNC: a book can take "
+            "minutes, so this returns a batch_id immediately — poll "
+            "get_regression_status(batch_id) until it reports complete, then "
+            "read the differences with get_regression_differences. Omit "
+            "case_ids to run every case. This does NOT change any baseline."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "case_ids": {
+                    "type": "array", "items": {"type": "string"},
+                    "description": "Cases to run; omit or leave empty to run all.",
+                },
+                "template_id": {
+                    "type": "string",
+                    "description": (
+                        "Run against this template instead of each case's own. "
+                        "Omit to use the template the case was captured with."),
+                },
+                "use_pinned_code": {
+                    "type": "boolean", "default": False,
+                    "description": (
+                        "Replay the exact rule code frozen in the baseline "
+                        "rather than the template's current state. Use this to "
+                        "tell an engine change apart from a rule change."),
+                },
+            },
+        },
+    },
+    {
+        "name": "get_regression_status",
+        "description": (
+            "Progress of a running batch: percent complete, which case and "
+            "posting date it is on, elapsed and estimated remaining time, and "
+            "once finished the per-case outcomes with their run_ids. Poll this "
+            "after run_regression until status is complete."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {"batch_id": {"type": "string"}},
+            "required": ["batch_id"],
+        },
+    },
+    {
+        "name": "get_regression_differences",
+        "description": (
+            "Every transaction-level difference for one run. Each row names the "
+            "instrument, sub-instrument, posting date, effective date and "
+            "transaction type, with the expected amount, the actual amount and "
+            "the delta. Status is MISSING (in the baseline, not produced), "
+            "ADDED (produced, not expected) or CHANGED (same transaction, "
+            "different amount). Paged — a failing case can have thousands."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "run_id": {"type": "string"},
+                "status": {
+                    "type": "string", "enum": ["MISSING", "ADDED", "CHANGED"],
+                    "description": "Only differences of this kind. Omit for all.",
+                },
+                "limit": {"type": "integer", "default": 50},
+                "offset": {"type": "integer", "default": 0},
+            },
+            "required": ["run_id"],
+        },
+    },
+    {
+        "name": "list_regression_runs",
+        "description": (
+            "Run history for a case (newest first): when it ran, which template "
+            "and baseline version it used, how many differences it found, how "
+            "long it took, and where its time went. Use the run_id with "
+            "get_regression_differences."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "case_id": {"type": "string",
+                            "description": "Omit for the most recent runs across all cases."},
+                "limit": {"type": "integer", "default": 20},
+            },
+        },
+    },
+    {
+        "name": "stop_regression",
+        "description": (
+            "Ask a running batch to stop. Cooperative: a posting date is one "
+            "indivisible execution, so it stops at the next date boundary. A "
+            "stopped case is recorded as cancelled, never as a pass or a "
+            "failure, and keeps no differences."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {"batch_id": {"type": "string"}},
+            "required": ["batch_id"],
+        },
+    },
+]
+
+_REGRESSION_NAMES = {t["name"] for t in _REGRESSION_TOOLS}
+
+
+class _McpBackground:
+    """Stand-in for FastAPI's BackgroundTasks.
+
+    run_regression hands its work to a background task so the HTTP request can
+    return a batch id straight away. Here there is no request to return from,
+    but the same shape applies: schedule it on this server's loop so the model
+    can poll while the book runs.
+    """
+
+    def __init__(self):
+        self._tasks = []
+
+    def add_task(self, fn, *args, **kwargs):
+        self._tasks.append(asyncio.create_task(fn(*args, **kwargs)))
+
+
+def _pct(n, total):
+    return f"{n}/{total}" if total else str(n)
+
+
+async def _regression_tool(name: str, args: dict) -> str:
+    """Dispatch the read/execute regression tools."""
+    if name == "list_regression_cases":
+        cases = await reg.list_cases()
+        if not cases:
+            return ("No regression cases exist yet. They are captured from the "
+                    "app (Rule Manager → Add to Regression); this connector can "
+                    "run and read them but not create them.")
+        lines = [f"{len(cases)} regression case(s):"]
+        for c in cases:
+            last = c.get("last_run") or {}
+            counts = last.get("counts") or {}
+            status = (last.get("status") or "never run").upper()
+            diffs = counts.get("differences")
+            ds = c.get("dataset_summary") or {}
+            lines.append(
+                f"\n  • {c['name']}  [{status}"
+                + (f" · {diffs} difference(s)" if diffs else "") + "]"
+                f"\n      case_id: {c['id']}"
+                f"\n      baseline v{c.get('active_version')} expects "
+                f"{c.get('expected_count', 0):,} transaction(s)"
+                f"\n      dataset: {ds.get('total_rows', 0):,} rows, "
+                f"{ds.get('posting_date_count', 0)} posting date(s), "
+                f"{ds.get('instrument_count', 0)} instrument(s)"
+                f"\n      template: {c.get('source_template_name') or 'workspace rules'}")
+            if last.get("run_id"):
+                lines.append(f"      last run_id: {last['run_id']}")
+        return "\n".join(lines)
+
+    if name == "get_regression_case":
+        case = await reg.get_case(args["case_id"])
+        ds = case.get("dataset_summary") or {}
+        versions = case.get("versions") or []
+        lines = [
+            f"{case['name']}  (case_id: {case['id']})",
+            case.get("description") or "no description",
+            "",
+            f"active baseline: v{case.get('active_version')}",
+            f"amount tolerance: {case.get('amount_tolerance')}",
+            f"template captured with: {case.get('source_template_name') or 'workspace rules'}",
+        ]
+        if case.get("nondeterminism_warnings"):
+            lines.append(
+                "WARNING: these rules reference "
+                + ", ".join(case["nondeterminism_warnings"])
+                + " — results may differ between runs for reasons that are not regressions.")
+        lines += ["", f"versions ({len(versions)}):"]
+        for v in versions[:20]:
+            lines.append(
+                f"  v{v['version']}  {v.get('expected_count', 0):,} txns  "
+                f"{v.get('created_at', '')}  {v.get('note', '')}")
+        return "\n".join(lines)
+
+    if name == "run_regression":
+        req = reg.RunRequest(
+            case_ids=args.get("case_ids") or [],
+            template_id=(args.get("template_id") or None),
+            use_pinned_code=bool(args.get("use_pinned_code")),
+        )
+        bg = _McpBackground()
+        started = await reg.run_regression(req, bg)
+        return (
+            f"Started {started['total']} regression case(s).\n"
+            f"batch_id: {started['batch_id']}\n\n"
+            f"Replaying every posting date of each frozen dataset — this can take "
+            f"minutes. Poll get_regression_status(batch_id=\"{started['batch_id']}\") "
+            f"until it reports complete, then read the differences.")
+
+    if name == "get_regression_status":
+        batch = await reg.get_batch(args["batch_id"])
+        p = batch.get("progress") or {}
+        done = batch.get("status") == "complete"
+        if not done:
+            eta = p.get("eta_ms")
+            return (
+                f"RUNNING — {p.get('percent', 0)}%\n"
+                f"case {_pct(p.get('cases_done', 0) + 1, p.get('cases_total'))}"
+                f"  ({batch.get('current_case') or '…'})\n"
+                + (f"posting date {_pct(p.get('date_index', 0) + 1, p.get('date_total'))}\n"
+                   if p.get("date_total") else "")
+                + (f"~{round(eta / 1000)}s remaining (estimate)\n" if eta else "")
+                + f'\nCall get_regression_status(batch_id="{args["batch_id"]}") again.')
+
+        results = batch.get("results") or []
+        head = ("STOPPED" if batch.get("cancelled") else "COMPLETE")
+        lines = [
+            f"{head} — {batch.get('passed', 0)} passed · "
+            f"{batch.get('failed', 0)} failed · {batch.get('errored', 0)} errored"
+            + (f" · {batch.get('stopped', 0)} stopped" if batch.get("stopped") else ""),
+            "",
+        ]
+        for r in results:
+            c = r.get("counts") or {}
+            lines.append(
+                f"  • {r.get('case_name')}: {str(r.get('status', '')).upper()}"
+                + (f"  ({c.get('differences', 0)} difference(s): "
+                   f"{c.get('missing', 0)} missing, {c.get('added', 0)} added, "
+                   f"{c.get('changed', 0)} changed)" if c else "")
+                + (f"\n      run_id: {r['run_id']}" if r.get("run_id") else ""))
+        if any(r.get("status") in ("failed", "error") for r in results):
+            lines += ["", "Read the detail with get_regression_differences(run_id=…)."]
+        return "\n".join(lines)
+
+    if name == "get_regression_differences":
+        limit = int(args.get("limit") or 50)
+        offset = int(args.get("offset") or 0)
+        diff = await reg.get_run_diff(
+            args["run_id"], status=(args.get("status") or None),
+            limit=limit, offset=offset)
+        counts = diff.get("counts") or {}
+        rows = diff.get("rows") or []
+        lines = [
+            f"run status: {str(diff.get('status', '')).upper()}",
+            f"expected {counts.get('expected_total', 0):,} · "
+            f"actual {counts.get('actual_total', 0):,} · "
+            f"matched {counts.get('matched', 0):,}",
+            f"differences: {counts.get('missing', 0)} missing, "
+            f"{counts.get('added', 0)} added, {counts.get('changed', 0)} changed",
+            "",
+            f"showing {len(rows)} of {diff.get('total', 0)} difference row(s)"
+            + (f" (offset {offset})" if offset else ""),
+            "",
+        ]
+        for r in rows:
+            exp = r.get("expected_amount")
+            act = r.get("actual_amount")
+            lines.append(
+                f"  {r.get('status','?'):<8} {r.get('instrumentid','')}"
+                f"/{r.get('subinstrumentid','')}  {r.get('postingdate','')}"
+                f"  {r.get('transactiontype','')}"
+                f"  expected={'—' if exp is None else exp}"
+                f"  actual={'—' if act is None else act}"
+                f"  delta={r.get('delta')}")
+        if diff.get("total", 0) > offset + len(rows):
+            lines += ["", f"More rows: call again with offset={offset + len(rows)}."]
+        return "\n".join(lines)
+
+    if name == "list_regression_runs":
+        runs = await reg.list_runs(case_id=(args.get("case_id") or None),
+                                   limit=int(args.get("limit") or 20))
+        if not runs:
+            return "No runs recorded."
+        lines = [f"{len(runs)} run(s), newest first:"]
+        for r in runs:
+            c = r.get("counts") or {}
+            t = r.get("timing") or {}
+            tmpl = (r.get("template_used") or {}).get("name") or "?"
+            lines.append(
+                f"\n  • {r.get('started_at','')}  {str(r.get('status','')).upper()}"
+                f"\n      run_id: {r.get('run_id')}"
+                f"\n      case: {r.get('case_name')}  ·  baseline v{r.get('version_compared')}"
+                f"\n      template: {tmpl}"
+                + (f"  ·  {c.get('differences', 0)} difference(s)" if c else "")
+                + (f"\n      took {round((r.get('duration_ms') or 0) / 1000, 1)}s"
+                   + (f", slowest date {t.get('slowest_date')} at "
+                      f"{round((t.get('slowest_date_ms') or 0) / 1000, 1)}s"
+                      if t.get("slowest_date_ms") else "")
+                   if r.get("duration_ms") is not None else ""))
+            for e in (r.get("errors") or [])[:3]:
+                lines.append(f"      error on {e.get('posting_date') or 'run'}: "
+                             f"{str(e.get('error'))[:160]}")
+        return "\n".join(lines)
+
+    if name == "stop_regression":
+        ack = await reg.cancel_batch(args["batch_id"])
+        return ack.get("message", "Stop requested.")
+
+    return f"Unknown regression tool: {name}"
+
+
 server = Server("fyntrac-dsl")
 
 
@@ -174,7 +510,7 @@ async def _resolve_run_config(model_override: str = ""):
     if not cfg:
         raise RuntimeError(
             "No AI provider is configured yet. Open the app → Settings → "
-            "AI Agent Setup, add a provider and API key, then try again.")
+            "Copilot Setup, add a provider and API key, then try again.")
     provider_name = cfg.get("provider", "")
     model = (model_override or "").strip() or cfg.get("selected_model", "")
     try:
@@ -182,7 +518,7 @@ async def _resolve_run_config(model_override: str = ""):
     except Exception as exc:
         raise RuntimeError(
             "The stored API key could not be read. Re-enter it in the app "
-            "under Settings → AI Agent Setup.") from exc
+            "under Settings → Copilot Setup.") from exc
     try:
         provider = app.get_provider(provider_name)
     except Exception as exc:
@@ -190,7 +526,6 @@ async def _resolve_run_config(model_override: str = ""):
     return provider, api_key, model, provider_name
 
 
-import asyncio          # noqa: E402
 import time             # noqa: E402
 import uuid             # noqa: E402
 
@@ -331,6 +666,12 @@ async def _list_tools() -> list[types.Tool]:
             inputSchema=_GET_AGENT_TASK_STATUS_TOOL["parameters"],
         ),
     ]
+    for t in _REGRESSION_TOOLS:
+        tools.append(types.Tool(
+            name=t["name"],
+            description=t["description"],
+            inputSchema=t["parameters"],
+        ))
     for s in _EXPOSED:
         tools.append(types.Tool(
             name=s["name"],
@@ -347,6 +688,14 @@ async def _call_tool(name: str, arguments: dict | None) -> list[types.TextConten
         return [types.TextContent(type="text", text=await _run_agent_task(arguments))]
     if name == "get_agent_task_status":
         return [types.TextContent(type="text", text=await _get_agent_task_status(arguments))]
+    if name in _REGRESSION_NAMES:
+        try:
+            text = await _regression_tool(name, arguments)
+        except HTTPException as exc:
+            text = f"Regression error: {exc.detail}"
+        except KeyError as exc:
+            text = f"Missing required argument: {exc}"
+        return [types.TextContent(type="text", text=text)]
     if name not in _EXPOSED_NAMES:
         return [types.TextContent(
             type="text",

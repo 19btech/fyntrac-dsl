@@ -1,16 +1,16 @@
 import React, { useMemo, useRef, useCallback, useState, useEffect } from "react";
 import {
-  Box, Typography, Card, CardContent, Chip, Alert, Table, TableBody,
-  TableCell, TableContainer, TableHead, TableRow, TableFooter, Tooltip,
+  Box, Typography, Card, CardContent, Chip, Alert, Tooltip,
   IconButton, CircularProgress, Tabs, Tab, Autocomplete, TextField, Button,
   Menu, MenuItem, ToggleButton, ToggleButtonGroup, Stack, Snackbar,
-  TableSortLabel, Fade,
+  Fade,
 } from "@mui/material";
 import {
   Eye, AlertTriangle, CheckCircle2, FileText, DollarSign, Calendar, TrendingUp,
   TrendingDown, Download, ChevronDown, Copy, FileDown, RotateCcw, Filter,
   Layers, ListChecks, LayoutDashboard, Info, XCircle,
 } from "lucide-react";
+import DataTable, { numericAwareComparator } from "../DataTable";
 import html2pdf from "html2pdf.js";
 
 /* ──────────────────────────────────────────────────────────────────────────
@@ -270,6 +270,20 @@ const ScheduleCard = ({ data, title, density, onCopy, defaultMaxRows = 12 }) => 
     allKeys.filter(k => (data || []).some(r => typeof r[k] === 'number'))
   ), [allKeys, data]);
 
+  /* Columns follow whatever keys the schedule produced, so they are derived
+   * rather than declared. Numeric columns right-align and sort numerically. */
+  const scheduleColumns = useMemo(() => allKeys.map(k => ({
+    field: k,
+    headerName: k.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase()),
+    flex: 1,
+    minWidth: 110,
+    type: numericKeys.includes(k) ? 'number' : 'string',
+    align: numericKeys.includes(k) ? 'right' : 'left',
+    headerAlign: numericKeys.includes(k) ? 'right' : 'left',
+    cellClassName: numericKeys.includes(k) ? 'cell-num' : undefined,
+    valueFormatter: (value) => formatNumber(value),
+  })), [allKeys, numericKeys]);
+
   const totals = useMemo(() => {
     const sums = {};
     for (const k of numericKeys) {
@@ -326,56 +340,30 @@ const ScheduleCard = ({ data, title, density, onCopy, defaultMaxRows = 12 }) => 
           </IconButton>
         </Tooltip>
       </Box>
-      <TableContainer sx={{ maxHeight: 420 }}>
-        <Table size="small" stickyHeader>
-          <TableHead>
-            <TableRow>
-              <TableCell sx={{ fontWeight: 600, fontSize: '0.75rem', py: 0.75, bgcolor: '#F8F9FA', color: C.muted, position: 'sticky', left: 0, zIndex: 3, minWidth: 36 }}>#</TableCell>
-              {allKeys.map(k => (
-                <TableCell key={k} align={numericKeys.includes(k) ? 'right' : 'left'}
-                  sx={{ fontWeight: 600, fontSize: '0.75rem', py: 0.75, bgcolor: '#F8F9FA', color: C.body, whiteSpace: 'nowrap' }}>
-                  {k.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())}
-                </TableCell>
-              ))}
-            </TableRow>
-          </TableHead>
-          <TableBody>
-            {rows.map((row, i) => (
-              <TableRow key={i} hover>
-                <TableCell sx={{ fontSize: '0.75rem', py: cellPy, color: C.muted, position: 'sticky', left: 0, bgcolor: '#fff', zIndex: 1 }}>{i + 1}</TableCell>
-                {allKeys.map(k => {
-                  const v = row[k];
-                  const isNum = typeof v === 'number';
-                  return (
-                    <TableCell key={k} align={isNum ? 'right' : 'left'}
-                      sx={{
-                        fontSize: '0.75rem', py: cellPy, whiteSpace: 'nowrap',
-                        color: isNum ? C.ink : C.body,
-                        fontWeight: isNum ? 500 : 400,
-                        fontFamily: isNum ? 'monospace' : 'inherit',
-                      }}>
-                      {formatNumber(v)}
-                    </TableCell>
-                  );
-                })}
-              </TableRow>
-            ))}
-          </TableBody>
-          {numericKeys.length > 0 && (
-            <TableFooter>
-              <TableRow sx={{ '& td': { borderTop: `2px solid ${C.border}`, bgcolor: '#FAFBFD', position: 'sticky', bottom: 0 } }}>
-                <TableCell sx={{ fontSize: '0.75rem', fontWeight: 700, color: C.ink }}>Total</TableCell>
-                {allKeys.map(k => (
-                  <TableCell key={k} align={numericKeys.includes(k) ? 'right' : 'left'}
-                    sx={{ fontSize: '0.75rem', fontWeight: 700, color: C.ink, fontFamily: numericKeys.includes(k) ? 'monospace' : 'inherit' }}>
-                    {numericKeys.includes(k) ? formatNumber(totals[k]) : ''}
-                  </TableCell>
-                ))}
-              </TableRow>
-            </TableFooter>
-          )}
-        </Table>
-      </TableContainer>
+      {/* Totals move above the grid: the free DataGrid has no footer row,
+          and pinning them here keeps them visible while scrolling. */}
+      {numericKeys.length > 0 && (
+        <Box sx={{ display: 'flex', gap: 1.5, flexWrap: 'wrap', px: 1.5, py: 0.75,
+                   bgcolor: '#FAFBFD', borderBottom: `1px solid ${C.border}` }}>
+          <Typography variant="caption" sx={{ fontWeight: 700, color: C.ink }}>Total</Typography>
+          {numericKeys.map(k => (
+            <Typography key={k} variant="caption" sx={{ color: C.body }}>
+              {k.replace(/_/g, ' ')}:{' '}
+              <Box component="span" sx={{ fontFamily: 'monospace', fontWeight: 700, color: C.ink }}>
+                {formatNumber(totals[k])}
+              </Box>
+            </Typography>
+          ))}
+        </Box>
+      )}
+      <Box sx={{ height: 420 }}>
+        <DataTable
+          rows={rows}
+          columns={scheduleColumns}
+          pageSize={100}
+          emptyLabel="No schedule rows"
+        />
+      </Box>
       {hasMore && (
         <Box sx={{ px: 1.5, py: 0.75, borderTop: `1px solid ${C.border}`, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
           <Typography variant="caption" color={C.muted}>
@@ -394,8 +382,11 @@ const ScheduleCard = ({ data, title, density, onCopy, defaultMaxRows = 12 }) => 
  * Transactions table with sort, totals, running balance, DR/CR
  * ──────────────────────────────────────────────────────────────────────── */
 const TransactionsCard = ({ transactions, density, onCopy }) => {
-  const [orderBy, setOrderBy] = useState('postingdate');
-  const [order, setOrder] = useState('asc');
+  /* The running balance is accumulated in posting-date order and stays that
+   * way: the grid's own sorting reorders the display only. Sorting by amount
+   * and getting a "running" balance that jumps around was never meaningful. */
+  const [orderBy] = useState('postingdate');
+  const [order] = useState('asc');
 
   const sorted = useMemo(() => {
     const arr = [...transactions];
@@ -426,11 +417,6 @@ const TransactionsCard = ({ transactions, density, onCopy }) => {
     return { debit, credit, net };
   }, [transactions]);
 
-  const handleSort = (col) => {
-    if (orderBy === col) setOrder(o => (o === 'asc' ? 'desc' : 'asc'));
-    else { setOrderBy(col); setOrder('asc'); }
-  };
-
   const handleCopy = async () => {
     try {
       await navigator.clipboard.writeText(toCSV(transactions));
@@ -442,14 +428,6 @@ const TransactionsCard = ({ transactions, density, onCopy }) => {
   if (!transactions || transactions.length === 0) return null;
 
   const cellPy = density === 'compact' ? 0.25 : 0.625;
-  const head = (col, label, align = 'left') => (
-    <TableCell align={align} sx={{ fontWeight: 600, fontSize: '0.75rem', py: 0.75, bgcolor: '#F8F9FA', color: C.body, whiteSpace: 'nowrap' }}>
-      <TableSortLabel active={orderBy === col} direction={orderBy === col ? order : 'asc'} onClick={() => handleSort(col)}>
-        {label}
-      </TableSortLabel>
-    </TableCell>
-  );
-
   return (
     <Card variant="outlined" sx={{ borderColor: C.border, borderRadius: 2, mb: 1.5 }}>
       <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, px: 1.5, py: 1, borderBottom: `1px solid ${C.border}`, bgcolor: '#FAFBFD' }}>
@@ -467,61 +445,30 @@ const TransactionsCard = ({ transactions, density, onCopy }) => {
           </IconButton>
         </Tooltip>
       </Box>
-      <TableContainer sx={{ maxHeight: 480 }}>
-        <Table size="small" stickyHeader>
-          <TableHead>
-            <TableRow>
-              {head('postingdate', 'Posting Date')}
-              {head('effectivedate', 'Effective Date')}
-              {head('transactiontype', 'Type')}
-              {head('instrumentid', 'Instrument')}
-              {head('subinstrumentid', 'Sub')}
-              {head('amount', 'Amount', 'right')}
-              <TableCell align="right" sx={{ fontWeight: 600, fontSize: '0.75rem', py: 0.75, bgcolor: '#F8F9FA', color: C.body }}>Running</TableCell>
-            </TableRow>
-          </TableHead>
-          <TableBody>
-            {withBalance.map((t, i) => {
-              const amt = Number(t.amount) || 0;
-              const isDr = amt > 0;
-              const isCr = amt < 0;
-              return (
-                <TableRow key={i} hover>
-                  <TableCell sx={{ fontSize: '0.75rem', py: cellPy }}>{t.postingdate || '—'}</TableCell>
-                  <TableCell sx={{ fontSize: '0.75rem', py: cellPy }}>{t.effectivedate || t.postingdate || '—'}</TableCell>
-                  <TableCell sx={{ fontSize: '0.75rem', py: cellPy }}>
-                    <Chip label={t.transactiontype || 'Unknown'} size="small"
-                      sx={{ fontSize: '0.6875rem', height: 18, bgcolor: C.brandSoft, color: C.brand }} />
-                  </TableCell>
-                  <TableCell sx={{ fontSize: '0.75rem', py: cellPy, color: C.muted, fontFamily: 'monospace' }}>{t.instrumentid || '—'}</TableCell>
-                  <TableCell sx={{ fontSize: '0.75rem', py: cellPy, color: C.muted, fontFamily: 'monospace' }}>{t.subinstrumentid || '1'}</TableCell>
-                  <TableCell align="right" sx={{ fontSize: '0.75rem', py: cellPy, fontFamily: 'monospace', fontWeight: 600 }}>
-                    <Box sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.5, color: isDr ? C.successInk : isCr ? C.dangerInk : C.ink }}>
-                      {isDr && <TrendingUp size={12} />}
-                      {isCr && <TrendingDown size={12} />}
-                      {formatNumber(Math.abs(amt))}
-                    </Box>
-                  </TableCell>
-                  <TableCell align="right" sx={{ fontSize: '0.75rem', py: cellPy, fontFamily: 'monospace', color: C.muted }}>
-                    {formatNumber(t._runningBalance)}
-                  </TableCell>
-                </TableRow>
-              );
-            })}
-          </TableBody>
-          <TableFooter>
-            <TableRow sx={{ '& td': { borderTop: `2px solid ${C.border}`, bgcolor: '#FAFBFD', position: 'sticky', bottom: 0 } }}>
-              <TableCell colSpan={5} sx={{ fontSize: '0.75rem', fontWeight: 700, color: C.ink }}>
-                Totals · DR {formatNumber(totals.debit)} · CR {formatNumber(totals.credit)}
-              </TableCell>
-              <TableCell align="right" sx={{ fontSize: '0.75rem', fontWeight: 700, fontFamily: 'monospace', color: C.ink }}>
-                {formatNumber(totals.net)}
-              </TableCell>
-              <TableCell />
-            </TableRow>
-          </TableFooter>
-        </Table>
-      </TableContainer>
+      {/* Totals above the grid — see the schedule table for why. */}
+      <Box sx={{ display: 'flex', gap: 1.5, flexWrap: 'wrap', px: 1.5, py: 0.75,
+                 bgcolor: '#FAFBFD', borderBottom: `1px solid ${C.border}` }}>
+        <Typography variant="caption" sx={{ fontWeight: 700, color: C.ink }}>
+          Totals
+        </Typography>
+        <Typography variant="caption" sx={{ color: C.successInk }}>
+          DR <Box component="span" sx={{ fontFamily: 'monospace', fontWeight: 700 }}>{formatNumber(totals.debit)}</Box>
+        </Typography>
+        <Typography variant="caption" sx={{ color: C.dangerInk }}>
+          CR <Box component="span" sx={{ fontFamily: 'monospace', fontWeight: 700 }}>{formatNumber(totals.credit)}</Box>
+        </Typography>
+        <Typography variant="caption" sx={{ color: C.ink }}>
+          Net <Box component="span" sx={{ fontFamily: 'monospace', fontWeight: 700 }}>{formatNumber(totals.net)}</Box>
+        </Typography>
+      </Box>
+      <Box sx={{ height: 480 }}>
+        <DataTable
+          rows={withBalance}
+          columns={TXN_COLUMNS}
+          pageSize={100}
+          emptyLabel="No transactions"
+        />
+      </Box>
     </Card>
   );
 };
@@ -529,6 +476,54 @@ const TransactionsCard = ({ transactions, density, onCopy }) => {
 /* ──────────────────────────────────────────────────────────────────────────
  * Checks tab — grouped warnings
  * ──────────────────────────────────────────────────────────────────────── */
+/* Transaction columns. Debit/credit styling keys off the sign of the amount,
+ * as the old table's inline colouring did. */
+const TXN_COLUMNS = [
+  { field: 'postingdate', headerName: 'Posting Date', flex: 1, minWidth: 110 },
+  {
+    field: 'effectivedate', headerName: 'Effective Date', flex: 1, minWidth: 110,
+    valueGetter: (value, row) => value || row.postingdate || '',
+  },
+  {
+    field: 'transactiontype', headerName: 'Type', flex: 1.1, minWidth: 130,
+    renderCell: (params) => (
+      <Chip label={params.value || 'Unknown'} size="small"
+        sx={{ fontSize: '0.6875rem', height: 18, bgcolor: C.brandSoft, color: C.brand }} />
+    ),
+  },
+  {
+    field: 'instrumentid', headerName: 'Instrument', flex: 1, minWidth: 110,
+    cellClassName: 'cell-mono',
+  },
+  {
+    field: 'subinstrumentid', headerName: 'Sub', flex: 0.5, minWidth: 70,
+    cellClassName: 'cell-mono',
+    valueGetter: (value) => value || '1',
+    sortComparator: numericAwareComparator,
+  },
+  {
+    field: 'amount', headerName: 'Amount', type: 'number', flex: 0.9, minWidth: 110,
+    align: 'right', headerAlign: 'right', cellClassName: 'cell-num',
+    renderCell: (params) => {
+      const amt = Number(params.value) || 0;
+      return (
+        <Box sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.5,
+                   color: amt > 0 ? C.successInk : amt < 0 ? C.dangerInk : C.ink }}>
+          {amt > 0 && <TrendingUp size={12} />}
+          {amt < 0 && <TrendingDown size={12} />}
+          {formatNumber(Math.abs(amt))}
+        </Box>
+      );
+    },
+  },
+  {
+    field: '_runningBalance', headerName: 'Running', type: 'number',
+    flex: 0.9, minWidth: 110, align: 'right', headerAlign: 'right',
+    cellClassName: 'cell-mono',
+    valueFormatter: (value) => formatNumber(value),
+  },
+];
+
 const ChecksPanel = ({ warnings }) => {
   const [onlyErrors, setOnlyErrors] = useState(false);
   const groups = useMemo(() => {

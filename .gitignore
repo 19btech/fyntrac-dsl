@@ -88,3 +88,6 @@ android-sdk/
 # AI encryption key
 .ai_secret_key
 backend/.ai_secret_key
+
+# Agent-uploaded Excel workbooks (user data, never committed)
+backend/agent/uploads/

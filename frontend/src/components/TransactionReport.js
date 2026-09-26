@@ -1,12 +1,12 @@
-import React, { useState, useEffect, useMemo, useCallback } from "react";
+import React, { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import {
-  Box, Typography, Table, TableBody, TableCell, TableContainer, TableHead,
-  TableRow, TableFooter, TableSortLabel, Paper, Button, Menu, MenuItem,
-  CircularProgress, Alert, Chip, Stack, TextField, MenuItem as SelectItem,
-  Tooltip, IconButton, LinearProgress,
+  Box, Typography, Button, Menu, MenuItem, CircularProgress, Alert, Chip,
+  Stack, Tooltip, LinearProgress,
 } from "@mui/material";
+import { useGridApiRef, gridFilteredSortedRowEntriesSelector } from "@mui/x-data-grid";
+import DataTable, { numericAwareComparator } from "./DataTable";
 import {
-  Receipt, Download, RotateCcw, FileDown, ChevronDown, Filter, X,
+  Receipt, Download, RotateCcw, FileDown, ChevronDown, Play,
 } from "lucide-react";
 import axios from "axios";
 import { API } from "../config";
@@ -21,29 +21,43 @@ const C = {
   zebra: '#FAFBFF',
 };
 
-/* The canonical report order. instrumentid appeared twice in the spec; the
- * second occurrence is redundant once subinstrumentid follows it. */
-const DEFAULT_SORT = [
-  'instrumentid', 'postingdate', 'effectivedate', 'subinstrumentid', 'amount',
-];
-
-const COLUMNS = [
-  { key: 'instrumentid',    label: 'Instrument ID',   align: 'left'  },
-  { key: 'subinstrumentid', label: 'Sub-Instrument',  align: 'left',  numericAware: true },
-  { key: 'postingdate',     label: 'Posting Date',    align: 'left'  },
-  { key: 'effectivedate',   label: 'Effective Date',  align: 'left'  },
-  { key: 'transactiontype', label: 'Transaction Type', align: 'left' },
-  { key: 'amount',          label: 'Amount',          align: 'right', numeric: true },
-  { key: 'template_name',   label: 'Rule / Template', align: 'left'  },
-];
-
 const fmtAmount = (v) => {
   const n = Number(v);
   if (!Number.isFinite(n)) return '—';
   return n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 4 });
 };
 
-const slugify = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
+/* Column order as specified: dates, then identity, then amount last. Amount is
+ * typed as a number so the column menu offers numeric comparisons rather than
+ * text matching. */
+const COLUMNS = [
+  { field: 'postingdate', headerName: 'Posting Date', minWidth: 130, flex: 1 },
+  { field: 'effectivedate', headerName: 'Effective Date', minWidth: 130, flex: 1 },
+  {
+    field: 'instrumentid', headerName: 'Instrument ID', minWidth: 140, flex: 1.2,
+    cellClassName: 'cell-strong',
+  },
+  {
+    field: 'subinstrumentid', headerName: 'Sub-Instrument', minWidth: 130, flex: 0.8,
+    sortComparator: numericAwareComparator,
+  },
+  {
+    field: 'transactiontype', headerName: 'Transaction Type', minWidth: 160, flex: 1.2,
+    renderCell: (params) => (params.value
+      ? <Chip size="small" label={params.value}
+          sx={{ height: 18, fontSize: '0.65rem', bgcolor: C.surface,
+                border: `1px solid ${C.border}`, color: C.body }} />
+      : '—'),
+  },
+  {
+    field: 'amount', headerName: 'Amount', type: 'number',
+    minWidth: 130, flex: 0.9, align: 'right', headerAlign: 'right',
+    valueFormatter: (value) => fmtAmount(value),
+    cellClassName: (params) => (Number(params.value) < 0 ? 'cell-num neg' : 'cell-num'),
+  },
+];
+
+const EXPORT_KEYS = COLUMNS.map(c => c.field);
 
 const toCSV = (rows, keys) => {
   if (!rows || !rows.length) return '';
@@ -64,38 +78,29 @@ const downloadBlob = (data, filename, mime = 'text/csv') => {
   URL.revokeObjectURL(url);
 };
 
-/* Numeric-aware comparator so sub-instrument 10 sorts after 9, not after 1. */
-const cmp = (a, b, col) => {
-  const av = a[col.key], bv = b[col.key];
-  if (col.numeric) return (Number(av) || 0) - (Number(bv) || 0);
-  if (col.numericAware) {
-    const an = Number(av), bn = Number(bv);
-    const aNum = Number.isFinite(an), bNum = Number.isFinite(bn);
-    if (aNum && bNum) return an - bn;
-    if (aNum !== bNum) return aNum ? -1 : 1;
-  }
-  return String(av ?? '').localeCompare(String(bv ?? ''));
-};
-
 export default function TransactionReport() {
+  const apiRef = useGridApiRef();
   const [rows, setRows] = useState([]);
   const [meta, setMeta] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
-  const [sortBy, setSortBy] = useState(null);          // null = canonical order
-  const [sortDir, setSortDir] = useState('asc');
-  const [instrument, setInstrument] = useState('');
-  const [template, setTemplate] = useState('');
   const [exportAnchor, setExportAnchor] = useState(null);
+  const [running, setRunning] = useState(false);
+  const [runResult, setRunResult] = useState(null);
+  /* What the grid is currently showing, after its own filters and sorting. The
+   * summary total and both exports follow it, so what you export is what you
+   * can see. */
+  const [visible, setVisible] = useState([]);
+  const visibleKey = useRef('');
 
   const load = useCallback(async () => {
     setLoading(true); setError(null);
     try {
-      const params = { limit: 20000 };
-      if (instrument) params.instrumentid = instrument;
-      if (template) params.template_name = template;
-      const res = await axios.get(`${API}/transaction-reports`, { params });
-      setRows(res.data?.transactions || []);
+      const res = await axios.get(`${API}/transaction-reports`, { params: { limit: 20000 } });
+      const data = res.data?.transactions || [];
+      // The grid needs a stable id, and the report has no natural key: the same
+      // instrument, date and type can legitimately repeat.
+      setRows(data.map((r, i) => ({ ...r, id: i })));
       setMeta(res.data || null);
     } catch (e) {
       setError(e?.response?.data?.detail || e.message || 'Failed to load transactions');
@@ -103,44 +108,70 @@ export default function TransactionReport() {
     } finally {
       setLoading(false);
     }
-  }, [instrument, template]);
+  }, []);
 
   useEffect(() => { load(); }, [load]);
 
-  /* The server already returns canonical order; only re-sort when the user
-   * clicks a header, so the default view is the report order as specified. */
-  const sorted = useMemo(() => {
-    if (!sortBy) return rows;
-    const col = COLUMNS.find(c => c.key === sortBy);
-    if (!col) return rows;
-    const out = [...rows].sort((a, b) => cmp(a, b, col));
-    return sortDir === 'desc' ? out.reverse() : out;
-  }, [rows, sortBy, sortDir]);
+  /* Run the whole book: every instrument, every posting date, using the rules
+   * currently in the workspace. No template argument — the server combines the
+   * saved rules by priority, which is exactly the template last loaded into the
+   * Rule Manager. `replace` clears the previous report first, so a second press
+   * does not double every row. */
+  const runAll = useCallback(async () => {
+    setRunning(true); setError(null); setRunResult(null);
+    try {
+      const res = await axios.post(`${API}/transaction-reports/run`, null,
+        { params: { replace: true } });
+      setRunResult(res.data || null);
+      await load();
+    } catch (e) {
+      setError(e?.response?.data?.detail || e.message || 'Run failed');
+    } finally {
+      setRunning(false);
+    }
+  }, [load]);
+
+  /* The grid owns filtering and sorting, so the visible set is read back from
+   * it rather than recomputed here. onStateChange fires on every interaction,
+   * so this only re-renders when the visible rows actually differ. */
+  const syncVisible = useCallback(() => {
+    if (!apiRef.current?.getRow) return;
+    let entries;
+    try {
+      entries = gridFilteredSortedRowEntriesSelector(apiRef);
+    } catch {
+      return;
+    }
+    const models = entries.map(e => e.model);
+    const key = `${models.length}:${models[0]?.id ?? ''}:${models[models.length - 1]?.id ?? ''}`;
+    if (key === visibleKey.current) return;
+    visibleKey.current = key;
+    setVisible(models);
+  }, [apiRef]);
+
+  useEffect(() => { visibleKey.current = ''; syncVisible(); }, [rows, syncVisible]);
 
   const total = useMemo(
-    () => sorted.reduce((s, r) => s + (Number(r.amount) || 0), 0), [sorted]);
+    () => visible.reduce((s, r) => s + (Number(r.amount) || 0), 0), [visible]);
 
-  const handleSort = (key) => {
-    if (sortBy === key) {
-      if (sortDir === 'asc') setSortDir('desc');
-      else { setSortBy(null); setSortDir('asc'); }   // third click → canonical
-    } else { setSortBy(key); setSortDir('asc'); }
-  };
+  const isFiltered = visible.length !== rows.length;
+  const exportSuffix = () => (isFiltered ? 'filtered' : 'all');
 
   const exportCsv = () => {
-    downloadBlob(toCSV(sorted, COLUMNS.map(c => c.key)),
-      `transaction-report-${slugify(instrument) || 'all'}.csv`);
+    downloadBlob(toCSV(visible, EXPORT_KEYS), `transaction-report-${exportSuffix()}.csv`);
     setExportAnchor(null);
   };
   const exportJson = () => {
-    downloadBlob(JSON.stringify({ generated_at: new Date().toISOString(),
-      filters: { instrument, template }, total_amount: total,
-      row_count: sorted.length, transactions: sorted }, null, 2),
-      `transaction-report-${slugify(instrument) || 'all'}.json`, 'application/json');
+    downloadBlob(JSON.stringify({
+      generated_at: new Date().toISOString(),
+      filtered: isFiltered,
+      total_amount: total,
+      row_count: visible.length,
+      transactions: visible.map(r => Object.fromEntries(
+        EXPORT_KEYS.map(k => [k, r[k]]))),
+    }, null, 2), `transaction-report-${exportSuffix()}.json`, 'application/json');
     setExportAnchor(null);
   };
-
-  const hasFilters = Boolean(instrument || template);
 
   return (
     <Box sx={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0, bgcolor: C.bg }}>
@@ -154,46 +185,28 @@ export default function TransactionReport() {
           Transaction Report
         </Typography>
         <Typography variant="caption" sx={{ color: C.muted, flex: 1, minWidth: 180 }}>
-          Every transaction across all periods, by instrument and sub-instrument.
+          Every transaction across all periods. Use a column's menu to sort,
+          filter or hide it.
         </Typography>
 
-        <TextField
-          select size="small" label="Instrument" value={instrument}
-          onChange={(e) => setInstrument(e.target.value)}
-          sx={{ minWidth: 160, '& .MuiInputBase-root': { fontSize: '0.75rem' } }}
-        >
-          <SelectItem value="">All instruments</SelectItem>
-          {(meta?.filters?.instruments || []).map(i => (
-            <SelectItem key={i} value={i}>{i}</SelectItem>
-          ))}
-        </TextField>
+        <Tooltip title="Run the loaded rules over every instrument, on every posting date in the current dataset">
+          <span>
+            <Button size="small" variant="contained" onClick={runAll} disabled={running || loading}
+              startIcon={running ? <CircularProgress size={12} color="inherit" /> : <Play size={13} />}
+              sx={{ textTransform: 'none', fontSize: '0.75rem', bgcolor: C.success,
+                '&:hover': { bgcolor: '#0E9F6E' } }}>
+              {running ? 'Running…' : 'Play'}
+            </Button>
+          </span>
+        </Tooltip>
 
-        <TextField
-          select size="small" label="Rule / Template" value={template}
-          onChange={(e) => setTemplate(e.target.value)}
-          sx={{ minWidth: 170, '& .MuiInputBase-root': { fontSize: '0.75rem' } }}
-        >
-          <SelectItem value="">All rules</SelectItem>
-          {(meta?.filters?.templates || []).map(t => (
-            <SelectItem key={t} value={t}>{t}</SelectItem>
-          ))}
-        </TextField>
-
-        {hasFilters && (
-          <Tooltip title="Clear filters">
-            <IconButton size="small" onClick={() => { setInstrument(''); setTemplate(''); }}>
-              <X size={14} />
-            </IconButton>
-          </Tooltip>
-        )}
-
-        <Button size="small" variant="outlined" onClick={load} disabled={loading}
+        <Button size="small" variant="outlined" onClick={load} disabled={loading || running}
           startIcon={loading ? <CircularProgress size={12} color="inherit" /> : <RotateCcw size={13} />}
           sx={{ textTransform: 'none', fontSize: '0.75rem', borderColor: C.brand, color: C.brand }}>
           {loading ? 'Loading…' : 'Refresh'}
         </Button>
 
-        <Button size="small" variant="contained" disabled={!sorted.length}
+        <Button size="small" variant="contained" disabled={!visible.length}
           onClick={(e) => setExportAnchor(e.currentTarget)}
           startIcon={<Download size={13} />} endIcon={<ChevronDown size={13} />}
           sx={{ textTransform: 'none', fontSize: '0.75rem', bgcolor: C.brand,
@@ -210,12 +223,38 @@ export default function TransactionReport() {
         </Menu>
       </Box>
 
-      {loading && <LinearProgress sx={{ height: 2 }} />}
+      {(loading || running) && <LinearProgress sx={{ height: 2 }} />}
 
-      {/* Summary strip */}
+      {/* What the last Play produced. The source is stated rather than chosen:
+          the report always runs the rules currently in the workspace. */}
+      {runResult && !error && (
+        <Alert severity={runResult.dates_failed ? 'warning' : 'success'}
+          onClose={() => setRunResult(null)}
+          sx={{ mx: 2, mt: 1, py: 0.25 }}>
+          <Typography variant="caption">
+            {runResult.message}
+            {runResult.rule_names?.length > 0 && (
+              <> — using {runResult.rule_names.length} rule
+              {runResult.rule_names.length !== 1 ? 's' : ''}: {runResult.rule_names.join(', ')}</>
+            )}
+          </Typography>
+          {runResult.errors?.length > 0 && (
+            <Box component="ul" sx={{ pl: 2, m: 0, fontSize: '0.72rem' }}>
+              {runResult.errors.slice(0, 5).map((e, i) => (
+                <li key={i}>{e.posting_date || 'run'}: {String(e.error).slice(0, 200)}</li>
+              ))}
+            </Box>
+          )}
+        </Alert>
+      )}
+
+      {/* Summary strip — follows the grid's current filters. */}
       {meta && !error && (
         <Stack direction="row" spacing={1} sx={{ px: 2, py: 1, flexWrap: 'wrap', gap: 0.75 }}>
-          <Chip size="small" label={`${sorted.length.toLocaleString()} transactions`}
+          <Chip size="small"
+            label={isFiltered
+              ? `${visible.length.toLocaleString()} of ${rows.length.toLocaleString()} transactions`
+              : `${rows.length.toLocaleString()} transactions`}
             sx={{ bgcolor: C.brandSoft, color: C.brand, fontWeight: 600 }} />
           <Chip size="small" label={`${meta.summary?.instrument_count ?? 0} instruments`}
             sx={{ bgcolor: C.surface, color: C.body, border: `1px solid ${C.border}` }} />
@@ -224,11 +263,6 @@ export default function TransactionReport() {
           <Chip size="small" label={`Total ${fmtAmount(total)}`}
             sx={{ bgcolor: total < 0 ? C.dangerSoft : C.successSoft,
                   color: total < 0 ? C.dangerInk : C.successInk, fontWeight: 700 }} />
-          {sortBy && (
-            <Chip size="small" icon={<Filter size={12} />} onDelete={() => setSortBy(null)}
-              label={`sorted by ${sortBy} ${sortDir}`}
-              sx={{ bgcolor: C.surface, border: `1px solid ${C.border}` }} />
-          )}
         </Stack>
       )}
 
@@ -237,98 +271,22 @@ export default function TransactionReport() {
       {meta?.truncated && (
         <Alert severity="info" sx={{ mx: 2, mb: 1, fontSize: '0.75rem' }}>
           Showing the first {meta.returned.toLocaleString()} of {meta.total.toLocaleString()} transactions.
-          Filter by instrument to narrow the report.
         </Alert>
       )}
 
-      {/* Table */}
+      {/* Grid */}
       <Box sx={{ flex: 1, minHeight: 0, px: 2, pb: 2 }}>
-        {!loading && !sorted.length && !error ? (
-          <Box sx={{ py: 6, textAlign: 'center', color: C.muted }}>
-            <Receipt size={28} />
-            <Typography variant="body2" sx={{ mt: 1, fontWeight: 600, color: C.body }}>
-              No transactions yet
-            </Typography>
-            <Typography variant="caption">
-              Execute a template to generate transactions, then refresh this report.
-            </Typography>
-          </Box>
-        ) : (
-          <TableContainer component={Paper} elevation={0}
-            sx={{ height: '100%', border: `1px solid ${C.border}`, borderRadius: 1.5 }}>
-            <Table stickyHeader size="small" sx={{ '& td, & th': { fontSize: '0.75rem' } }}>
-              <TableHead>
-                <TableRow>
-                  {COLUMNS.map(col => (
-                    <TableCell key={col.key} align={col.align}
-                      sx={{ fontWeight: 700, color: C.ink, bgcolor: C.brandSoft,
-                            whiteSpace: 'nowrap', borderBottom: `2px solid #D6D8FE` }}>
-                      <TableSortLabel
-                        active={sortBy === col.key}
-                        direction={sortBy === col.key ? sortDir : 'asc'}
-                        onClick={() => handleSort(col.key)}
-                      >
-                        {col.label}
-                      </TableSortLabel>
-                    </TableCell>
-                  ))}
-                </TableRow>
-              </TableHead>
-              <TableBody>
-                {sorted.map((r, i) => (
-                  <TableRow key={`${r.instrumentid}-${r.subinstrumentid}-${r.postingdate}-${r.template_name}-${i}`}
-                    sx={{ '&:nth-of-type(odd)': { bgcolor: C.zebra },
-                          '&:hover': { bgcolor: C.brandSoft } }}>
-                    <TableCell sx={{ fontWeight: 600, color: C.ink, whiteSpace: 'nowrap' }}>
-                      {r.instrumentid || '—'}
-                    </TableCell>
-                    <TableCell sx={{ color: C.body }}>{r.subinstrumentid || '—'}</TableCell>
-                    <TableCell sx={{ color: C.body, whiteSpace: 'nowrap' }}>{r.postingdate || '—'}</TableCell>
-                    <TableCell sx={{ color: C.body, whiteSpace: 'nowrap' }}>{r.effectivedate || '—'}</TableCell>
-                    <TableCell>
-                      {r.transactiontype
-                        ? <Chip size="small" label={r.transactiontype}
-                            sx={{ height: 18, fontSize: '0.65rem', bgcolor: C.surface,
-                                  border: `1px solid ${C.border}`, color: C.body }} />
-                        : '—'}
-                    </TableCell>
-                    <TableCell align="right" sx={{
-                      fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
-                      fontWeight: 600,
-                      color: Number(r.amount) < 0 ? C.danger : C.ink, whiteSpace: 'nowrap',
-                    }}>
-                      {fmtAmount(r.amount)}
-                    </TableCell>
-                    <TableCell sx={{ color: C.muted }}>{r.template_name || '—'}</TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-              {sorted.length > 0 && (
-                <TableFooter>
-                  <TableRow>
-                    <TableCell colSpan={5} sx={{ fontWeight: 700, color: C.ink,
-                      bgcolor: C.surface, borderTop: `2px solid ${C.border}`, position: 'sticky', bottom: 0 }}>
-                      Total — {sorted.length.toLocaleString()} transactions
-                    </TableCell>
-                    <TableCell align="right" sx={{
-                      fontWeight: 800, bgcolor: C.surface, borderTop: `2px solid ${C.border}`,
-                      position: 'sticky', bottom: 0,
-                      fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
-                      color: total < 0 ? C.danger : C.ink,
-                    }}>
-                      {fmtAmount(total)}
-                    </TableCell>
-                    <TableCell sx={{ bgcolor: C.surface, borderTop: `2px solid ${C.border}`,
-                      position: 'sticky', bottom: 0 }} />
-                  </TableRow>
-                </TableFooter>
-              )}
-            </Table>
-          </TableContainer>
-        )}
+        <DataTable
+          apiRef={apiRef}
+          rows={rows}
+          columns={COLUMNS}
+          loading={loading || running}
+          onStateChange={syncVisible}
+          emptyLabel={rows.length
+            ? 'No transactions match these filters'
+            : 'No transactions yet — press Play to run the loaded rules'}
+        />
       </Box>
     </Box>
   );
 }
-
-export { DEFAULT_SORT, COLUMNS, toCSV };

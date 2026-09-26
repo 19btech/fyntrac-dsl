@@ -1,9 +1,9 @@
 import React, { useMemo } from "react";
 import {
   Box, Typography, Card, IconButton, Chip,
-  Table, TableBody, TableCell, TableContainer, TableHead, TableRow,
 } from "@mui/material";
 import { CheckCircle2, XCircle, AlertTriangle, X } from "lucide-react";
+import DataTable from "../DataTable";
 
 /**
  * Parses a single print line of the form `name = <repr>` or `name: <repr>`
@@ -182,28 +182,25 @@ function PerInstrumentTable({ rows, valueLabel }) {
   const visible = rows.slice(0, 100);
   return (
     <Box>
-      <TableContainer sx={{ border: '1px solid #E0E4EA', borderRadius: 1, maxHeight: 360 }}>
-        <Table size="small" stickyHeader>
-          <TableHead>
-            <TableRow>
-              <TableCell sx={{ fontWeight: 700, bgcolor: '#F5F7FA', width: 40 }}>#</TableCell>
-              <TableCell sx={{ fontWeight: 700, bgcolor: '#F5F7FA' }}>Instrument</TableCell>
-              <TableCell sx={{ fontWeight: 700, bgcolor: '#F5F7FA' }}>{valueLabel}</TableCell>
-            </TableRow>
-          </TableHead>
-          <TableBody>
-            {visible.map((r, idx) => (
-              <TableRow key={idx} hover>
-                <TableCell sx={{ color: '#90A4AE', fontFamily: 'monospace', verticalAlign: 'top' }}>{idx + 1}</TableCell>
-                <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.8125rem', verticalAlign: 'top' }}>{r.instrument || '—'}</TableCell>
-                <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.8125rem', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
-                  {_formatFullArrayValue(r.value, r.raw)}
-                </TableCell>
-              </TableRow>
-            ))}
-          </TableBody>
-        </Table>
-      </TableContainer>
+      <Box sx={{ height: 360 }}>
+        <DataTable
+          rows={visible}
+          columns={[
+            { field: 'instrument', headerName: 'Instrument', flex: 1, minWidth: 140,
+              cellClassName: 'cell-mono',
+              valueGetter: (value) => value || '—' },
+            { field: 'value', headerName: valueLabel, flex: 2, minWidth: 220,
+              cellClassName: 'cell-mono', sortable: false,
+              renderCell: (params) => (
+                <Box sx={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', py: 0.5 }}>
+                  {_formatFullArrayValue(params.row.value, params.row.raw)}
+                </Box>
+              ) },
+          ]}
+          getRowHeight={() => 'auto'}
+          emptyLabel="No values"
+        />
+      </Box>
       {rows.length > visible.length && (
         <Typography variant="caption" color="text.secondary" sx={{ mt: 0.5, display: 'block' }}>
           Showing first {visible.length} of {rows.length} rows
@@ -222,33 +219,18 @@ function RowsTable({ rows }) {
   const visible = rows.slice(0, 50);
   return (
     <Box>
-      <TableContainer sx={{ border: '1px solid #E0E4EA', borderRadius: 1, maxHeight: 320 }}>
-        <Table size="small" stickyHeader>
-          <TableHead>
-            <TableRow>
-              <TableCell sx={{ fontWeight: 700, bgcolor: '#F5F7FA', width: 40 }}>#</TableCell>
-              {columns.map(c => (
-                <TableCell key={c} sx={{ fontWeight: 700, bgcolor: '#F5F7FA' }}>{c}</TableCell>
-              ))}
-            </TableRow>
-          </TableHead>
-          <TableBody>
-            {visible.map((row, idx) => (
-              <TableRow key={idx} hover>
-                <TableCell sx={{ color: '#90A4AE', fontFamily: 'monospace' }}>{idx + 1}</TableCell>
-                {columns.map(c => {
-                  const v = isObjectList ? row?.[c] : row;
-                  return (
-                    <TableCell key={c} sx={{ fontFamily: 'monospace', fontSize: '0.8125rem' }}>
-                      {v === null || v === undefined ? '—' : formatScalar(v)}
-                    </TableCell>
-                  );
-                })}
-              </TableRow>
-            ))}
-          </TableBody>
-        </Table>
-      </TableContainer>
+      <Box sx={{ height: 320 }}>
+        <DataTable
+          rows={visible.map((row, i) => (isObjectList ? { ...row, id: i } : { value: row, id: i }))}
+          columns={columns.map(c => ({
+            field: c, headerName: c, flex: 1, minWidth: 120,
+            cellClassName: 'cell-mono',
+            valueFormatter: (value) => (
+              value === null || value === undefined ? '—' : formatScalar(value)),
+          }))}
+          emptyLabel="No rows"
+        />
+      </Box>
       {rows.length > visible.length && (
         <Typography variant="caption" color="text.secondary" sx={{ mt: 0.5, display: 'block' }}>
           Showing first {visible.length} of {rows.length} rows

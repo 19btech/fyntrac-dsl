@@ -1,22 +1,25 @@
 import React, { useState, useEffect, useRef } from "react";
 import axios from "axios";
 import { useToast } from "../components/ToastProvider";
-import { Upload, Code, BookOpen, Sparkles, Trash2, Search as SearchIcon, Settings, ChevronDown, Database, Calculator, Eye, Save, Receipt, Menu as MenuIcon } from "lucide-react";
+import { Upload, Code, BookOpen, Sparkles, Trash2, Search as SearchIcon, Settings, ChevronDown, Database, Calculator, Eye, Save, Receipt, Menu as MenuIcon, ShieldCheck } from "lucide-react";
 import { Button, Tabs, Tab, Box, Menu, MenuItem, Divider, Alert, Typography, ToggleButtonGroup, ToggleButton, Tooltip, CircularProgress, IconButton, useMediaQuery, useTheme } from '@mui/material';
 import Editor from "@monaco-editor/react";
 import FileUploadPanel from "../components/FileUploadPanel";
 import LeftSidebar from "../components/LeftSidebar";
-import ChatAssistant from "../components/ChatAssistant";
+import ChatAssistant, { CHAT_PANEL_WIDTH, CHAT_PANEL_WIDTH_EXPANDED }
+  from "../components/ChatAssistant";
+import FyntracAssistantButton from "../components/FyntracAssistantButton";
 import ConsoleOutput from "../components/ConsoleOutput";
 import FunctionBrowser from "../components/FunctionBrowser";
 import EventDataViewer from "../components/EventDataViewer";
 import AppDialog, { useAppDialog } from "../components/AppDialog";
 import AIAgentSetupWizard from "../components/AIAgentSetupWizard";
+import RegressionModal from "../components/RegressionModal";
+import TransactionReport from "../components/TransactionReport";
 import LivePreview from "../components/rulebuilder/LivePreview";
 import AccountingRuleBuilder from "../components/rulebuilder/AccountingRuleBuilder";
 import TemplateLibrary from "../components/rulebuilder/TemplateWizard";
 import ACCOUNTING_TEMPLATES from "../components/rulebuilder/AccountingTemplates";
-import TransactionReport from "../components/TransactionReport";
 import SavedRules from "../components/rulebuilder/SavedRules";
 import { API } from "../config";
 import { runAllTests } from "../agent/testing";
@@ -63,6 +66,7 @@ const Dashboard = () => {
   // Custom function builder removed: feature disabled
   const [showEventDataViewer, setShowEventDataViewer] = useState(false);
   const [showAISetup, setShowAISetup] = useState(false);
+  const [showRegression, setShowRegression] = useState(false);
   const [providerRefreshKey, setProviderRefreshKey] = useState(0);
   const [codeRefreshKey, setCodeRefreshKey] = useState(0);
   const [codeRefreshing, setCodeRefreshing] = useState(false);
@@ -76,13 +80,30 @@ const Dashboard = () => {
   // Execution results for LivePreview
   const [lastExecutionResult, setLastExecutionResult] = useState({ transactions: [], printOutputs: [], templateName: '' });
   // Template batch execution state
-  const [batchRunning, setBatchRunning] = useState(false);
-  const [batchStatus, setBatchStatus] = useState(null); // { total, current, currentDate, results, errors }
   const chatAssistantRef = useRef(null);
   const editorRef = useRef(null);
   const monacoRef = useRef(null);
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
-  const [chatCollapsed, setChatCollapsed] = useState(false);
+    const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  // The Copilot is hidden until the floating Fyntrac button summons it. It
+  // stays mounted behind a zero-width dock so an in-flight agent run survives
+  // being dismissed.
+  const [chatOpen, setChatOpen] = useState(false);
+  const [chatExpanded, setChatExpanded] = useState(false);
+  const CHAT_WIDTH = chatExpanded ? CHAT_PANEL_WIDTH_EXPANDED : CHAT_PANEL_WIDTH;
+
+  // The Copilot and the events sidebar trade places: opening one folds the
+  // other away, and dismissing the Copilot hands the space back.
+  const openChat = React.useCallback(() => {
+    setChatOpen(true);
+    setSidebarCollapsed(true);
+  }, []);
+  const closeChat = React.useCallback(() => {
+    setChatOpen(false);
+    setSidebarCollapsed(false);
+  }, []);
+  const toggleChat = React.useCallback((next) => {
+    if (next) openChat(); else closeChat();
+  }, [openChat, closeChat]);
   const toast = useToast();
   const { confirmProps, openConfirm, promptProps, openPrompt } = useAppDialog();
 
@@ -375,91 +396,6 @@ const Dashboard = () => {
     });
   };
 
-  const handleRunTemplate = async (templateId) => {
-    if (!selectedEvent) {
-      toast.error("Please select an event first");
-      return;
-    }
-
-    // Fetch unique posting dates from loaded activity event data
-    let postingDates = [];
-    try {
-      const pdRes = await axios.get(`${API}/event-data/posting-dates`);
-      postingDates = pdRes.data?.posting_dates || [];
-    } catch (_e) {
-      postingDates = [];
-    }
-
-    if (postingDates.length <= 1) {
-      // Zero or one posting date — run exactly as before (pass the single date if present)
-      try {
-        // Wipe previous transaction reports before running
-        try { await axios.delete(`${API}/transaction-reports/all`); } catch (_) {}
-        addConsoleLog("Executing template on event data...", "info");
-        const response = await axios.post(`${API}/templates/execute`, {
-          template_id: templateId,
-          event_name: selectedEvent,
-          ...(postingDates.length === 1 ? { posting_date: postingDates[0] } : {}),
-        });
-        addConsoleLog(`✓ Execution completed! Generated ${response.data.transactions.length} transactions`, "success");
-        addConsoleLog(`Report ID: ${response.data.report_id}`, "info");
-        addConsoleLog(JSON.stringify(response.data.transactions, null, 2), "result");
-        toast.success(`Generated ${response.data.transactions.length} transactions`);
-      } catch (error) {
-        addConsoleLog(`✗ Execution error: ${error.response?.data?.detail || error.message}`, "error");
-        toast.error("Execution failed");
-      }
-      return;
-    }
-
-    // Multiple posting dates — run sequentially across all dates
-    // Wipe previous transaction reports before batch run
-    try { await axios.delete(`${API}/transaction-reports/all`); } catch (_) {}
-    setBatchRunning(true);
-    setBatchStatus({ total: postingDates.length, current: 0, currentDate: null, results: [], errors: [] });
-    addConsoleLog(`Starting batch execution across ${postingDates.length} posting dates...`, "info");
-
-    const batchResults = [];
-    const batchErrors = [];
-
-    for (let i = 0; i < postingDates.length; i++) {
-      const date = postingDates[i];
-      setBatchStatus(prev => ({ ...prev, current: i + 1, currentDate: date }));
-      addConsoleLog(`Running posting date ${i + 1} of ${postingDates.length}: ${date}`, "info");
-
-      try {
-        const response = await axios.post(`${API}/templates/execute`, {
-          template_id: templateId,
-          event_name: selectedEvent,
-          posting_date: date,
-        });
-        const txCount = response.data.transactions.length;
-        batchResults.push({ date, transactions: txCount });
-        addConsoleLog(`  ✓ ${date} — ${txCount} transaction(s) generated`, "success");
-      } catch (error) {
-        const msg = error.response?.data?.detail || error.message;
-        batchErrors.push({ date, error: msg });
-        addConsoleLog(`  ✗ ${date} — ${msg}`, "error");
-        // Continue to next date
-      }
-    }
-
-    setBatchStatus(prev => ({ ...prev, current: postingDates.length, currentDate: null, results: batchResults, errors: batchErrors }));
-    setBatchRunning(false);
-
-    const totalTx = batchResults.reduce((sum, r) => sum + r.transactions, 0);
-    if (batchErrors.length === 0) {
-      addConsoleLog(`✓ Batch complete — ${totalTx} total transaction(s) across ${postingDates.length} posting dates`, "success");
-      toast.success(`Batch complete: ${totalTx} transactions across ${postingDates.length} dates`);
-    } else {
-      addConsoleLog(`Batch finished with ${batchErrors.length} failure(s). ${totalTx} transaction(s) generated from ${batchResults.length} successful date(s).`, "warning");
-      batchErrors.forEach(e => {
-        addConsoleLog(`  Failed date ${e.date}: ${e.error}`, "error");
-      });
-      toast.error(`Batch finished with ${batchErrors.length} failure(s)`);
-    }
-  };
-
   const handleDeployTemplate = async (templateId, templateName) => {
     try {
       addConsoleLog(`Deploying template '${templateName}'...`, 'info');
@@ -650,7 +586,8 @@ const Dashboard = () => {
     }
   };
 
-  const handleAskAIAboutFunction = (funcName, message) => {
+    const handleAskAIAboutFunction = (funcName, message) => {
+    openChat();
     if (chatAssistantRef.current && chatAssistantRef.current.sendSilentMessage) {
       chatAssistantRef.current.sendSilentMessage(funcName, message);
     }
@@ -659,7 +596,7 @@ const Dashboard = () => {
   return (
     <div style={{ display: 'flex', height: '100vh', backgroundColor: '#F8F9FA', overflow: 'auto', minWidth: '900px' }} data-testid="dashboard-container">
       {/* Left Sidebar */}
-        <div className="sidebar-enter" style={{ position: 'relative', zIndex: 1200 }}>
+        <div className="sidebar-enter" style={{ position: 'relative', zIndex: 1200, flexShrink: 0 }}>
         <LeftSidebar 
           events={events} 
           selectedEvent={selectedEvent}
@@ -833,9 +770,20 @@ const Dashboard = () => {
                   sx={{ fontSize: '0.875rem', py: 1.5 }}
                 >
                   <Sparkles size={16} style={{ color: '#6C757D', marginRight: 8 }} />
-                  AI Agent Setup
+                  Copilot Setup
                 </MenuItem>
-                
+                <Divider />
+                <MenuItem
+                  onClick={() => {
+                    setShowRegression(true);
+                    setSettingsAnchorEl(null);
+                  }}
+                  data-testid="menu-regression"
+                  sx={{ fontSize: '0.875rem', py: 1.5 }}
+                >
+                  <ShieldCheck size={16} style={{ color: '#6C757D', marginRight: 8 }} />
+                  Regression
+                </MenuItem>
               </Menu>
             </div>
           </div>
@@ -872,12 +820,6 @@ const Dashboard = () => {
                   addConsoleLog={addConsoleLog}
                   selectedEvent={selectedEvent}
                   onViewEvent={(eventName) => { setSelectedEvent(eventName); setShowEventDataViewer(true); }}
-                  onGenerateSample={(message) => {
-                    if (chatAssistantRef.current && chatAssistantRef.current.sendAgentMessage) {
-                      setChatCollapsed(false);
-                      chatAssistantRef.current.sendAgentMessage(message);
-                    }
-                  }}
                 />
             </TabPanel>
 
@@ -1200,14 +1142,21 @@ const Dashboard = () => {
             </TabPanel>
           </Box>
 
-          {/* Right Sidebar - Chat Assistant */}
-          <div className="chat-panel-enter" style={{ flexShrink: 0, position: 'relative', zIndex: 1200 }}>
-            <ChatAssistant 
+                    {/* Right Sidebar - Fyntrac Copilot */}
+          <div
+            className="chat-dock"
+            data-open={chatOpen}
+            data-testid="chat-dock"
+            aria-hidden={!chatOpen}
+            style={{ width: chatOpen ? CHAT_WIDTH : 0 }}
+          >
+            <ChatAssistant
               ref={chatAssistantRef}
-              dslFunctions={dslFunctions} 
+              dslFunctions={dslFunctions}
               events={events}
-              collapsed={chatCollapsed}
-              onToggleCollapsed={() => setChatCollapsed(c => !c)}
+              onClose={closeChat}
+              expanded={chatExpanded}
+              onToggleExpanded={() => setChatExpanded(e => !e)}
               onInsertCode={(code) => setDslCode(prev => prev + "\n" + code)}
               onOverwriteCode={(code) => setDslCode(code)}
               editorCode={dslCode}
@@ -1268,9 +1217,13 @@ const Dashboard = () => {
         />
       )}
 
+            {/* Floating Copilot launcher — the only way in when the panel is closed */}
+      <FyntracAssistantButton open={chatOpen} onToggle={toggleChat} />
+
       <AppDialog {...confirmProps} />
       <AppDialog {...promptProps} />
       <AIAgentSetupWizard open={showAISetup} onClose={() => setShowAISetup(false)} onSaved={() => setProviderRefreshKey(k => k + 1)} />
+      <RegressionModal open={showRegression} onClose={() => setShowRegression(false)} />
     </div>
   );
 };

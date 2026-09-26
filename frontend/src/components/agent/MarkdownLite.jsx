@@ -192,7 +192,7 @@ export default function MarkdownLite({ text, style }) {
   const blocks = [];
   let i = 0;
   let key = 0;
-  const listItemStyle = { margin: "2px 0", lineHeight: 1.55 };
+  const listItemStyle = { margin: "0 0 0.35em", lineHeight: 1.6 };
 
   while (i < lines.length) {
     const line = lines[i];
@@ -308,10 +308,14 @@ export default function MarkdownLite({ text, style }) {
     const h = line.match(/^(#{1,4})\s+(.*)/);
     if (h) {
       const level = h[1].length;
-      const sizes = { 1: 17, 2: 15.5, 3: 14, 4: 13 };
+      // Relative so headings scale with whatever font-size the host sets: the
+      // Copilot reads larger than the agent timeline, from the same renderer.
+      const sizes = { 1: "1.5em", 2: "1.28em", 3: "1.1em", 4: "1em" };
       blocks.push(
         <div key={key++} style={{
-          fontWeight: 700, fontSize: sizes[level] || 13, margin: "10px 0 4px", lineHeight: 1.3,
+          fontWeight: 650, fontSize: sizes[level] || "1em",
+          letterSpacing: "-0.018em", color: "#14213D", lineHeight: 1.3,
+          margin: blocks.length === 0 ? "0 0 0.45em" : "1.2em 0 0.45em",
         }}>{renderInline(h[2], `h${key}`)}</div>
       );
       i++;
@@ -327,7 +331,7 @@ export default function MarkdownLite({ text, style }) {
         i++;
       }
       blocks.push(
-        <ul key={key++} style={{ margin: "4px 0", paddingLeft: 20 }}>
+        <ul key={key++} style={{ margin: "0 0 0.8em", paddingLeft: "1.45em" }}>
           {items.map((it, ii) => (
             <li key={ii} style={{ ...listItemStyle, marginLeft: it.indent >= 2 ? 16 : 0 }}>
               {renderInline(it.text, `li${key}-${ii}`)}
@@ -346,7 +350,7 @@ export default function MarkdownLite({ text, style }) {
         i++;
       }
       blocks.push(
-        <ol key={key++} style={{ margin: "4px 0", paddingLeft: 22 }}>
+        <ol key={key++} style={{ margin: "0 0 0.8em", paddingLeft: "1.55em" }}>
           {items.map((it, ii) => (
             <li key={ii} style={listItemStyle}>{renderInline(it, `ol${key}-${ii}`)}</li>
           ))}
@@ -370,7 +374,7 @@ export default function MarkdownLite({ text, style }) {
       i++;
     }
     blocks.push(
-      <p key={key++} style={{ margin: "4px 0", lineHeight: 1.55 }}>
+      <p key={key++} style={{ margin: "0 0 0.7em", lineHeight: 1.65 }}>
         {para.map((pl, pi) => (
           <React.Fragment key={pi}>
             {pi > 0 && <br />}
@@ -381,5 +385,6 @@ export default function MarkdownLite({ text, style }) {
     );
   }
 
-  return <div style={{ fontSize: 13, ...style }}>{blocks}</div>;
+  // `md-lite` only strips the trailing margin off the last block.
+  return <div className="md-lite" style={{ fontSize: 13, ...style }}>{blocks}</div>;
 }

@@ -1,28 +1,34 @@
 import React, { useState, useRef, useEffect, useCallback } from "react";
 import { useToast } from "./ToastProvider";
 import {
-  Send, Square, Sparkles, Bot, MessageSquare, ChevronLeft, ChevronRight,
-  Paperclip, History, Plus, Trash2, FileSpreadsheet, ArrowDown, Copy, Check,
-  FileText,
+  Send, Square, MessageSquare, Menu as MenuIcon, SquarePen,
+  Maximize2, Minimize2, PanelRightClose, Trash2, X, ChevronRight,
+  ArrowDown, Copy, Check,
 } from "lucide-react";
 import {
-  Box, Paper, Stack, Typography, IconButton, Tooltip, TextField, Chip,
-  Avatar, Drawer, List, ListItemButton, ListItemText, Divider,
-  ToggleButton, ToggleButtonGroup, Badge, InputAdornment,
-  Menu, MenuItem, ListItemIcon,
+  Box, Paper, Stack, Typography, IconButton, Tooltip, TextField, Badge,
 } from "@mui/material";
 import ModelSelector from "./ModelSelector";
 import AgentMessage from "./agent/AgentMessage";
 import AgentRunMessage from "./agent/AgentRunMessage";
 import MarkdownLite from "./agent/MarkdownLite";
+import { FyntracMark } from "./fyntracMark";
 import { runAgentPipeline, generateMessageId } from "../agent/agentPipeline";
 import { detectFunctionMention, getExplanation, formatForChat, detectConceptMention, getConcept, formatConceptForChat } from "../agent/testing/explanationStore";
 import "./ChatAssistant.css";
 
+// Panel widths, shared with the dock that slides it in and out.
+export const CHAT_PANEL_WIDTH = 504;
+export const CHAT_PANEL_WIDTH_EXPANDED = 760;
+
+// Icons down the panel's left rail.
+const railBtnSx = {
+  width: 30, height: 30, borderRadius: 2, color: "#6B7280",
+  "&:hover": { bgcolor: "#F1F3F9", color: "#14213D" },
+};
+
 // ── Multi-conversation store (localStorage) ────────────────────────────────
-// Each chat: { id, title, updatedAt, sessionId, messages, workbooks }
-// `workbooks` records the Excel files uploaded during that conversation so
-// reopening a chat shows which model files the agent had available.
+// Each chat: { id, title, updatedAt, sessionId, messages }
 const CHATS_KEY = "fyntracChats";
 const CURRENT_CHAT_KEY = "fyntracCurrentChatId";
 const MAX_CHATS = 20;
@@ -76,6 +82,23 @@ const fmtWhen = (ts) => {
     : d.toLocaleDateString([], { month: "short", day: "numeric" });
 };
 
+// "11 minutes ago" — how the conversation list dates a thread.
+const fmtAgo = (ts) => {
+  if (!ts) return "";
+  const mins = Math.round(Math.max(0, Date.now() - ts) / 60000);
+  if (mins < 1) return "just now";
+  const plural = (n, unit) => `${n} ${unit}${n === 1 ? "" : "s"} ago`;
+  if (mins < 60) return plural(mins, "minute");
+  const hours = Math.round(mins / 60);
+  if (hours < 24) return plural(hours, "hour");
+  const days = Math.round(hours / 24);
+  if (days < 7) return plural(days, "day");
+  const d = new Date(ts);
+  return d.toLocaleDateString([], d.getFullYear() === new Date().getFullYear()
+    ? { month: "short", day: "numeric" }
+    : { month: "short", day: "numeric", year: "numeric" });
+};
+
 // Day bucket key + human label for sticky date separators between turns.
 const dayKey = (ts) => (ts ? new Date(ts).toDateString() : "");
 const dayLabel = (ts) => {
@@ -91,7 +114,7 @@ const dayLabel = (ts) => {
     : { month: "short", day: "numeric", year: "numeric" });
 };
 
-const ChatAssistantComponent = ({ dslFunctions, events, onInsertCode, onOverwriteCode, editorCode, consoleOutput, editorRef, monacoRef, providerRefreshKey, uiContext, onAgentDataChange, collapsed = false, onToggleCollapsed }, ref) => {
+const ChatAssistantComponent = ({ dslFunctions, events, onInsertCode, onOverwriteCode, editorCode, consoleOutput, editorRef, monacoRef, providerRefreshKey, uiContext, onAgentDataChange, onClose, expanded = false, onToggleExpanded }, ref) => {
   const toast = useToast();
 
   const [currentChatId, setCurrentChatId] = useState(() => {
@@ -109,14 +132,6 @@ const ChatAssistantComponent = ({ dslFunctions, events, onInsertCode, onOverwrit
       return [];
     }
   });
-  const [workbooks, setWorkbooks] = useState(() => {
-    const chat = loadChats().find(c => c.id === (localStorage.getItem(CURRENT_CHAT_KEY) || ""));
-    return (chat && chat.workbooks) || [];
-  });
-  const [documents, setDocuments] = useState(() => {
-    const chat = loadChats().find(c => c.id === (localStorage.getItem(CURRENT_CHAT_KEY) || ""));
-    return (chat && chat.documents) || [];
-  });
   const [chats, setChats] = useState(loadChats);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [input, setInput] = useState("");
@@ -132,19 +147,10 @@ const ChatAssistantComponent = ({ dslFunctions, events, onInsertCode, onOverwrit
     }
   });
   const [selectedModel, setSelectedModel] = useState("");
-  const [agentMode, setAgentMode] = useState(() => {
-    try { return localStorage.getItem("chatAgentMode") === "1"; } catch (e) { return false; }
-  });
-  const [uploadingWorkbook, setUploadingWorkbook] = useState(false);
-  const [uploadingDocument, setUploadingDocument] = useState(false);
-  // Anchor element for the paperclip "attach" menu (Excel vs Requirements doc).
-  const [attachAnchor, setAttachAnchor] = useState(null);
   const [showScrollBtn, setShowScrollBtn] = useState(false);
   const [copiedId, setCopiedId] = useState(null);
   const scrollRef = useRef(null);
   const inputRef = useRef(null);
-  const fileInputRef = useRef(null);
-  const docInputRef = useRef(null);
   const atBottomRef = useRef(true);
 
   // Track whether the user is near the bottom so streaming updates don't yank
@@ -171,10 +177,6 @@ const ChatAssistantComponent = ({ dslFunctions, events, onInsertCode, onOverwrit
   };
 
   useEffect(() => {
-    try { localStorage.setItem("chatAgentMode", agentMode ? "1" : "0"); } catch (e) { /* ignore */ }
-  }, [agentMode]);
-
-  useEffect(() => {
     try { localStorage.setItem(CURRENT_CHAT_KEY, currentChatId); } catch (e) { /* ignore */ }
   }, [currentChatId]);
 
@@ -191,7 +193,7 @@ const ChatAssistantComponent = ({ dslFunctions, events, onInsertCode, onOverwrit
       else localStorage.removeItem("chatSessionId");
     } catch (e) { /* ignore */ }
     // Upsert into the multi-chat store only once there is real content.
-    if (!persistable.length && !workbooks.length && !documents.length) return;
+    if (!persistable.length) return;
     const all = loadChats();
     const entry = {
       id: currentChatId,
@@ -199,15 +201,13 @@ const ChatAssistantComponent = ({ dslFunctions, events, onInsertCode, onOverwrit
       updatedAt: Date.now(),
       sessionId: sessionId || null,
       messages: persistable,
-      workbooks,
-      documents,
     };
     const idx = all.findIndex(c => c.id === currentChatId);
     if (idx >= 0) all[idx] = entry; else all.unshift(entry);
     all.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
     saveChats(all);
     setChats(all);
-  }, [messages, sessionId, workbooks, documents, currentChatId]);
+  }, [messages, sessionId, currentChatId]);
 
   const resetBackendSession = (sid) => {
     if (!sid) return;
@@ -220,8 +220,6 @@ const ChatAssistantComponent = ({ dslFunctions, events, onInsertCode, onOverwrit
   const handleNewChat = () => {
     if (loading) return;
     setMessages([]);
-    setWorkbooks([]);
-    setDocuments([]);
     setSessionId(null);
     setCurrentChatId(genChatId());
     setHistoryOpen(false);
@@ -235,8 +233,6 @@ const ChatAssistantComponent = ({ dslFunctions, events, onInsertCode, onOverwrit
     if (loading) return;
     // Loaded conversations are historical — replay only, never re-execute.
     setMessages(markReplay(persistableMessages(chat.messages || [])));
-    setWorkbooks(chat.workbooks || []);
-    setDocuments(chat.documents || []);
     setSessionId(chat.sessionId || null);
     setCurrentChatId(chat.id);
     setHistoryOpen(false);
@@ -248,103 +244,6 @@ const ChatAssistantComponent = ({ dslFunctions, events, onInsertCode, onOverwrit
     saveChats(remaining);
     setChats(remaining);
     if (chatId === currentChatId) handleNewChat();
-  };
-
-  // ── Excel workbook upload (agent model-import workflow) ────────────────
-  // .xlsx only — enforced here, on the <input accept>, and server-side.
-  const handleWorkbookFile = async (e) => {
-    const file = e.target.files && e.target.files[0];
-    if (fileInputRef.current) fileInputRef.current.value = "";
-    if (!file) return;
-    if (!file.name.toLowerCase().endsWith(".xlsx")) {
-      toast.error("Only Excel .xlsx workbooks can be uploaded");
-      return;
-    }
-    setUploadingWorkbook(true);
-    try {
-      const form = new FormData();
-      form.append("file", file);
-      const res = await fetch("/api/agent/workbooks/upload", { method: "POST", body: form });
-      const body = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        throw new Error(body.detail || `Upload failed (${res.status})`);
-      }
-      toast.success(body.duplicate_of_existing
-        ? "Workbook already uploaded — reusing it"
-        : `Workbook '${body.filename}' uploaded`);
-      setWorkbooks(prev => {
-        if (prev.some(w => w.workbook_id === body.workbook_id)) return prev;
-        return [...prev, {
-          workbook_id: body.workbook_id,
-          filename: body.filename,
-          sheets: body.sheets || [],
-          uploaded_at: body.uploaded_at || new Date().toISOString(),
-        }];
-      });
-      setMessages(prev => [...prev, {
-        role: "assistant",
-        content: body.message || `Workbook '${body.filename}' uploaded (${(body.sheets || []).length} sheets).`,
-        ts: Date.now(),
-      }]);
-      setAgentMode(true);
-      setInput(`Analyse the uploaded workbook "${body.filename}" and rebuild it as DSL rules: ask me which sheets are inputs/calculations/outputs, reuse my existing events and data where they fit, translate the formulas, and verify the results.`);
-      if (inputRef.current) inputRef.current.focus();
-    } catch (err) {
-      toast.error(err.message || "Workbook upload failed");
-    } finally {
-      setUploadingWorkbook(false);
-    }
-  };
-
-  // ── Requirements document upload (PDF / Word) ──────────────────────────
-  // The agent reads the doc's text, analyses it, asks clarifying questions,
-  // then builds. .pdf / .docx only — enforced here, on <input accept>, and
-  // server-side.
-  const handleDocumentFile = async (e) => {
-    const file = e.target.files && e.target.files[0];
-    if (docInputRef.current) docInputRef.current.value = "";
-    if (!file) return;
-    const lower = file.name.toLowerCase();
-    if (!lower.endsWith(".pdf") && !lower.endsWith(".docx")) {
-      toast.error("Only PDF or Word (.docx) documents can be uploaded");
-      return;
-    }
-    setUploadingDocument(true);
-    try {
-      const form = new FormData();
-      form.append("file", file);
-      const res = await fetch("/api/agent/documents/upload", { method: "POST", body: form });
-      const body = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        throw new Error(body.detail || `Upload failed (${res.status})`);
-      }
-      toast.success(body.duplicate_of_existing
-        ? "Document already uploaded — reusing it"
-        : `Document '${body.filename}' uploaded`);
-      setDocuments(prev => {
-        if (prev.some(d => d.document_id === body.document_id)) return prev;
-        return [...prev, {
-          document_id: body.document_id,
-          filename: body.filename,
-          kind: body.kind,
-          pages: body.pages,
-          paragraphs: body.paragraphs,
-          uploaded_at: body.uploaded_at || new Date().toISOString(),
-        }];
-      });
-      setMessages(prev => [...prev, {
-        role: "assistant",
-        content: body.message || `Requirements document '${body.filename}' uploaded.`,
-        ts: Date.now(),
-      }]);
-      setAgentMode(true);
-      setInput(`Read the uploaded requirements document "${body.filename}", summarise what you understand, and ask me any clarifying questions before building. Reuse my existing events and data where they fit.`);
-      if (inputRef.current) inputRef.current.focus();
-    } catch (err) {
-      toast.error(err.message || "Document upload failed");
-    } finally {
-      setUploadingDocument(false);
-    }
   };
 
   React.useImperativeHandle(ref, () => ({
@@ -360,15 +259,7 @@ const ChatAssistantComponent = ({ dslFunctions, events, onInsertCode, onOverwrit
         handleSendWithMessage(message);
       }
     },
-    // Variant that forces agent mode for the next send (used by quick-action
-    // buttons such as the Event Data viewer's "Generate Sample" button).
-    sendAgentMessage: (message) => {
-      if (!message.trim()) return;
-      setAgentMode(true);
-      setMessages(prev => [...prev, { role: "user", content: message, ts: Date.now() }]);
-      handleSendWithMessage(message, { forceAgent: true });
-    },
-    // Silent variant used by the Ask AI button: no user bubble is shown.
+        // Silent variant used by the Ask AI button: no user bubble is shown.
     // funcName is the display name (e.g. "rate"); message is the full prompt.
     sendSilentMessage: (funcName, message) => {
       if (!message.trim()) return;
@@ -427,29 +318,8 @@ const ChatAssistantComponent = ({ dslFunctions, events, onInsertCode, onOverwrit
     return () => clearInterval(interval);
   }, [loading]);
 
-  const handleSendWithMessage = async (userMessage, opts = {}) => {
+    const handleSendWithMessage = async (userMessage) => {
     setLoading(true);
-
-    // Agent mode: spawn an autonomous run instead of the explanation pipeline.
-    if (agentMode || opts.forceAgent) {
-      const runKey = generateMessageId();
-      // Ensure a stable session_id exists so the agent runtime can persist
-      // conversation history across runs in the same chat.
-      let sid = sessionId;
-      if (!sid) {
-        try {
-          sid = (window.crypto && window.crypto.randomUUID)
-            ? window.crypto.randomUUID()
-            : `s_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
-        } catch (e) {
-          sid = `s_${Date.now()}`;
-        }
-        setSessionId(sid);
-        try { localStorage.setItem("chatSessionId", sid); } catch (e) { /* ignore */ }
-      }
-      setMessages(prev => [...prev, { role: "agent-run", runKey, task: userMessage, model: selectedModel || undefined, ts: Date.now() }]);
-      return;
-    }
 
     // Check if the user is asking about a known DSL function.
     const functionName = detectFunctionMention(userMessage);
@@ -521,649 +391,517 @@ const ChatAssistantComponent = ({ dslFunctions, events, onInsertCode, onOverwrit
 
   const visibleMessages = messages.filter(m => !m._hidden);
 
-  // ── Collapsed rail ─────────────────────────────────────────────────────
-  if (collapsed) {
-    return (
-      <Paper
-        elevation={0}
-        data-testid="chat-assistant-collapsed"
-        sx={{
-          width: 44, height: "100%", display: "flex", flexDirection: "column",
-          alignItems: "center", py: 1, gap: 1, borderRadius: 0,
-          borderLeft: "1px solid", borderColor: "divider",
-          transition: "width 200ms ease",
-        }}
-      >
-        <Tooltip title="Expand AI Assistant" placement="left">
-          <IconButton size="small" onClick={onToggleCollapsed} className="panel-toggle-btn"
-            sx={{ border: "1px solid", borderColor: "divider", bgcolor: "background.paper", boxShadow: 1 }}>
-            <ChevronLeft size={15} />
+  // The header's second line names the thread, the way a product copilot
+  // titles the conversation you are in.
+  const conversationLabel = visibleMessages.length === 0
+    ? "New conversation"
+    : chatTitle(messages);
+
+  // The panel's two chrome controls, shared by the conversation and the
+  // Chats list so the header keeps its shape between the two views.
+  const panelControls = (
+    <>
+      {onToggleExpanded && (
+        <Tooltip title={expanded ? "Shrink panel" : "Expand panel"}>
+          <IconButton size="small" onClick={onToggleExpanded}
+            data-testid="chat-expand-button"
+            aria-label={expanded ? "Shrink panel" : "Expand panel"}
+            sx={railBtnSx}>
+            {expanded ? <Minimize2 size={16} /> : <Maximize2 size={16} />}
           </IconButton>
         </Tooltip>
-        <Avatar sx={{ width: 28, height: 28, mt: 0.5, background: "linear-gradient(135deg, #6366f1, #8b5cf6)" }}>
-          <Sparkles size={15} />
-        </Avatar>
-        {visibleMessages.length > 0 && (
-          <Tooltip title={`${visibleMessages.length} message(s)`} placement="left">
-            <Badge badgeContent={visibleMessages.length} color="primary" max={99}>
-              <MessageSquare size={16} color="#6C757D" />
-            </Badge>
-          </Tooltip>
-        )}
+      )}
+      {onClose && (
+        <Tooltip title={"Close Copilot (Ctrl/⌘ + J)"}>
+          <IconButton size="small" onClick={onClose}
+            data-testid="chat-close-button" aria-label="Close Copilot"
+            sx={railBtnSx}>
+            <PanelRightClose size={17} />
+          </IconButton>
+        </Tooltip>
+      )}
+    </>
+  );
+
+  const panelSx = {
+    width: expanded ? CHAT_PANEL_WIDTH_EXPANDED : CHAT_PANEL_WIDTH,
+    height: "100%", display: "flex",
+    borderRadius: 0, borderLeft: "1px solid #E9ECEF", bgcolor: "#fff",
+    transition: "width 260ms cubic-bezier(0.22, 1, 0.36, 1)",
+    position: "relative", overflow: "hidden",
+  };
+
+  // ── Chats ─────────────────────────────────────────────────────────────
+  // A view of the panel rather than a drawer over it: the rail steps aside
+  // and an × returns you to the conversation you came from.
+  if (historyOpen) {
+    return (
+      <Paper elevation={0} data-testid="chat-assistant" sx={panelSx}>
+        <Box sx={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column" }}>
+          <Box sx={{
+            px: 1.5, py: 1.5, display: "flex", alignItems: "center", gap: 1,
+            borderBottom: "1px solid #F1F3F5", flexShrink: 0,
+          }}>
+            <Tooltip title="Back to the conversation">
+              <IconButton size="small" onClick={() => setHistoryOpen(false)}
+                data-testid="chat-history-close" aria-label="Back to the conversation"
+                sx={railBtnSx}>
+                <X size={18} />
+              </IconButton>
+            </Tooltip>
+            <Typography component="div" className="copilot-title"
+              sx={{ flex: 1, minWidth: 0, fontSize: 16 }}>
+              Chats
+            </Typography>
+            {panelControls}
+          </Box>
+
+          <Box className="chat-scroll" data-testid="chat-history-list"
+            sx={{ flex: 1, overflowY: "auto", px: 1.5, py: 1.5 }}>
+            {chats.length === 0 ? (
+              <Stack alignItems="center" sx={{ pt: 6, px: 3, textAlign: "center" }}>
+                <MessageSquare size={26} color="#C4C8D4" />
+                <Typography className="copilot-prose" sx={{ mt: 1.5, color: "#6b7280" }}>
+                  No conversations yet. Your chats are saved here automatically.
+                </Typography>
+              </Stack>
+            ) : chats.map(chat => {
+              const current = chat.id === currentChatId;
+              return (
+                <Box
+                  key={chat.id}
+                  role="button"
+                  tabIndex={0}
+                  onClick={() => handleLoadChat(chat)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" || e.key === " ") {
+                      e.preventDefault();
+                      handleLoadChat(chat);
+                    }
+                  }}
+                  sx={{
+                    display: "flex", alignItems: "center", gap: 1.25,
+                    px: 1.5, py: 1.25, mb: 0.5, borderRadius: "10px",
+                    cursor: "pointer", transition: "background 0.13s ease",
+                    bgcolor: current ? "#EAECFD" : "transparent",
+                    "&:hover": { bgcolor: current ? "#E1E4FC" : "#F5F6FA" },
+                    "&:hover .chat-row-del": { opacity: 1 },
+                    "&:focus-visible": { outline: "2px solid #5B5FED", outlineOffset: 2 },
+                  }}
+                >
+                  <MessageSquare size={17} color="#5B5FED" style={{ flexShrink: 0 }} />
+                  <Box sx={{ flex: 1, minWidth: 0 }}>
+                    <Typography noWrap sx={{
+                      fontSize: 13.5, fontWeight: 600, letterSpacing: "-0.008em",
+                      color: "#14213D",
+                    }}>
+                      {chat.title || "New conversation"}
+                    </Typography>
+                    </Box>
+                  <Typography sx={{ fontSize: 12, color: "#6B7280", flexShrink: 0 }}>
+                    {fmtAgo(chat.updatedAt)}
+                  </Typography>
+                  <IconButton
+                    className="chat-row-del" size="small"
+                    onClick={(e) => handleDeleteChat(e, chat.id)}
+                    aria-label="Delete conversation" title="Delete conversation"
+                    sx={{ opacity: 0, transition: "opacity 0.13s", p: 0.25, color: "#9AA0AA" }}
+                  >
+                    <Trash2 size={14} />
+                  </IconButton>
+                  <ChevronRight size={16} color="#9AA0AA" style={{ flexShrink: 0 }} />
+                </Box>
+              );
+            })}
+          </Box>
+        </Box>
       </Paper>
     );
   }
 
-  // ── Full panel ─────────────────────────────────────────────────────────
+  // -- Panel ---------------------------------------------------------------
+  // There is no collapsed stub: dismissing the Copilot is the parent's job,
+  // and the floating Fyntrac button brings it back.
   return (
     <Paper
       elevation={0}
       data-testid="chat-assistant"
-      sx={{
-        width: 504, height: "100%", display: "flex", flexDirection: "column",
-        borderRadius: 0, borderLeft: "1px solid", borderColor: "divider",
-        transition: "width 200ms ease", position: "relative", overflow: "hidden",
-      }}
+      sx={panelSx}
     >
-      {/* Header */}
+      {/* Left icon rail */}
       <Box sx={{
-        px: 2, py: 1.25, display: "flex", alignItems: "center", gap: 1.25,
-        borderBottom: "1px solid", borderColor: "divider", flexShrink: 0,
-        bgcolor: "background.paper",
+        width: 44, flexShrink: 0, display: "flex", flexDirection: "column",
+        alignItems: "center", pt: 1.5, gap: 0.5,
+        borderRight: "1px solid #F1F3F5",
       }}>
-        <Avatar sx={{ width: 34, height: 34, background: "linear-gradient(135deg, #6366f1, #8b5cf6)" }}>
-          <Sparkles size={17} />
-        </Avatar>
-        <Box sx={{ flex: 1, minWidth: 0 }}>
-          <Typography variant="subtitle2" sx={{ fontWeight: 700, lineHeight: 1.2 }}>
-            AI Assistant
-          </Typography>
-        </Box>
-        <Tooltip title="Start a new conversation">
+        <Tooltip title="Conversations" placement="right">
+          <IconButton size="small" onClick={() => setHistoryOpen(true)}
+            data-testid="chat-history-button" aria-label="Conversations"
+            sx={railBtnSx}>
+            <Badge badgeContent={chats.length} color="primary" max={99}
+              sx={{ "& .MuiBadge-badge": { fontSize: 9, height: 14, minWidth: 14 } }}>
+              <MenuIcon size={17} />
+            </Badge>
+          </IconButton>
+        </Tooltip>
+        <Tooltip title="New conversation" placement="right">
           <span>
             <IconButton size="small" onClick={handleNewChat} disabled={loading}
-              data-testid="new-chat-button">
-              <Plus size={17} />
+              data-testid="new-chat-button" aria-label="New conversation"
+              sx={railBtnSx}>
+              <SquarePen size={16} />
             </IconButton>
           </span>
         </Tooltip>
-        <Tooltip title="Conversation history">
-          <span>
-            <IconButton size="small" onClick={() => setHistoryOpen(true)} disabled={loading}
-              data-testid="chat-history-button">
-              <Badge badgeContent={chats.length} color="primary" max={99}
-                sx={{ "& .MuiBadge-badge": { fontSize: 9, height: 14, minWidth: 14 } }}>
-                <History size={17} />
-              </Badge>
-            </IconButton>
-          </span>
-        </Tooltip>
-        {onToggleCollapsed && (
-          <Tooltip title="Collapse panel">
-            <IconButton size="small" onClick={onToggleCollapsed} className="panel-toggle-btn"
-              sx={{ border: "1px solid", borderColor: "divider", boxShadow: 1 }}>
-              <ChevronRight size={15} />
-            </IconButton>
-          </Tooltip>
-        )}
       </Box>
 
-      {/* Files (Excel models + requirement docs) attached to this conversation */}
-      {(workbooks.length > 0 || documents.length > 0) && (
+      {/* Conversation column */}
+      <Box sx={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column" }}>
+        {/* Header */}
         <Box sx={{
-          px: 2, py: 0.75, display: "flex", flexWrap: "wrap", gap: 0.5,
-          borderBottom: "1px solid", borderColor: "divider", bgcolor: "#fafbff", flexShrink: 0,
+          px: 2, py: 1.5, display: "flex", alignItems: "flex-start", gap: 0.5,
+          borderBottom: "1px solid #F1F3F5", flexShrink: 0,
         }}>
-          {workbooks.map(w => (
-            <Tooltip key={w.workbook_id}
-              title={`Excel model — ${(w.sheets || []).length} sheet(s), available to the agent as workbook_id ${w.workbook_id}`}>
-              <Chip
-                size="small"
-                icon={<FileSpreadsheet size={13} />}
-                label={w.filename}
-                variant="outlined"
-                color="success"
-                sx={{ maxWidth: 220, "& .MuiChip-label": { fontSize: 11 } }}
-              />
-            </Tooltip>
-          ))}
-          {documents.map(d => (
-            <Tooltip key={d.document_id}
-              title={`Requirements ${d.kind === "pdf" ? "PDF" : "Word"} document — available to the agent as document_id ${d.document_id}`}>
-              <Chip
-                size="small"
-                icon={<FileText size={13} />}
-                label={d.filename}
-                variant="outlined"
-                color="warning"
-                sx={{ maxWidth: 220, "& .MuiChip-label": { fontSize: 11 } }}
-              />
-            </Tooltip>
-          ))}
+          <Box sx={{ flex: 1, minWidth: 0, pt: 0.25 }}>
+            <Typography component="div" className="copilot-title" noWrap>
+              Fyntrac Copilot
+            </Typography>
+            <Typography component="div" className="copilot-subtitle" noWrap>
+              {conversationLabel}
+            </Typography>
+          </Box>
+          {panelControls}
         </Box>
-      )}
 
-      {/* Messages */}
-      <Box ref={scrollRef} onScroll={handleScroll}
-        role="log" aria-live="polite" aria-relevant="additions text"
-        aria-label="Conversation with the AI assistant"
-        className="chat-scroll"
-        sx={{ flex: 1, overflowY: "auto", px: 2, py: 1.5, bgcolor: "#f7f8fa", position: "relative" }}>
-        {visibleMessages.length === 0 && (
-          <Stack alignItems="center" justifyContent="center" spacing={1.5}
-            sx={{ height: "100%", textAlign: "center", px: 2 }}>
-            <Avatar sx={{ width: 52, height: 52, background: "linear-gradient(135deg, #6366f1, #8b5cf6)" }}>
-              {agentMode ? <Bot size={26} /> : <Sparkles size={26} />}
-            </Avatar>
-            <Typography variant="subtitle1" sx={{ fontWeight: 700 }}>
-              {agentMode ? "What should the agent build?" : "How can I help with your calculations?"}
-            </Typography>
-            <Typography variant="body2" color="text.secondary" sx={{ maxWidth: 360 }}>
-              {agentMode
-                ? "I define events, generate or import data, write rules with DSL functions only (no custom code), then dry-run and self-debug. Attach a file with the paperclip below — an Excel model I'll translate into rules, or a PDF/Word requirements document I'll read and build from. Destructive actions always need your approval."
-                : "I explain DSL functions with worked examples and walk you through the Rule Builder step by step. Switch to Agent mode for autonomous builds, or use the AI Rule Generator inside the Rule Builder for full code generation."}
-            </Typography>
-            <Stack spacing={0.75} sx={{ width: "100%", maxWidth: 380, pt: 0.5 }}>
-              {(agentMode ? [
-                "Build IFRS9 ECL stage 1/2/3 with sample data for 5 loans",
-                "Create an amortization rule for fixed-rate loans and verify totals",
-                "Translate my uploaded Excel model into rules and reconcile it",
-              ] : [
+        {/* Messages */}
+        <Box ref={scrollRef} onScroll={handleScroll}
+          role="log" aria-live="polite" aria-relevant="additions text"
+          aria-label="Conversation with Fyntrac Copilot"
+          className="chat-scroll"
+          sx={{ flex: 1, overflowY: "auto", px: 2.5, py: 1.5, bgcolor: "#fff", position: "relative" }}>
+          {visibleMessages.length === 0 && (
+            <Stack alignItems="center" sx={{ pt: 4, px: 2, textAlign: "center" }}>
+              <FyntracMark size={42} />
+              <Typography sx={{
+                mt: 2, fontSize: 19, fontWeight: 650, letterSpacing: "-0.02em",
+                color: "#14213d",
+              }}>
+                Ask me anything
+              </Typography>
+              <Typography className="copilot-prose" sx={{ mt: 1, maxWidth: 400, color: "#6b7280" }}>
+                Get help with Fyntrac accounting rules — DSL functions, events,
+                schedules and the Rule Builder. Choose a suggestion below, or
+                ask what’s on your mind.
+              </Typography>
+              <Stack spacing={1} sx={{ width: "100%", maxWidth: 440, pt: 3 }}>
+                {[
                 "What does pmt() do? Show me with sample numbers.",
                 "Walk me through building a loan amortization rule",
                 "How do I add a Schedule step in the Rule Builder?",
-              ]).map((q, i) => (
-                <Chip
-                  key={i}
-                  label={q}
-                  variant="outlined"
-                  onClick={() => setInput(q)}
-                  sx={{
-                    justifyContent: "flex-start", height: "auto", py: 0.75,
-                    borderRadius: 2, "& .MuiChip-label": { whiteSpace: "normal", fontSize: 12 },
-                  }}
-                />
-              ))}
-            </Stack>
-          </Stack>
-        )}
-
-        <Stack spacing={0.75}>
-          {visibleMessages.map((msg, idx) => {
-            const prev = idx > 0 ? visibleMessages[idx - 1] : null;
-            // Consecutive messages from the same sender on the same day are
-            // "grouped": the assistant avatar shows only on the first of a run.
-            const grouped = !!prev && prev.role === msg.role
-              && dayKey(prev.ts) === dayKey(msg.ts);
-            // Sticky date separator when the calendar day changes (only when we
-            // have timestamps to compare).
-            const showDay = !!msg.ts && (idx === 0 || dayKey(prev?.ts) !== dayKey(msg.ts));
-            const dateSep = showDay ? (
-              <Box key={`day${idx}`} className="chat-day-sep">
-                <span>{dayLabel(msg.ts)}</span>
-              </Box>
-            ) : null;
-            // Faint divider before a new user turn (skipped when a date
-            // separator already breaks the flow, and never grouped).
-            const turnDivider = (!dateSep && !grouped && msg.role === "user" && idx > 0) ? (
-              <Divider key={`d${idx}`} sx={{ my: 0.5, opacity: 0.45 }} />
-            ) : null;
-
-            if (msg.role === "user") {
-              return (
-                <React.Fragment key={idx}>
-                  {dateSep}
-                  {turnDivider}
-                  <Box
-                    className="chat-msg-in"
-                    sx={{
-                      display: "flex", flexDirection: "column", alignItems: "flex-end",
-                      mt: grouped ? -0.25 : 0,
-                      "&:hover .msg-copy": { opacity: 1 },
+              ].map((q, i) => (
+                  <button
+                    key={i}
+                    type="button"
+                    className="copilot-suggestion"
+                    onClick={() => {
+                      setInput(q);
+                      if (inputRef.current) inputRef.current.focus();
                     }}
                   >
-                    <Box sx={{
-                      maxWidth: "85%", px: 1.5, py: 1,
-                      bgcolor: "primary.main", color: "primary.contrastText",
-                      borderRadius: "14px 14px 4px 14px",
-                      fontSize: 13, lineHeight: 1.5, whiteSpace: "pre-wrap",
-                      wordBreak: "break-word",
-                    }}>
-                      {msg.content}
-                    </Box>
-                    <Stack direction="row" alignItems="center" spacing={0.5} sx={{ mt: 0.25, pr: 0.5 }}>
-                      <IconButton
-                        className="msg-copy" size="small"
-                        onClick={() => copyMessage(idx, msg.content)}
-                        sx={{ opacity: 0, transition: "opacity 0.15s", p: 0.25 }}
-                        title="Copy"
-                      >
-                        {copiedId === idx ? <Check size={12} /> : <Copy size={12} />}
-                      </IconButton>
-                      {msg.ts && (
-                        <Typography variant="caption" color="text.secondary" sx={{ fontSize: 10 }}>
-                          {fmtWhen(msg.ts)}
-                        </Typography>
-                      )}
-                    </Stack>
-                  </Box>
-                </React.Fragment>
-              );
-            }
-
-            if (msg.role === "agent-run") {
-              // Replay (never re-execute) when the message came from
-              // persistence (_replay) OR already carries a saved timeline.
-              const isReplay = !!msg._replay
-                || (Array.isArray(msg.events) && msg.events.length > 0);
-              const runKey = msg.runKey;
-              return (
-                <React.Fragment key={runKey || idx}>
-                  {dateSep}
-                  <Box className="chat-msg-in" sx={{ width: "100%" }}>
-                  <AgentRunMessage
-                    key={runKey || idx}
-                    task={msg.task}
-                    model={msg.model}
-                    sessionId={sessionId}
-                    replay={isReplay}
-                    initialEvents={isReplay ? (msg.events || []) : undefined}
-                    initialStatus={isReplay ? (msg.finalStatus || "done") : undefined}
-                    onAgentDataChange={onAgentDataChange}
-                    onStopHandleReady={(fn) => setStopHandler(() => fn)}
-                    onComplete={(finalEv, allEvents) => {
-                      setLoading(false);
-                      setStopHandler(null);
-                      // Persist the completed run keyed by its stable runKey
-                      // (NOT the visible index, which diverges from the full
-                      // messages array when hidden messages are present).
-                      setMessages(prev => prev.map(m =>
-                        m.role === "agent-run" && m.runKey === runKey
-                          ? { ...m, events: allEvents, finalStatus: finalEv?.status || "done" }
-                          : m
-                      ));
-                    }}
-                  />
-                  </Box>
-                </React.Fragment>
-              );
-            }
-
-            if (msg.role === "agent") {
-              return (
-                <React.Fragment key={idx}>
-                  {dateSep}
-                  <Box className="chat-msg-in" sx={{ width: "100%" }}>
-                    <AgentMessage
-                      messageId={msg.messageId}
-                      onInsertCode={onInsertCode}
-                      onOverwriteCode={onOverwriteCode}
-                    />
-                  </Box>
-                </React.Fragment>
-              );
-            }
-
-            if (msg.role === "assistant") {
-              return (
-                <React.Fragment key={idx}>
-                  {dateSep}
-                  <Box className="chat-msg-in" sx={{ display: "flex", gap: 1, alignItems: "flex-start", mt: grouped ? -0.25 : 0, "&:hover .msg-copy": { opacity: 1 } }}>
-                  {grouped ? (
-                    <Box sx={{ width: 24, flexShrink: 0 }} />
-                  ) : (
-                    <Avatar sx={{ width: 24, height: 24, mt: 0.25, background: "linear-gradient(135deg, #6366f1, #8b5cf6)" }}>
-                      <Sparkles size={12} />
-                    </Avatar>
-                  )}
-                  <Box sx={{ maxWidth: "88%", minWidth: 0 }}>
-                    {msg.error_type ? (
-                      <Paper variant="outlined" sx={{
-                        px: 1.5, py: 1, borderRadius: "4px 14px 14px 14px",
-                        borderColor: "error.light", bgcolor: "#fff5f5",
-                        display: "flex", gap: 0.75, alignItems: "center",
-                      }}>
-                        <Typography variant="body2" color="error.main" sx={{ fontSize: 13 }}>
-                          {msg.error_message || msg.content}
-                        </Typography>
-                      </Paper>
-                    ) : (
-                      <Paper variant="outlined" sx={{
-                        px: 1.5, py: 0.5, borderRadius: "4px 14px 14px 14px",
-                        fontSize: 13, lineHeight: 1.55, wordBreak: "break-word",
-                      }}>
-                        <MarkdownLite text={msg.content} />
-                      </Paper>
-                    )}
-                    <Stack direction="row" alignItems="center" spacing={0.5} sx={{ mt: 0.25, pl: 0.5 }}>
-                      <IconButton
-                        className="msg-copy" size="small"
-                        onClick={() => copyMessage(idx, msg.error_message || msg.content)}
-                        sx={{ opacity: 0, transition: "opacity 0.15s", p: 0.25 }}
-                        title="Copy"
-                      >
-                        {copiedId === idx ? <Check size={12} /> : <Copy size={12} />}
-                      </IconButton>
-                      {msg.ts && (
-                        <Typography variant="caption" color="text.secondary" sx={{ fontSize: 10 }}>
-                          {fmtWhen(msg.ts)}
-                        </Typography>
-                      )}
-                    </Stack>
-                  </Box>
-                  </Box>
-                </React.Fragment>
-              );
-            }
-            return null;
-          })}
-
-          {/* Live typing indicator while a plain-chat reply is generating.
-              Agent runs render their own streaming timeline, so only show
-              this when the last message is a user turn awaiting a reply. */}
-          {loading && visibleMessages.length > 0
-            && visibleMessages[visibleMessages.length - 1].role === "user" && (
-            <Box className="chat-msg-in" sx={{ display: "flex", gap: 1, alignItems: "flex-start" }}>
-              <Avatar sx={{ width: 24, height: 24, mt: 0.25, background: "linear-gradient(135deg, #6366f1, #8b5cf6)" }}>
-                <Sparkles size={12} />
-              </Avatar>
-              <Paper variant="outlined" aria-label="Assistant is typing"
-                sx={{ px: 1.5, py: 1, borderRadius: "4px 14px 14px 14px" }}>
-                <Box className="chat-typing" aria-hidden="true">
-                  <span /><span /><span />
-                </Box>
-              </Paper>
-            </Box>
+                    {q}
+                  </button>
+                ))}
+              </Stack>
+            </Stack>
           )}
-        </Stack>
 
-        {/* Jump-to-latest button (only when scrolled up) */}
-        {showScrollBtn && (
-          <IconButton
-            onClick={() => scrollToBottom()}
-            size="small"
-            aria-label="Jump to latest message"
-            sx={{
-              position: "sticky", bottom: 8, left: "100%", mr: 1,
-              bgcolor: "background.paper", border: "1px solid", borderColor: "divider",
-              boxShadow: 2, "&:hover": { bgcolor: "background.paper" },
-            }}
-            title="Jump to latest"
-          >
-            <ArrowDown size={16} />
-          </IconButton>
-        )}
-      </Box>
+          <Box sx={{ display: "flex", flexDirection: "column" }}>
+            {visibleMessages.map((msg, idx) => {
+              const prev = idx > 0 ? visibleMessages[idx - 1] : null;
+              // Consecutive messages from the same sender on the same day are
+              // "grouped": the assistant avatar shows only on the first of a run.
+              const grouped = !!prev && prev.role === msg.role
+                && dayKey(prev.ts) === dayKey(msg.ts);
+              // Sticky date separator when the calendar day changes (only when we
+              // have timestamps to compare).
+              const showDay = !!msg.ts && (idx === 0 || dayKey(prev?.ts) !== dayKey(msg.ts));
+              const dateSep = showDay ? (
+                <Box key={`day${idx}`} className="chat-day-sep">
+                  <span>{dayLabel(msg.ts)}</span>
+                </Box>
+              ) : null;
 
-      {/* Footer: model + mode + input */}
-      <Box sx={{ px: 1.5, pt: 1, pb: 1.25, borderTop: "1px solid", borderColor: "divider", bgcolor: "background.paper", flexShrink: 0 }}>
-        <Stack direction="row" alignItems="center" spacing={1} sx={{ mb: 1 }}>
-          <Box sx={{ flex: 1, minWidth: 0 }}>
+              if (msg.role === "user") {
+                return (
+                  <React.Fragment key={idx}>
+                    {dateSep}
+                    <Box
+                      className="chat-msg-in"
+                      sx={{
+                        display: "flex", flexDirection: "column", alignItems: "flex-end",
+                        mt: grouped ? 0.75 : 2.5,
+                        "&:hover .msg-copy": { opacity: 1 },
+                      }}
+                    >
+                      <Box sx={{
+                        maxWidth: "82%", px: 2, py: 1.25,
+                        bgcolor: "#EAECFD", color: "#1F2544",
+                        borderRadius: "20px",
+                        fontSize: 14.5, lineHeight: 1.55, letterSpacing: "-0.008em",
+                        whiteSpace: "pre-wrap", wordBreak: "break-word",
+                      }}>
+                        {msg.content}
+                      </Box>
+                      <Stack direction="row" alignItems="center" spacing={0.5} sx={{ mt: 0.25, pr: 0.5 }}>
+                        <IconButton
+                          className="msg-copy" size="small"
+                          onClick={() => copyMessage(idx, msg.content)}
+                          sx={{ opacity: 0, transition: "opacity 0.15s", p: 0.25 }}
+                          title="Copy"
+                        >
+                          {copiedId === idx ? <Check size={12} /> : <Copy size={12} />}
+                        </IconButton>
+                        {msg.ts && (
+                          <Typography variant="caption" color="text.secondary" sx={{ fontSize: 10 }}>
+                            {fmtWhen(msg.ts)}
+                          </Typography>
+                        )}
+                      </Stack>
+                    </Box>
+                  </React.Fragment>
+                );
+              }
+
+              if (msg.role === "agent-run") {
+                // Replay (never re-execute) when the message came from
+                // persistence (_replay) OR already carries a saved timeline.
+                const isReplay = !!msg._replay
+                  || (Array.isArray(msg.events) && msg.events.length > 0);
+                const runKey = msg.runKey;
+                return (
+                  <React.Fragment key={runKey || idx}>
+                    {dateSep}
+                    <Box className="chat-msg-in" sx={{ width: "100%" }}>
+                    <AgentRunMessage
+                      key={runKey || idx}
+                      task={msg.task}
+                      model={msg.model}
+                      sessionId={sessionId}
+                      replay={isReplay}
+                      initialEvents={isReplay ? (msg.events || []) : undefined}
+                      initialStatus={isReplay ? (msg.finalStatus || "done") : undefined}
+                      onAgentDataChange={onAgentDataChange}
+                      onStopHandleReady={(fn) => setStopHandler(() => fn)}
+                      onComplete={(finalEv, allEvents) => {
+                        setLoading(false);
+                        setStopHandler(null);
+                        // Persist the completed run keyed by its stable runKey
+                        // (NOT the visible index, which diverges from the full
+                        // messages array when hidden messages are present).
+                        setMessages(prev => prev.map(m =>
+                          m.role === "agent-run" && m.runKey === runKey
+                            ? { ...m, events: allEvents, finalStatus: finalEv?.status || "done" }
+                            : m
+                        ));
+                      }}
+                    />
+                    </Box>
+                  </React.Fragment>
+                );
+              }
+
+              if (msg.role === "agent") {
+                return (
+                  <React.Fragment key={idx}>
+                    {dateSep}
+                    <Box className="chat-msg-in" sx={{ width: "100%", mt: 1.5 }}>
+                      <Box sx={{ mb: 1 }}><FyntracMark size={22} /></Box>
+                      <Box className="copilot-answer">
+                        <AgentMessage
+                          messageId={msg.messageId}
+                          onInsertCode={onInsertCode}
+                          onOverwriteCode={onOverwriteCode}
+                        />
+                      </Box>
+                    </Box>
+                  </React.Fragment>
+                );
+              }
+
+              if (msg.role === "assistant") {
+                return (
+                  <React.Fragment key={idx}>
+                    {dateSep}
+                    <Box className="chat-msg-in" sx={{
+                      width: "100%", minWidth: 0,
+                      mt: grouped ? 0.5 : 1.5,
+                      "&:hover .msg-copy": { opacity: 1 },
+                    }}>
+                    {!grouped && (
+                      <Box sx={{ mb: 1 }}><FyntracMark size={22} /></Box>
+                    )}
+                    <Box sx={{ minWidth: 0 }}>
+                      {msg.error_type ? (
+                        <Paper elevation={0} sx={{
+                          px: 1.75, py: 1.125, borderRadius: 2,
+                          border: "1px solid #FBD5D5", bgcolor: "#FEF6F6",
+                          display: "flex", gap: 0.75, alignItems: "center",
+                        }}>
+                          <Typography color="error.main"
+                            sx={{ fontSize: 14.5, lineHeight: 1.6, letterSpacing: "-0.008em" }}>
+                            {msg.error_message || msg.content}
+                          </Typography>
+                        </Paper>
+                      ) : (
+                        // No card: the reply is prose on the page, the way the
+                        // product copilots people already use present it.
+                        <Box className="copilot-answer" sx={{ wordBreak: "break-word" }}>
+                          <MarkdownLite text={msg.content} style={{ fontSize: 14.5 }} />
+                        </Box>
+                      )}
+                      <Stack direction="row" alignItems="center" spacing={0.5} sx={{ mt: 0.25 }}>
+                        <IconButton
+                          className="msg-copy" size="small"
+                          onClick={() => copyMessage(idx, msg.error_message || msg.content)}
+                          sx={{ opacity: 0, transition: "opacity 0.15s", p: 0.25 }}
+                          title="Copy"
+                        >
+                          {copiedId === idx ? <Check size={12} /> : <Copy size={12} />}
+                        </IconButton>
+                        {msg.ts && (
+                          <Typography variant="caption" color="text.secondary" sx={{ fontSize: 10 }}>
+                            {fmtWhen(msg.ts)}
+                          </Typography>
+                        )}
+                      </Stack>
+                    </Box>
+                    </Box>
+                  </React.Fragment>
+                );
+              }
+              return null;
+            })}
+
+            {/* Live typing indicator while a plain-chat reply is generating.
+                Agent runs render their own streaming timeline, so only show
+                this when the last message is a user turn awaiting a reply. */}
+            {loading && visibleMessages.length > 0
+              && visibleMessages[visibleMessages.length - 1].role === "user" && (
+              <Box className="chat-msg-in" sx={{ width: "100%", mt: 1.5 }}>
+                <Box sx={{ mb: 1 }}><FyntracMark size={22} /></Box>
+                <Box aria-label="Assistant is typing" sx={{ py: 0.5 }}>
+                  <Box className="chat-typing" aria-hidden="true">
+                    <span /><span /><span />
+                  </Box>
+                </Box>
+              </Box>
+            )}
+          </Box>
+
+          {/* Jump-to-latest button (only when scrolled up) */}
+          {showScrollBtn && (
+            <IconButton
+              onClick={() => scrollToBottom()}
+              size="small"
+              aria-label="Jump to latest message"
+              sx={{
+                position: "sticky", bottom: 8, left: "100%", mr: 1,
+                bgcolor: "background.paper", border: "1px solid", borderColor: "divider",
+                boxShadow: 2, "&:hover": { bgcolor: "background.paper" },
+              }}
+              title="Jump to latest"
+            >
+              <ArrowDown size={16} />
+            </IconButton>
+          )}
+        </Box>
+
+        {/* Composer: model picker, then the input card and its disclaimer */}
+        <Box sx={{ px: 2, pt: 1, pb: 1.25, flexShrink: 0, bgcolor: "#fff" }}>
+          <Box sx={{ mb: 1 }}>
             <ModelSelector onModelChange={handleModelChange} refreshKey={providerRefreshKey} />
           </Box>
-          <ToggleButtonGroup
-            size="small"
-            exclusive
-            value={agentMode ? "agent" : "chat"}
-            onChange={(_, v) => { if (v) setAgentMode(v === "agent"); }}
-            disabled={loading}
-            data-testid="agent-mode-toggle"
-            sx={{ "& .MuiToggleButton-root": { px: 1.25, py: 0.4, textTransform: "none", fontSize: 12, gap: 0.5 } }}
-          >
-            <ToggleButton value="chat">
-              <Tooltip title="Ask mode — explanations & guided help">
-                <Box sx={{ display: "flex", alignItems: "center", gap: 0.5 }}>
-                  <MessageSquare size={13} /> Chat
-                </Box>
-              </Tooltip>
-            </ToggleButton>
-            <ToggleButton value="agent">
-              <Tooltip title="Agent mode — autonomous build with tools; can import Excel models">
-                <Box sx={{ display: "flex", alignItems: "center", gap: 0.5 }}>
-                  <Bot size={13} /> Agent
-                </Box>
-              </Tooltip>
-            </ToggleButton>
-          </ToggleButtonGroup>
-        </Stack>
 
-        <TextField
-          inputRef={inputRef}
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          onKeyDown={handleKeyDown}
-          placeholder={loading
-            ? "Generating…"
-            : (agentMode
-              ? "Describe what to build, or attach an Excel model…"
-              : "Ask about DSL functions, rules, schedules…")}
-          fullWidth
-          multiline
-          maxRows={5}
-          size="small"
-          disabled={loading}
-          data-testid="chat-input"
-          InputProps={{
-            sx: {
-              borderRadius: 3, fontSize: 13, alignItems: "flex-end", py: 0.75,
-              transition: "box-shadow 0.15s, border-color 0.15s",
-              "&.Mui-focused": { boxShadow: "0 0 0 3px rgba(99,102,241,0.15)" },
+          {/* Input card: textarea above, actions on the row beneath. */}
+          <Box sx={{
+            border: "1px solid #E3E5EC", borderRadius: "14px",
+            px: 1.5, pt: 1.25, pb: 0.75, bgcolor: "#fff",
+            transition: "border-color 0.15s ease, box-shadow 0.15s ease",
+            "&:focus-within": {
+              borderColor: "#5B5FED",
+              boxShadow: "0 0 0 3px rgba(91,95,237,0.12)",
             },
-            startAdornment: (
-              <InputAdornment position="start" sx={{ alignSelf: "flex-end", mb: 0.25 }}>
-                <input
-                  ref={fileInputRef}
-                  type="file"
-                  accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                  onChange={handleWorkbookFile}
-                  style={{ display: "none" }}
-                  data-testid="workbook-file-input"
-                />
-                <input
-                  ref={docInputRef}
-                  type="file"
-                  accept=".pdf,.docx,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-                  onChange={handleDocumentFile}
-                  style={{ display: "none" }}
-                  data-testid="document-file-input"
-                />
-                <Tooltip title={(uploadingWorkbook || uploadingDocument)
-                  ? "Uploading…"
-                  : "Attach a file — an Excel model or a requirements document"}>
-                  <span>
-                    <IconButton
-                      size="small"
-                      edge="start"
-                      onClick={(e) => setAttachAnchor(e.currentTarget)}
-                      disabled={loading || uploadingWorkbook || uploadingDocument}
-                      data-testid="attach-button"
-                      aria-label="Attach a file"
-                    >
-                      <Paperclip size={16} />
-                    </IconButton>
-                  </span>
-                </Tooltip>
-                <Menu
-                  anchorEl={attachAnchor}
-                  open={Boolean(attachAnchor)}
-                  onClose={() => setAttachAnchor(null)}
-                  anchorOrigin={{ vertical: "top", horizontal: "left" }}
-                  transformOrigin={{ vertical: "bottom", horizontal: "left" }}
-                  slotProps={{ paper: { sx: { mt: -1, borderRadius: 2, minWidth: 288, boxShadow: 6 } } }}
-                >
-                  <Typography variant="caption" sx={{ px: 2, pt: 1, pb: 0.5, display: "block", color: "text.secondary", fontWeight: 600, letterSpacing: 0.3 }}>
-                    ATTACH A FILE
-                  </Typography>
-                  <MenuItem
-                    onClick={() => { setAttachAnchor(null); fileInputRef.current && fileInputRef.current.click(); }}
-                    sx={{ py: 1.25, alignItems: "flex-start" }}
-                    data-testid="attach-excel"
-                  >
-                    <ListItemIcon sx={{ mt: 0.25 }}>
-                      <FileSpreadsheet size={20} color="#1a7f4b" />
-                    </ListItemIcon>
-                    <ListItemText
-                      primary="Excel calculation sheet"
-                      secondary="A .xlsx model — the agent translates its formulas into rules and reconciles the results."
-                      primaryTypographyProps={{ fontSize: 14, fontWeight: 600 }}
-                      secondaryTypographyProps={{ fontSize: 12, sx: { whiteSpace: "normal" } }}
-                    />
-                  </MenuItem>
-                  <MenuItem
-                    onClick={() => { setAttachAnchor(null); docInputRef.current && docInputRef.current.click(); }}
-                    sx={{ py: 1.25, alignItems: "flex-start" }}
-                    data-testid="attach-document"
-                  >
-                    <ListItemIcon sx={{ mt: 0.25 }}>
-                      <FileText size={20} color="#c2410c" />
-                    </ListItemIcon>
-                    <ListItemText
-                      primary="Business requirements document"
-                      secondary="A PDF or Word (.docx) spec — the agent reads it, confirms the details with you, then builds."
-                      primaryTypographyProps={{ fontSize: 14, fontWeight: 600 }}
-                      secondaryTypographyProps={{ fontSize: 12, sx: { whiteSpace: "normal" } }}
-                    />
-                  </MenuItem>
-                </Menu>
-              </InputAdornment>
-            ),
-            endAdornment: (
-              <InputAdornment position="end" sx={{ alignSelf: "flex-end", mb: 0.25 }}>
-                <Tooltip title={stopHandler ? "Stop agent" : "Send (Enter)"}>
-                  <span>
-                    {(() => {
-                      const active = stopHandler || (input.trim() && !loading);
-                      return (
-                        <IconButton
-                          size="small"
-                          onClick={stopHandler
-                            ? () => { try { stopHandler(); } catch (_) {} setStopHandler(null); }
-                            : handleSendMessage}
-                          disabled={stopHandler ? false : (!input.trim() || loading)}
-                          data-testid={stopHandler ? "stop-agent-button" : "send-message-button"}
-                          aria-label={stopHandler ? "Stop agent" : "Send message"}
-                          sx={{
-                            width: 32, height: 32,
-                            background: active
-                              ? "linear-gradient(135deg, #6366f1, #8b5cf6)"
-                              : "transparent",
-                            color: active ? "#fff" : "text.disabled",
-                            boxShadow: active ? "0 2px 8px rgba(99,102,241,0.35)" : "none",
-                            transition: "background 0.15s, box-shadow 0.15s, transform 0.1s",
-                            "&:hover": { background: active
-                              ? "linear-gradient(135deg, #4f46e5, #7c3aed)" : undefined,
-                              transform: active ? "scale(1.06)" : undefined },
-                            "&.Mui-disabled": { color: "text.disabled" },
-                          }}
-                        >
-                          {stopHandler || loading ? <Square size={14} /> : <Send size={14} />}
-                        </IconButton>
-                      );
-                    })()}
-                  </span>
-                </Tooltip>
-              </InputAdornment>
-            ),
-          }}
-        />
-        <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 0.5, px: 0.5, fontSize: 10.5 }}>
-          {agentMode
-            ? "The agent asks before anything destructive. Attach an Excel model or requirements document with the paperclip."
-            : "Shift+Enter for a new line."}
-        </Typography>
+          }}>
+            <TextField
+              inputRef={inputRef}
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              onKeyDown={handleKeyDown}
+              placeholder={loading ? "Generating…" : "Ask Copilot…"}
+              fullWidth
+              multiline
+              maxRows={6}
+              variant="standard"
+              disabled={loading}
+              data-testid="chat-input"
+              InputProps={{
+                disableUnderline: true,
+                sx: {
+                  p: 0, fontSize: 13.5, lineHeight: 1.6,
+                  letterSpacing: "-0.006em", color: "#1f2937",
+                },
+              }}
+            />
+
+            <Stack direction="row" alignItems="center" sx={{ mt: 0.75 }}>
+              <Box sx={{ flex: 1 }} />
+
+              <Tooltip title={stopHandler ? "Stop agent" : "Send (Enter)"}>
+                <span>
+                  {(() => {
+                    const active = stopHandler || (input.trim() && !loading);
+                    return (
+                      <IconButton
+                        size="small"
+                        onClick={stopHandler
+                          ? () => { try { stopHandler(); } catch (_) {} setStopHandler(null); }
+                          : handleSendMessage}
+                        disabled={stopHandler ? false : (!input.trim() || loading)}
+                        data-testid={stopHandler ? "stop-agent-button" : "send-message-button"}
+                        aria-label={stopHandler ? "Stop agent" : "Send message"}
+                        sx={{
+                          width: 32, height: 32,
+                          bgcolor: active ? "#5B5FED" : "#F1F3F5",
+                          color: active ? "#fff" : "#ADB5BD",
+                          boxShadow: active ? "0 2px 8px rgba(91,95,237,0.30)" : "none",
+                          transition: "background 0.15s, box-shadow 0.15s, transform 0.1s",
+                          "&:hover": {
+                            bgcolor: active ? "#4346C8" : "#F1F3F5",
+                            transform: active ? "scale(1.06)" : "none",
+                          },
+                          "&.Mui-disabled": { bgcolor: "#F1F3F5", color: "#CED4DA" },
+                        }}
+                      >
+                        {stopHandler || loading ? <Square size={14} /> : <Send size={14} />}
+                      </IconButton>
+                    );
+                  })()}
+                </span>
+              </Tooltip>
+            </Stack>
+          </Box>
+
+          <Typography sx={{
+            display: "block", mt: 0.75, textAlign: "center",
+            fontSize: 10.5, lineHeight: 1.45, color: "#9AA0AA",
+            letterSpacing: "-0.003em",
+          }}>
+            Shift+Enter for a new line. Fyntrac Copilot can make mistakes —
+            review generated rules before you deploy.
+          </Typography>
+        </Box>
       </Box>
 
-      {/* Conversation history drawer */}
-      <Drawer
-        anchor="right"
-        open={historyOpen}
-        onClose={() => setHistoryOpen(false)}
-        PaperProps={{ sx: { width: 340 } }}
-      >
-        <Box sx={{ px: 2, py: 1.5, display: "flex", alignItems: "center", gap: 1 }}>
-          <History size={17} />
-          <Typography variant="subtitle2" sx={{ fontWeight: 700, flex: 1 }}>
-            Conversations
-          </Typography>
-          <Tooltip title="Start a new conversation">
-            <IconButton size="small" onClick={handleNewChat}>
-              <Plus size={16} />
-            </IconButton>
-          </Tooltip>
-        </Box>
-        <Divider />
-        {chats.length === 0 ? (
-          <Box sx={{ p: 3, textAlign: "center" }}>
-            <Typography variant="body2" color="text.secondary">
-              No conversations yet. Your chats — including any Excel models or
-              requirement documents you attach — are saved here automatically.
-            </Typography>
-          </Box>
-        ) : (
-          <List dense sx={{ overflowY: "auto" }}>
-            {chats.map(chat => (
-              <ListItemButton
-                key={chat.id}
-                selected={chat.id === currentChatId}
-                onClick={() => handleLoadChat(chat)}
-                sx={{ alignItems: "flex-start", py: 1 }}
-              >
-                <ListItemText
-                  disableTypography
-                  primary={
-                    <Stack direction="row" alignItems="center" spacing={0.75}>
-                      <Typography variant="body2" noWrap sx={{ fontWeight: 600, flex: 1 }}>
-                        {chat.title || "New conversation"}
-                      </Typography>
-                      <Typography variant="caption" color="text.secondary" sx={{ flexShrink: 0 }}>
-                        {fmtWhen(chat.updatedAt)}
-                      </Typography>
-                      <IconButton size="small" edge="end"
-                        onClick={(e) => handleDeleteChat(e, chat.id)}
-                        title="Delete conversation">
-                        <Trash2 size={13} />
-                      </IconButton>
-                    </Stack>
-                  }
-                  secondary={
-                    <Box>
-                      <Typography variant="caption" color="text.secondary">
-                        {(chat.messages || []).length} message(s)
-                      </Typography>
-                      {((chat.workbooks || []).length > 0 || (chat.documents || []).length > 0) && (
-                        <Stack direction="row" spacing={0.5} sx={{ mt: 0.5, flexWrap: "wrap", gap: 0.5 }}>
-                          {(chat.workbooks || []).map(w => (
-                            <Chip
-                              key={w.workbook_id}
-                              size="small"
-                              icon={<FileSpreadsheet size={11} />}
-                              label={w.filename}
-                              variant="outlined"
-                              color="success"
-                              sx={{ height: 20, maxWidth: 200, "& .MuiChip-label": { fontSize: 10 } }}
-                            />
-                          ))}
-                          {(chat.documents || []).map(d => (
-                            <Chip
-                              key={d.document_id}
-                              size="small"
-                              icon={<FileText size={11} />}
-                              label={d.filename}
-                              variant="outlined"
-                              color="warning"
-                              sx={{ height: 20, maxWidth: 200, "& .MuiChip-label": { fontSize: 10 } }}
-                            />
-                          ))}
-                        </Stack>
-                      )}
-                    </Box>
-                  }
-                />
-              </ListItemButton>
-            ))}
-          </List>
-        )}
-      </Drawer>
     </Paper>
   );
 };

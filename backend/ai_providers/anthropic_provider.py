@@ -150,7 +150,7 @@ def _classify_error(exc: Exception) -> tuple[str, str]:
             or "401" in msg or "invalid x-api-key" in msg
             or "x-api-key header is invalid" in msg or "invalid api key" in msg
             or "invalid_api_key" in msg):
-        return ERROR_INVALID_KEY, "The API key was not accepted by Anthropic. Check it under Settings → AI Agent Setup."
+        return ERROR_INVALID_KEY, "The API key was not accepted by Anthropic. Check it under Settings → Copilot Setup."
     if "permission_error" in msg or "permission" in msg or "403" in msg:
         return ERROR_MODEL_PREMIUM, ("Your Anthropic key doesn't have access to this "
                                      "model. Pick a different model, or check your Anthropic plan.")

@@ -6,13 +6,33 @@ from datetime import datetime, timedelta
 from typing import List, Dict, Any, Optional
 
 
-def safe_eval_expression(expression: str, context: Dict[str, Any]):
+# ---------------------------------------------------------------------------
+# Expression evaluation caches
+# ---------------------------------------------------------------------------
+# safe_eval_expression() runs once per schedule cell and once per iteration
+# element, so a single rule can reach it hundreds of thousands of times in one
+# book. Three things were repeated on every call and none of them depend on the
+# data: the globals mapping, the keyword rewrite, and compiling the expression.
+_EVAL_GLOBALS = None          # built on first use, once DSL_FUNCTIONS exists
+_EVAL_CODE_CACHE = {}         # rewritten expression -> compiled code object
+_EVAL_REWRITE_CACHE = {}      # raw expression -> rewritten expression
+_EVAL_CACHE_MAX = 4000
+
+_IF_CALL_RE = re.compile(r'\bif\s*\(')
+_BOOL_CALL_RE = re.compile(r'\b(and|or|not)\s*\(')
+
+
+def _eval_globals():
+    """The shared globals mapping for DSL expression evaluation.
+
+    Built once: DSL_FUNCTIONS is fixed after import, and an eval'd expression
+    cannot assign, so nothing can mutate what is handed out here. Callers pass
+    their own variables as *locals*, which keeps per-call state separate.
     """
-    Evaluate a DSL expression string in a restricted context.
-    Uses the registered `DSL_FUNCTIONS` and a small set of safe builtins.
-    Falls back to raising the original exception to the caller.
-    """
-    # Build a safe globals mapping exposing DSL functions and a few helpers
+    global _EVAL_GLOBALS
+    if _EVAL_GLOBALS is not None:
+        return _EVAL_GLOBALS
+
     safe_globals = {
         # An EMPTY builtins mapping, not None. Both block every builtin, but
         # with None Python cannot even perform the final name lookup, so every
@@ -33,19 +53,73 @@ def safe_eval_expression(expression: str, context: Dict[str, Any]):
         'False': False,
         'None': None,
     }
-
-    # Insert DSL functions if available
     dsl_funcs = globals().get('DSL_FUNCTIONS', {})
     safe_globals.update(dsl_funcs)
 
     # `and` / `or` / `not` are registered DSL functions but are Python
-    # keywords, so `eval("and(a, b)")` raises a SyntaxError — the caller then
+    # keywords, so `eval("and(a, b)")` raises a SyntaxError -- the caller then
     # swallows it and returns None, which later crashes with "NoneType is not
     # subscriptable" inside schedule columns. Expose non-keyword aliases and
-    # rewrite the call sites below, mirroring the if( -> iif( handling.
+    # rewrite the call sites, mirroring the if( -> iif( handling.
     for _kw in ('and', 'or', 'not'):
         if _kw in dsl_funcs:
             safe_globals[_kw + '_op'] = dsl_funcs[_kw]
+
+    # Only memoise a fully-populated table: this module defines
+    # DSL_FUNCTIONS well below here, so an early call must not freeze an
+    # empty mapping.
+    if dsl_funcs:
+        _EVAL_GLOBALS = safe_globals
+    return safe_globals
+
+
+def _compile_dsl_expression(expr_str: str):
+    """Rewrite keyword-named calls and compile, caching both by source text."""
+    expr_for_eval = _EVAL_REWRITE_CACHE.get(expr_str)
+    if expr_for_eval is None:
+        # Replace 'if(' with 'iif(' because 'if' is a Python keyword and cannot
+        # be used as a function name in eval(), even though DSL_FUNCTIONS has
+        # 'iif' mapped to if_op. Same for and/or/not -> *_op.
+        expr_for_eval = _IF_CALL_RE.sub('iif(', expr_str)
+        expr_for_eval = _BOOL_CALL_RE.sub(lambda m: m.group(1) + '_op(',
+                                          expr_for_eval)
+        if len(_EVAL_REWRITE_CACHE) >= _EVAL_CACHE_MAX:
+            _EVAL_REWRITE_CACHE.clear()
+        _EVAL_REWRITE_CACHE[expr_str] = expr_for_eval
+
+    code = _EVAL_CODE_CACHE.get(expr_for_eval)
+    if code is None:
+        code = compile(expr_for_eval, '<dsl_expr>', 'eval')
+        if len(_EVAL_CODE_CACHE) >= _EVAL_CACHE_MAX:
+            _EVAL_CODE_CACHE.clear()
+        _EVAL_CODE_CACHE[expr_for_eval] = code
+    return code
+
+
+# Number of DSL expression evaluations since the last reset. Read per posting
+# date by the runner, to show where a slow book actually spends itself.
+_EVAL_COUNT = 0
+
+
+def reset_eval_count():
+    global _EVAL_COUNT
+    _EVAL_COUNT = 0
+
+
+def get_eval_count() -> int:
+    return _EVAL_COUNT
+
+
+def safe_eval_expression(expression: str, context: Dict[str, Any]):
+    """
+    Evaluate a DSL expression string in a restricted context.
+    Uses the registered `DSL_FUNCTIONS` and a small set of safe builtins.
+    Falls back to raising the original exception to the caller.
+    """
+    global _EVAL_COUNT
+    _EVAL_COUNT += 1
+    # Globals are shared and built once; see _eval_globals().
+    safe_globals = _eval_globals()
 
     # Lazy-evaluate top-level if(...) / iif(...) to avoid evaluating both branches
     expr_str = str(expression).strip()
@@ -77,13 +151,13 @@ def safe_eval_expression(expression: str, context: Dict[str, Any]):
     # The context variables are provided as locals so they shadow DSL functions if needed
     # Replace 'if(' with 'iif(' because 'if' is a Python keyword and cannot be used as a
     # function name in eval(), even though DSL_FUNCTIONS has 'iif' mapped to if_op.
-    import re as _re
-    expr_for_eval = _re.sub(r'\bif\s*\(', 'iif(', expr_str)
-    # Rewrite keyword-named boolean function calls to their non-keyword aliases
-    # so eval() accepts them: and( -> and_op(, or( -> or_op(, not( -> not_op(.
-    expr_for_eval = _re.sub(r'\b(and|or|not)\s*\(', lambda m: m.group(1) + '_op(', expr_for_eval)
+    # The expression is compiled once per distinct source string: the same
+    # schedule column is evaluated for every period of every instrument on
+    # every posting date, and re-parsing it each time cost ~25x the
+    # evaluation itself.
     try:
-        return eval(expr_for_eval, safe_globals, context or {})
+        return eval(_compile_dsl_expression(expr_str), safe_globals,
+                    context or {})
     except Exception:
         # Re-raise to let callers handle/log; callers often catch and return None
         raise
@@ -255,7 +329,33 @@ def _date_part_before(date_str: str, sep: str):
     return head if _DATE_HEAD_RE.match(head) else None
 
 
+# Parsed-date cache. See _normalize_date_uncached for why this matters: the
+# miss path costs a regex compile per candidate format, and a book repeats the
+# same few hundred date strings millions of times.
+_ND_CACHE = {}
+_ND_CACHE_MAX = 100000
+
+
 def normalize_date(date_value: Any) -> str:
+    """Normalize a date value to YYYY-MM-DD, memoised on string inputs.
+
+    Strings are the hot path by a wide margin and are safe to key on: the
+    result depends on nothing but the input text. Everything else falls
+    through to the uncached implementation.
+    """
+    if type(date_value) is str:
+        cached = _ND_CACHE.get(date_value)
+        if cached is not None:
+            return cached
+        result = _normalize_date_uncached(date_value)
+        if len(_ND_CACHE) >= _ND_CACHE_MAX:
+            _ND_CACHE.clear()
+        _ND_CACHE[date_value] = result
+        return result
+    return _normalize_date_uncached(date_value)
+
+
+def _normalize_date_uncached(date_value: Any) -> str:
     """
     Normalize a date value to YYYY-MM-DD string format.
     Handles datetime objects, timestamps, and various string formats.
@@ -713,6 +813,9 @@ def yield_to_maturity(price: float, face: float, coupon: float, years: float) ->
 
 
 # Arithmetic
+_RAA_CLS = None   # bound to _RowAwareArray at the foot of this module
+
+
 def _broadcast_binary(a, b, op_name, scalar_op):
     """Apply ``scalar_op(x, y)`` element-wise when either input is a list/tuple.
 
@@ -726,8 +829,10 @@ def _broadcast_binary(a, b, op_name, scalar_op):
     referenced bare (e.g. `multiply(openingBalance, Monthly_Rate)`) operates
     on the current row's value, not the whole array.
     """
-    # Defer import to avoid forward-reference issues; class is defined below.
-    _RAA = globals().get('_RowAwareArray')
+    # Resolved once at import (see _RAA_CLS at the foot of this module).
+    # This is the engine's innermost primitive -- a globals() lookup here was
+    # costing more than the arithmetic it guards.
+    _RAA = _RAA_CLS
     if _RAA is not None:
         if isinstance(a, _RAA):
             a = a._row if a._row is not None else 0
@@ -780,14 +885,19 @@ def to_number(x: Any) -> float:
 
     Treat None, empty string, and 'None' as 0. If conversion fails, return 0.
     """
+    # Numbers first: this is the overwhelmingly common input, and taking it
+    # before the context-array unwrap skips a global lookup per call.
+    # _RowAwareArray subclasses list, so it can never match here.
+    if isinstance(x, (int, float)):
+        return x
     if x is None:
         return 0
     # Unwrap hybrid context-array to its current-row scalar.
-    _RAA = globals().get('_RowAwareArray')
+    _RAA = _RAA_CLS
     if _RAA is not None and isinstance(x, _RAA):
         x = x._row if x._row is not None else 0
-    if isinstance(x, (int, float)):
-        return x
+        if isinstance(x, (int, float)):
+            return x
     # Strings: empty or 'None' -> 0, else try float conversion
     if isinstance(x, str):
         s = x.strip()
@@ -1932,10 +2042,18 @@ def schedule(period_def: Dict[str, Any], columns: Dict[str, str], context: Dict[
                 # Lag function for referencing previous rows (overrides DSL_FUNCTIONS lag)
                 "lag": create_lag(prior_snapshot),
 
-                # Python built-ins
+                # Python built-ins.
+                #
+                # min/max are the DSL's own, not Python's: the builtins raise
+                # "max() iterable argument is empty" on an empty collection,
+                # which kills the whole posting date, while min_val/max_val
+                # return 0 the way they already do in every other context. A
+                # schedule column asking for max() of a set that happens to be
+                # empty for one instrument on one date is ordinary, not an
+                # error. `sum` was already mapped this way.
                 "abs": abs,
-                "min": min,
-                "max": max,
+                "min": min_val,
+                "max": max_val,
                 "round": round,
                 "sum": sum_vals,
                 "len": len,
@@ -4235,3 +4353,9 @@ for _m in DSL_FUNCTION_METADATA:
     _ex = DSL_FUNCTION_EXAMPLES.get(_m.get("name"))
     if _ex:
         _m["example"] = _ex
+
+
+# _RowAwareArray is defined part-way down this module, but the hot primitives
+# above run millions of times per book and cannot afford a globals() lookup to
+# find it. Bind it once, here, where the class definitely exists.
+_RAA_CLS = _RowAwareArray

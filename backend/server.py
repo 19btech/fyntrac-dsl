@@ -9,7 +9,10 @@ from typing import List, Dict, Any, Optional
 import uuid
 from datetime import datetime, timezone
 import csv
+import hashlib
 import io
+import time as _time
+from collections import OrderedDict
 import pandas as pd
 import json
 import re
@@ -126,6 +129,40 @@ def _validate_template_ast(source: str, label: str = '<dsl_template>') -> None:
 # ---------------------------------------------------------------------------
 
 _SANDBOX_BLOCKED_BUILTINS = ('exec', 'eval', 'compile', 'open', 'input', 'breakpoint')
+
+
+_TEMPLATE_CODE_CACHE: "OrderedDict[str, Any]" = OrderedDict()
+_TEMPLATE_CODE_CACHE_MAX = 64
+
+
+def _compile_template(python_code: str, label: str = '<dsl_template>'):
+    """Validate and compile a generated template, once per distinct source.
+
+    A full-book run executes the SAME template once per posting date, and
+    both the AST security walk and compile() are pure functions of the source
+    text -- so on a 14-date book they were each repeated 14 times over
+    identical input. Profiling a representative run put 72% of the total in
+    those two calls, against 20% in the actual arithmetic.
+
+    Keyed on the exact post-substitution source, so a template that changes by
+    even a character gets revalidated: the cache can never let unvalidated
+    code through, it only skips repeating a verdict already reached for that
+    identical text. Callers still exec into a FRESH globals mapping, because
+    templates keep module-level state that must not leak between runs.
+    """
+    key = hashlib.sha256(python_code.encode('utf-8')).hexdigest()
+    cached = _TEMPLATE_CODE_CACHE.get(key)
+    if cached is not None:
+        _TEMPLATE_CODE_CACHE.move_to_end(key)
+        return cached
+
+    _validate_template_ast(python_code, label=label)
+    code_obj = compile(python_code, label, 'exec')
+
+    _TEMPLATE_CODE_CACHE[key] = code_obj
+    while len(_TEMPLATE_CODE_CACHE) > _TEMPLATE_CODE_CACHE_MAX:
+        _TEMPLATE_CODE_CACHE.popitem(last=False)
+    return code_obj
 
 
 def _make_sandbox_builtins() -> dict:
@@ -271,6 +308,83 @@ def _validate_dsl_user_code(user_python_body: str, label: str = '<dsl_user_code>
                 )
 
 
+_NUMERIC_DECLARED_TYPES = ('decimal', 'float', 'integer', 'int')
+
+
+def _is_blank_cell(value) -> bool:
+    """True for NaN / empty / 'none' / 'null' cells, matching ingest cleaning."""
+    try:
+        if pd.isna(value):
+            return True
+    except (TypeError, ValueError):
+        pass
+    s = str(value).strip()
+    return s == '' or s.lower() in ('none', 'null')
+
+
+def _looks_numeric(value) -> bool:
+    """True when the cell can be read as a number without losing information."""
+    if isinstance(value, bool):
+        return False
+    if isinstance(value, (int, float)):
+        return True
+    s = str(value).strip().replace(',', '')
+    if not s:
+        return False
+    try:
+        float(s)
+    except (TypeError, ValueError):
+        return False
+    # A zero-padded id ("00123") parses as a float but must not be stored as
+    # one -- the padding is meaningful and float() would discard it.
+    digits = s.lstrip('+-')
+    if len(digits) > 1 and digits.startswith('0') and not digits.startswith('0.'):
+        return False
+    return True
+
+
+def _reconcile_field_types(data_rows: list, field_types: dict) -> tuple:
+    """Demote numeric field types that the actual data contradicts.
+
+    A field declared decimal/integer whose values are not all numeric used to be
+    coerced with ``float(value)``, and the ``except`` branch stored ``0.0`` in
+    place of every value that failed -- silently destroying identifiers such as
+    "SKU-001" and dropping the padding from "00123". Types on the
+    EventConfiguration JSON path are guessed from the column name alone, so the
+    data is the more reliable source: where they disagree, the data wins.
+
+    Returns ``(reconciled_types, corrections)`` where corrections maps
+    field -> {"from", "to", "sample"} for every demoted field.
+    """
+    reconciled = dict(field_types)
+    corrections: dict = {}
+
+    for field, declared in field_types.items():
+        if str(declared).strip().lower() not in _NUMERIC_DECLARED_TYPES:
+            continue
+        offender = None
+        saw_value = False
+        for row in data_rows:
+            if field not in row:
+                continue
+            value = row[field]
+            if _is_blank_cell(value):
+                continue
+            saw_value = True
+            if not _looks_numeric(value):
+                offender = value
+                break
+        if saw_value and offender is not None:
+            reconciled[field] = 'string'
+            corrections[field] = {
+                "from": declared,
+                "to": "string",
+                "sample": str(offender)[:64],
+            }
+
+    return reconciled, corrections
+
+
 def _normalize_ingest_date_value(value):
     """Normalize a value (scalar or list or JSON-list-string) to yyyy-mm-dd or list of such strings."""
     if value is None:
@@ -395,12 +509,15 @@ except Exception:
 # Support running in different execution contexts: prefer package import, fallback to module-level
 try:
     from backend.dsl_functions import DSL_FUNCTIONS, DSL_FUNCTION_METADATA, normalize_date
+    from backend import dsl_functions
 except Exception:
     try:
         from dsl_functions import DSL_FUNCTIONS, DSL_FUNCTION_METADATA, normalize_date
+        import dsl_functions
     except Exception:
         # Last resort: try relative import (works when executed as package)
         from .dsl_functions import DSL_FUNCTIONS, DSL_FUNCTION_METADATA, normalize_date
+        from . import dsl_functions
 
 try:
     from bson import ObjectId
@@ -424,8 +541,8 @@ db = client[settings.db_name]
 
 # --- Shared error message table for AI chat endpoints ---
 ERROR_MESSAGES = {
-    "no_provider": "You haven't set up an AI provider yet. Go to Settings \u2192 AI Agent Setup to get started.",
-    "invalid_key": "Your API key appears to be invalid or has expired. Please update it in Settings \u2192 AI Agent Setup.",
+    "no_provider": "You haven't set up an AI provider yet. Go to Settings \u2192 Copilot Setup to get started.",
+    "invalid_key": "Your API key appears to be invalid or has expired. Please update it in Settings \u2192 Copilot Setup.",
     "quota_exceeded": "You've reached the usage limit for your {provider} account. Please check your plan or billing.",
     "rate_limited": "You're sending messages too quickly. Please wait a moment before trying again.",
     "model_premium": "The selected model ({model}) requires a paid subscription on {provider}. Switch to a free-tier model or upgrade your account.",
@@ -599,7 +716,8 @@ def extract_event_names_from_dsl(dsl_code: str) -> List[str]:
     _NOT_EVENTS = {"self", "math", "datetime", "os", "sys", "json", "re"}
     return list({m for m in matches if m not in _NOT_EVENTS})
 
-def merge_event_data_by_instrument(event_data_dict: Dict[str, List[Dict]]) -> List[Dict]:
+def merge_event_data_by_instrument(event_data_dict: Dict[str, List[Dict]],
+                                   latest_cache: Optional[Dict[str, Dict]] = None) -> List[Dict]:
     """
     Merge data from multiple events by instrumentid.
     Each event's fields are prefixed with EVENT_NAME_ to avoid conflicts.
@@ -608,18 +726,29 @@ def merge_event_data_by_instrument(event_data_dict: Dict[str, List[Dict]]) -> Li
     Hierarchy: postingDate → instrumentId → subInstrumentId → effectiveDates
     
     If subInstrumentId is missing or null, it defaults to "1".
+
+    `latest_cache` maps event_name to an already-computed latest-row-per-
+    instrument view, for events whose rows the caller knows do not change
+    between calls. A full book merges once per posting date and passes
+    reference tables unfiltered every time, so without this their entire
+    row set is re-scanned on every date. An entry here also vouches that
+    those rows were already shape-checked, so the pre-flight is skipped.
     """
     merged_data = {}
     bad_row_events = []
+    cache = latest_cache or {}
     
     for event_name, data_rows in event_data_dict.items():
-        # Pre-flight check: ensure every row is a dict. Surface a clear error pointing
-        # at the offending event/row so the user knows where to look.
-        if isinstance(data_rows, list):
-            for idx, row in enumerate(data_rows):
-                if not isinstance(row, dict):
-                    bad_row_events.append((event_name, idx, type(row).__name__))
-        latest_data = get_latest_data_per_instrument(data_rows if isinstance(data_rows, list) else [])
+        latest_data = cache.get(event_name)
+        if latest_data is None:
+            # Pre-flight check: ensure every row is a dict. Surface a clear error
+            # pointing at the offending event/row so the user knows where to look.
+            if isinstance(data_rows, list):
+                for idx, row in enumerate(data_rows):
+                    if not isinstance(row, dict):
+                        bad_row_events.append((event_name, idx, type(row).__name__))
+            latest_data = get_latest_data_per_instrument(
+                data_rows if isinstance(data_rows, list) else [])
         
         for instrument_id, row in latest_data.items():
             if instrument_id not in merged_data:
@@ -768,9 +897,28 @@ and_op = DSL_FUNCTIONS.get('and', lambda a, b: a and b)
 or_op = DSL_FUNCTIONS.get('or', lambda a, b: a or b)
 not_op = DSL_FUNCTIONS.get('not', lambda a: not a)
 
-# Restore Python built-ins (needed for native Python syntax)
-min = _builtin_min
-max = _builtin_max
+# Restore Python built-ins (needed for native Python syntax).
+#
+# min/max are wrapped rather than restored raw. Python's raise
+# "max() iterable argument is empty" on an empty collection, which aborts the
+# whole posting date -- while every other DSL context (iteration expressions,
+# schedule columns) returns 0 for the same input. A collection that happens to
+# be empty for one instrument on one date is ordinary, not an error.
+#
+# The wrapper only intercepts the single-empty-collection case; every other
+# call, including the multi-argument and key= forms, goes straight to the
+# builtin, so native Python usage in Custom Code is untouched.
+def _guarded_min_max(_builtin, _name):
+    def _fn(*args, **kwargs):
+        if len(args) == 1 and not kwargs and isinstance(args[0], (list, tuple)):
+            cleaned = [c for c in args[0] if c is not None]
+            return _builtin(cleaned) if cleaned else 0
+        return _builtin(*args, **kwargs)
+    _fn.__name__ = _name
+    return _fn
+
+min = _guarded_min_max(_builtin_min, 'min')
+max = _guarded_min_max(_builtin_max, 'max')
 sum = _builtin_sum
 len = _builtin_len
 # Smart range: DSL range(list)->max-min; Python range(int,...) for iterations
@@ -972,9 +1120,28 @@ and_op = DSL_FUNCTIONS.get('and', lambda a, b: a and b)
 or_op = DSL_FUNCTIONS.get('or', lambda a, b: a or b)
 not_op = DSL_FUNCTIONS.get('not', lambda a: not a)
 
-# Restore Python built-ins (needed for native Python syntax)
-min = _builtin_min
-max = _builtin_max
+# Restore Python built-ins (needed for native Python syntax).
+#
+# min/max are wrapped rather than restored raw. Python's raise
+# "max() iterable argument is empty" on an empty collection, which aborts the
+# whole posting date -- while every other DSL context (iteration expressions,
+# schedule columns) returns 0 for the same input. A collection that happens to
+# be empty for one instrument on one date is ordinary, not an error.
+#
+# The wrapper only intercepts the single-empty-collection case; every other
+# call, including the multi-argument and key= forms, goes straight to the
+# builtin, so native Python usage in Custom Code is untouched.
+def _guarded_min_max(_builtin, _name):
+    def _fn(*args, **kwargs):
+        if len(args) == 1 and not kwargs and isinstance(args[0], (list, tuple)):
+            cleaned = [c for c in args[0] if c is not None]
+            return _builtin(cleaned) if cleaned else 0
+        return _builtin(*args, **kwargs)
+    _fn.__name__ = _name
+    return _fn
+
+min = _guarded_min_max(_builtin_min, 'min')
+max = _guarded_min_max(_builtin_max, 'max')
 sum = _builtin_sum
 len = _builtin_len
 # Smart range: DSL range(list)->max-min; Python range(int,...) for iterations
@@ -1698,10 +1865,11 @@ async def execute_python_template(python_code: str, event_data: List[Dict[str, A
         }
         # Defense-in-depth: AST-validate the generated template before exec
         # so user-injected Custom Code cannot reach __import__, dunder
-        # introspection, or import disallowed modules.
-        _validate_template_ast(python_code, label='<dsl_template>')
+        # introspection, or import disallowed modules. Cached by source text,
+        # so a book that runs one template across many posting dates validates
+        # and compiles it once rather than once per date.
         # Execute the template which defines helper functions like process_event_data, get_print_outputs
-        exec(compile(python_code, '<dsl_template>', 'exec'), exec_globals)
+        exec(_compile_template(python_code), exec_globals)
 
         # Prefer calling process_event_data (multi-event template) and pass raw_event_data.
         # Inspect the signature explicitly so we never swallow internal TypeErrors as a
@@ -2708,6 +2876,30 @@ async def upload_event_data_excel(file: UploadFile = File(...)):
             # Get field types from event definition
             field_types = {f['name']: f.get('datatype', 'string') for f in event.get('fields', [])}
 
+            # The declared types may be name-based guesses from an
+            # EventConfiguration JSON import, which carries no values. Let the
+            # actual data correct them before any coercion runs, so a wrong
+            # guess can no longer overwrite real values with 0.0.
+            field_types, type_corrections = _reconcile_field_types(data_rows, field_types)
+            if type_corrections:
+                corrected_fields = []
+                for f in event.get('fields', []):
+                    fname = f.get('name')
+                    if fname in type_corrections:
+                        f = {**f, 'datatype': type_corrections[fname]['to']}
+                    corrected_fields.append(f)
+                await db.event_definitions.update_one(
+                    {"event_name": event['event_name']},
+                    {"$set": {"fields": corrected_fields}},
+                )
+                event['fields'] = corrected_fields
+                for fname, corr in type_corrections.items():
+                    logger.info(
+                        "Event '%s' field '%s': datatype %s -> %s "
+                        "(value %r is not numeric); definition updated.",
+                        event['event_name'], fname, corr['from'], corr['to'], corr['sample'],
+                    )
+
             cleaned_rows = []
             # Track coercions summary: field -> coerced_count
             coercions = {}
@@ -2775,7 +2967,8 @@ async def upload_event_data_excel(file: UploadFile = File(...)):
                 "sheet_name": sheet_name,
                 "rows_uploaded": len(cleaned_rows),
                 "remapped_headers": remapped_headers,
-                "coercions": coercions if coercions else None
+                "coercions": coercions if coercions else None,
+                "type_corrections": type_corrections if type_corrections else None
             })
         
         if not all_posting_dates:
@@ -3504,6 +3697,265 @@ async def execute_template(request: TemplateExecuteRequest):
         raise HTTPException(status_code=400, detail=str(e))
 
 
+_PRINT_STMT_RE = re.compile(r'^\s*print\s*\(', re.MULTILINE)
+
+
+def _strip_print_statements(dsl_code: str) -> str:
+    """Drop whole-line print() statements from generated DSL.
+
+    A report run wants transactions, nothing else. Left in, a schedule rule
+    serialises its entire materialised grid to print_outputs on EVERY posting
+    date -- measured at ~2.9MB per run for 40 instruments over a 36-period
+    schedule -- which is pure transport and serialisation cost for output the
+    report never reads.
+
+    Only lines that START with print( are removed, so a print nested inside a
+    formula or string is untouched.
+    """
+    if not dsl_code:
+        return dsl_code
+    kept = [ln for ln in dsl_code.split('\n')
+            if not _PRINT_STMT_RE.match(ln)]
+    return '\n'.join(kept)
+
+
+async def _load_dataset_for_events(referenced_events):
+    """Load event definitions + rows for `referenced_events` from live storage.
+
+    Returns (all_event_fields, event_metadata, event_data_dict) keyed by the
+    canonical (stored) event name, plus the list of names that had no
+    definition. Split out of the report run so a regression replay can hand
+    `_run_full_book` a *snapshot* dataset in exactly the same shape instead of
+    whatever happens to be uploaded right now.
+    """
+    all_event_fields = {}
+    event_metadata = {}
+    event_data_dict = {}
+    missing = []
+    for name in referenced_events:
+        ev = await db.event_definitions.find_one(
+            {"event_name": {"$regex": f"^{re.escape(name)}$", "$options": "i"}},
+            {"_id": 0})
+        if not ev:
+            missing.append(name)
+            continue
+        canonical = ev["event_name"]
+        all_event_fields[canonical] = ev.get("fields", [])
+        event_metadata[canonical] = {
+            "eventType": ev.get("eventType", "activity")}
+        rows = await db.event_data.find_one(
+            {"event_name": {"$regex": f"^{re.escape(name)}$", "$options": "i"}},
+            {"_id": 0})
+        event_data_dict[canonical] = (rows or {}).get("data_rows") or []
+    return all_event_fields, event_metadata, event_data_dict, missing
+
+
+def _posting_dates_in(event_data_dict, event_metadata):
+    """Every distinct posting date present in the activity data, ascending.
+
+    Reference events carry no posting date and are excluded -- they are
+    lookup tables that apply on every date.
+    """
+    return sorted({
+        str(get_field_case_insensitive(row, "postingdate", "")).strip()
+        for name, rows in event_data_dict.items()
+        if str(event_metadata.get(name, {}).get("eventType", "activity")).lower() != "reference"
+        for row in rows
+        if str(get_field_case_insensitive(row, "postingdate", "")).strip()
+    })
+
+
+def _profile_top(profiler, limit=12):
+    """The heaviest functions in a profiled run, as plain rows.
+
+    Sorted by total time spent *inside* each function rather than cumulative,
+    so a cheap wrapper around expensive work does not mask the real cost.
+    """
+    import pstats
+    stats = pstats.Stats(profiler)
+    rows = []
+    for func, (_cc, nc, tt, ct, _callers) in stats.stats.items():
+        filename, lineno, name = func
+        short = filename.rsplit("\\", 1)[-1].rsplit("/", 1)[-1]
+        rows.append({
+            "function": f"{short}:{lineno}({name})" if short else name,
+            "calls": nc,
+            "self_ms": round(tt * 1000, 1),
+            "total_ms": round(ct * 1000, 1),
+        })
+    rows.sort(key=lambda r: r["self_ms"], reverse=True)
+    return rows[:limit]
+
+
+async def _run_full_book(dsl_code, all_event_fields, event_metadata,
+                         event_data_dict, on_progress=None, profile=False):
+    """Run `dsl_code` for EVERY instrument on EVERY posting date in the data.
+
+    The pure execution core shared by the Transaction Report and by regression
+    replays. It persists nothing and reads no live collection: everything it
+    needs arrives as arguments, so a regression run can replay a frozen
+    dataset without disturbing the workspace the user is currently looking at.
+
+    `on_progress(index, total, posting_date)` is awaited before each date when
+    supplied, so a long batch can report where it is.
+
+    Returns {transactions, per_date, errors, posting_dates} where
+    `transactions` is the flat book across all dates.
+    """
+    # The report reads transactions only -- printing the schedule grid on
+    # every posting date is wasted work and wasted payload.
+    python_code = dsl_to_python_multi_event(
+        _strip_print_statements(dsl_code), all_event_fields)
+
+    _t0 = _time.perf_counter()
+    posting_dates = _posting_dates_in(event_data_dict, event_metadata)
+    # No dates at all means undated data: run once, unscoped, rather than
+    # reporting "nothing to do".
+    dates_to_run = posting_dates or [None]
+
+    # Bucket every activity row by its posting date ONCE. Filtering per date
+    # re-reads the whole book on every date, which is the difference between
+    # O(rows) and O(dates x rows); on a 60-date, 90k-row book that rescan was
+    # the single largest cost in the run.
+    def _is_reference(name):
+        return str(event_metadata.get(name, {}).get(
+            "eventType", "activity")).lower() == "reference"
+
+    buckets = {}
+    reference_rows = {}
+    for _name, _rows in event_data_dict.items():
+        _safe = _rows if isinstance(_rows, list) else []
+        if _is_reference(_name):
+            # Reference tables carry no posting date and apply on every date.
+            reference_rows[_name] = list(_safe)
+            continue
+        _by_date = {}
+        for _row in _safe:
+            if not isinstance(_row, dict):
+                continue
+            _key = str(get_field_case_insensitive(_row, "postingdate", "")).strip()
+            _by_date.setdefault(_key, []).append(_row)
+        buckets[_name] = _by_date
+
+    # Reference rows are identical on every date, so their latest-per-instrument
+    # view is derived once rather than inside every merge.
+    latest_cache = {_name: get_latest_data_per_instrument(_rows)
+                    for _name, _rows in reference_rows.items()}
+
+    def _scope(pdate):
+        """The rows in play for one posting date, same shape the filter gave."""
+        if pdate is None:
+            return event_data_dict
+        target = pdate.strip()
+        scoped = {name: by_date.get(target, [])
+                  for name, by_date in buckets.items()}
+        scoped.update(reference_rows)
+        return scoped
+
+
+    prepare_ms = int((_time.perf_counter() - _t0) * 1000)
+    profiler = None
+    if profile:
+        import cProfile
+        profiler = cProfile.Profile()
+        profiler.enable()
+    transactions, per_date, errors = [], [], []
+    cancelled = False
+    for idx, pdate in enumerate(dates_to_run):
+        if on_progress is not None:
+            # Returning False asks the book to stop. Between posting dates is
+            # the only safe place to do it: a date is one indivisible call into
+            # the engine, so a stop lands within one date rather than instantly.
+            try:
+                _keep_going = await on_progress(idx, len(dates_to_run), pdate)
+            except Exception:
+                _keep_going = None
+            if _keep_going is False:
+                cancelled = True
+                break
+        try:
+            _td = _time.perf_counter()
+            try:
+                dsl_functions.reset_eval_count()
+            except Exception:
+                pass
+            scoped = _scope(pdate)
+            merged = merge_event_data_by_instrument(
+                scoped, latest_cache=latest_cache if pdate else None)
+            _merge_ms = int((_time.perf_counter() - _td) * 1000)
+            if not merged:
+                per_date.append({"posting_date": pdate, "instruments": 0,
+                                 "transactions": 0, "txns": []})
+                continue
+            # `scoped`, not the whole book: collect_by_instrument() and
+            # collect_all() read the raw event data directly and span every
+            # date they are given. Handed the unfiltered dict they gather one
+            # value per row across ALL posting dates, so a rule that fans a
+            # per-line array into createTransaction emitted the same
+            # transaction once per date -- 32 identical rows for a 9-date book.
+            # Business Preview and the agent's dry run already scope this the
+            # same way; the full-book run was the odd one out, which is why it
+            # disagreed with the preview for the same rule and data.
+            result = await execute_python_template(
+                python_code, merged, scoped, pdate, None)
+            txns = [t.model_dump() for t in (result.get("transactions") or [])]
+            transactions.extend(txns)
+            try:
+                _evals = dsl_functions.get_eval_count()
+            except Exception:
+                _evals = None
+            _total_ms = int((_time.perf_counter() - _td) * 1000)
+            per_date.append({"posting_date": pdate, "instruments": len(merged),
+                             "transactions": len(txns), "txns": txns,
+                             "duration_ms": _total_ms,
+                             # Split the date so a slow one points at a cause:
+                             # data shaping, or the rules themselves.
+                             "merge_ms": _merge_ms,
+                             "execute_ms": _total_ms - _merge_ms,
+                             "evals": _evals})
+        except HTTPException as exc:
+            errors.append({"posting_date": pdate, "error": exc.detail})
+        except Exception as exc:
+            # One bad date must not abandon the rest of the book.
+            errors.append({"posting_date": pdate, "error": str(exc)})
+
+    profile_top = None
+    if profiler is not None:
+        try:
+            profiler.disable()
+            profile_top = _profile_top(profiler)
+        except Exception as exc:
+            logger.warning(f"Profiling a full book failed: {exc}")
+
+    total_ms = int((_time.perf_counter() - _t0) * 1000)
+    slowest = max((e for e in per_date if e.get("duration_ms") is not None),
+                  key=lambda e: e["duration_ms"], default=None)
+    if total_ms > 5000:
+        # A slow book has two very different causes -- many dates, or one
+        # expensive date -- and they need opposite fixes. Say which it was.
+        logger.info(
+            "Full book: %d date(s) in %.1fs (prepare %dms, slowest date %s at %dms)",
+            len(dates_to_run), total_ms / 1000, prepare_ms,
+            (slowest or {}).get("posting_date"), (slowest or {}).get("duration_ms", 0))
+    return {
+        "transactions": transactions,
+        "per_date": per_date,
+        "errors": errors,
+        "posting_dates": [d for d in dates_to_run if d],
+        "cancelled": cancelled,
+        "timing": {
+            "total_ms": total_ms,
+            "prepare_ms": prepare_ms,
+            "profile": profile_top,
+            "merge_ms": sum(e.get("merge_ms") or 0 for e in per_date),
+            "execute_ms": sum(e.get("execute_ms") or 0 for e in per_date),
+            "evals": sum(e.get("evals") or 0 for e in per_date),
+            "slowest_date": (slowest or {}).get("posting_date"),
+            "slowest_date_ms": (slowest or {}).get("duration_ms"),
+        },
+    }
+
+
 @api_router.post("/transaction-reports/run")
 async def run_transaction_report(template_id: Optional[str] = None,
                                  replace: bool = True):
@@ -3550,6 +4002,21 @@ async def run_transaction_report(template_id: Optional[str] = None,
                 status_code=400,
                 detail="Nothing to run — no saved rules and no template selected.")
 
+        # Names of the rules this run covers — lets the report say which
+        # rule set produced the rows it is showing.
+        rule_names = []
+        try:
+            if not template_id:
+                rule_names = sorted(
+                    r.get("name", "")
+                    for r in await db.saved_rules.find(
+                        {}, {"_id": 0, "name": 1}).to_list(500)
+                    if r.get("name"))
+            else:
+                rule_names = [template_name]
+        except Exception:
+            rule_names = [template_name]
+
         # ── 2. Load every referenced event ────────────────────────────
         referenced_events = extract_event_names_from_dsl(dsl_code) or []
         if not referenced_events:
@@ -3557,40 +4024,14 @@ async def run_transaction_report(template_id: Optional[str] = None,
                 status_code=400,
                 detail="The rules reference no events, so there is nothing to run.")
 
-        all_event_fields = {}
-        event_metadata = {}
-        event_data_dict = {}
-        missing = []
-        for name in referenced_events:
-            ev = await db.event_definitions.find_one(
-                {"event_name": {"$regex": f"^{re.escape(name)}$", "$options": "i"}},
-                {"_id": 0})
-            if not ev:
-                missing.append(name)
-                continue
-            canonical = ev["event_name"]
-            all_event_fields[canonical] = ev.get("fields", [])
-            event_metadata[canonical] = {
-                "eventType": ev.get("eventType", "activity")}
-            rows = await db.event_data.find_one(
-                {"event_name": {"$regex": f"^{re.escape(name)}$", "$options": "i"}},
-                {"_id": 0})
-            event_data_dict[canonical] = (rows or {}).get("data_rows") or []
+        (all_event_fields, event_metadata,
+         event_data_dict, missing) = await _load_dataset_for_events(referenced_events)
         if missing:
             raise HTTPException(
                 status_code=404,
                 detail=f"Event definition(s) not found: {', '.join(missing)}")
 
-        # ── 3. Every posting date in the activity data ────────────────
-        posting_dates = sorted({
-            str(get_field_case_insensitive(row, "postingdate", "")).strip()
-            for name, rows in event_data_dict.items()
-            if str(event_metadata.get(name, {}).get("eventType", "activity")).lower() != "reference"
-            for row in rows
-            if str(get_field_case_insensitive(row, "postingdate", "")).strip()
-        })
-
-        # ── 4. Start clean so a second press does not double the book ──
+        # ── 3. Start clean so a second press does not double the book ──
         if replace:
             try:
                 await db.transaction_reports.delete_many({})
@@ -3598,61 +4039,51 @@ async def run_transaction_report(template_id: Optional[str] = None,
                 pass
             in_memory_data["transaction_reports"] = []
 
-        python_code = dsl_to_python_multi_event(dsl_code, all_event_fields)
+        # ── 4. Run the whole book ─────────────────────────────────────
+        outcome = await _run_full_book(
+            dsl_code, all_event_fields, event_metadata, event_data_dict)
+        errors = outcome["errors"]
+        dates_total = len(outcome["posting_dates"]) or 1
+        total_txns = len(outcome["transactions"])
 
-        # ── 5. One execution per posting date ─────────────────────────
-        # No dates at all means undated data: run once, unscoped, rather
-        # than reporting "nothing to do".
-        dates_to_run = posting_dates or [None]
-        runs, errors = [], []
-        total_txns = 0
-
-        for pdate in dates_to_run:
+        # ── 5. Persist one report document per posting date ───────────
+        # One Play = one batch. Every document it writes carries this id so
+        # the report can show just the current run instead of every
+        # transaction ever produced by any rule set.
+        report_run_id = str(uuid.uuid4())
+        runs = []
+        for entry in outcome["per_date"]:
+            txns = entry.pop("txns", [])
+            runs.append(entry)
+            if not txns:
+                continue
+            report = TransactionReport(
+                template_name=template_name,
+                event_name=", ".join(referenced_events),
+                transactions=txns)
+            doc = report.model_dump()
+            doc["executed_at"] = doc["executed_at"].isoformat()
+            doc["report_run_id"] = report_run_id
+            doc["rule_names"] = rule_names
             try:
-                scoped = (filter_event_data_by_posting_date(
-                              event_data_dict, pdate, event_metadata)
-                          if pdate else event_data_dict)
-                merged = merge_event_data_by_instrument(scoped)
-                if not merged:
-                    runs.append({"posting_date": pdate, "instruments": 0,
-                                 "transactions": 0})
-                    continue
-                result = await execute_python_template(
-                    python_code, merged, event_data_dict, pdate, None)
-                txns = [t.model_dump() for t in (result.get("transactions") or [])]
-                total_txns += len(txns)
-
-                report = TransactionReport(
-                    template_name=template_name,
-                    event_name=", ".join(referenced_events),
-                    transactions=txns)
-                doc = report.model_dump()
-                doc["executed_at"] = doc["executed_at"].isoformat()
-                try:
-                    await db.transaction_reports.insert_one(doc)
-                except Exception:
-                    in_memory_data.setdefault("transaction_reports", []).append(doc)
-
-                runs.append({"posting_date": pdate, "instruments": len(merged),
-                             "transactions": len(txns)})
-            except HTTPException as exc:
-                errors.append({"posting_date": pdate, "error": exc.detail})
-            except Exception as exc:
-                # One bad date must not abandon the rest of the book.
-                errors.append({"posting_date": pdate, "error": str(exc)})
+                await db.transaction_reports.insert_one(doc)
+            except Exception:
+                in_memory_data.setdefault("transaction_reports", []).append(doc)
 
         return {
-            "message": (f"Ran {len(runs)} of {len(dates_to_run)} posting date(s) — "
+            "message": (f"Ran {len(runs)} of {dates_total} posting date(s) — "
                         f"{total_txns} transaction(s)"),
             "template_name": template_name,
-            "posting_dates": [d for d in dates_to_run if d],
-            "dates_total": len(dates_to_run),
+            "posting_dates": outcome["posting_dates"],
+            "dates_total": dates_total,
             "dates_succeeded": len(runs),
             "dates_failed": len(errors),
             "transactions_created": total_txns,
             "runs": runs,
             "errors": errors,
             "events_used": referenced_events,
+            "report_run_id": report_run_id,
+            "rule_names": rule_names,
         }
     except HTTPException:
         raise
@@ -3667,6 +4098,7 @@ async def get_transaction_reports(
     offset: int = 0,
     instrumentid: Optional[str] = None,
     template_name: Optional[str] = None,
+    scope: str = "current",
 ):
     """Every transaction ever produced, flattened across all runs.
 
@@ -3689,6 +4121,21 @@ async def get_transaction_reports(
             docs = list((in_memory_data or {}).get("transaction_reports") or [])
         if not docs:
             docs = list((in_memory_data or {}).get("transaction_reports") or [])
+
+        # Default to the CURRENT run: the most recent Play, identified by the
+        # report_run_id shared by every document that Play wrote. Without this
+        # the report is the union of every run ever stored, so transactions
+        # from rules that have since been edited or deleted keep showing up —
+        # and the whole history has to be flattened on every load.
+        # scope="all" opts back into the full history.
+        run_ids = [d.get("report_run_id") for d in docs if d.get("report_run_id")]
+        current_run_id = None
+        if scope != "all" and run_ids:
+            newest = max(
+                (d for d in docs if d.get("report_run_id")),
+                key=lambda d: str(d.get("executed_at") or ""))
+            current_run_id = newest.get("report_run_id")
+            docs = [d for d in docs if d.get("report_run_id") == current_run_id]
 
         rows = []
         for doc in docs:
@@ -3754,6 +4201,10 @@ async def get_transaction_reports(
                 "instrument_count": len(instruments),
                 "run_count": len(docs),
             },
+            "scope": scope,
+            "report_run_id": current_run_id,
+            "rule_names": sorted({
+                n for d in docs for n in (d.get("rule_names") or [])}),
             "filters": {
                 "instruments": instruments[:1000],
                 "templates": templates,
@@ -4687,27 +5138,65 @@ async def import_transactions(file: UploadFile = File(...)):
 # Event Configuration → Event Definition transformer
 # ---------------------------------------------------------------------------
 
-# Keywords that mark a field name as numeric (decimal). Lookup is case-
-# insensitive and substring-based on the assembled UPPERCASE field name.
+# Keywords that mark a field name as numeric (decimal). Matched as a substring
+# of the assembled UPPERCASE field name, because real Fyntrac columns run words
+# together (LOANAMOUNT, BEGINNINGBALANCE) and token-exact matching would miss
+# them. Short keywords that would false-positive inside unrelated words live in
+# _DECIMAL_TOKENS below instead.
 _DECIMAL_KEYWORDS = (
-    "AMOUNT", "BALANCE", "PRINCIPAL", "RATE", "INTEREST", "PRICE",
-    "QUANTITY", "TERM", "COUPON", "YIELD", "SPREAD", "FEE", "PAYMENT",
-    "CASH", "ACCRUAL", "RECEIVABLE", "CF", "LOAN",
+    "AMOUNT", "BALANCE", "PRINCIPAL", "INTEREST", "PRICE",
+    "QUANTITY", "COUPON", "YIELD", "SPREAD", "PAYMENT",
+    "CASH", "ACCRUAL", "RECEIVABLE", "LOAN",
 )
-_DECIMAL_NAME_SUFFIXES = ("_ID", "ID")  # ProductId / customer_id → decimal
+
+# Keywords too short to match as a bare substring: "CF" appears inside any name
+# containing those two letters, "RATE" inside CORPORATE/SEPARATE, "TERM" inside
+# TERMINATION/DETERMINED, "FEE" inside FEEDBACK. These are matched only against
+# whole underscore-delimited tokens, or as a token suffix (EXPECTEDCF, NOTERATE).
+_DECIMAL_TOKENS = ("CF", "RATE", "TERM", "FEE")
+
+# Ordinary English words that end with DATE or RATE and would otherwise be
+# mistyped by the token-suffix rule below (MANDATE -> date, CORPORATE ->
+# decimal). Matched as whole tokens; extend as real column names demand.
+_KEYWORD_FALSE_FRIENDS = frozenset({
+    "MANDATE", "CANDIDATE", "UPDATE", "UPDATED", "UPDATEDBY",
+    "VALIDATE", "VALIDATED", "CONSOLIDATE", "CONSOLIDATED",
+    "CORPORATE", "SEPARATE", "ACCURATE", "AGGREGATE", "AGGREGATED",
+    "ESTIMATE", "ESTIMATED", "INTERMEDIATE",
+})
+
+
+def _name_tokens(n: str) -> list:
+    """Split an assembled UPPERCASE field name into underscore-delimited tokens."""
+    return [t for t in n.split("_") if t]
 
 
 def _infer_field_dt(name: str) -> str:
-    """Infer datatype from the assembled (already prefixed) field name."""
+    """Infer datatype from the assembled (already prefixed) field name.
+
+    Name-based inference is a fallback only: it runs when an EventConfiguration
+    JSON is loaded, because that file carries column names but no values and no
+    declared types. Once real event data lands, the ingest path re-derives the
+    type from the values and corrects this guess (see `_reconcile_field_type`).
+    """
     n = name.upper()
-    if "DATE" in n:
+    tokens = [t for t in _name_tokens(n) if t not in _KEYWORD_FALSE_FRIENDS]
+
+    # DATE must be a whole token or a token affix -- a bare "DATE" in n also
+    # matches UPDATEDBY, MANDATE, CANDIDATE and VALIDATED.
+    if any(t == "DATE" or t.endswith("DATE") or t.startswith("DATE") for t in tokens):
         return "date"
+
     if any(k in n for k in _DECIMAL_KEYWORDS):
         return "decimal"
-    # Treat *Id / *_ID / *_ID_* as decimal (matches sample reference data:
-    # ProductId, ATTRIBUTE_PRODUCT_ID_CURRENT, etc.)
-    if n.endswith("ID") or n.endswith("_ID") or "_ID_" in n:
+
+    if any(t == k or t.endswith(k) for t in tokens for k in _DECIMAL_TOKENS):
         return "decimal"
+
+    # NOTE: identifier-looking names (*Id, *_ID, *_ID_*) are deliberately left
+    # as "string". They were previously inferred as "decimal", which made the
+    # ingest coercion run float() over values like "SKU-001" and silently store
+    # 0.0 in their place, and dropped leading zeros from padded ids.
     return "string"
 
 
@@ -5184,21 +5673,72 @@ async def _mirror_user_template_to_dsl(name: str, combined_code: str, rules: lis
         try:
             referenced_events = extract_event_names_from_dsl(combined_code or "")
             all_event_fields: Dict[str, Dict[str, Any]] = {}
+            unresolved_events: List[str] = []
             for evt_name in referenced_events:
+                # Case-insensitive, like every other event lookup on the
+                # platform (/templates/execute, run_transaction_report,
+                # agent tools._find_event_def). An exact match here meant a
+                # DSL that spelled the event in different case than
+                # event_definitions silently resolved NOTHING -- and the
+                # fallback below then emitted a standalone artifact for a
+                # model that references events.
                 evt = await db.event_definitions.find_one(
-                    {"event_name": evt_name}, {"_id": 0}
+                    {"event_name": {"$regex": f"^{re.escape(evt_name)}$",
+                                    "$options": "i"}},
+                    {"_id": 0},
                 )
                 if evt:
-                    all_event_fields[evt_name] = {
+                    # Key by the STORED spelling. dsl_to_python_multi_event
+                    # canonicalises EVENT.field to these keys, and
+                    # merge_event_data_by_instrument prefixes merged rows with
+                    # the same stored spelling -- so keying by the DSL's
+                    # spelling could emit field reads that miss the row.
+                    canonical = evt.get("event_name") or evt_name
+                    all_event_fields[canonical] = {
                         "fields": evt.get("fields", []),
                         "eventType": evt.get("eventType", "activity"),
                     }
+                else:
+                    unresolved_events.append(evt_name)
             if all_event_fields:
+                if unresolved_events:
+                    # Not fatal: extract_event_names_from_dsl matches ANY
+                    # `identifier.field`, so an unresolved name may simply not
+                    # be an event. It IS fatal at runtime if it really was one
+                    # (the reference compiles to an unassigned EVENT_field
+                    # variable), so say so loudly here.
+                    logger.warning(
+                        f"Template '{name}' references {unresolved_events} "
+                        f"which match no event definition; if these are real "
+                        f"events, their fields will raise NameError at run time."
+                    )
                 python_code = dsl_to_python_multi_event(
                     combined_code or "", all_event_fields
                 )
+            elif referenced_events:
+                # The DSL references events but NOT ONE resolved. Compiling
+                # standalone here is never correct: dsl_to_python_standalone
+                # does no EVENT.field rewriting and defines no collect_*
+                # functions, so every event reference in the artifact raises
+                # NameError on the first row, for every instrument. Refuse the
+                # deploy instead of shipping that to the runtime.
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"Cannot deploy \"{name}\": the model references "
+                        f"event(s) {referenced_events} but none of them match "
+                        f"an event definition. Compiling it would produce a "
+                        f"standalone artifact in which every event reference "
+                        f"fails with NameError at run time. Check the event "
+                        f"names in the rules against the loaded event "
+                        f"definitions, then deploy again. Nothing was written."
+                    ),
+                )
             else:
+                # A genuine standalone model -- references no events at all.
                 python_code = dsl_to_python_standalone(combined_code or "")
+        except HTTPException:
+            raise
         except Exception as e:
             compile_error = str(e)
             logger.warning(
@@ -5255,6 +5795,10 @@ async def _mirror_user_template_to_dsl(name: str, combined_code: str, rules: lis
             await db.dsl_template_artifacts.delete_many(
                 {"template_id": template_id, "version": {"$lt": next_version}}
             )
+    except HTTPException:
+        # A deliberate refusal (e.g. no referenced event resolved) must reach
+        # the caller, not be downgraded to a log line and a silent success.
+        raise
     except Exception as e:
         logger.warning(f"Failed to mirror user template '{name}' to dsl_templates: {e}")
 
@@ -5733,11 +6277,41 @@ from contextlib import asynccontextmanager
 async def lifespan(app):
     """Application lifespan: startup and shutdown hooks."""
     logger.info("Application startup")
+    # Regression data grows without bound (every case keeps every version, and
+    # every version a whole book), so its indexes are built at startup rather
+    # than left to a migration nobody runs.
+    try:
+        await _regression.ensure_indexes()
+    except Exception as exc:
+        logger.warning(f"Regression index setup skipped: {exc}")
     yield
     client.close()
     logger.info("Application shutdown — MongoDB client closed")
 
+# ── Regression testing ──────────────────────────────────────────────────
+# Lives in its own module; it reaches back for the db handle and the execution
+# engine through configure() rather than importing server.py, which would be
+# circular.
+try:
+    from backend import regression as _regression
+except Exception:
+    try:
+        import regression as _regression
+    except Exception:
+        from . import regression as _regression
+
+_regression.configure(
+    db=db,
+    run_full_book=_run_full_book,
+    get_combined_code=get_combined_code,
+    extract_event_names_from_dsl=extract_event_names_from_dsl,
+    settings=settings,
+    keep_runs=int(os.environ.get("REGRESSION_KEEP_RUNS", "50")),
+)
+
 # Include router under /api so frontend proxying to /api/* resolves correctly
+app.include_router(_regression.router, prefix="/api")
+app.include_router(_regression.router)
 app.include_router(api_router, prefix="/api")
 
 # Also include the same routes at root (no prefix) for dev environments where

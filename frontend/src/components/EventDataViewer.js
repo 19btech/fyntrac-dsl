@@ -2,10 +2,17 @@ import React, { useState, useEffect, useCallback, useMemo } from "react";
 import axios from "axios";
 import * as XLSX from "xlsx";
 import { useToast } from "./ToastProvider";
-import { Database, Download, ArrowUp, ArrowDown, ArrowUpDown } from "lucide-react";
-import { Button, IconButton, Chip, Box, Typography, Table, TableHead, TableBody, TableRow, TableCell, Card, Tabs, Tab, Alert, TextField, CircularProgress, Tooltip, Dialog, DialogTitle, DialogContent, Slide } from '@mui/material';
+import { Database, Download } from "lucide-react";
+import { Button, IconButton, Chip, Box, Typography, Card, Tabs, Tab, Alert, TextField, CircularProgress, Tooltip, Dialog, DialogTitle, DialogContent, Slide } from '@mui/material';
+import DataTable from './DataTable';
 import { API } from '../config';
 import ModalHeader from './ModalHeader';
+
+const ERROR_COLUMNS = [
+  { field: 'ErrorType', headerName: 'Error Type', width: 180, cellClassName: 'cell-mono',
+    valueGetter: (value) => value || 'FileLoad' },
+  { field: 'Message', headerName: 'Message', flex: 1, minWidth: 280 },
+];
 
 const EventDataViewer = ({ onClose }) => {
   const [eventDataSummary, setEventDataSummary] = useState([]);
@@ -16,10 +23,7 @@ const EventDataViewer = ({ onClose }) => {
   const [uploadErrors, setUploadErrors] = useState([]);
   const [instrumentWarning, setInstrumentWarning] = useState(null); // array of instrument ids or null
   // Sort: { key: columnName | null, dir: 'asc' | 'desc' }
-  const [sort, setSort] = useState({ key: null, dir: 'asc' });
   // Inline edit: { rowIdx: originalIndex, col: columnName, value: string } | null
-  const [editing, setEditing] = useState(null);
-  const [savingCell, setSavingCell] = useState(false);
   const toast = useToast();
 
   const loadEventDataSummary = useCallback(async () => {
@@ -41,8 +45,6 @@ const EventDataViewer = ({ onClose }) => {
       const response = await axios.get(`${API}/event-data/${eventName}`);
       setEventData(response.data);
       setSelectedEvent(eventName);
-      setSort({ key: null, dir: 'asc' });
-      setEditing(null);
     } catch (error) {
       toast.error("Failed to load event data");
     } finally {
@@ -236,34 +238,6 @@ const EventDataViewer = ({ onClose }) => {
     return String(value);
   };
 
-  // --- Sorting ---
-  const handleSortClick = (col) => {
-    setEditing(null);
-    setSort(prev => {
-      if (prev.key !== col) return { key: col, dir: 'asc' };
-      if (prev.dir === 'asc') return { key: col, dir: 'desc' };
-      return { key: null, dir: 'asc' };
-    });
-  };
-
-  const sortableValue = (v) => {
-    if (v === null || v === undefined) return null;
-    if (typeof v === 'object') {
-      if (v.$date) return Date.parse(v.$date) || v.$date;
-      if (v.$numberDecimal) return Number(v.$numberDecimal);
-      if (v.$numberLong) return Number(v.$numberLong);
-      if (v.$oid) return v.$oid;
-      return JSON.stringify(v);
-    }
-    if (typeof v === 'string') {
-      const n = Number(v);
-      if (v.trim() !== '' && !Number.isNaN(n)) return n;
-      const t = Date.parse(v);
-      if (!Number.isNaN(t) && /\d{4}-\d{2}-\d{2}/.test(v)) return t;
-      return v.toLowerCase();
-    }
-    return v;
-  };
 
   // Build [{row, originalIndex}] preserving original index for edit/save.
   const indexedRows = useMemo(() => {
@@ -271,73 +245,50 @@ const EventDataViewer = ({ onClose }) => {
     return rows.map((row, originalIndex) => ({ row, originalIndex }));
   }, [eventData]);
 
-  const sortedRows = useMemo(() => {
-    if (!sort.key) return indexedRows;
-    const dir = sort.dir === 'asc' ? 1 : -1;
-    const arr = [...indexedRows];
-    arr.sort((a, b) => {
-      const av = sortableValue(a.row?.[sort.key]);
-      const bv = sortableValue(b.row?.[sort.key]);
-      if (av === null && bv === null) return 0;
-      if (av === null) return 1;
-      if (bv === null) return -1;
-      if (typeof av === 'number' && typeof bv === 'number') return (av - bv) * dir;
-      return String(av).localeCompare(String(bv), undefined, { numeric: true }) * dir;
-    });
-    return arr;
-  }, [indexedRows, sort]);
+  /* The grid's row id is the row's ORIGINAL position in data_rows, which is
+   * what the PATCH endpoint addresses. Sorting or filtering therefore cannot
+   * send an edit to the wrong row. */
+  const gridRows = useMemo(
+    () => (eventData?.data_rows || []).map((row, i) => ({ ...row, id: i })),
+    [eventData]);
 
-  // --- Inline editing ---
-  const beginEdit = (originalIndex, col, currentValue) => {
-    setEditing({
-      rowIdx: originalIndex,
-      col,
-      value: currentValue === null || currentValue === undefined ? '' : renderCellValue(currentValue),
-    });
-  };
+  const dataColumns = useMemo(() => getColumnHeaders().map(header => ({
+    field: header,
+    headerName: header,
+    flex: 1,
+    minWidth: 120,
+    editable: true,
+    cellClassName: 'cell-mono',
+    valueFormatter: (value) => renderCellValue(value),
+  })), [eventData]);   // eslint-disable-line react-hooks/exhaustive-deps
 
-  const cancelEdit = () => setEditing(null);
+  /* One committed cell per call. Resolving returns the saved row to the grid;
+   * throwing makes it roll the cell back and surface the error, which is why
+   * the failure path re-raises rather than swallowing. */
+  const handleRowUpdate = useCallback(async (newRow, oldRow) => {
+    const col = Object.keys(newRow).find(
+      k => k !== 'id' && renderCellValue(newRow[k]) !== renderCellValue(oldRow[k]));
+    if (!col || !selectedEvent) return oldRow;
 
-  const saveEdit = async () => {
-    if (!editing || !selectedEvent) return;
-    const { rowIdx, col, value } = editing;
-    const original = eventData?.data_rows?.[rowIdx]?.[col];
-    if (renderCellValue(original) === value) {
-      setEditing(null);
-      return;
-    }
-    setSavingCell(true);
-    try {
-      const resp = await axios.patch(
-        `${API}/event-data/${encodeURIComponent(selectedEvent)}/rows/${rowIdx}`,
-        { updates: { [col]: value } },
-      );
-      const updatedRow = resp?.data?.row;
-      setEventData(prev => {
-        if (!prev) return prev;
-        const next = { ...prev, data_rows: [...(prev.data_rows || [])] };
-        next.data_rows[rowIdx] = updatedRow || { ...(next.data_rows[rowIdx] || {}), [col]: value };
-        return next;
-      });
-      toast.success('Cell updated');
-      setEditing(null);
-    } catch (err) {
+    const resp = await axios.patch(
+      `${API}/event-data/${encodeURIComponent(selectedEvent)}/rows/${newRow.id}`,
+      { updates: { [col]: newRow[col] } },
+    ).catch(err => {
       const msg = err?.response?.data?.detail || err?.message || 'Failed to update cell';
-      toast.error(typeof msg === 'string' ? msg : 'Failed to update cell');
-    } finally {
-      setSavingCell(false);
-    }
-  };
+      throw new Error(typeof msg === 'string' ? msg : 'Failed to update cell');
+    });
 
-  const handleEditKeyDown = (e) => {
-    if (e.key === 'Enter') {
-      e.preventDefault();
-      saveEdit();
-    } else if (e.key === 'Escape') {
-      e.preventDefault();
-      cancelEdit();
-    }
-  };
+    const updatedRow = resp?.data?.row;
+    setEventData(prev => {
+      if (!prev) return prev;
+      const next = { ...prev, data_rows: [...(prev.data_rows || [])] };
+      next.data_rows[newRow.id] = updatedRow
+        || { ...(next.data_rows[newRow.id] || {}), [col]: newRow[col] };
+      return next;
+    });
+    toast.success('Cell updated');
+    return updatedRow ? { ...updatedRow, id: newRow.id } : newRow;
+  }, [selectedEvent, toast]);   // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <Dialog
@@ -467,22 +418,12 @@ const EventDataViewer = ({ onClose }) => {
                 </Box>
                 <Box sx={{ flex: 1, overflow: 'auto', p: 2 }}>
                   {uploadErrors.length > 0 ? (
-                    <Table size="small">
-                      <TableHead>
-                        <TableRow>
-                          <TableCell sx={{ fontWeight: 600, bgcolor: '#F8F9FA' }}>Error Type</TableCell>
-                          <TableCell sx={{ fontWeight: 600, bgcolor: '#F8F9FA' }}>Message</TableCell>
-                        </TableRow>
-                      </TableHead>
-                      <TableBody>
-                        {uploadErrors.map((err, i) => (
-                          <TableRow key={i} hover>
-                            <TableCell sx={{ fontFamily: 'monospace' }}>{err.ErrorType || 'FileLoad'}</TableCell>
-                            <TableCell>{err.message}</TableCell>
-                          </TableRow>
-                        ))}
-                      </TableBody>
-                    </Table>
+                    <DataTable
+                      rows={uploadErrors}
+                      columns={ERROR_COLUMNS}
+                      autoHeight
+                      emptyLabel="No errors"
+                    />
                   ) : (
                     <Box sx={{ textAlign: 'center', py: 6 }}>
                       <Typography variant="body2" color="text.secondary">No upload errors recorded</Typography>
@@ -512,96 +453,26 @@ const EventDataViewer = ({ onClose }) => {
                     <Typography variant="h6">{selectedEvent}</Typography>
                     <Typography variant="caption" color="text.secondary">
                       {eventData?.data_rows?.length || 0} rows × {getColumnHeaders().length} columns
-                      {sort.key ? ` • sorted by ${sort.key} (${sort.dir})` : ''}
                     </Typography>
                   </Box>
                   <Typography variant="caption" color="text.secondary" sx={{ fontStyle: 'italic' }}>
-                    Click column to sort • Double-click cell to edit
+                    Use a column's menu to sort or filter • Double-click a cell to edit
                   </Typography>
                 </Box>
 
                 {/* Data Table */}
                 <Box sx={{ flex: 1, overflow: 'auto', p: 2 }}>
                   {eventData?.data_rows?.length > 0 ? (
-                    <Table size="small">
-                      <TableHead>
-                        <TableRow>
-                          <TableCell sx={{ fontWeight: 600, bgcolor: '#F8F9FA' }}>#</TableCell>
-                          {getColumnHeaders().map((header, idx) => {
-                            const isActive = sort.key === header;
-                            const SortIcon = !isActive ? ArrowUpDown : (sort.dir === 'asc' ? ArrowUp : ArrowDown);
-                            return (
-                              <TableCell
-                                key={idx}
-                                sx={{
-                                  fontWeight: 600,
-                                  bgcolor: '#F8F9FA',
-                                  whiteSpace: 'nowrap',
-                                  cursor: 'pointer',
-                                  userSelect: 'none',
-                                  '&:hover': { bgcolor: '#EEF0FE' },
-                                }}
-                                onClick={() => handleSortClick(header)}
-                                title="Click to sort"
-                              >
-                                <Box sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.5 }}>
-                                  <span>{header}</span>
-                                  <SortIcon size={12} color={isActive ? '#5B5FED' : '#ADB5BD'} />
-                                </Box>
-                              </TableCell>
-                            );
-                          })}
-                        </TableRow>
-                      </TableHead>
-                      <TableBody>
-                        {sortedRows.map(({ row, originalIndex }, displayIdx) => (
-                          <TableRow key={originalIndex} hover>
-                            <TableCell sx={{ color: '#6C757D', fontFamily: 'monospace', fontSize: '0.8125rem' }}>
-                              {displayIdx + 1}
-                            </TableCell>
-                            {getColumnHeaders().map((header, colIdx) => {
-                              const isEditing = editing && editing.rowIdx === originalIndex && editing.col === header;
-                              return (
-                                <TableCell
-                                  key={colIdx}
-                                  onDoubleClick={() => beginEdit(originalIndex, header, row[header])}
-                                  sx={{
-                                    fontFamily: 'monospace',
-                                    fontSize: '0.8125rem',
-                                    whiteSpace: 'nowrap',
-                                    cursor: isEditing ? 'text' : 'cell',
-                                    p: isEditing ? '2px 4px' : undefined,
-                                    bgcolor: isEditing ? '#FFFBEA' : undefined,
-                                    '&:hover': isEditing ? undefined : { bgcolor: '#F8F9FA' },
-                                  }}
-                                  title={isEditing ? '' : 'Double-click to edit'}
-                                >
-                                  {isEditing ? (
-                                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
-                                      <TextField
-                                        autoFocus
-                                        size="small"
-                                        variant="standard"
-                                        value={editing.value}
-                                        onChange={(e) => setEditing(prev => prev ? { ...prev, value: e.target.value } : prev)}
-                                        onKeyDown={handleEditKeyDown}
-                                        onBlur={saveEdit}
-                                        disabled={savingCell}
-                                        InputProps={{ sx: { fontFamily: 'monospace', fontSize: '0.8125rem' } }}
-                                        sx={{ minWidth: 80 }}
-                                      />
-                                      {savingCell && <CircularProgress size={12} />}
-                                    </Box>
-                                  ) : (
-                                    renderCellValue(row[header])
-                                  )}
-                                </TableCell>
-                              );
-                            })}
-                          </TableRow>
-                        ))}
-                      </TableBody>
-                    </Table>
+                    <Box sx={{ height: '100%', minHeight: 320 }}>
+                      <DataTable
+                        rows={gridRows}
+                        columns={dataColumns}
+                        processRowUpdate={handleRowUpdate}
+                        onProcessRowUpdateError={(err) => toast.error(
+                          err?.message || 'Failed to update cell')}
+                        emptyLabel="No rows"
+                      />
+                    </Box>
                   ) : (
                     <Box sx={{ textAlign: 'center', py: 6 }}>
                       <Typography variant="body2" color="text.secondary">

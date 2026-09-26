@@ -5,11 +5,12 @@ import {
   Dialog, DialogTitle, DialogContent, DialogContentText, DialogActions,
   Menu, MenuItem, ListItemIcon, ListItemText, Slide,
 } from "@mui/material";
-import { Trash2, Edit3, Calculator, GitBranch, Repeat, Database, Clock, Play, GripVertical, BookmarkPlus, RotateCcw, Code, Calendar, Copy, ChevronDown, Save, FilePlus } from "lucide-react";
+import { Trash2, Edit3, Calculator, GitBranch, Repeat, Database, Clock, Play, GripVertical, BookmarkPlus, RotateCcw, Code, Calendar, Copy, ChevronDown, Save, FilePlus, ShieldCheck } from "lucide-react";
 import { API } from "../../config";
 import { useToast } from "./../ToastProvider";
 import PostingDateModal from "../PostingDateModal";
 import ModalHeader from "../ModalHeader";
+import AddToRegressionModal from "../AddToRegressionModal";
 
 const RULE_TYPE_META = {
   simple_calc: { label: 'Calculation', color: '#5B5FED', icon: Calculator },
@@ -50,6 +51,7 @@ const SavedRules = ({ onEditRule, onEditSchedule, refreshKey, onPlayAll, onClear
   const [duplicating, setDuplicating] = useState(false);
   // Anchor element for the bookmark split-button menu
   const [bookmarkMenuAnchor, setBookmarkMenuAnchor] = useState(null);
+  const [showAddToRegression, setShowAddToRegression] = useState(false);
   // Posting-date selector state for the Business Review (Play All) flow.
   // When the user clicks Play and the loaded data spans multiple posting dates
   // we present `PostingDateModal` to let them pick exactly one before running.
@@ -533,6 +535,16 @@ const SavedRules = ({ onEditRule, onEditSchedule, refreshKey, onPlayAll, onClear
                   </Box>
                 );
               })()}
+              <Tooltip title="Capture the loaded dataset and these rules as a regression case">
+                <IconButton
+                  size="small"
+                  onClick={() => setShowAddToRegression(true)}
+                  data-testid="add-to-regression-button"
+                  sx={{ color: '#5B5FED' }}
+                >
+                  <ShieldCheck size={16} />
+                </IconButton>
+              </Tooltip>
               <Divider orientation="vertical" flexItem sx={{ mx: 0.5 }} />
               <Tooltip title="Clear everything — editor, console, preview & rules">
                 <IconButton size="small" onClick={() => setShowClearAll(true)} sx={{ color: '#F44336' }}>
@@ -879,6 +891,12 @@ const SavedRules = ({ onEditRule, onEditSchedule, refreshKey, onPlayAll, onClear
           </Button>
         </DialogActions>
       </Dialog>
+
+      <AddToRegressionModal
+        open={showAddToRegression}
+        onClose={() => setShowAddToRegression(false)}
+        onCaptured={(data) => toast.success(data?.message || 'Regression case captured')}
+      />
     </Box>
   );
 };
