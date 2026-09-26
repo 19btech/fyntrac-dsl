@@ -226,7 +226,7 @@ const PROFILE_COLUMNS = [
   },
 ];
 
-const RegressionModal = ({ open, onClose }) => {
+const RegressionModal = ({ open, onClose, editorCode = '' }) => {
   const [cases, setCases] = useState([]);
   const [loading, setLoading] = useState(false);
   const [search, setSearch] = useState('');
@@ -356,10 +356,17 @@ const RegressionModal = ({ open, onClose }) => {
   const startRun = useCallback(async (caseIds) => {
     setBanner(null);
     const usePinned = runTemplateId === '__pinned__';
+    const useWorkspace = runTemplateId === '__workspace__';
+    const preset = usePinned || useWorkspace || runTemplateId === '__origin__';
     const body = {
       case_ids: caseIds,
-      template_id: (runTemplateId === '__origin__' || usePinned) ? null : runTemplateId,
+      template_id: preset ? null : runTemplateId,
       use_pinned_code: usePinned,
+      use_workspace_rules: useWorkspace,
+      // Send what is actually on screen. The editor may hold edits that were
+      // never saved, and those are usually the whole point of the run; with
+      // no buffer the server falls back to the saved rules.
+      workspace_code: useWorkspace ? (editorCode || null) : null,
       profile: profileRun,
     };
     try {
@@ -399,7 +406,7 @@ const RegressionModal = ({ open, onClose }) => {
     } catch (err) {
       setBanner({ severity: 'error', message: err.message });
     }
-  }, [runTemplateId, profileRun, loadCases, loadDetail, selectedId]);
+  }, [runTemplateId, profileRun, editorCode, loadCases, loadDetail, selectedId]);
 
   // ── mutations ─────────────────────────────────────────────────────────
   const post = useCallback(async (url, body, label) => {
@@ -666,7 +673,7 @@ const RegressionModal = ({ open, onClose }) => {
               >
                 {batchRunning ? 'Running…' : (checked.length ? `Run ${checked.length}` : 'Run All')}
               </Button>
-              <Tooltip title="Refresh">
+                            <Tooltip title="Refresh">
                 <span>
                   <IconButton size="small" onClick={loadCases} disabled={loading || batchRunning}>
                     <RefreshCw size={15} />
@@ -674,6 +681,28 @@ const RegressionModal = ({ open, onClose }) => {
                 </span>
               </Tooltip>
             </Box>
+
+            {/* Suite-level target. The detail pane has its own copy of this
+                control, but it only exists once a case is selected — and a
+                suite run is the common case. Both drive runTemplateId. */}
+            <TextField
+              select fullWidth size="small" value={runTemplateId}
+              onChange={(e) => setRunTemplateId(e.target.value)}
+              disabled={batchRunning}
+              label="Run against"
+              data-testid="regression-run-target"
+              sx={{ mt: 1.25, '& .MuiInputBase-input': { fontSize: '0.8125rem' } }}
+            >
+              <MenuItem value="__origin__">Each case’s own template</MenuItem>
+              <MenuItem value="__workspace__">Workspace rules (live editor)</MenuItem>
+              <MenuItem value="__pinned__">Pinned baseline code</MenuItem>
+              {templates.length > 0 && (
+                <MenuItem disabled sx={{ fontSize: '0.7rem', opacity: 0.7 }}>
+                  Templates
+                </MenuItem>
+              )}
+              {templates.map(t => <MenuItem key={t.id} value={t.id}>{t.name}</MenuItem>)}
+            </TextField>
           </Box>
 
 
@@ -764,6 +793,9 @@ const RegressionModal = ({ open, onClose }) => {
                     >
                       <MenuItem value="__origin__">
                         Current “{selected.source_template_name || 'Workspace rules'}”
+                      </MenuItem>
+                      <MenuItem value="__workspace__">
+                        Workspace rules (live editor)
                       </MenuItem>
                       <MenuItem value="__pinned__">Pinned baseline code</MenuItem>
                       {templates.length > 0 && (

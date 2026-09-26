@@ -197,7 +197,10 @@ _REGRESSION_TOOLS = [
             "minutes, so this returns a batch_id immediately — poll "
             "get_regression_status(batch_id) until it reports complete, then "
             "read the differences with get_regression_differences. Omit "
-            "case_ids to run every case. This does NOT change any baseline."
+            "case_ids to run every case. Three things can be replayed: each "
+            "case's origin template (the default), a template you name, or "
+            "the current workspace rules (use_workspace_rules). This does NOT "
+            "change any baseline."
         ),
         "parameters": {
             "type": "object",
@@ -212,12 +215,27 @@ _REGRESSION_TOOLS = [
                         "Run against this template instead of each case's own. "
                         "Omit to use the template the case was captured with."),
                 },
+                "use_workspace_rules": {
+                    "type": "boolean", "default": False,
+                    "description": (
+                        "Run every case against the CURRENT WORKSPACE RULES "
+                        "instead of any template \u2014 the saved rules and "
+                        "schedules as they stand right now, combined in "
+                        "priority order. This is how you check whether the "
+                        "rules you have just been editing still reproduce "
+                        "every baseline, without packaging them into a "
+                        "template first. Overrides template_id. Note: over "
+                        "this connector the workspace means the SAVED rules; "
+                        "unsaved edits sitting in someone's browser editor are "
+                        "not visible here, so save a rule before running it."),
+                },
                 "use_pinned_code": {
                     "type": "boolean", "default": False,
                     "description": (
                         "Replay the exact rule code frozen in the baseline "
                         "rather than the template's current state. Use this to "
-                        "tell an engine change apart from a rule change."),
+                        "tell an engine change apart from a rule change. "
+                        "Takes precedence over use_workspace_rules."),
                 },
             },
         },
@@ -370,15 +388,19 @@ async def _regression_tool(name: str, args: dict) -> str:
         return "\n".join(lines)
 
     if name == "run_regression":
+        # No workspace_code over this connector: there is no editor here, so
+        # the workspace is assembled from the saved rules server-side.
         req = reg.RunRequest(
             case_ids=args.get("case_ids") or [],
             template_id=(args.get("template_id") or None),
             use_pinned_code=bool(args.get("use_pinned_code")),
+            use_workspace_rules=bool(args.get("use_workspace_rules")),
         )
         bg = _McpBackground()
         started = await reg.run_regression(req, bg)
         return (
-            f"Started {started['total']} regression case(s).\n"
+            f"Started {started['total']} regression case(s) against "
+            f"{started.get('running_against', 'each case\'s origin template')}.\n"
             f"batch_id: {started['batch_id']}\n\n"
             f"Replaying every posting date of each frozen dataset — this can take "
             f"minutes. Poll get_regression_status(batch_id=\"{started['batch_id']}\") "

@@ -1223,7 +1223,11 @@ const Dashboard = () => {
       <AppDialog {...confirmProps} />
       <AppDialog {...promptProps} />
       <AIAgentSetupWizard open={showAISetup} onClose={() => setShowAISetup(false)} onSaved={() => setProviderRefreshKey(k => k + 1)} />
-      <RegressionModal open={showRegression} onClose={() => setShowRegression(false)} />
+      <RegressionModal
+        open={showRegression}
+        onClose={() => setShowRegression(false)}
+        editorCode={dslCode}
+      />
     </div>
   );
 };

@@ -326,6 +326,14 @@ class RunRequest(BaseModel):
     case_ids: List[str] = []           # empty => every case
     template_id: Optional[str] = None  # None => each case's origin template
     use_pinned_code: bool = False      # replay the code frozen in the baseline
+    # Run every case against the workspace rather than a template. `None` is
+    # already taken on template_id (it means "the case's own origin"), so this
+    # needs its own flag rather than another sentinel.
+    use_workspace_rules: bool = False
+    # The editor's exact buffer, which may hold edits that were never saved.
+    # Omitted => the workspace is assembled server-side from the saved rules,
+    # which is what a caller with no editor (the MCP connector) gets.
+    workspace_code: Optional[str] = None
     profile: bool = False              # attribute the time, at ~2x the cost
 
 
@@ -885,7 +893,9 @@ async def recapture_case(case_id: str, request: AcceptRequest):
 async def _run_one_case(case: Dict[str, Any], batch_id: str,
                         template_id: Optional[str],
                         use_pinned_code: bool,
-                        on_progress=None, profile: bool = False) -> Dict[str, Any]:
+                        on_progress=None, profile: bool = False,
+                        use_workspace_rules: bool = False,
+                        workspace_code: Optional[str] = None) -> Dict[str, Any]:
     """Replay one case and record the run + its diff."""
     db = _db()
     case_id = case["id"]
@@ -914,13 +924,25 @@ async def _run_one_case(case: Dict[str, Any], batch_id: str,
             dsl_code = snapshot.get("dsl_code") or ""
             template_name = f'{snapshot.get("name") or "Baseline"} (pinned v{version})'
             used_id = snapshot.get("id")
+        elif use_workspace_rules and workspace_code is not None and workspace_code.strip():
+            # Exactly what is on screen, saved or not. The short digest goes in
+            # the label so two workspace runs of different edits are told apart
+            # in the run list instead of both reading "Workspace rules".
+            dsl_code = workspace_code
+            template_name = f"Workspace rules (editor \u00b7 {hash_payload(workspace_code)[:8]})"
+            used_id = None
+        elif use_workspace_rules:
+            # No buffer supplied: assemble the workspace from the saved rules.
+            dsl_code, template_name, used_id = await _resolve_template_code(None)
         else:
             requested = template_id if template_id is not None else case.get("source_template_id")
             dsl_code, template_name, used_id = await _resolve_template_code(requested)
 
         if not dsl_code.strip():
-            raise HTTPException(status_code=400,
-                                detail="The selected template has no code to run.")
+            raise HTTPException(
+                status_code=400,
+                detail=("The workspace has no rules to run." if use_workspace_rules
+                        else "The selected template has no code to run."))
 
         events = await _load_dataset(version_doc["dataset_hash"])
         outcome = await _replay(dsl_code, events, on_progress=on_progress,
@@ -1013,7 +1035,9 @@ async def _prune_runs(case_id: str) -> None:
 
 async def _execute_batch(batch_id: str, cases: List[Dict[str, Any]],
                          template_id: Optional[str], use_pinned_code: bool,
-                         profile: bool = False) -> None:
+                         profile: bool = False,
+                         use_workspace_rules: bool = False,
+                         workspace_code: Optional[str] = None) -> None:
     """Run a batch of cases sequentially, updating the batch doc as it goes.
 
     Nothing here is allowed to escape. This runs detached as a background
@@ -1054,7 +1078,9 @@ async def _execute_batch(batch_id: str, cases: List[Dict[str, Any]],
                               "current_date": None}})
                 run = await _run_one_case(case, batch_id, template_id,
                                           use_pinned_code, on_progress=_progress,
-                                          profile=profile)
+                                          profile=profile,
+                                          use_workspace_rules=use_workspace_rules,
+                                          workspace_code=workspace_code)
                 await _prune_runs(case["id"])
                 entry = {"case_id": case["id"], "case_name": case.get("name"),
                          "run_id": run["run_id"], "status": run["status"],
@@ -1141,9 +1167,21 @@ async def run_regression(request: RunRequest, background: BackgroundTasks):
     })
     background.add_task(_execute_batch, batch_id, cases,
                         request.template_id, request.use_pinned_code,
-                        request.profile)
+                        request.profile,
+                        request.use_workspace_rules, request.workspace_code)
+    if request.use_pinned_code:
+        against = "each case's pinned baseline code"
+    elif request.use_workspace_rules:
+        against = ("the workspace rules as they stand in the editor"
+                   if (request.workspace_code or "").strip()
+                   else "the saved workspace rules")
+    elif request.template_id:
+        against = "the selected template"
+    else:
+        against = "each case's origin template"
     return {"success": True, "batch_id": batch_id, "total": len(cases),
-            "message": f"Running {len(cases)} regression case(s)…"}
+            "running_against": against,
+            "message": f"Running {len(cases)} regression case(s) against {against}…"}
 
 
 def _batch_progress(batch: Dict[str, Any]) -> Dict[str, Any]:
