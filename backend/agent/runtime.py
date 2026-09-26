@@ -2124,7 +2124,7 @@ async def run_agent(
                     logger.exception("Provider call failed")
                     _hint = ("" if len(_candidates) > 1 else
                              " No fallback model is configured — add a second AI "
-                             "provider under Settings → AI Agent Setup so builds "
+                             "provider under Settings → Copilot Setup so builds "
                              "survive a provider outage.")
                     yield {"type": "error", "message": f"Provider error: {exc}.{_hint}"}
                     final_status = "failed"
