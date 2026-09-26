@@ -10,19 +10,154 @@ Accepts either:
 In case B, the transformer is called automatically.
 
 Usage:
-    from FyntracPythonModel.model_runner import ModelRunner
+    from app.python_model.model_runner import ModelRunner
 
     runner = ModelRunner()
-    result = runner.run_from_json(python_code, raw_json_records)
+    result = runner.run_from_json(python_code, raw_json_records, posting_date='2023-01-01')
 """
 
 import ast
+import functools
+import logging
 import os
 import re
 from typing import Any, Dict, List, Optional
 
+logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Missing-field tolerance for the generated collect_* helpers
+# ---------------------------------------------------------------------------
+# The collect_* family is emitted INTO the template by DSL Studio (they appear
+# as "<dsl_template>" frames in tracebacks), so they cannot be changed here.
+# They raise ValueError when a referenced field is absent from every loaded
+# event. That is correct for a genuine typo, but it also hard-fails the
+# legitimate first-period case where a balance event exists with no balance
+# columns yet -- e.g.
+#     REVENUE_BALANCE(EffectiveDate, InstrumentId, PostingDate, SubInstrumentId)
+# The template's functions resolve their own names through exec_globals (that
+# dict IS their module namespace), so rebinding an entry there also intercepts
+# the template's internal calls.
+_COLLECT_FUNCTION_NAMES = (
+    'collect',
+    'collect_all',
+    'collect_by_instrument',
+    'collect_by_subinstrument',
+    'collect_effectivedates_for_subinstrument',
+    'collect_subinstrumentids',
+)
+
+# Matched against the message so ONLY the missing-field case is softened;
+# every other ValueError from the template still propagates.
+_MISSING_FIELD_MARKER = 'no loaded event supplies a field named'
+
+# Default ON. Set FYNTRAC_LENIENT_COLLECT=false to restore hard failures.
+_LENIENT_COLLECT = os.getenv(
+    'FYNTRAC_LENIENT_COLLECT', 'true'
+).strip().lower() not in ('0', 'false', 'no', 'off')
+
+
+def _make_collect_lenient(fn, name: str):
+    """Wrap a generated collect_* helper so a missing field yields no rows
+    instead of aborting the whole instrument.
+
+    Returns an EMPTY _RowAwareArray (dsl_functions' hybrid list/scalar type,
+    the same one schedule() injects for context arrays). It is still an empty
+    sequence -- len() == 0, iterates as empty, falsy -- but it also answers 0
+    in arithmetic, so a template doing a raw `total + prior_balance` on the
+    collected value gets 0 instead of
+    "TypeError: unsupported operand type(s) for +: 'int' and 'NoneType'".
+
+    A plain [] was not enough: array_get([], i) / array_first([]) /
+    array_last([]) default to None, and the generated template performs raw
+    Python arithmetic on the result. Note this only covers the value itself --
+    if the template extracts with array_get(x, i) and NO default, that call
+    still yields None and the fix belongs in the model, not here.
+
+    Every substitution is logged at WARNING with the original message, so a
+    real typo stays visible instead of silently becoming zero.
+    """
+    @functools.wraps(fn)
+    def _lenient(*args, **kwargs):
+        try:
+            return fn(*args, **kwargs)
+        except ValueError as e:
+            if _MISSING_FIELD_MARKER not in str(e):
+                raise
+            _ref = args[0] if args else kwargs.get('field', '?')
+            logger.warning(
+                "%s(%r): field not present in any loaded event — substituting an "
+                "empty result for this instrument. If this is not the expected "
+                "first-period/no-data case, the reference is wrong. Detail: %s",
+                name, _ref, str(e).split('. Loaded events:')[0],
+            )
+            try:
+                from app.python_model.dsl_functions import _RowAwareArray
+                return _RowAwareArray([], row_value=0)
+            except Exception:
+                return []
+    _lenient.__wrapped_by_fyntrac__ = True
+    return _lenient
+
+
+def _describe_template_failure(python_code: str, exc: Exception, max_names: int = 40):
+    """Pinpoint a failure that happened inside the generated template.
+
+    A traceback frame gives a line NUMBER in "<dsl_template>", but that file
+    exists only in memory, so the log shows no source and no variable names --
+    which makes an error like "int + NoneType" impossible to act on. We still
+    hold the template text in `python_code`, so print the offending line and
+    name the locals that are None in that frame.
+
+    Only variable NAMES are logged (plus types for non-None operands on the
+    line), never values, so no business data reaches the log.
+    """
+    try:
+        frames = []
+        tb = exc.__traceback__
+        while tb:
+            frames.append(tb)
+            tb = tb.tb_next
+        target = None
+        for t in reversed(frames):
+            if t.tb_frame.f_code.co_filename == '<dsl_template>':
+                target = t
+                break
+        if target is None:
+            return None
+        lineno = target.tb_lineno
+        lines = (python_code or '').split('\n')
+        src = lines[lineno - 1].strip() if 1 <= lineno <= len(lines) else '<unavailable>'
+        loc = target.tb_frame.f_locals
+        none_names = sorted(
+            k for k, v in loc.items() if v is None and not k.startswith('__')
+        )
+        # Types of the identifiers that actually appear on the failing line --
+        # narrows it down when several locals are None.
+        on_line = sorted({
+            k for k in loc
+            if not k.startswith('__') and re.search(r'\b%s\b' % re.escape(k), src)
+        })
+        types_on_line = ', '.join(
+            f"{k}={type(loc[k]).__name__}" for k in on_line[:max_names]
+        )
+        return lineno, src, none_names[:max_names], types_on_line
+    except Exception:
+        return None
+
+
+def _apply_collect_leniency(exec_globals: dict) -> None:
+    """Rebind the template's collect_* helpers in place (no-op if disabled)."""
+    if not _LENIENT_COLLECT:
+        return
+    for _name in _COLLECT_FUNCTION_NAMES:
+        _fn = exec_globals.get(_name)
+        if callable(_fn) and not getattr(_fn, '__wrapped_by_fyntrac__', False):
+            exec_globals[_name] = _make_collect_lenient(_fn, _name)
+
 try:
-    from FyntracPythonModel.data_transformer import transform
+    from app.python_model.data_transformer import transform
 except ImportError:
     from data_transformer import transform
 
@@ -37,6 +172,7 @@ _ALLOWED_IMPORT_MODULES = frozenset({
     'sys', 'os', 'json', 'datetime', 'inspect',
     'dsl_functions', 'backend', 'backend.dsl_functions',
     'FyntracPythonModel', 'FyntracPythonModel.dsl_functions',
+    'app', 'app.python_model', 'app.python_model.dsl_functions',
 })
 
 # Dunders the trusted scaffolding itself uses; everything else is blocked.
@@ -118,6 +254,14 @@ class TransactionOutput:
         }
 
 
+# Template source -> (post-processed source, compiled code object). compile_template() runs once per
+# instrument (each gets its own namespace), and the source -> code step -- import rewriting, field
+# injection, the full-AST safety check, compile() -- is a pure function of the source that took ~25%
+# of per-instrument model time on Hearst. Keyed by source, so a changed model file is recompiled.
+_COMPILED_TEMPLATES: Dict[str, tuple] = {}
+_COMPILED_TEMPLATES_MAX = 16
+
+
 class ModelRunner:
     """Runs a DSL-generated Python template against event data and returns transactions."""
 
@@ -130,15 +274,19 @@ class ModelRunner:
     def _fix_import_paths(self, python_code: str) -> str:
         """
         Rewrite dsl_functions imports in the generated Python code so they
-        resolve to the copy sitting in this package (FyntracPythonModel/).
+        resolve to the copy sitting in this package (app/python_model/).
         """
         python_code = python_code.replace(
             "from backend.dsl_functions import",
-            "from FyntracPythonModel.dsl_functions import"
+            "from app.python_model.dsl_functions import"
         )
         python_code = python_code.replace(
             "from dsl_functions import",
-            "from FyntracPythonModel.dsl_functions import"
+            "from app.python_model.dsl_functions import"
+        )
+        python_code = python_code.replace(
+            "from FyntracPythonModel.dsl_functions import",
+            "from app.python_model.dsl_functions import"
         )
         return python_code
 
@@ -156,6 +304,32 @@ class ModelRunner:
         for name in dir(builtins):
             if name not in blocked:
                 safe[name] = getattr(builtins, name)
+
+        # `sum` must follow DSL semantics, not Python's.
+        #
+        # The DSL defines sum as sum_vals, which routes every element through
+        # to_number() and so treats None / '' / 'None' as 0. That binding is
+        # already used in the DSL_FUNCTIONS registry and in schedule()'s column
+        # eval context ("sum": sum_vals). Generated template code, however,
+        # calls a bare sum(...) at Python level, which resolved to the builtin
+        # and raised on any None element:
+        #     sum(balance_row_count) ->
+        #     TypeError: unsupported operand type(s) for +: 'int' and 'NoneType'
+        # even though the same expression evaluates fine inside a schedule
+        # column. Bind it here so the template sees one consistent `sum`.
+        try:
+            from app.python_model.dsl_functions import sum_vals as _sum_vals, to_number as _to_number
+
+            def _dsl_sum(iterable, start=0):
+                """DSL sum: None/blank elements count as 0 (mirrors sum_vals)."""
+                return _to_number(start) + _sum_vals(iterable)
+
+            _dsl_sum.__name__ = 'sum'
+            safe['sum'] = _dsl_sum
+        except Exception:
+            # dsl_functions unavailable -> leave the builtin in place.
+            pass
+
         real_import = getattr(builtins, '__import__')
 
         def _guarded_import(name, _globals=None, _locals=None, fromlist=(), level=0):
@@ -181,6 +355,8 @@ class ModelRunner:
             while tb.tb_next:
                 tb = tb.tb_next
             py_lineno = tb.tb_lineno
+            if python_code is None:
+                return None
             code_lines = python_code.split('\n')
             if 1 <= py_lineno <= len(code_lines):
                 m = re.search(r'# DSL_LINE:(\d+)', code_lines[py_lineno - 1])
@@ -191,25 +367,143 @@ class ModelRunner:
         return None
 
     # ------------------------------------------------------------------
+    # DSL code pre-processing
+    # ------------------------------------------------------------------
+    def _remove_self_assignments(self, python_code: str) -> str:
+        """
+        Remove no-op self-assignments generated by the DSL playground, e.g.:
+            EOD_postingdate = EOD_postingdate
+        These cause an UnboundLocalError because Python marks the LHS name
+        as a local variable for the whole function scope, making the RHS
+        reference undefined before assignment.
+        """
+        return re.sub(
+            r'^([ \t]*)([A-Za-z_][A-Za-z0-9_]*)\s*=\s*\2\s*$',
+            r'\1# (removed self-assignment: \2)',
+            python_code,
+            flags=re.MULTILINE,
+        )
+
+    def _inject_missing_field_extractions(self, python_code: str) -> str:
+        """
+        Auto-inject get_field_case_insensitive() extraction lines for any
+        EVENT_FIELD variables (ALL_CAPS_WITH_UNDERSCORE) that are referenced
+        in the DSL template but have no extraction line generated by the playground.
+
+        The DSL playground sometimes generates DEFAULT_xxx extraction lines but
+        forgets to generate the corresponding INT_ACC_xxx or EOD_xxx lines even
+        though the logic block uses them.  This pre-processor detects and fixes
+        those gaps before the code is compiled.
+        """
+        # --- 1. Variables already assigned anywhere in the code ---
+        assigned = set(re.findall(
+            r'^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(?!=)',
+            python_code,
+            flags=re.MULTILINE,
+        ))
+
+        # --- 2. All identifiers that look like event-prefixed fields ---
+        # Matches: EVENTID_fieldname  (e.g. INT_ACC_rate, EOD_BILLING,
+        #          INT_ACC_BALANCES_Unpaid_Principal_Balance)
+        # Must start with an uppercase letter and contain at least one underscore.
+        used = set(re.findall(r'\b([A-Z][A-Za-z0-9_]{2,})\b', python_code))
+
+        # --- 3. Skip Python constants and very generic names ---
+        _SKIP = {'None', 'True', 'False', 'NULL', 'NAN', 'INF'}
+
+        missing = {
+            name for name in used
+            if '_' in name and name not in assigned and name not in _SKIP
+        }
+
+        if not missing:
+            return python_code
+
+        # --- 4. Build injection lines (best-effort type inference) ---
+        _DATE_SUFFIXES = ('date', '_id', 'name', 'code', 'type', 'description', 'text')
+        injection_lines = ["        # Auto-injected: missing event field extractions"]
+        for var in sorted(missing):
+            vl = var.lower()
+            if any(vl.endswith(s) for s in _DATE_SUFFIXES):
+                injection_lines.append(
+                    f"        {var} = str(get_field_case_insensitive(row, '{var}', '') or '')"
+                )
+            else:
+                injection_lines.append(
+                    f"        {var} = get_field_case_insensitive(row, '{var}', 0) or 0"
+                )
+
+        # --- 5. Inject before the "# Execute DSL logic" section ---
+        marker = "        # Execute DSL logic"
+        if marker in python_code:
+            block = "\n".join(injection_lines) + "\n\n"
+            python_code = python_code.replace(marker, block + marker, 1)
+
+        return python_code
+
+    # ------------------------------------------------------------------
+    def compile_template(self, python_code: str) -> dict:
+        """Compile the DSL template once and return the exec_globals dict containing the executable functions."""
+        try:
+            cached = _COMPILED_TEMPLATES.get(python_code)
+            if cached is None:
+                source = python_code
+                python_code = self._fix_import_paths(python_code)
+                python_code = self._remove_self_assignments(python_code)
+                python_code = self._inject_missing_field_extractions(python_code)
+                _validate_template_ast(python_code, label='<dsl_template>')
+                code = compile(python_code, '<dsl_template>', 'exec')
+                if len(_COMPILED_TEMPLATES) >= _COMPILED_TEMPLATES_MAX:
+                    _COMPILED_TEMPLATES.clear()
+                _COMPILED_TEMPLATES[source] = (python_code, code)
+            else:
+                python_code, code = cached
+            # Always a FRESH namespace: only the source->code step above is reused, so one
+            # instrument's module-level state can never reach the next one's.
+            exec_globals = {
+                '__file__': os.path.abspath(__file__),
+                '__name__': '__dsl_template__',
+                '__builtins__': self._build_safe_builtins(),
+            }
+            exec(code, exec_globals)
+            # Soften missing-field failures in the template's collect_* helpers.
+            _apply_collect_leniency(exec_globals)
+            # Keep the POST-PROCESSED source. _inject_missing_field_extractions
+            # inserts lines, so "<dsl_template>" line numbers in a traceback
+            # refer to THIS text, not to the original artifact the caller holds.
+            # Resolving a traceback against the original yields the wrong line
+            # (often a blank one) and mis-numbered # DSL_LINE markers.
+            exec_globals['__fyntrac_source__'] = python_code
+            return exec_globals
+        except Exception as e:
+            dsl_line = self._extract_dsl_line(python_code, e)
+            error_msg = str(e)
+            if dsl_line:
+                error_msg = f"[DSL Line {dsl_line}] {error_msg}"
+            raise ValueError(f"Template compilation failed: {error_msg}")
+
+    # ------------------------------------------------------------------
     # Core runner (pre-transformed data)
     # ------------------------------------------------------------------
     def run(
         self,
-        python_code: str,
-        event_data: List[Dict[str, Any]],
+        python_code: Optional[str] = None,
+        event_data: List[Dict[str, Any]] = None,
         raw_event_data: Optional[Dict[str, List[Dict]]] = None,
         override_postingdate: Optional[str] = None,
         override_effectivedate: Optional[str] = None,
+        exec_globals: Optional[dict] = None,
     ) -> Dict[str, Any]:
         """
         Execute a generated Python template against pre-transformed event data.
 
         Args:
-            python_code: The generated Python code string (from dsl_template_artifacts).
+            python_code: The generated Python code string. Optional if exec_globals is provided.
             event_data: List of merged row dicts — one per instrument.
             raw_event_data: Dict of event_name -> raw row lists (for collect() functions).
             override_postingdate: Optional override for posting date.
             override_effectivedate: Optional override for effective date.
+            exec_globals: Pre-compiled template globals.
 
         Returns:
             {
@@ -220,21 +514,10 @@ class ModelRunner:
             }
         """
         try:
-            python_code = self._fix_import_paths(python_code)
-
-            # Defense-in-depth: AST-validate the (rewritten) template BEFORE exec
-            # so a malformed/tampered artifact cannot import arbitrary modules or
-            # reach dunder introspection, even though exec/eval/open are blocked.
-            _validate_template_ast(python_code, label='<dsl_template>')
-
-            exec_globals = {
-                '__file__': os.path.abspath(__file__),
-                '__name__': '__dsl_template__',
-                '__builtins__': self._build_safe_builtins(),
-            }
-
-            # Compile and execute the template (defines process_event_data, etc.)
-            exec(compile(python_code, '<dsl_template>', 'exec'), exec_globals)
+            if exec_globals is None:
+                if not python_code:
+                    raise ValueError("Must provide either python_code or exec_globals")
+                exec_globals = self.compile_template(python_code)
 
             # Call the processing function. Inspect the signature explicitly so
             # we never swallow internal TypeErrors as a "wrong signature" — that
@@ -248,6 +531,7 @@ class ModelRunner:
                     _param_count = len(_inspect.signature(_proc).parameters)
                 except (TypeError, ValueError):
                     _param_count = 4
+
                 if _param_count >= 4:
                     transactions = _proc(
                         event_data, raw_event_data,
@@ -300,17 +584,15 @@ class ModelRunner:
                 except Exception:
                     pass
 
-            # Mirror the backend result contract: report how many transactions
-            # the zero-amount guard suppressed, so a production run whose row
-            # count is lower than its input can explain the gap. The
-            # suppression itself lives in dsl_functions (shared), so behaviour
-            # already matched — only the diagnostic was missing here.
-            # Read the counter off the dsl_functions module (the template only
-            # imports the names it calls, so it is not in exec_globals).
+            # createTransaction() now suppresses zero-amount transactions at
+            # the source rather than generating them and relying on the
+            # caller to discard them before persistence. Report the count so
+            # a batch whose row count is lower than its input can explain
+            # the gap instead of it looking like missing data.
             zero_skipped = 0
             try:
                 try:
-                    from FyntracPythonModel.dsl_functions import (
+                    from app.python_model.dsl_functions import (
                         _get_skipped_zero_amount,
                     )
                 except Exception:
@@ -328,10 +610,29 @@ class ModelRunner:
             }
 
         except Exception as e:
-            dsl_line = self._extract_dsl_line(python_code, e)
+            # Resolve line numbers against the source that was actually
+            # compiled (see __fyntrac_source__), falling back to the caller's
+            # copy when compilation never got that far.
+            _src = (exec_globals or {}).get('__fyntrac_source__') or python_code
+            dsl_line = self._extract_dsl_line(_src, e)
             error_msg = str(e)
             if dsl_line:
                 error_msg = f"[DSL Line {dsl_line}] {error_msg}"
+            # The returned dict carries only str(e), which for a bare
+            # KeyError/NameError inside a generated template is often a single
+            # opaque token (e.g. "collect") with no indication of where it came
+            # from. Log the real traceback so the failing line is recoverable.
+            logger.error(
+                "Model execution failed (%s): %s", type(e).__name__, error_msg,
+                exc_info=True,
+            )
+            _info = _describe_template_failure(_src, e)
+            if _info:
+                _ln, _src, _nones, _types = _info
+                logger.error("  template line %d: %s", _ln, _src)
+                logger.error("  operands on that line: %s", _types or '(none resolved)')
+                logger.error("  locals that are None here: %s",
+                             ', '.join(_nones) if _nones else '(none)')
             return {
                 "transactions": [],
                 "print_outputs": [],
@@ -344,10 +645,11 @@ class ModelRunner:
     # ------------------------------------------------------------------
     def run_from_json(
         self,
-        python_code: str,
+        python_code: Optional[str],
         raw_json_records: list,
         posting_date: str,
         effective_date: Optional[str] = None,
+        exec_globals: Optional[dict] = None,
     ) -> Dict[str, Any]:
         """
         End-to-end: takes the raw import JSON (same format as DSL Studio Import),
@@ -355,11 +657,12 @@ class ModelRunner:
         ALL instruments that have data for that date.
 
         Args:
-            python_code: The generated Python code string (from dsl_template_artifacts).
+            python_code: The generated Python code string. Optional if exec_globals provided.
             raw_json_records: The raw JSON array — same format as uploaded to
                              DSL Studio's Import functionality.
             posting_date: Required. Only instruments with this posting date are processed.
             effective_date: Optional override for effective date.
+            exec_globals: Pre-compiled template globals.
 
         Returns: Same shape as run().
         """
@@ -386,4 +689,5 @@ class ModelRunner:
             raw_event_data=raw_event_data,
             override_postingdate=posting_date,
             override_effectivedate=effective_date,
+            exec_globals=exec_globals,
         )
