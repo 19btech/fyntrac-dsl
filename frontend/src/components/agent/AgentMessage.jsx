@@ -85,26 +85,41 @@ export default function AgentMessage({ messageId, onInsertCode, onOverwriteCode 
     return unsub;
   }, [messageId]);
 
+  // The thinking / reading / planning / executing trace is scaffolding, not
+  // conversation. It runs while the Copilot works and clears itself the
+  // moment the reply starts arriving, leaving only the answer behind. On an
+  // error it stays: with no reply to show, it is the only account of what
+  // the Copilot got through.
+  const showProgress = stage === STAGES.THINKING
+    || stage === STAGES.READING
+    || stage === STAGES.PLANNING
+    || stage === STAGES.EXECUTING
+    || stage === STAGES.ERROR;
+
   return (
     <div className="agent-message">
-      {/* STAGE 1 — THINKING */}
-      {thinkingText && (
-        <ThinkingBlock text={thinkingText} active={stage === STAGES.THINKING} />
-      )}
+      {showProgress && (
+        <>
+          {/* STAGE 1 — THINKING */}
+          {thinkingText && (
+            <ThinkingBlock text={thinkingText} active={stage === STAGES.THINKING} />
+          )}
 
-      {/* STAGE 2 — READING */}
-      {readSteps.length > 0 && (
-        <ReadingBlock steps={readSteps} active={stage === STAGES.READING} />
-      )}
+          {/* STAGE 2 — READING */}
+          {readSteps.length > 0 && (
+            <ReadingBlock steps={readSteps} active={stage === STAGES.READING} />
+          )}
 
-      {/* STAGE 3 — PLANNING */}
-      {planSteps.length > 0 && (
-        <PlanningBlock steps={planSteps} active={stage === STAGES.PLANNING} />
-      )}
+          {/* STAGE 3 — PLANNING */}
+          {planSteps.length > 0 && (
+            <PlanningBlock steps={planSteps} active={stage === STAGES.PLANNING} />
+          )}
 
-      {/* STAGE 4 — EXECUTING */}
-      {execSteps.length > 0 && (
-        <ExecutingBlock steps={execSteps} />
+          {/* STAGE 4 — EXECUTING */}
+          {execSteps.length > 0 && (
+            <ExecutingBlock steps={execSteps} />
+          )}
+        </>
       )}
 
       {/* STAGE 5 — STREAMING REPLY */}

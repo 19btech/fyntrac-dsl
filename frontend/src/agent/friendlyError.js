@@ -24,7 +24,7 @@ export function friendlyError(raw) {
       s.includes("invalid api key") || s.includes("invalid x-api-key") ||
       s.includes("incorrect api key") || s.includes("authentication_error") ||
       s.includes("unauthenticated") || s.includes(" 401")) {
-    return F("The AI provider didn't accept its access key. Please check the provider settings under Settings → AI Agent Setup.");
+    return F("The AI provider didn't accept its access key. Please check the provider settings under Settings → Copilot Setup.");
   }
   // Model access / not enabled — key is fine, but no access to THIS model.
   if (s.includes("permission") || s.includes(" 403") || s.includes("does not have access") ||

@@ -8,6 +8,7 @@
     "@monaco-editor/react": "^4.7.0",
     "@mui/icons-material": "^7.3.0",
     "@mui/material": "^7.3.0",
+    "@mui/x-data-grid": "^8.29.3",
     "axios": "^1.8.4",
     "html2pdf.js": "^0.14.0",
     "http-proxy-middleware": "^3.0.5",

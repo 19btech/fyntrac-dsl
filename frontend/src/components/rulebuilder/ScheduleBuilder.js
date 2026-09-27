@@ -2,7 +2,7 @@ import React, { useState, useMemo, useCallback, useEffect } from "react";
 import {
   Box, Typography, Card, CardContent, Button, TextField, MenuItem, Chip, IconButton,
   Tooltip, Divider, Select, FormControl, InputLabel, Paper, Switch, FormControlLabel,
-  Alert, Table, TableBody, TableCell, TableContainer, TableHead, TableRow,
+  Alert,
   ToggleButtonGroup, ToggleButton, CircularProgress, Dialog, DialogTitle, DialogContent, DialogContentText, DialogActions,
   Autocomplete, Slide,
 } from "@mui/material";
@@ -10,6 +10,7 @@ import {
   Plus, Trash2, ArrowUp, ArrowDown, GripVertical, Play, Code, Eye, Calendar,
   Table as TableIcon, BarChart3, RefreshCw, Save,
 } from "lucide-react";
+import DataTable from "../DataTable";
 import ModalHeader from "../ModalHeader";
 import { API } from "../../config";
 import FormulaBar from "./FormulaBar";
@@ -105,6 +106,55 @@ const ColumnCard = ({ column, index, events, variables, onUpdate, onRemove, onMo
  * ScheduleBuilder — Visual drag-and-drop schedule column builder.
  * Builds schedule() DSL code using a column palette and formula bars.
  */
+/* Rows and columns for the schedule preview.
+ *
+ * Columns follow the generated data's own keys, with subinstrument_id pulled
+ * to the front; `_composite_id` is internal and never shown. Before a preview
+ * exists, three greyed placeholder rows stand in so the grid's shape is
+ * visible while the user is still configuring it. */
+function buildSchedulePreview(data, headers, selectedSubId) {
+  if (!data) {
+    const cols = (headers || []).map(h => ({
+      field: h, headerName: h, flex: 1, minWidth: 110, sortable: false,
+      cellClassName: 'cell-placeholder',
+      valueGetter: () => (h === 'date' || h.includes('date') ? '2026-01-31' : '...'),
+    }));
+    return { rows: [1, 2, 3].map(id => ({ id })), columns: cols };
+  }
+
+  const filtered = selectedSubId === '__all__'
+    ? data
+    : data.filter(r => (r._composite_id ?? String(r.subinstrument_id ?? '')) === selectedSubId);
+
+  const keys = Object.keys(filtered[0] || {}).filter(k => k !== '_composite_id');
+  const subIdx = keys.indexOf('subinstrument_id');
+  if (subIdx > 0) { keys.splice(subIdx, 1); keys.unshift('subinstrument_id'); }
+
+  const isNumeric = (k) => filtered.some(r => typeof r[k] === 'number');
+  const columns = keys.map(k => ({
+    field: k,
+    headerName: k,
+    flex: 1,
+    minWidth: 110,
+    type: isNumeric(k) ? 'number' : 'string',
+    align: isNumeric(k) ? 'right' : 'left',
+    headerAlign: isNumeric(k) ? 'right' : 'left',
+    cellClassName: isNumeric(k) ? 'cell-num' : undefined,
+    valueFormatter: (value) => (
+      typeof value === 'number'
+        ? (Number.isInteger(value)
+            ? value.toLocaleString()
+            : value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 4 }))
+        : String(value ?? '—')),
+  }));
+
+  return {
+    rows: filtered.slice(0, 20).map((r, i) => ({ ...r, id: i })),
+    columns,
+    total: filtered.length,
+  };
+}
+
 const ScheduleBuilder = ({ events, dslFunctions, onClose, onSave, initialData }) => {
   const toast = useToast();
   const cfg = initialData?.config || {};
@@ -1046,47 +1096,27 @@ const ScheduleBuilder = ({ events, dslFunctions, onClose, onSave, initialData })
                 {schedulePreviewError}
               </Alert>
             )}
-            <TableContainer component={Paper} variant="outlined" sx={{ mb: 2, maxHeight: 280, overflow: 'auto' }}>
-              <Table size="small" stickyHeader>
-                <TableHead>
-                  <TableRow sx={{ bgcolor: '#F8F9FA' }}>
-                    <TableCell sx={{ fontWeight: 600, fontSize: '0.75rem', bgcolor: '#F8F9FA' }}>#</TableCell>
-                    {(schedulePreviewData ? Object.keys(schedulePreviewData[0] || {}) : previewHeaders).map(h => (
-                      <TableCell key={h} sx={{ fontWeight: 600, fontSize: '0.75rem', bgcolor: '#F8F9FA', whiteSpace: 'nowrap' }}>{h}</TableCell>
-                    ))}
-                  </TableRow>
-                </TableHead>
-                <TableBody>
-                  {schedulePreviewData ? (
-                    schedulePreviewData.slice(0, 20).map((row, rowIdx) => (
-                      <TableRow key={rowIdx} hover sx={{ '&:last-child td': { borderBottom: 0 } }}>
-                        <TableCell sx={{ fontSize: '0.75rem', color: '#6C757D' }}>{rowIdx + 1}</TableCell>
-                        {Object.values(row).map((val, ci) => (
-                          <TableCell key={ci} sx={{ fontSize: '0.75rem',
-                            fontFamily: typeof val === 'number' ? 'monospace' : 'inherit',
-                            fontWeight: typeof val === 'number' ? 500 : 400 }}>
-                            {typeof val === 'number'
-                              ? (Number.isInteger(val) ? val.toLocaleString() : val.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 4 }))
-                              : String(val ?? '—')}
-                          </TableCell>
-                        ))}
-                      </TableRow>
-                    ))
-                  ) : (
-                    [1, 2, 3].map(row => (
-                      <TableRow key={row} sx={{ '&:last-child td': { borderBottom: 0 } }}>
-                        <TableCell sx={{ fontSize: '0.75rem', color: '#6C757D' }}>{row}</TableCell>
-                        {previewHeaders.map(h => (
-                          <TableCell key={h} sx={{ fontSize: '0.75rem', color: '#ADB5BD', fontStyle: 'italic' }}>
-                            {h === 'date' || h.includes('date') ? '2026-01-31' : '...'}
-                          </TableCell>
-                        ))}
-                      </TableRow>
-                    ))
+            {(() => {
+              const preview = buildSchedulePreview(
+                schedulePreviewData, previewHeaders, previewSelectedSubId);
+              return (
+                <>
+                  <Box sx={{ height: 280, mb: 2 }}>
+                    <DataTable
+                      rows={preview.rows}
+                      columns={preview.columns}
+                      emptyLabel="No schedule rows"
+                      sx={{ '& .cell-placeholder': { color: '#ADB5BD', fontStyle: 'italic' } }}
+                    />
+                  </Box>
+                  {preview.total > 20 && (
+                    <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 1 }}>
+                      Showing 20 of {preview.total} rows
+                    </Typography>
                   )}
-                </TableBody>
-              </Table>
-            </TableContainer>
+                </>
+              );
+            })()}
             {schedulePreviewData && schedulePreviewData.length > 20 && (
               <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 1 }}>
                 Showing 20 of {schedulePreviewData.length} rows
