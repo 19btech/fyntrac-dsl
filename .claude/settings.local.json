@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(set -e)",
+      "Bash(cp -v __TRACKED_VAR__/backend/mcp_server.py backend/mcp_server.py)",
+      "Bash(cp -v __TRACKED_VAR__/backend/MCP_SETUP.md backend/MCP_SETUP.md)",
+      "Bash(cp -v __TRACKED_VAR__/backend/package-lock.json backend/package-lock.json)",
+      "Bash(cp -v __TRACKED_VAR__/backend/agent/knowledge/excel_translation_guide.md backend/agent/knowledge/excel_translation_guide.md)"
+    ]
+  }
+}
