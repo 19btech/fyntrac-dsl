@@ -1475,9 +1475,7 @@ async def export_run_diff(run_id: str):
     difference row. Reviewers work in Excel, and a diff that only exists
     inside the modal cannot be circulated or attached to a change record.
     """
-    import io as _io
     import openpyxl
-    from fastapi.responses import Response as _Response
 
     db = _db()
     run = await db.regression_runs.find_one({"run_id": run_id}, {"_id": 0})
@@ -1521,15 +1519,104 @@ async def export_run_diff(run_id: str):
             row.get("actual_amount"), row.get("delta"),
         ])
 
+    return _xlsx_response(wb, f"{_safe_filename(run.get('case_name'))}_diff_{run_id[:8]}.xlsx")
+
+
+def _safe_filename(name: Optional[str]) -> str:
+    return re.sub(r"[^A-Za-z0-9_-]+", "_", name or "regression")
+
+
+def _xlsx_response(wb, filename: str):
+    import io as _io
+    from fastapi.responses import Response as _Response
+
     buffer = _io.BytesIO()
     wb.save(buffer)
-    safe_name = re.sub(r"[^A-Za-z0-9_-]+", "_", run.get("case_name") or "regression")
     return _Response(
         content=buffer.getvalue(),
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        headers={"Content-Disposition":
-                 f'attachment; filename="{safe_name}_diff_{run_id[:8]}.xlsx"'},
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
+
+
+def _cell(value: Any) -> Any:
+    """openpyxl rejects dicts and lists; flatten them rather than fail the file."""
+    if isinstance(value, (dict, list, tuple, set)):
+        return json.dumps(value, default=str)
+    return value
+
+
+async def _case_version(case_id: str, version: Optional[int]) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    """The case and the requested version (the active baseline by default)."""
+    db = _db()
+    case = await db.regression_cases.find_one({"id": case_id}, {"_id": 0})
+    if not case:
+        raise HTTPException(status_code=404, detail="Regression case not found.")
+    wanted = version if version is not None else case.get("active_version", 1)
+    ver = await db.regression_case_versions.find_one(
+        {"case_id": case_id, "version": wanted}, {"_id": 0})
+    if not ver:
+        raise HTTPException(status_code=404, detail=f"Version v{wanted} not found.")
+    return case, ver
+
+
+@router.get("/regression/cases/{case_id}/dataset/export")
+async def export_case_dataset(case_id: str, version: Optional[int] = None):
+    """Download a case's frozen event data as .xlsx, one sheet per event.
+
+    Same layout the event-data upload reads (sheet name = event name), so the
+    snapshot can be loaded back into the app to reproduce the case by hand.
+    """
+    import openpyxl
+
+    case, ver = await _case_version(case_id, version)
+    events = await _load_dataset(ver["dataset_hash"])
+
+    wb = openpyxl.Workbook()
+    wb.remove(wb.active)
+    used: set = set()
+    for ev in events:
+        # Excel caps sheet names at 31 characters and forbids a few symbols.
+        title = re.sub(r"[\\/*?:\[\]]", "_", ev["event_name"])[:31] or "event"
+        base, n = title, 2
+        while title.lower() in used:
+            suffix = f"_{n}"
+            title, n = base[:31 - len(suffix)] + suffix, n + 1
+        used.add(title.lower())
+        ws = wb.create_sheet(title)
+        rows = ev.get("data_rows") or []
+        columns: List[str] = []
+        for row in rows:
+            for key in row:
+                if key not in columns:
+                    columns.append(key)
+        ws.append(columns)
+        for row in rows:
+            ws.append([_cell(row.get(col)) for col in columns])
+    if not wb.worksheets:
+        wb.create_sheet("empty")
+
+    return _xlsx_response(
+        wb, f"{_safe_filename(case.get('name'))}_eventdata_v{ver['version']}.xlsx")
+
+
+@router.get("/regression/cases/{case_id}/expected/export")
+async def export_case_expected(case_id: str, version: Optional[int] = None):
+    """Download a case's expected transactions (the baseline) as .xlsx."""
+    import openpyxl
+
+    case, ver = await _case_version(case_id, version)
+    transactions = await _load_expected(case_id, ver["version"])
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "transactions"
+    ws.append(list(TXN_FIELDS))
+    for txn in transactions:
+        ws.append([_cell(txn.get(field)) for field in TXN_FIELDS])
+
+    return _xlsx_response(
+        wb, f"{_safe_filename(case.get('name'))}_expected_v{ver['version']}.xlsx")
 
 
 # ── Indexes ─────────────────────────────────────────────────────────────

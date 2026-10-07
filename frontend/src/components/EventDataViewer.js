@@ -11,7 +11,9 @@ import ModalHeader from './ModalHeader';
 const ERROR_COLUMNS = [
   { field: 'ErrorType', headerName: 'Error Type', width: 180, cellClassName: 'cell-mono',
     valueGetter: (value) => value || 'FileLoad' },
-  { field: 'Message', headerName: 'Message', flex: 1, minWidth: 280 },
+  // FileUploadPanel stores `message`; older saved errors may carry `Message`.
+  { field: 'message', headerName: 'Message', flex: 1, minWidth: 280,
+    valueGetter: (value, row) => value ?? row?.Message ?? '' },
 ];
 
 const EventDataViewer = ({ onClose }) => {
@@ -422,6 +424,8 @@ const EventDataViewer = ({ onClose }) => {
                       rows={uploadErrors}
                       columns={ERROR_COLUMNS}
                       autoHeight
+                      getRowHeight={() => 'auto'}
+                      sx={{ '& .MuiDataGrid-cell': { whiteSpace: 'normal', py: 1 } }}
                       emptyLabel="No errors"
                     />
                   ) : (

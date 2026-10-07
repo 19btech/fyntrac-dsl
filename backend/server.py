@@ -716,6 +716,16 @@ def extract_event_names_from_dsl(dsl_code: str) -> List[str]:
     _NOT_EVENTS = {"self", "math", "datetime", "os", "sys", "json", "re"}
     return list({m for m in matches if m not in _NOT_EVENTS})
 
+def _strip_dsl_literals_and_comments(dsl_code: str) -> str:
+    """Blank out string literals and whole-line `#` / `//` comments, so an
+    `identifier.field` that only appears in text is not mistaken for an event
+    read."""
+    import re
+    kept = [ln for ln in (dsl_code or "").splitlines()
+            if not ln.lstrip().startswith(("#", "//"))]
+    return re.sub(r'"(?:\\.|[^"\\\n])*"|\'(?:\\.|[^\'\\\n])*\'', '""',
+                  "\n".join(kept))
+
 def merge_event_data_by_instrument(event_data_dict: Dict[str, List[Dict]],
                                    latest_cache: Optional[Dict[str, Dict]] = None) -> List[Dict]:
     """
@@ -2773,14 +2783,14 @@ async def upload_event_data_excel(file: UploadFile = File(...)):
         # posting date is processed independently via filter_event_data_by_posting_date.
 
         # Enforce maximum rows per sheet: do not proceed if any sheet exceeds the limit
-        MAX_ROWS_PER_SHEET = 500
+        MAX_ROWS_PER_SHEET = 2500
         for sheet_name, df in sheet_data_cache.items():
             try:
                 row_count = int(df.shape[0])
             except Exception:
                 row_count = 0
             if row_count > MAX_ROWS_PER_SHEET:
-                raise HTTPException(status_code=400, detail="Upload failed: This file exceeds the allowed row limit. A maximum of 500 rows per table is supported.")
+                raise HTTPException(status_code=400, detail=f"Upload failed: This file exceeds the allowed row limit. A maximum of {MAX_ROWS_PER_SHEET} rows per table is supported.")
         
         def _normalize(s: str) -> str:
             import re
@@ -5700,18 +5710,35 @@ async def _mirror_user_template_to_dsl(name: str, combined_code: str, rules: lis
                     }
                 else:
                     unresolved_events.append(evt_name)
+            # Names that appear only inside a string literal or a comment line
+            # ("see Rev.Rec policy") are not event references. Anything left
+            # is a real `EVENT.field` read in executable code.
+            unresolved_in_code = (
+                set(extract_event_names_from_dsl(
+                    _strip_dsl_literals_and_comments(combined_code or "")))
+                & set(unresolved_events)
+            )
+            if all_event_fields and unresolved_in_code:
+                # A PARTIAL resolution is as broken as none: the missing
+                # event's rows never reach the model, so every rule that reads
+                # it computes on nothing. This used to be a log warning and a
+                # "deployed" response -- on the Hearst model, dropping one
+                # reference table silently took the book from 155
+                # transactions to 61 with no error anywhere.
+                missing = sorted(unresolved_in_code)
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"Cannot deploy \"{name}\": the model reads event(s) "
+                        f"{missing} which match no event definition "
+                        f"(resolved: {sorted(all_event_fields)}). The deployed "
+                        f"model would silently compute without that data. Load "
+                        f"the missing event definition(s) or fix the event "
+                        f"names in the rules, then deploy again. Nothing was "
+                        f"written."
+                    ),
+                )
             if all_event_fields:
-                if unresolved_events:
-                    # Not fatal: extract_event_names_from_dsl matches ANY
-                    # `identifier.field`, so an unresolved name may simply not
-                    # be an event. It IS fatal at runtime if it really was one
-                    # (the reference compiles to an unassigned EVENT_field
-                    # variable), so say so loudly here.
-                    logger.warning(
-                        f"Template '{name}' references {unresolved_events} "
-                        f"which match no event definition; if these are real "
-                        f"events, their fields will raise NameError at run time."
-                    )
                 python_code = dsl_to_python_multi_event(
                     combined_code or "", all_event_fields
                 )
@@ -5740,9 +5767,16 @@ async def _mirror_user_template_to_dsl(name: str, combined_code: str, rules: lis
         except HTTPException:
             raise
         except Exception as e:
-            compile_error = str(e)
+            # Refuse rather than write an artifact with empty python_code and
+            # answer "deployed" -- the runtime would load a model that defines
+            # no process function at all.
             logger.warning(
                 f"DSL→Python compile failed for user template '{name}': {e}"
+            )
+            raise HTTPException(
+                status_code=400,
+                detail=(f"Cannot deploy \"{name}\": DSL compile failed: {e}. "
+                        f"Nothing was written."),
             )
 
         # Upsert dsl_templates by name. Preserve existing id when updating so
@@ -5800,7 +5834,14 @@ async def _mirror_user_template_to_dsl(name: str, combined_code: str, rules: lis
         # the caller, not be downgraded to a log line and a silent success.
         raise
     except Exception as e:
-        logger.warning(f"Failed to mirror user template '{name}' to dsl_templates: {e}")
+        # The deploy endpoint reports success after this returns, so a failed
+        # write must surface -- not leave the runtime on a stale or half-
+        # written artifact while the UI says "deployed".
+        logger.error(f"Failed to mirror user template '{name}' to dsl_templates: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Deploy of \"{name}\" failed while writing the artifact: {e}",
+        )
 
 
 @api_router.get("/user-templates")

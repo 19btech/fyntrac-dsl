@@ -169,3 +169,57 @@ def test_event_free_model_still_compiles_standalone(monkeypatch):
     _deploy(db, monkeypatch)
     py = _artifact(db)
     assert "def process_standalone" in py
+
+
+# -- a PARTIAL resolution is refused too ----------------------------------
+# Resolving some events but not others used to log a warning and report
+# "deployed": the missing event's rows never reached the model, so every rule
+# reading it computed on nothing (Hearst: 155 transactions silently became 61).
+PARTIAL_DSL = DSL + 'rate = SSP_RULE.ssp_pct\n'
+
+
+def test_partially_resolved_events_refuse_the_deploy(monkeypatch):
+    db = _DB(EVT)
+    db.user_templates.docs[0]["combinedCode"] = PARTIAL_DSL
+    with pytest.raises(HTTPException) as exc:
+        _deploy(db, monkeypatch)
+    assert exc.value.status_code == 400
+    assert "SSP_RULE" in str(exc.value.detail)
+    assert db.dsl_template_artifacts.docs == []
+    assert db.dsl_templates.docs == []
+
+
+def test_partial_deploy_succeeds_once_the_missing_event_is_loaded(monkeypatch):
+    db = _DB(EVT)
+    db.event_definitions.docs.append(
+        {"event_name": "SSP_RULE", "eventType": "reference",
+         "fields": [{"name": "ssp_pct", "datatype": "decimal"}]})
+    db.user_templates.docs[0]["combinedCode"] = PARTIAL_DSL
+    _deploy(db, monkeypatch)
+    assert "def process_event_data" in _artifact(db)
+
+
+@pytest.mark.parametrize("noise", [
+    'print("see Rev.Rec policy")\n',
+    '# Rev.Rec is booked below\n',
+    '// Rev.Rec is booked below\n',
+])
+def test_dotted_text_in_strings_and_comments_does_not_block(noise, monkeypatch):
+    db = _DB(EVT)
+    db.user_templates.docs[0]["combinedCode"] = noise + DSL
+    _deploy(db, monkeypatch)
+    assert "def process_event_data" in _artifact(db)
+
+
+# -- a compile failure is refused, not shipped as an empty artifact -------
+def test_compile_failure_refuses_the_deploy(monkeypatch):
+    db = _DB(EVT)
+
+    def _boom(*a, **k):
+        raise ValueError("bad syntax on line 3")
+    monkeypatch.setattr(S, "dsl_to_python_multi_event", _boom)
+    with pytest.raises(HTTPException) as exc:
+        _deploy(db, monkeypatch)
+    assert exc.value.status_code == 400
+    assert "bad syntax" in str(exc.value.detail)
+    assert db.dsl_template_artifacts.docs == []

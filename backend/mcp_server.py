@@ -74,7 +74,7 @@ _SESSION_ID = "claude-desktop-mcp"
 _BUILDER_TOOLS = [
     # discovery
     "list_events", "get_event_data", "list_dsl_functions", "list_saved_rules",
-    "get_saved_rule", "list_templates", "list_saved_schedules",
+    "get_saved_rule", "get_step", "list_templates", "list_saved_schedules",
     "get_dsl_syntax_guide", "find_similar_template", "list_canonical_patterns",
     "get_canonical_pattern",
     # plan
@@ -513,12 +513,35 @@ server = Server("fyntrac-dsl")
 
 # ── Helpers ─────────────────────────────────────────────────────────────────
 
-def _fmt(result) -> str:
+# Per-response cap. 12,000 hid everything past ~step 60 of a 94-step rule, so
+# it is now larger and configurable; anything over it is saved in full to a
+# file and the response says where, instead of silently losing the tail.
+_MAX_RESPONSE_CHARS = int(os.environ.get("FYNTRAC_MCP_MAX_CHARS") or 60000)
+_SPILL_DIR = os.environ.get("FYNTRAC_MCP_SPILL_DIR") or os.path.join(
+    __import__("tempfile").gettempdir(), "fyntrac-mcp-responses")
+
+
+def _fmt(result, tool_name: str = "tool") -> str:
     try:
         s = json.dumps(result, indent=2, default=str, ensure_ascii=False)
     except Exception:
         s = str(result)
-    return s if len(s) <= 12000 else s[:12000] + "\n… (truncated)"
+    if len(s) <= _MAX_RESPONSE_CHARS:
+        return s
+    note = (f"\n… (truncated: showing {_MAX_RESPONSE_CHARS:,} of {len(s):,} chars")
+    try:
+        import datetime as _dt
+        os.makedirs(_SPILL_DIR, exist_ok=True)
+        stamp = _dt.datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+        path = os.path.join(_SPILL_DIR, f"{tool_name}-{stamp}.json")
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(s)
+        note += f". Full response saved to {path}"
+    except OSError as exc:
+        note += f". Could not save the full response: {exc}"
+    hint = (". For large rules, use get_step, or get_saved_rule with "
+            "steps_only / from_index / to_index.)")
+    return s[:_MAX_RESPONSE_CHARS] + note + hint
 
 
 async def _resolve_run_config(model_override: str = ""):
@@ -729,7 +752,7 @@ async def _call_tool(name: str, arguments: dict | None) -> list[types.TextConten
     set_current_session_id(_SESSION_ID)
     try:
         result = await dispatch_tool(name, arguments)
-        return [types.TextContent(type="text", text=_fmt(result))]
+        return [types.TextContent(type="text", text=_fmt(result, name))]
     except ToolError as exc:
         return [types.TextContent(type="text", text=f"Tool error: {exc}")]
     except Exception as exc:                                  # pragma: no cover

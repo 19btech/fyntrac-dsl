@@ -2730,7 +2730,7 @@ async def tool_dry_run_template(args: dict) -> dict:
                                   for k, v in by_type.items()},
         "transaction_summary": transaction_summary,
         "sample_transactions": txn_dicts[:sample_limit],
-        "print_outputs": (result.get("print_outputs") or [])[:10],
+        "print_outputs": (result.get("print_outputs") or [])[:50],
         "sanity_warnings": sanity_warnings,
         "next_action": next_action,
     }
@@ -4245,7 +4245,39 @@ async def tool_list_saved_rules(args: dict) -> dict:
 
 async def tool_get_saved_rule(args: dict) -> dict:
     rule = await _load_rule((args.get("rule_id") or "").strip())
-    return {"rule": rule}
+    steps_only = bool(args.get("steps_only"))
+    ranged = args.get("from_index") is not None or args.get("to_index") is not None
+    if not steps_only and not ranged:
+        return {"rule": rule}
+    # A large rule (REVREC_Revenue_Recognition: 94 steps, ~86K chars) does not
+    # fit in one tool response, so the tail steps were unreadable. A step
+    # window, without the outputs/variables/generated code, reads it in parts.
+    steps = rule.get("steps") or []
+    lo = int(args.get("from_index") or 0)
+    hi = int(args["to_index"]) if args.get("to_index") is not None else len(steps) - 1
+    lo, hi = max(lo, 0), min(hi, len(steps) - 1)
+    return {
+        "rule_id": rule.get("id"),
+        "rule_name": rule.get("name"),
+        "step_count": len(steps),
+        "from_index": lo,
+        "to_index": hi,
+        "steps": [{"index": i, **steps[i]} for i in range(lo, hi + 1)],
+    }
+
+
+async def tool_get_step(args: dict) -> dict:
+    """One full step of a saved rule, by step_id, step_name or step_index."""
+    rule = await _load_rule((args.get("rule_id") or "").strip())
+    idx = _resolve_step_index(rule, args)
+    steps = rule.get("steps") or []
+    return {
+        "rule_id": rule.get("id"),
+        "rule_name": rule.get("name"),
+        "step_index": idx,
+        "step_count": len(steps),
+        "step": steps[idx],
+    }
 
 
 def _normalise_transaction_outputs(steps: list[dict], outputs: dict,
@@ -4398,9 +4430,13 @@ def _normalise_transaction_outputs(steps: list[dict], outputs: dict,
                 nt[date_key] = f"{default_event}.{canonical_field}"
 
         sid_now = str(nt.get("subInstrumentId") or "").strip()
-        # If the rule has a subinstrumentid alias step, always use it in transactions.
+        # A subinstrumentid alias step replaces only an unset / default id.
+        # Overwriting an explicit choice (e.g. a per-log `del_subs` array)
+        # broadcast the row's single sub across every amount, so each amount
+        # was booked on the wrong sub-instrument.
         if has_subinstrumentid_step:
-            nt["subInstrumentId"] = "subinstrumentid"
+            if sid_now in _DEFAULT_SUBIDS:
+                nt["subInstrumentId"] = "subinstrumentid"
         elif multi_subid_default:
             # Multi-subid event detected: prefer the row-level identifier
             # over the literal default "1" / "1.0".
@@ -5824,6 +5860,9 @@ async def tool_update_step(args: dict) -> dict:
         "step_id": merged.get("id"),
         "step_name": merged["name"],
         "merge_mode": "deep",
+        # The step as saved, so an edit can be checked without a second read
+        # (a large rule's tail steps don't fit in one get_saved_rule response).
+        "step": rule["steps"][idx],
     }
     # Read-back: re-fetch and confirm the patched fields actually persisted.
     if merged.get("id"):
@@ -5916,6 +5955,7 @@ async def tool_patch_step(args: dict) -> dict:
         "step_id": working.get("id"),
         "step_name": working.get("name"),
         "ops_applied": applied,
+        "step": rule["steps"][idx],
     }
     if working.get("id"):
         # Build an "expected subset" by re-applying ops to an empty mirror of
@@ -6691,21 +6731,37 @@ async def tool_debug_step(args: dict) -> dict:
     except Exception as exc:
         raise ToolError(f"DSL translation failed for debug step: {exc}") from exc
     try:
-        result = await execute_python_template(py, merged, event_data, posting_date, args.get("effective_date"))
+        # collect_by_instrument / collect_all read this raw dict, not the
+        # merged rows, so it must be scoped to the posting date exactly as a
+        # real run scopes it (_run_full_book). Passing every date's rows made
+        # this tool show arrays spanning the whole history while the run saw
+        # one date -- the probe and the emitted transaction disagreed.
+        result = await execute_python_template(py, merged, {**event_data, **scoped},
+                                                posting_date, args.get("effective_date"))
     except Exception as exc:
         raise ToolError(f"Execution failed: {exc}") from exc
 
     prints = result.get("print_outputs") or []
     debug_lines = [p for p in prints if "__DEBUG_STEP__" in str(p)][:50]
-    return {
+    # Values first, code last: for a late step the code alone outgrows a tool
+    # response, and truncation used to cut off the debug value -- the one
+    # thing the caller asked for.
+    # Other steps' prints along the way can be whole schedule grids (64K chars
+    # on REVREC alone, vs 280 for the value asked for), so each is clipped.
+    def _clip(p, limit=1500):
+        s = str(p)
+        return s if len(s) <= limit else s[:limit] + f"… [{len(s) - limit:,} more chars]"
+    payload = {
         "rule_id": rule["id"],
         "step_name": target.get("name"),
         "variable": var,
-        "code": code,
         "row_count": len(merged),
         "debug_outputs": debug_lines,
-        "all_prints": prints[:50],
+        "all_prints": [p if "__DEBUG_STEP__" in str(p) else _clip(p) for p in prints[:50]],
     }
+    if args.get("include_code", True) is not False:
+        payload["code"] = code
+    return payload
 
 
 async def _events_referenced_by_rule(rule: dict) -> list[str]:
@@ -6808,7 +6864,8 @@ async def _execute_dsl_for_rule(rule: dict, code: str, posting_date: str | None,
     except Exception as exc:
         raise ToolError(f"DSL translation failed: {exc}") from exc
     try:
-        result = await execute_python_template(py, merged, event_data,
+        # Scoped like a real run -- see tool_debug_step.
+        result = await execute_python_template(py, merged, {**event_data, **scoped},
                                                 posting_date, effective_date)
     except Exception as exc:
         raise ToolError(f"Execution failed: {exc}") from exc
@@ -7278,7 +7335,13 @@ async def tool_debug_schedule(args: dict) -> dict:
     except Exception as exc:
         raise ToolError(f"Schedule DSL translation failed: {exc}") from exc
     try:
-        result = await execute_python_template(py, merged, event_data, posting_date, args.get("effective_date"))
+        # collect_by_instrument / collect_all read this raw dict, not the
+        # merged rows, so it must be scoped to the posting date exactly as a
+        # real run scopes it (_run_full_book). Passing every date's rows made
+        # this tool show arrays spanning the whole history while the run saw
+        # one date -- the probe and the emitted transaction disagreed.
+        result = await execute_python_template(py, merged, {**event_data, **scoped},
+                                                posting_date, args.get("effective_date"))
     except Exception as exc:
         raise ToolError(f"Schedule execution failed: {exc}") from exc
 
@@ -8946,6 +9009,19 @@ async def tool_dry_run_rule(args: dict) -> dict:
         raise ToolError("rule_id is required")
     rule = await _load_rule(rule_id)
     code = rule.get("generatedCode") or _generate_rule_code(rule)
+    if not _rule_printing_enabled(rule):
+        # The rule-level switch silences prints in production, but a dry run is
+        # a diagnostic: steps flagged printResult: true are exactly what the
+        # caller wants to see, and print_outputs came back empty. Probe-only --
+        # nothing is saved. Steps without an explicit flag stay quiet, so
+        # schedule grids are not dumped.
+        import copy as _copy
+        probe = _copy.deepcopy(rule)
+        probe["outputs"] = {**(probe.get("outputs") or {}), "printResult": True}
+        for s in probe.get("steps") or []:
+            if s.get("printResult") is None:
+                s["printResult"] = False
+        code = _generate_rule_code(probe)
     transient_name = f"__dryrun_rule__{rule['id']}"
     extract_event_names = _h("extract_event_names_from_dsl")
     dsl_to_python = _h("dsl_to_python")
@@ -9768,6 +9844,7 @@ TOOLS: dict[str, Callable[[dict], Awaitable[dict]]] = {
     # Rule / step / schedule / template-assembly tools
     "list_saved_rules": tool_list_saved_rules,
     "get_saved_rule": tool_get_saved_rule,
+    "get_step": tool_get_step,
     "create_saved_rule": tool_create_saved_rule,
     "update_saved_rule": tool_update_saved_rule,
     "delete_saved_rule": tool_delete_saved_rule,
@@ -10164,10 +10241,39 @@ TOOL_SCHEMAS.extend([
     },
     {
         "name": "get_saved_rule",
-        "description": "Fetch a single saved rule (full document including all steps).",
+        "description": (
+            "Fetch a single saved rule (full document including all steps). For a "
+            "large rule, pass steps_only and/or from_index/to_index to read a window "
+            "of steps (each tagged with its index) without outputs, variables or "
+            "generated code; use get_step for one step."
+        ),
         "parameters": {
             "type": "object",
-            "properties": {"rule_id": {"type": "string", "description": "id or exact name"}},
+            "properties": {
+                "rule_id": {"type": "string", "description": "id or exact name"},
+                "steps_only": {"type": "boolean",
+                               "description": "Return only the steps (plus step_count), not the whole rule."},
+                "from_index": {"type": "integer", "description": "First step index to return (0-based, inclusive)."},
+                "to_index": {"type": "integer", "description": "Last step index to return (inclusive)."},
+            },
+            "required": ["rule_id"],
+        },
+    },
+    {
+        "name": "get_step",
+        "description": (
+            "Fetch ONE full step of a saved rule (formula, value, source, schedule "
+            "config, flags, id). Identify it by step_id (preferred), step_name or "
+            "step_index. Use this to read a step before editing it."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "rule_id": {"type": "string", "description": "id or exact name"},
+                "step_id": {"type": "string"},
+                "step_name": {"type": "string"},
+                "step_index": {"type": "integer"},
+            },
             "required": ["rule_id"],
         },
     },
@@ -10578,6 +10684,8 @@ TOOL_SCHEMAS.extend([
                 "step_name": {"type": "string"},
                 "posting_date": {"type": "string"},
                 "effective_date": {"type": "string"},
+                "include_code": {"type": "boolean",
+                                 "description": "Default true. Pass false to omit the generated code and get just the values."},
             },
             "required": ["rule_id"],
         },

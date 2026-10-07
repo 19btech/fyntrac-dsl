@@ -257,7 +257,10 @@ const FileUploadPanel = ({ onUploadSuccess, events, transactions = [], addConsol
       const detail = error.response?.data?.detail;
       // Structured header-validation error: { message, errors: [...] }
       const isStructured = detail && typeof detail === 'object' && Array.isArray(detail.errors);
-      const topMsg = isStructured ? detail.message : (detail || error.message);
+      const topMsg = isStructured ? detail.message
+        : (detail && typeof detail === 'object')
+          ? (detail.message || JSON.stringify(detail))
+          : (detail || error.message);
       toast.error("Upload failed — check event data viewer for errors");
       addConsoleLog(`✗ ${topMsg}`, "error");
       const structured = isStructured

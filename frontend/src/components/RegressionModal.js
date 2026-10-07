@@ -11,6 +11,7 @@ import {
 import DataTable from "./DataTable";
 import { API } from "../config";
 import ModalHeader from "./ModalHeader";
+import { classifyEditorCode } from "./regressionEditorCheck";
 
 // Bounded by the MIT DataGrid's 100-row page cap; this is also the server's
 // page size, so a huge diff costs more requests but never a giant payload.
@@ -226,7 +227,7 @@ const PROFILE_COLUMNS = [
   },
 ];
 
-const RegressionModal = ({ open, onClose, editorCode = '' }) => {
+const RegressionModal = ({ open, onClose, editorCode = '', editorBaseCode = null, onReloadEditor }) => {
   const [cases, setCases] = useState([]);
   const [loading, setLoading] = useState(false);
   const [search, setSearch] = useState('');
@@ -254,6 +255,9 @@ const RegressionModal = ({ open, onClose, editorCode = '' }) => {
   const [busy, setBusy] = useState(null);
   const [banner, setBanner] = useState(null);
   const [confirm, setConfirm] = useState(null);
+  // A workspace run held back because the editor may not hold the saved
+  // rules: { caseIds, kind: 'stale' | 'unknown' }.
+  const [heldRun, setHeldRun] = useState(null);
 
   const selected = useMemo(
     () => cases.find(c => c.id === selectedId) || null,
@@ -353,11 +357,25 @@ const RegressionModal = ({ open, onClose, editorCode = '' }) => {
   }, [tab, activeRunId, diffPage, diffFilter, loadDiff]);
 
   // ── running ───────────────────────────────────────────────────────────
-  const startRun = useCallback(async (caseIds) => {
+  // `source` is only set when the user has answered the stale-editor prompt:
+  // 'saved' runs the saved rules, 'editor' runs the on-screen code regardless.
+  const startRun = useCallback(async (caseIds, source) => {
     setBanner(null);
+    setHeldRun(null);
     const usePinned = runTemplateId === '__pinned__';
     const useWorkspace = runTemplateId === '__workspace__';
     const preset = usePinned || useWorkspace || runTemplateId === '__origin__';
+    if (useWorkspace && !source) {
+      // The editor only refreshes when this page reloads the rules, so a rule
+      // saved elsewhere (the agent, another tab) leaves it holding old code --
+      // and a workspace run would then test that old code while reporting it
+      // as the workspace. Check before running rather than after.
+      const kind = await classifyEditorCode(editorCode, editorBaseCode);
+      if (kind === 'stale' || kind === 'unknown') {
+        setHeldRun({ caseIds, kind });
+        return;
+      }
+    }
     const body = {
       case_ids: caseIds,
       template_id: preset ? null : runTemplateId,
@@ -366,7 +384,7 @@ const RegressionModal = ({ open, onClose, editorCode = '' }) => {
       // Send what is actually on screen. The editor may hold edits that were
       // never saved, and those are usually the whole point of the run; with
       // no buffer the server falls back to the saved rules.
-      workspace_code: useWorkspace ? (editorCode || null) : null,
+      workspace_code: useWorkspace && source !== 'saved' ? (editorCode || null) : null,
       profile: profileRun,
     };
     try {
@@ -406,7 +424,7 @@ const RegressionModal = ({ open, onClose, editorCode = '' }) => {
     } catch (err) {
       setBanner({ severity: 'error', message: err.message });
     }
-  }, [runTemplateId, profileRun, editorCode, loadCases, loadDetail, selectedId]);
+  }, [runTemplateId, profileRun, editorCode, editorBaseCode, loadCases, loadDetail, selectedId]);
 
   // ── mutations ─────────────────────────────────────────────────────────
   const post = useCallback(async (url, body, label) => {
@@ -768,6 +786,38 @@ const RegressionModal = ({ open, onClose, editorCode = '' }) => {
               <Typography variant="caption">{banner.message}</Typography>
             </Alert>
           )}
+          {heldRun && (
+            <Alert severity="warning" sx={{ m: 2, mb: 0 }} data-testid="regression-stale-editor"
+              onClose={() => setHeldRun(null)}>
+              <Typography variant="caption" component="div" sx={{ mb: 1 }}>
+                {heldRun.kind === 'stale'
+                  ? 'The saved rules changed after the editor loaded them (for example, the agent saved a rule). The editor still holds the older code, so a run against it would not test the saved rules.'
+                  : 'The editor holds code that differs from the saved rules, and it was not loaded from them in this session. It may be out of date.'}
+                {' '}Nothing was run.
+              </Typography>
+              <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap' }}>
+                <Button size="small" variant="contained"
+                  onClick={() => startRun(heldRun.caseIds, 'saved')}
+                  data-testid="regression-run-saved">
+                  Run saved rules
+                </Button>
+                {onReloadEditor && (
+                  <Button size="small" variant="outlined"
+                    onClick={() => {
+                      onReloadEditor();
+                      setHeldRun(null);
+                      setBanner({ severity: 'info', message: 'Editor reloaded from the saved rules. Unsaved edits in it were replaced. Run again when ready.' });
+                    }}>
+                    Reload editor
+                  </Button>
+                )}
+                <Button size="small"
+                  onClick={() => startRun(heldRun.caseIds, 'editor')}>
+                  Run editor code anyway
+                </Button>
+              </Box>
+            </Alert>
+          )}
           {!selected && (
             <Box sx={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'text.secondary' }}>
               <Typography variant="body2">Select a case to see its baseline and differences.</Typography>
@@ -906,6 +956,18 @@ const RegressionModal = ({ open, onClose, editorCode = '' }) => {
                         })}
                       >
                         Recapture from current data
+                      </Button>
+                      <Button
+                        size="small" variant="outlined" startIcon={<Download size={14} />}
+                        href={`${API}/regression/cases/${selected.id}/dataset/export`}
+                      >
+                        Download event data
+                      </Button>
+                      <Button
+                        size="small" variant="outlined" startIcon={<Download size={14} />}
+                        href={`${API}/regression/cases/${selected.id}/expected/export`}
+                      >
+                        Download expected results
                       </Button>
                       <Button
                         size="small" variant="outlined" color="error" startIcon={<Trash2 size={14} />}

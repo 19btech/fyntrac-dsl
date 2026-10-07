@@ -56,6 +56,11 @@ const Dashboard = () => {
     }
   });
 
+  // The saved rules as they were when the editor last loaded them. Lets the
+  // regression dialog tell "I edited the editor" from "the saved rules moved
+  // underneath the editor" (e.g. the agent saved a rule). null = unknown.
+  const [editorBaseCode, setEditorBaseCode] = useState(null);
+
   const [templates, setTemplates] = useState([]);
   const [selectedEvent, setSelectedEvent] = useState("");
   const [transactionDefinitions, setTransactionDefinitions] = useState([]);
@@ -577,6 +582,7 @@ const Dashboard = () => {
       const response = await axios.get(`${API}/combined-code`);
       if (response.data) {
         setDslCode(response.data.code ?? '');
+        setEditorBaseCode(response.data.code ?? '');
         setCodeRefreshKey(k => k + 1);
       }
     } catch (error) {
@@ -1227,6 +1233,8 @@ const Dashboard = () => {
         open={showRegression}
         onClose={() => setShowRegression(false)}
         editorCode={dslCode}
+        editorBaseCode={editorBaseCode}
+        onReloadEditor={() => loadCombinedCode({ silent: false })}
       />
     </div>
   );
